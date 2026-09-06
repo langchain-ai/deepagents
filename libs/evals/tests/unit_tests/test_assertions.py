@@ -50,29 +50,29 @@ def _traj(*steps: AgentStep) -> AgentTrajectory:
 class TestToolNotCalled:
     def test_absent_passes(self) -> None:
         traj = _traj(_step(1, _tc("lookup_population", city="tokyo")))
-        assert tool_not_called("get_rubric").check(traj) is True
+        assert tool_not_called("fetch_page").check(traj) is True
 
     def test_present_fails(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")))
-        assert tool_not_called("get_rubric").check(traj) is False
+        traj = _traj(_step(1, _tc("fetch_page")))
+        assert tool_not_called("fetch_page").check(traj) is False
 
     def test_describe_failure_names_tool_and_count(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")), _step(2, _tc("get_rubric")))
-        msg = tool_not_called("get_rubric").describe_failure(traj)
-        assert "get_rubric" in msg
+        traj = _traj(_step(1, _tc("fetch_page")), _step(2, _tc("fetch_page")))
+        msg = tool_not_called("fetch_page").describe_failure(traj)
+        assert "fetch_page" in msg
         # Two forbidden calls were found; the count must surface.
         assert "2" in msg
 
     def test_step_scoped_match(self) -> None:
-        traj = _traj(_step(1, _tc("lookup_population")), _step(2, _tc("get_rubric")))
+        traj = _traj(_step(1, _tc("lookup_population")), _step(2, _tc("fetch_page")))
         # Forbidden only in step 1 (where it is absent) → passes.
-        assert tool_not_called("get_rubric", step=1).check(traj) is True
+        assert tool_not_called("fetch_page", step=1).check(traj) is True
         # Forbidden in step 2 (where it is present) → fails.
-        assert tool_not_called("get_rubric", step=2).check(traj) is False
+        assert tool_not_called("fetch_page", step=2).check(traj) is False
 
     def test_step_out_of_range_fails(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")))
-        assertion = tool_not_called("get_rubric", step=5)
+        traj = _traj(_step(1, _tc("fetch_page")))
+        assertion = tool_not_called("fetch_page", step=5)
         assert assertion.check(traj) is False
         assert "trajectory has 1 step" in assertion.describe_failure(traj)
 
@@ -114,12 +114,12 @@ class TestToolNotCalled:
 
     def test_describe_failure_names_the_scoped_step(self) -> None:
         """A step-scoped failure surfaces the step in its description."""
-        traj = _traj(_step(1, _tc("lookup_population")), _step(2, _tc("get_rubric")))
-        msg = tool_not_called("get_rubric", step=2).describe_failure(traj)
+        traj = _traj(_step(1, _tc("lookup_population")), _step(2, _tc("fetch_page")))
+        msg = tool_not_called("fetch_page", step=2).describe_failure(traj)
         assert "step 2" in msg
 
     def test_factory_equals_class(self) -> None:
-        assert tool_not_called("get_goal", step=2) == ToolNotCalled(name="get_goal", step=2)
+        assert tool_not_called("fetch_user", step=2) == ToolNotCalled(name="fetch_user", step=2)
 
 
 # ---------------------------------------------------------------------------
@@ -129,16 +129,16 @@ class TestToolNotCalled:
 
 class TestToolCalled:
     def test_present_passes(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")))
-        assert tool_called("get_rubric").check(traj) is True
+        traj = _traj(_step(1, _tc("fetch_page")))
+        assert tool_called("fetch_page").check(traj) is True
 
     def test_absent_fails(self) -> None:
         traj = _traj(_step(1, _tc("lookup_population")))
-        assert tool_called("get_rubric").check(traj) is False
+        assert tool_called("fetch_page").check(traj) is False
 
     def test_out_of_range_step_fails(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")))
-        assert tool_called("get_rubric", step=2).check(traj) is False
+        traj = _traj(_step(1, _tc("fetch_page")))
+        assert tool_called("fetch_page", step=2).check(traj) is False
 
     def test_step_and_args_matching(self) -> None:
         traj = _traj(
@@ -158,13 +158,13 @@ class TestToolCalled:
 
     def test_describe_failure_names_tool_and_step(self) -> None:
         traj = _traj(_step(1, _tc("lookup_population")))
-        message = tool_called("get_rubric", step=1).describe_failure(traj)
-        assert "get_rubric" in message
+        message = tool_called("fetch_page", step=1).describe_failure(traj)
+        assert "fetch_page" in message
         assert "step 1" in message
 
     def test_factory_equals_class(self) -> None:
-        assert tool_called("get_goal", step=2) == ToolCalled(
-            name="get_goal",
+        assert tool_called("fetch_user", step=2) == ToolCalled(
+            name="fetch_user",
             step=2,
         )
 
@@ -176,12 +176,12 @@ class TestToolCalled:
 
 class TestToolCall:
     def test_present_true(self) -> None:
-        traj = _traj(_step(1, _tc("get_rubric")))
-        assert tool_call(name="get_rubric").check(traj) is True
+        traj = _traj(_step(1, _tc("fetch_page")))
+        assert tool_call(name="fetch_page").check(traj) is True
 
     def test_absent_false(self) -> None:
         traj = _traj(_step(1, _tc("lookup_population")))
-        assert tool_call(name="get_rubric").check(traj) is False
+        assert tool_call(name="fetch_page").check(traj) is False
 
     def test_combined_arg_filters_preserve_existing_behavior(self) -> None:
         traj = _traj(_step(1, _tc("write_file", a=1, b=2)))
@@ -202,7 +202,7 @@ class TestSelectorValidation:
     @pytest.mark.parametrize("bad_step", [0, -1])
     def test_tool_not_called_nonpositive_step_raises(self, bad_step: int) -> None:
         with pytest.raises(ValueError, match="positive"):
-            tool_not_called("get_rubric", step=bad_step)
+            tool_not_called("fetch_page", step=bad_step)
 
     def test_tool_not_called_both_arg_filters_raise(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):
@@ -211,7 +211,7 @@ class TestSelectorValidation:
     @pytest.mark.parametrize("bad_step", [0, -1])
     def test_tool_called_nonpositive_step_raises(self, bad_step: int) -> None:
         with pytest.raises(ValueError, match="positive"):
-            tool_called("get_rubric", step=bad_step)
+            tool_called("fetch_page", step=bad_step)
 
     def test_tool_called_both_arg_filters_raise(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):

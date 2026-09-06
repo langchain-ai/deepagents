@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:449af03fe04a07eb725487b45b69f51ec602a05a2c98475683e53db273671581",
+  "claims": [
+    {
+      "id": "claim_02a3292b94514936b7fbbbe869876251",
+      "statement": "Deep Agents is a three-layer stack: LangGraph is the runtime (state, checkpoints, streaming, interrupts), LangChain create_agent is the agent abstraction that builds the model-plus-tools-plus-middleware loop on top of LangGraph, and Deep Agents is an opinionated harness on top of create_agent.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L73-L75",
+          "version": "repo-lines-v1:sha256:4c5d8fc25f9a9ca4c46f747b4aaba4dd6544d1b888140f0ee1761f977ee361f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWI0MzY4ODM3ODQ2ZDYyZmVjNzRkMTI5MWUzNDMxYTc4NTgwMzZjZDliZjM0MGExZjY4MWVhOGI5YTI4OTI3MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDdkZjVmMjEyNGY1MTNkNWQ5Y2VmMmQ2NDNhYjg1MzNhZmEwYTRhYWY0NmQyMjYxMTMzMDBhYTk2ZmI5ZjFkNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2FjYjc4ZThkNGIxZjk3Y2ZhMzNlZmZmOWExMjgwYWE5MmM5ZTU2ZmVkZDA2N2MyYmUxY2NjOTMzZDNiMDNjMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzRlZWY2NTVjZTU5NmE2MWU5NjE2NzMzMWNjZWY3OTg4OWNiNWJlOGJiZjI1ZGNmOTYzNjdlYzZlNmRiYzdjMSJ9"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L12-L28",
+          "version": "repo-lines-v1:sha256:23398c3df8bf537980a1caa851dd9877a72fd5877a02a8dca483672537d63337:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNmIyZmVjN2E0ZjQ1NjRkNWQ3MGI0M2QwNzEwMjcxNWFlNTE1MTBkMGU1YTcyMWVjNzUyZTQ2OTE3MjVhNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3NzBmZDg3NTQwMTU1ZDg2YzA5ZTFlNDNhODI1NzRlMDlkZmQyYjQ1MjY3YWZmNjFkNDg4ODBmMzM5N2U2YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YjFjNTczYTA3ZjIwMjQwMTBiYWJkZGU0MThiMzA3NmZhNGM0YjhlYmQ2OGNmZWQzYjBkZTFkMmFhODA5ZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxODZjZTE5Y2NlOWIxMGUyZDU1NjA3YzI1ZjljYmY1NDYyNGJhMjJhOWUwMWM5MzNlOTBmYTU3YWJjYTViZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cbc6217aff854d20a0bf5f141fb82ae3",
+      "statement": "Deep Agents does not introduce a new runtime; create_deep_agent() assembles the default middleware stack and configures backends, subagents, skills, memory, and profiles on top of create_agent().",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L26-L30",
+          "version": "repo-lines-v1:sha256:549a324dfb8bdc4d4a7e9913a2d220302ed8a47266ca53ef0857411b296ba1ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjc0ODdlY2Q1ZjFjM2Q2ODlmMmNhOTE1MDNlOGVlYjZjYWM4ODUzYjJlOWFjZWNhYjg2NTI5MmIzMzliY2VhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTUwZjM4NTk4ODY5YTM0ZDljNDMzNjQ3ZWM4ZWQxOWRlODJmZDcyMjhmZjYzNzRkOTViMDQ5NzE0OGE4N2IzNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjFiMjZiOTJlYWE4NDBhM2QzYjEzOWI0YjE2ZDQzNzg0MGQ2MmI1YWVmZTRhNmFlN2M5MzgxZjJlY2M3NWEzMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ca12b1f3fd54872ba573336b929a972",
+      "statement": "The dependency direction runs Deep Agents to LangChain create_agent to LangGraph, so each layer depends on the one below it and any LangGraph CompiledStateGraph can be passed in as a Deep Agents sub-agent.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L85-L89",
+          "version": "repo-lines-v1:sha256:72c36c30cb3a3bd7683fc6d53d27c94473b6997f74dc4048cc4e068fcfc65fa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2RkNjk4MTVlYzBkOWQ0ZmY1ZTU0MGMxMTVmZGQxYjI2ZjJmZDU3NjFhNTQwNDAwZjZmZGJmOTVlNzkwN2I3NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmFlYzI2ZThiNjAwZTZlZDY0ZjFlZDc4YWFkN2ZkNWNhNWFiNDJlOTAwNjVkOTA1YTVmMWMxZjgxZGVjYTA2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzFjY2JmNDY5ZTg2MDQzMGMyZDQzOGFhNDM0MThiNTZiOWIyYWU1M2QyOGQxMjRmYjQ5Y2UyZmI5ZmE0NjA5NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAxZjJlYzE3NTkzYzEwNTRlYjQ2MzY3ZDg0NTNlZjI0YTE3M2NlOTZiNzExN2Q5MWY5YTY4ZDQ0ZmVmOGIwMSJ9"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L14-L20",
+          "version": "repo-lines-v1:sha256:c1d1dfbed120943544b89535091a2384ba1e48850e2f4e3f82d30280fa4310dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I2MWQ4NWI0MDRlZGY1NDQwNGYyZjRkNWI5ZjQ1Zjc4YzY1MGNiNjE0ZGMzZTY3ODk0ZTM5OGM1ZWFiMWI5MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdjMDZjNTYxZDVjMzI3MzQzNjg1MjY4YTQ2YjMzOTFmMzk5OGVlZTg5MGQyYmU1MWYwZDIxY2M0YTUzYWU2ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2EyNjNlNjQ1OGUyNmYwYTYyODcyMjViYjIxZWQ0MWM3ZDM5NjlmMWU0N2RmYmVhMDM0YWIyNTJkY2VmZWFiYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAzMjJlYzUzZjFkNjFkMjA4NzQ2OWY1YTEyOWVlOTdmYjk1MWVkMjZhZTk1YjBkZmUxYjg4OWU5NzhkZDc2YiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_96b1377ae9274a719f50e9128950aa5b",
+      "statement": "LangGraph owns durable execution behavior — graph state carried between steps, checkpoints, streaming, and interrupt-based pause/resume — while LangChain create_agent owns the model/tool/repeat loop shape.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L22-L25",
+          "version": "repo-lines-v1:sha256:ab7d6c436a77b97909b815d5e9ddf2dc93570c668438e4814e1460f8cb4caeea:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmMyOGUyZTZiZmRmOWQwYjc1MjEzNjE3ODdhNWI2Zjc2YWViYjU2NTI3ZThhNmNjZjkzN2I5MmI3ZGY4MmY1MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJmOWY1MDU4OGNkM2M5MDcxZmUyYjY4ZDdlMGI5ZDE3ZTA3YjhmZGE5ZmE4ZjFjMTdlZGM3ZGEyMjVmNzY2OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmI0YmM2NDViMjUyOTQyMzY0OTRlMGE0ZGQ5YmM0M2MwNzU4NTY3YjFlYzMxNDg5ODdjYTkxMTJhMGVlYjI0MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGFhZjEwYzQ5NjhlNjkzNzU0YWU3MzE3NjE0OWMyMWZlNTg2NjYzNzM2OTQyYTBhYjAwMzdjMDliMDQ1ZTkwNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a6ec9756ab004ab9a00b002c024b1ebc",
+      "statement": "Deep Agents extends LangChain's AgentState with DeepAgentState, whose messages field uses a DeltaChannel reducer so checkpoint growth stays linear (O(N)) rather than quadratic (O(N^2)) on long threads.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L89-L91",
+          "version": "repo-lines-v1:sha256:9d2d24fb090bd6ee2f9dd94ce0c66285bc90038bbef5b6a46e9eab4c71013f0f:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWZlODU0N2I1ZThiODZkYzM5OTRlNGM2M2YyZWIxYWM2ZDBhNjRmMDg0MjZmZDRkYjYwOTQ3MmM2OGY4OWRjNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDY5YjBiNzUxNGQwOTgyYTJmMjhjZTUyMTZiMzljMjUwY2FhZjE5OGU4ZWYzZGNlMGRlM2ZlNjUzNjZkMjE0MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzQ4MmI0OGZiYjVhYjk3NGQxZDk4NTZiMTFiYTQ0OTMzNTRlMTkzMzExZGMyNzk3MGVmZTU4MGJhMWQyZGRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzU4ZWNkMzgzNDQ0NzAyOWViYzE2YmE2MDc4NzU1YzNiNGEwMWJhYmZkNjM2MzdlNTMxZjY5M2I4ZDIwZjU4NyJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L70-L73",
+          "version": "repo-lines-v1:sha256:4bbbabe96a41c95879541efc08647bc83bd85f03ca923dd6aab4aaefa29cd1d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZkNWUxZjQ2NzNiZGRlN2Y5MTMxNTkxZDRhYzk5ZjBlNGFiMTY2NTNkMGJlOTBkYWJiYTQ0N2Q4ZTgzMDRmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjVlOTJlNzJiMTg3NTA4ODRmNWFhNTA2ODMzZTc4YWI5OGIyMmZjODNiODUyNWY2YWZkMzZiY2Y1YzBiMDU0OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTYxNjIwMTk2NGExOTdmYWE3NzM4N2JhNzA0Yzg3ZTZiNjI0YmFkMzBkODEzOTg3ZDY4ZjUyN2MwYjcyOTAwNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_934112465cda404184ee8a97744a8ef0",
+      "statement": "create_deep_agent() is the assembly point that resolves the model and harness profile, resolves the backend, assembles the main-agent middleware stack, builds the default general-purpose subagent, composes the final system prompt, and delegates to LangChain's create_agent(...) to produce the runnable graph.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L36-L46",
+          "version": "repo-lines-v1:sha256:290562eb06046a81cf5c9cc412b1321eb8f07e71c6222813a15f2ad93bb2d6d4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0ZDRhMmRjZjBmNzVhYWE0NmZkNDFhYzNkMmNhMjIzNTc2M2VmYzUxNDBhOGJmMTAyY2M4ZjQ0OGM4NTg3MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxNjU1OWUxNDNmMTIyZmEzZGVjMDY5ZjMxYzA1ZDE2YWNkMDcxODMwZDQ1M2Q0ZGI0MWY4NzJmNDIwZmE5NjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkYjlhMTM4YWI1NTY4YmNlNzJhOGRhMzA5NDYxNDM5YWZiNGE3MmYxMjVhOWViZmMyMTRlM2NhYmY5ZmI1N2IifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L921-L933",
+          "version": "repo-lines-v1:sha256:58399d92067e3158683f3a81882f0152cb403fcc2d427c1548df7a5650fdd811:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYTYzNGI1MDQwYzhkN2IyM2M0NGUxZWZmMDdmYmU4Nzk2MThmMzA1ODhkOTAzYzM2NDMxZTZiYmZkOGY5ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4M2YxYzQ3NmM0NDY0NmM2ODE0MmEwY2Y0Njc2ZTJiOTkwZGFjMzYzMTU4ZTVkNGRkNTI0MDAxNWVmZDU5ZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYmJmNjZiMzUyYjAzMGFlMWJhMjY0YjgwZTlhOGU5ZjNkYTUwNWYzM2E3NmI3OThjZTFkNGMwZjFhNjc1ODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjllNDkxMTU3ZTkwNWJmZGE5MzQ0ZjAxZTNkNTUyOTlmOTQzMmQ4NTlhYTYyOWQ5MTQxZWY4Mzg0ZjNjNmYwZTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_71de25652d5e4513b2cc1f4221b42a4a",
+      "statement": "After building the graph, create_deep_agent() calls .with_config(...) to attach Deep Agents metadata (ls_integration, lc_versions, lc_agent_name) and a recursion_limit of 9,999 so long multi-step runs are not cut off.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L934-L943",
+          "version": "repo-lines-v1:sha256:ee2f27bc48ce7fd1012222e58c41559567371aafbddca5fbd7f39f5f40f4d3ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4YmQ3ZmVlZWY2ZWE4NDhkMTJjYmNmOTZkY2E3YzY5YTVjNWNkMjBjMWYxODI4NmQxMWJkNTE2NTc2MTQ0Y2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNzg3Yzg3MDhkYWU0YTFkYTQ1OWI4NGMxMzYyYmE3MTQyMzVlZjkwMDk0Nzk5ZTYyOTgyM2YzYmRmMDdlZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_929ec8009a6547e9bf721ff4415ec035",
+      "statement": "When a tool is missing the cause is middleware assembly or profile tool exclusions, whereas when a tool is visible but fails the cause is backend capability or filesystem permission enforcement.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L77-L87",
+          "version": "repo-lines-v1:sha256:4c1222f99b02a81b2e5bebf2fc3b5efc3c069305e82905d8d79867c88b6b4b2e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5ZTgyZDk3OTk1MzJlMzVkNDA2NWM3NzY0OWU2OTUxOGY1ODIwMjE5YTE5NWJkOWNkZTBlYTY2OWFiZDVlMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjMzhmNmQ2OTViMWJmZDljYjNlN2Y5NTY1MGUwMjI5YWExZjRlNzQyY2VjY2Q5OWVmZjgwMzY0NWE2ZjZlYjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3OWMxNTZhNGI2NWIxM2Y1YzRkYzhiNWNkYjFlMWI0NDQ5OWNiY2I1MzEzYTZhMDQzZTMzMzI5Y2Q5YjAwMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjViMmQxYWY1NjVhMDkzM2YwMzBlZTA4MTY1MzZlMTRhMjg4NzIwMTM3MDY3NzAzNWFhYTY5ZGZjMTQ5Y2EyZjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5435769baa32433dbc5503947f950ebb",
+      "statement": "The main-agent middleware stack is assembled in graph.py with filesystem, subagent, summarization, patch-tool-calls, profile, prompt-caching, memory, tool-exclusion, and human-in-the-loop middleware, and subagents get their own middleware stacks.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L63-L73",
+          "version": "repo-lines-v1:sha256:50efd9eb27d8c1374609d7f6ac6c2a3b14c32b28206af94753291efec808769b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3MjI0YWQ3ZjVkNDI0MzNiODY4NzdjMDc3NmE3MDEwYzk5ZGQ2OGI1YzFjYmZlNDhlZWEwODFmODk3NWE5ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNjlmMjk5MDJlMDc3OTRhZmM4N2FmOGQ0N2FhZTFiZTcwNDEwYTk5NTUyZjZhOTIxZDIyMzMyZTQzMzEwMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjOTA5OTk2OWUyOTY0ZjMwODA3NzllNzEwNTVkNzQ1OTdmNjcxMmEyOWI0ZjBlNzY2ZDEzODg0YmE0OTIzMjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3OWMxNTZhNGI2NWIxM2Y1YzRkYzhiNWNkYjFlMWI0NDQ5OWNiY2I1MzEzYTZhMDQzZTMzMzI5Y2Q5YjAwMzkifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L815-L892",
+          "version": "repo-lines-v1:sha256:e7293f618327a257610429542f35bc59d0d20775a23f8732a10c302c284f05a4:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eddcf558ba564b49aa25d500e6281468",
+      "statement": "The repository is a monorepo under libs/ with each package independently versioned, where deepagents is the core SDK exposing create_deep_agent, middleware, and pluggable backends.",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md#L6-L23",
+          "version": "repo-lines-v1:sha256:76e9743102c3fdaf97cfcf49164831168be00643382feef817c8f901427cfd9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMzgyNDRmZTdlNDQ0ZTYyNDE0ZTFhYjI1Y2NlMzc0YmU3NGE5ZTQ2ODZhN2NjZGI0ZDU5YThkZjVmYjNiMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1YWQ4NzQ5YzI0MzYxNDMxNWI3YWFjMGUyOTQyY2YyOWZiZjU0ZmE1MDZmMzFiZmYzZmZkMjcyZDZiODNmMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjZDIyMzM3OTI2ZWEwOThlODhmMWYyYjczY2U0ZjUzMTU1MzQyOWI0NDBkMDc1NDVjYWI1Yzk2NGIyMzgxMjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliNzhkODcwYWM4NGVkZWRmZTdlOWRiYTU1MTE5YzIwZjliZDE0Yjg3ZGFiNDliYmZkMDYxMmZjOTkyZmZiOTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_42c40779cccf4d6bb1759459480505fe",
+      "statement": "The code package is Deep Agents Code, a pre-built terminal coding agent built on the SDK, run via the dcode command with a TUI, remote sandboxes, memory, skills, and headless mode.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L46-L47",
+          "version": "repo-lines-v1:sha256:77d0f5c4bfeb66d08520a637f3046295119a40eede13597cb61afca49f756c1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTIxNzI5NDA5MDg2NmZjNDQ3ZDE0MDczZGI3YWJlZWYzMjM3Yzg1ZTk4OGJhNWI0NDQyNzRmZDU1NWVjZDJmNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWE3N2IyOTM2ZDE4ZTA4ZGU1YzA3MzIyMTc2MjcxMzU4YjE5YmUwZGQ2OGM2NWZiMmUyZmM1OTJjZjBhNWIzOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmNkNmE4ZmEwZDJmYjhhNmE1MTQ3ZjRiYmQ4ZjE4NDk5NjQxOWU3OTlmNzg4NTRmNjE5YjNhNWNkZTlhMGIxNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzIxMDZkYThkNTg1YmJjNjcxNmViMWUzMTU3NWRjZjcwMmMxZDYyZGNhMjRlNWQzYmU2ZGJhOTdmZTk3ZDc5NiJ9"
+        },
+        {
+          "resource": "repo://libs/README.md#L24-L24",
+          "version": "repo-lines-v1:sha256:fa9f80fc709292a92d21f885892a105bf7a802e61ce71ef70c8f447a0296a49b:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmE5ZjgwZmM3MDkyOTJhOTJkMjFmODg1ODkyYTEwNWJmN2E4MDJlNjFjZTcxZWY3MGM4ZjQ0N2EwMjk2YTQ5YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmE5ZjgwZmM3MDkyOTJhOTJkMjFmODg1ODkyYTEwNWJmN2E4MDJlNjFjZTcxZWY3MGM4ZjQ0N2EwMjk2YTQ5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTVmNDQ4OThiM2ZiNjViOTdkZWViMjA3NjY0YTJiZTdhZTZkYTU2YTFjMjQ2ZTk5YzUzMzMwM2U4MThmY2U0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTJlNTI4OGY0MzZlMDRlMDU5NzA0MWVjZGEwMmQxNTE5NjNmYzZkNzIwYjUzZjhhZGM0ZGVmZTcyNmJjMmM0YiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d625310d478400cbfea70ac34cbedc3",
+      "statement": "The acp package provides Agent Client Protocol integration for running a Deep Agent inside editors like Zed, including exposing dcode as an ACP server.",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md#L25-L25",
+          "version": "repo-lines-v1:sha256:395490a203587e3c4647aabe78151dee593e46334ab84152c3c824bfe6e2d3a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk1NDkwYTIwMzU4N2UzYzQ2NDdhYWJlNzgxNTFkZWU1OTNlNDYzMzRhYjg0MTUyYzNjODI0YmZlNmUyZDNhMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk1NDkwYTIwMzU4N2UzYzQ2NDdhYWJlNzgxNTFkZWU1OTNlNDYzMzRhYjg0MTUyYzNjODI0YmZlNmUyZDNhMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDVkNTUzYjIxZWYyZTBmOGQwZWJkOTg0Y2U1ZGI2Y2RiYzYzYTJlNzVkODMxNDU5M2E2M2FjZmRlZTk1ZmQ0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDgxYjFkOTg5MGRhNmI5NjQ3NjhlZWMwYWE2MjQ0NzdmZDBjOGUwZDJmZmU0N2EzMTM5ZGEyZjU5NGZmOTVhMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_172506cbee114b3990c8e4326f460998",
+      "statement": "The evals package is the evaluation suite with Harbor integration for benchmarking agent behavior.",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md#L26-L26",
+          "version": "repo-lines-v1:sha256:0c30a1bd9f8d27db76677ed484e45e4f704ce2d20251795ee6ddcd7fd87183ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGMzMGExYmQ5ZjhkMjdkYjc2Njc3ZWQ0ODRlNDVlNGY3MDRjZTJkMjAyNTE3OTVlZTZkZGNkN2ZkODcxODNlYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGMzMGExYmQ5ZjhkMjdkYjc2Njc3ZWQ0ODRlNDVlNGY3MDRjZTJkMjAyNTE3OTVlZTZkZGNkN2ZkODcxODNlYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmI5NmQ4YjMwYTAzYTE1NzdkOTBmYTEyNDUxMTNiNDZhZGNiMTE5MDEyYWZiMjBjN2VkYzMxZWFjOTg4YzBjYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I2MDgyZjU3ZGFhYjk1OWZkYzg3YWQ2NmY0ZDJjM2ZmODM5ZTY4ZmU4ZmNiNDU3Nzg3MDVmMWI4ODk4Nzc3ZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_886e1535ecf74f329f8ef24bae3528aa",
+      "statement": "The talon package is an experimental local runtime host for long-running agents, providing channel adapters and cron schedulers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md#L27-L27",
+          "version": "repo-lines-v1:sha256:fd2bc532ce3e4a56f550c171fc11d9006bbb25f69c24f1bb7ef45325cbee88b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYmM1MzJjZTNlNGE1NmY1NTBjMTcxZmMxMWQ5MDA2YmJiMjVmNjljMjRmMWJiN2VmNDUzMjVjYmVlODhiMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYmM1MzJjZTNlNGE1NmY1NTBjMTcxZmMxMWQ5MDA2YmJiMjVmNjljMjRmMWJiN2VmNDUzMjVjYmVlODhiMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWI3OGQ4NzBhYzg0ZWRlZGZlN2U5ZGJhNTUxMTljMjBmOWJkMTRiODdkYWI0OWJiZmQwNjEyZmM5OTJmZmI5NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjNiMzNmODkzMjFhZjUwMjE2ZDIzNmMwMDA3NjRlZmY5Y2U3Y2NhZjMyODJhZWE2OWEyNDg0NTMxZTRhNGUyMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_86e654a5397c41caacff256b7b60f7aa",
+      "statement": "The partners package holds provider/sandbox integrations (Daytona, Modal, Runloop, Vercel, QuickJS).",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md#L28-L28",
+          "version": "repo-lines-v1:sha256:f5eec761ae394f7f1a010d9ba91bdec8408f5c49a73ed38e47f9a4022f4c64f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVlZWM3NjFhZTM5NGY3ZjFhMDEwZDliYTkxYmRlYzg0MDhmNWM0OWE3M2VkMzhlNDdmOWE0MDIyZjRjNjRmMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVlZWM3NjFhZTM5NGY3ZjFhMDEwZDliYTkxYmRlYzg0MDhmNWM0OWE3M2VkMzhlNDdmOWE0MDIyZjRjNjRmMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTJlNTI4OGY0MzZlMDRlMDU5NzA0MWVjZGEwMmQxNTE5NjNmYzZkNzIwYjUzZjhhZGM0ZGVmZTcyNmJjMmM0YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjUwNjcwYTM5ZDMyNjMxNzQwMzMxNTZmYjk4NmQ3OTRiZDJkMGEyODdiNzRlNWUyMzlhZTBlYWM4YjU1N2JkZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d2325b1fdda24c31b6a43b38eb9ba687",
+      "statement": "Most Deep Agents-specific code lives in three places under libs/deepagents/deepagents/: middleware/ adds harness behavior to the loop, backends/ decides where files, memory, and shell execution live, and profiles/ tunes the harness per provider or model; graph.py is the construction entrypoint.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L104-L115",
+          "version": "repo-lines-v1:sha256:5f90d7982713ac6aef83786a9912bf4e685bdb8cb673bd3231cdaab096fabc7b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwM2I2MjA4Y2RmOTY2Mzg3MWY3MDkwNDAwZGNkMTA4ZWY1MWZkNjVmN2EwZDJjMDViNGMyNzI3YmZmZmIyZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0MzA5YzQ3MDk1Njc4ZTRmYmI0NzgzYWZmOThmMDZkNDgxZjA3MjU3MjE0NzI1ODg0MzA5MzRiZWE3MzI5OTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L30-L30",
+          "version": "repo-lines-v1:sha256:1a0f560ab6892bf1678bbbb912281ad2e8551087cdd8bd4734f02de7f7da6b1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjZhODRjNDViMGQ3NGMyNGQ5NjM1NjFhNjk2NjMwOGRhMzhlZDYyNWUyZjljY2FhOGE2MmZhNGJiZjBjZTU5NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjFiMjZiOTJlYWE4NDBhM2QzYjEzOWI0YjE2ZDQzNzg0MGQ2MmI1YWVmZTRhNmFlN2M5MzgxZjJlY2M3NWEzMiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.0",
+    "at": "2026-08-26T21:35:57.774Z"
+  }
+}

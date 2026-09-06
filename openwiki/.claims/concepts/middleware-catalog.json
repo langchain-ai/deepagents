@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:606d056acd7bef06fc02afd1946702b52383bd2248d61cad0a04094b7736aa46",
+  "claims": [
+    {
+      "id": "claim_d3c0b63bcdd446b9b1fe8e28af20eec7",
+      "statement": "The deepagents.middleware package re-exports its public middleware classes and supporting types (filesystem, summarization, skills, subagents, async_subagents, memory, rubric) from its __init__.py, defining the surface consumers import from deepagents.middleware.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/__init__.py#L50-L104",
+          "version": "repo-lines-v1:sha256:a69636a03e3809c09233f394154a80df0f8b44b060eabba709365796447c94b9:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkNDM3MjE5ZGViNzAxZTJiNjk0YjhhNjM4NWE1MzkxOTdkNGVhMzFhYTY3NDMxNTI5YmQyNGNhYjg5ZjM5ZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkNjZhZDI1MjI0N2M2YTJlMzVlYjA2YzYzOTRiZmQ4ZjMyODZmOGYwNDUyYzlkMWU4Njk0ZDM0MTJhZTE5MzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_408faefac079476e9300895e10e35bbe",
+      "statement": "Middleware subclasses AgentMiddleware and overrides hooks such as wrap_model_call() that intercept every LLM request before it is sent, letting it filter tools, inject system-prompt context, transform messages, and maintain cross-turn state — capabilities a plain tools= callable (invoked only after the model calls it) cannot provide.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/__init__.py#L15-L47",
+          "version": "repo-lines-v1:sha256:1435c8ef4c404c3f7372b55681a6b4908cf36fa84021c40c84b05cf98dd713f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViMzQ4YTY5NzJkNzI5M2I0M2Q4OWVjYjBjNmQzNGFkMTBmZWI1ZDMxZWRhZjIyZGRkYTk2NmMwNDRkMTJlNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3MTQ2ZjA1ZGNlYTczMTg2MjQyMDRhYWI5OTE1ZTRiY2FmOThlNTNhNmI3ZWJmODMzMDQ3NjA3NmI3NGI1MDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkZDUxNWQ3ODMwNWNkNzIwMWE2MDk3NjEyNWYzNGI4ZDg5MTIxN2Y0MTRjOGZmYmJjNTY4ZTNiNmZlMjJmMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkN2IxNWI1OGJlNTAxZWRkZjlmODhlZWJiMDFiOTkwYmI2MjYyODU4MzZiMTY0MzhlNzFkNGZjM2UyZGYyZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_aaa19dacb4e7417ea2d5254dc6f435e2",
+      "statement": "FilesystemMiddleware provides the filesystem tool set (ls, read_file, write_file, edit_file, delete, glob, grep, execute), resolves the backend, enforces permission deny rules, scrubs unsupported multimodal content, and offloads oversized tool results; it is the largest and most complex middleware module.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1-L1",
+          "version": "repo-lines-v1:sha256:3c3ab32e710c9d59db204b7c253423aad31bccd520f30428c67795f69b6ded0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2MzYWIzMmU3MTBjOWQ1OWRiMjA0YjdjMjUzNDIzYWFkMzFiY2NkNTIwZjMwNDI4YzY3Nzk1ZjY5YjZkZWQwYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2MzYWIzMmU3MTBjOWQ1OWRiMjA0YjdjMjUzNDIzYWFkMzFiY2NkNTIwZjMwNDI4YzY3Nzk1ZjY5YjZkZWQwYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWU3MTU3YWE1YjU0MzJlYmM0ZTgxNzIwYWY4NWZhMTgzZDMzNTkxZjFhNTIzODFjMDBhOWY5ZmE4OTlhZWNmMCJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1770-L2857",
+          "version": "repo-lines-v1:sha256:6232f54f8298d2cb787796d0bb838a6ea7854cae9078b27e29a067222eb3a5d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTg1YmYwOGM5YTdhNzkwZjBlZTFiNjdhMTU1YjVkNDg3MDQyYjlmNWJhZmY0ZDk4MzRiMDRkNjdiNzUwYWJmNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhlNjUzMjliYWU4ZGI3ZWJmZWIyNWNiZTViZDAwMWMwOTQ5OTdlY2ZhMzQ4ZjdmZGE3ZmRkYTE3ZDJjYTM2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWIzNWRhYTA5OWU2YzRmYWRlZGM2ZDcxMzg1YWE4NzhmMDIwMzk1YTc5YjM4MTViMDM2MzZlNjg2OGQwOTY3MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDBlMDVhY2VmMDU0NjI1YzQxM2Q0ZGFlOWZhMjRhNzAzM2E1NzA1N2JiNjNlMGRlNzlmMTYzYWVkNjdjYWFlMiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9dd8576f907a4ae6a3aaf99ae316ab30",
+      "statement": "The summarization module provides SummarizationMiddleware (automatic threshold-triggered compaction that offloads evicted history to a backend), SummarizationToolMiddleware (an on-demand compact_conversation tool), and the create_summarization_tool_middleware factory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1-L45",
+          "version": "repo-lines-v1:sha256:6512d353f961fe7a3d7394385191a5d6a338a8f8ea20486497e42bc51bf5bdc0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMzQxNmRlNGY0YTI0MDAwNDc5ZDliNDFhMWQ1Y2UzZDBmZmYxM2U0MjVhNTkxOTAyOWRlMzgxZTk4NTk0NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzZTMyZmY2MjcxZmI2M2RiNjIyZDU3MWMxODc3Mjc2NDBlMTFmY2JmMTVjNGFjMjVmMGU1ZjI0NzNlOWJkNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyMTYxYzdjY2JiMDMxNWQ3MzQxMzVjNmMwMWFmNzAyNjVkNmI4YjExMGE4YjY5MmZmYThlNzYxOTViMGM1YmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3748cc5f2e584ab3ac271a270b94ece8",
+      "statement": "SkillsMiddleware implements Anthropic's agent skills pattern with progressive disclosure, loading skills from one or more backend sources (later sources overriding earlier by name) and injecting instructions into the system prompt using backend APIs only.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1-L29",
+          "version": "repo-lines-v1:sha256:c20aa8b2aca9d5d0a494a44d72554355e914246fbe522b9c7b6eca20cfaa1868:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMThkZDg4OTU1NDU4ZjUwODBkN2FjNzZlMDYzZTk4ZDk2NmY3Mzk1MzVkMmViNTg4NGM4NmZjZDdjNGU3NWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2ODVjZmRmZWIyOTNhZTQzN2JiYjY1OGMwNTljOGE2ZmRhYjQ3NzcxOWEzNjg0MjIyNTI2YmE4YTM2ZmZlNDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_89b3d3b9a22946ee8120cd797069be50",
+      "statement": "SubAgentMiddleware exposes a task tool that delegates work to synchronous subagents which block until completion.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L4-L7",
+          "version": "repo-lines-v1:sha256:8c959dc95063efb73a111d19801c2ffd2e6f8b71bb9d6d2bec2743fd929feda9:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjRiMzc0YjZmYmE5MTMyZGE1Yjc4YmI4Zjg0ZTRhODMzZjYxYTAzMDViZjQ4ZjkwZjkzNjFlNTU3OTA0MThmNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzNkOTA2ZDljN2Q3OGE1NDM4MDdhNzY2ZThjYjE5N2M2NTY4MTExMDJiMzQ5ZTAzYjZmN2QwZjQ2ZDExZTBhMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTdlYTIzZGQ4ODdlMmMxODg2NjQxNDhiNDFkZDBlNTEzOTQyNGYyZGU3NjA0MTk3Zjg0ZWMyZGYwZWFlNjJmOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGY0MDk3YmEzZTQxZmE0ZjQ0OGIzMmVlMWM3OGY5ZmIyMjNiNDAwYjcwYzU1MGYwODAzNzg1YTYwMmFlZGM2OCJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L1-L1",
+          "version": "repo-lines-v1:sha256:3804250915f0483db43ee257cd405cd3f274d20163aa1af074146c846e0e75e2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzgwNDI1MDkxNWYwNDgzZGI0M2VlMjU3Y2Q0MDVjZDNmMjc0ZDIwMTYzYWExYWYwNzQxNDZjODQ2ZTBlNzVlMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzgwNDI1MDkxNWYwNDgzZGI0M2VlMjU3Y2Q0MDVjZDNmMjc0ZDIwMTYzYWExYWYwNzQxNDZjODQ2ZTBlNzVlMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTRiYjQ1ZGM2OTJhMmM2NzFlYjA3MzY4NjI0NjMzMzYxMTY0ZTk0MTNjZTFiMmU1ZGRkYWY5YTFjM2QxMGU1MiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_54c293d067014a83a2d0fe825181feab",
+      "statement": "AsyncSubAgentMiddleware launches background subagent runs on remote Agent Protocol servers via the LangGraph SDK and returns a task id immediately so the main agent can monitor progress, in contrast to synchronous subagents that block.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1-L10",
+          "version": "repo-lines-v1:sha256:febbc5baa840d64fad53d3267067f34ae714194a8fcc5e74887d678755caf12d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMGRiMDhhNDE0NjZmMzJhMTllOTczY2U2OGVmOTI3MTQ0MGRiN2EzZTc1NWQyMjRjMTdlNDQ1N2ZmNzg4MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkMWJlZmY4MThlOGNkMWJiMDE1MjQ5NzZlZTk5NTQ1Mzg1OTFlMmZhYTcyZDMzNjNlN2U3ODZmNTllZDc1ZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_964de9d698d84ecea31edcfed0d75b4e",
+      "statement": "MemoryMiddleware loads AGENTS.md files from configurable sources and always injects that persistent context into the system prompt, unlike skills which are on-demand.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L2-L38",
+          "version": "repo-lines-v1:sha256:dda3f37e225a316faac11a4b1122cad6050b71eb9a4939e1eea0e2448d41cad2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzODBlZjEwYWQ0MjdiMjVmNTZjZDNkNDU2OTZjYjkzNjlkMjQ4NTg2Mzg3ZDg0YmIyMTRmOGQzMjYxMjlkNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwYjRlOGNiZmYzYTNmNjBkZGY2ZWMzNGIzMGY0MjMxMjIyNjIzYmMxOTg4N2JjNjYzMjY1YTg3NzJlYTQxMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlMjQ1MmNhMTY2NzYwMjEwNWU0YzE0MDUzNzYyYWNkNmM2ZWQ2YzBhYzI0YTc0YjVmNmU2YjQ5MjE5YzUyYzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4NWU5ZTAzYzVmMTEwNDZlYThmZTdlNWRjNjY1MjhhMzlmMGIxZWIyOWQ0Yzg2N2Y1YzE2ZjQwNDc4ZTRiZjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5acf32f81a9a46dba1aa132ede1591ce",
+      "statement": "RubricMiddleware invokes a separate grader sub-agent each time the agent would otherwise finish; a needs_revision verdict injects feedback as a HumanMessage and resumes the loop, repeating until satisfied, failed, or max_iterations is reached. It is one of the largest middleware modules.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/rubric.py#L2-L11",
+          "version": "repo-lines-v1:sha256:70caefb4044752aa0abbafee47e5b3b94d0d2b8667690a8ed3be2f349979ff42:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhMjBlN2M2YTJjY2RhMzRkYjA3NDhhY2UwYmVlNGU1ZDYzZTVjYmRkYWE5YjgxMzNmODgyMzY5YzJjMDFhOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMjNlNmY2OTdhZTY3MjljNTJkMGEyZGUwM2IxMjkxMmYxYWQ5ZmNjNGRiMmMyYTVjYWU0MjcxNmQwYTg1NzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a19908f3a61742b19635db8c15d6f6cf",
+      "statement": "The rubric grader can emit satisfied, needs_revision, or failed verdicts, and the middleware synthesizes two additional terminal statuses (max_iterations_reached and grader_error) that the grader cannot emit; only needs_revision continues the loop.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/rubric.py#L66-L91",
+          "version": "repo-lines-v1:sha256:840d394e36b24f127422f9be13b911a338e655476890cd18344ddcfadde0a1d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlM2IzMGZhNzA2NzQ5Y2ZlNzZkMGIzNTQ1ZWQ3MWEwNzdkNjdlMGYyZjcxYjIzY2E2Y2FhMDc1OTcxNzUzYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwM2YzNzk1ZGU1MWQxNWI0MDIyOTVhMzg5YzIyNTFmNjI5OGJkZDg1ZWRhMjUyYjczNDg5ZDgxZTZhNWU3ZjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b9f248f7f9b439f95ee592380c695fb",
+      "statement": "The permissions module contains no logic of its own; it is a backward-compatible re-export of FilesystemPermission from the filesystem module.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/permissions.py#L1-L5",
+          "version": "repo-lines-v1:sha256:dd44d44bcf08c382a9b63106dfb16bcff7298fbd54e49174ff65cecb09ff1ca9:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmU5ZWI2ZGIxNjk3MmJlNjM0MjFiN2JkMDVmZDhiZGI3YWVkNzhiYzhjNmM0NzA1NTJkMGE0NzUxMGZhYjdiNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGZiOTc0NzQzZWM0MTc3NDIzMjRkZjA0OGZkMmU4MmI3NmIwOWY2ZjM3ZDkxMGE4ZGQ5Y2Y1MjNiYmE0MjRiMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b819fc8a1bcb46ebbac28f072e0b4792",
+      "statement": "PatchToolCallsMiddleware runs in before_agent and repairs dangling tool calls: for every AIMessage tool_call lacking a matching ToolMessage it appends a synthetic ToolMessage (cancelled, or malformed for invalid calls) and rewrites the history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py#L11-L49",
+          "version": "repo-lines-v1:sha256:76f04f6b2a3bb9fe5f05680a60203adaf73b37205246546d7dd233746d191d55:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwMzk0ZDhhOTc1OGNhMmYwYzUwNjE3ODNjMThlYTY2OTZjZmYxZjcxMmUwMzRiYjg2MmU3ZDdkOGVmNjdlZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiYTYzYjIyZDYzMDhiYTdlOWM4YjIzYzYzZjNkMTk0YjcyNjAzYmQ3ZTIxZDI5MmE1ZjE0NGE5OTIwNjNmYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlMTQyYjdiNmE4MDViOTAyZDQxMzVhZDUxYmM0NTBlZjQxYmUyMjg5NWQ1NzA5NmZkNWRhNDY3OWQ1ZWM1NTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b68d03fd37d84f538c0ccdbeacd66208",
+      "statement": "_fs_interrupt is glue that converts FilesystemPermission interrupt-mode rules into an interrupt_on mapping for HumanInTheLoopMiddleware via a per-call when predicate; FilesystemMiddleware itself only enforces deny rules and does not know about HITL.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py#L1-L30",
+          "version": "repo-lines-v1:sha256:c81af5c808e495265752ce6d5442e897cfc30f900beef03e33c3a762a6a7ae27:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4Y2FlZmZlZWNjZWNkODA1YmRiNzQ1Y2IyNzE3YTQ2YjQ1ZGIyOTQ1NTY3OTZlZjljNTViNDhkYzVjNWQyMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NTcxNWY5NGE2ZTg2OThkY2RiZDcyMjdiNWE1ZGY2MzI4MTQxODhmOTZhNmUyNWNjYzBlMDU3MGE2YmUxODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3YTViMjhiZmZjOGFiZGNjYmI0NWY4ZmYwNjg1MjI5OWI2NmE3MzM4OGIzNDdhYzlkNjU1Mzk2ZGVlNzUyMTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cecb7848bea945a3ac1dd4d74cf8ec55",
+      "statement": "_message_eviction provides the shared head+tail preview eviction/clipping helper used both by FilesystemMiddleware's proactive per-tool-call offload and by SummarizationMiddleware's reactive tail-clipping after a ContextOverflowError.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py#L1-L10",
+          "version": "repo-lines-v1:sha256:57c848e1b75555f27829a252008ef7a21ac8d85204f03936803329558e2553ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjN2UxOWY0NWMxNmM3MDU0YWI5YzZiY2Y3Y2FjOTIwZTg4NWY0ZDE4ZDI2YWZhMzhhYmZmZTQxODUyNWQzMWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0016532702c740ffb40f5916877d615b",
+      "statement": "_overflow_clip supplies the read-side tail-clipping used in SummarizationMiddleware's overflow fallback: read_file results are head-sliced with a pointer back to the original file, while other tool results are fully offloaded to /large_tool_results/{tool_call_id} and stubbed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py#L1-L14",
+          "version": "repo-lines-v1:sha256:20c01cbbabb115a243b01bf93052fc638b8f5186c03d46ee6702723d38460f55:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5NjM2NjBmYzlhNjk3MmQyNTE4OWMxN2I0MzRiMzk3YWU1MGQ4MmRmMzM5NzUxOTZjMWJiNThjZGEzZDM5ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d09740d72fc647369cf4428e080fecf1",
+      "statement": "_prompt_caching's append_prompt_caching_middleware always appends AnthropicPromptCachingMiddleware and conditionally appends Bedrock and Fireworks prompt-caching middleware when the corresponding langchain-aws / langchain-fireworks packages are installed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_prompt_caching.py#L41-L49",
+          "version": "repo-lines-v1:sha256:c8acca2aa756669b2e023f3d20c22179cd26f874204cc17142ecccd495ed37f0:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGY2YzVjNmIwOWFlNDU0ZDMyMDQ0ZWZjOWRjMWM4MGFmMTllNWQ4MjgxNjQzODZmZGMzMGIwMTRjOGNjMTc0NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRhZTdkODlhZGZhYWExOTVjY2FmOTkyNDBmZjY3M2E2OGMwZmZmYTQ0YmRhMjk2NDA2M2E5MTM2ZTVkZGMwZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZWU1YWYzYWE1NGFhYTBkMzNiODhjNGY0ZTJjNTQ4YWU2ZmQ4NzdlZmZlNjY0OTRmMDVhYmY5NjFiOGMyNDZhMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_82630e94b44b42e5967ec676d8da45d4",
+      "statement": "_state provides helpers for Deep Agents state schemas, such as private_state_field_names which resolves PrivateStateAttr-annotated fields at runtime and skips (with a warning) schemas whose annotations cannot be resolved.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_state.py#L13-L20",
+          "version": "repo-lines-v1:sha256:e80613b99b5fe8c17dca15526955d1960e39c9e98b2e6031f84af6544d980840:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWJiZGNmZTc5MDhkYTc2NGFhYzc5MjRiMDA1MTExYjk4YmU1MjRlMjM2MDRkM2QzMGZjMjA3ODYzNDQ0YjNhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGI3MTk0MzQ5MjFjZjJlNDQzMzM5MjgwZWUzZGFjNWI5MzZmYzIyYjUxNzg1NThkY2QyMzE4YTJhMjFiYjY3NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjg1OGFmMmE1MTFiNWZlMWU2NWYwNzNlNWU5NDZkOTFmMzlkMjUxMjFjYWU3Y2RkYjIxMmM5NzA2MjQ3MjhmMCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_bf09ac5d7f6546bf8034f8d0bd6ea59a",
+      "statement": "_ToolExclusionMiddleware filters harness-profile-excluded tools out of the model request and should be placed late in the stack so it can strip middleware-injected tools; excluded names are also rejected at the tool-call boundary to keep execution consistent with what was advertised.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py#L34-L60",
+          "version": "repo-lines-v1:sha256:39bc2607fcea90a2dbdd71c218b3064375a802774967af02496a6587f5ee8c04:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZmY5YzNlYTVjNWRlZDhjMWUxMzczN2FlMWRlMTUzMzZmMTliNWFiYTVhODg3OWRiNjU3Zjk5NDc2NjFkMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYmQxNjFmYTVjZGNjOGFmOTJjNTAwYzE1NmE3Njk5YWRmYWY3ZTMwMzg1MmUzYjNkMGFlNTllNTlmNWMxZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5YzEwZGEzMmY3NzY0ZDdkOTI0NjM4ZTZlNjJhNDhhOGEzNjBlMTc3OTNkY2EwOTAwNGMyODgzNGE0ZDJiN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3NWY2YmVhMWM0OGYxMWY0ODgzNmIwZmQwYWU5ZmNlN2ZhYWJjMDRkZDA0NDQ3MDkyMGQ2ZjI0MjIxNWUxMWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8fdbb735f5234ffaa81bb040a52252f7",
+      "statement": "_video is the optional boundary to the PyAV video backend, imported lazily so installs without the [video] extra stay lightweight; for a video read it decodes a time-window slice and emits sampled frames as interleaved text+image content blocks, interpreting read_file's offset/limit as seconds.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_video.py#L1-L17",
+          "version": "repo-lines-v1:sha256:28b3a39fe9b63c991c4f475b06c33f3ba7bfe296701048e5fe4cc1e5de7678fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNDVmMTE2N2VlYTFhMWYyZTBkNTExYzMzYTlkNjI2YjUzYjgxNzkyNzIzZGZjYmU1ZjJjNTBjMzhmMTA0OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1ZmMwY2UzNTI2NjgxMzQ4NzNhZGI1ODIwNjE0OGEyZWI0NGZmNDQ2OWRhMjVlZWNlOGE5NjI2ZjA1ZjI4NTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_01172d82faae4bdd974f96c8f7fbc28b",
+      "statement": "_utils holds small shared middleware utilities such as append_to_system_message, which returns a new SystemMessage with text appended to the existing content.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_utils.py#L1-L20",
+          "version": "repo-lines-v1:sha256:ecb957ea35f2def5d6a51f11633b68c191a6f813485aaeece5cbb68d7d858b44:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyNWVjNTc1YzkyYTk3ZWVjN2FiYTcyYWQzODYzMzA2ODg5MmRhYjQ5OTFlYWYzNDg2YWMyMjQ0NWI0M2EzNDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMjA4NGVlODNiZmEyYzU0MWY3ZGQwMzBiNmYzMGZmZjgwZjU4Yzk1OTQ3NGFmNjM2MWJjMDk3NjM5OTkyOTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3OTMyNTI0NTRlNTRlNGE2NjgzNzU5OTE5ZTU0NTE0ODRiMzJmYjY2ZjA2ZDk1Y2VmZjIyNjNiM2Y4OWU4ODQifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.0",
+    "at": "2026-08-26T21:35:57.774Z"
+  }
+}

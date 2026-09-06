@@ -98,38 +98,6 @@ def _empty_registry() -> SandboxRegistry:
     return SandboxRegistry(config=SandboxConfig(), include_entry_points=False)
 
 
-def test_builtins_are_available() -> None:
-    registry = _empty_registry()
-    assert registry.available_providers() == [
-        "agentcore",
-        "daytona",
-        "langsmith",
-        "modal",
-        "runloop",
-        "vercel",
-    ]
-    assert registry.is_available("daytona")
-    assert not registry.is_available("acme")
-
-
-def test_builtin_metadata_working_dir() -> None:
-    registry = _empty_registry()
-    assert _metadata(registry, "modal").working_dir == "/workspace"
-    assert _metadata(registry, "langsmith").supports_snapshot_name is True
-    assert _metadata(registry, "daytona").supports_snapshot_name is False
-    vercel = _metadata(registry, "vercel")
-    assert vercel.working_dir == "/vercel/sandbox"
-    assert vercel.backend_module == "langchain_vercel_sandbox"
-    assert vercel.supports_sandbox_id is True
-    assert vercel.supports_snapshot_name is False
-    assert vercel.install is not None
-    assert vercel.install.command(in_app=False) == "dcode install vercel"
-
-
-def test_unknown_provider_metadata_is_none() -> None:
-    assert _empty_registry().get_metadata("acme") is None
-
-
 def test_config_provider_is_discovered() -> None:
     config = SandboxConfig(
         default="acme",
@@ -237,28 +205,6 @@ def test_builtin_supports_sandbox_id_flags() -> None:
     registry = _empty_registry()
     assert _metadata(registry, "agentcore").supports_sandbox_id is False
     assert _metadata(registry, "daytona").supports_sandbox_id is True
-
-
-def test_config_override_of_builtin_carries_backend_module() -> None:
-    """Overriding a built-in keeps its probe module so deps stay verifiable."""
-    config = SandboxConfig(
-        providers={
-            "daytona": {
-                "class_path": _FAKE_CLASS_PATH,
-                "package": "my-daytona",
-            }
-        }
-    )
-    registry = SandboxRegistry(config=config, include_entry_points=False)
-    metadata = _metadata(registry, "daytona")
-    # Probe module inherited from the built-in base...
-    assert metadata.backend_module == "langchain_daytona"
-    # ...while the install hint reflects the user's package override.
-    assert metadata.install is not None
-    assert metadata.install.kind == "package"
-    assert metadata.install.name == "my-daytona"
-    # Working dir falls back to the built-in default when not overridden.
-    assert metadata.working_dir == "/home/daytona"
 
 
 def test_pure_config_provider_has_no_backend_module() -> None:

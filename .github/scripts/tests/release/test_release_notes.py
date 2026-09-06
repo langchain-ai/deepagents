@@ -61,7 +61,10 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
         "checks": "write",
         "contents": "read",
         "issues": "write",
-        "pull-requests": "read",
+        # The new-entries courtesy comment targets the release PR, whose branch
+        # is owned by the release-bot app installation; issues: write alone
+        # intermittently 403s there.
+        "pull-requests": "write",
     }
     job = workflow["jobs"]["curated-release-notes"]
     assert "github.event_name == 'pull_request'" in job["name"]
@@ -74,6 +77,10 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     check_workflow = CHECK_WORKFLOW.read_text()
     assert "expectedHead: pr.head.sha" in check_workflow
     assert "initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72" in check_workflow
+    # Refresh runs share one package-agnostic job name across every release PR, so the
+    # refreshed check's title/summary must name the validated package and version.
+    assert "Curated release notes are valid for ${target}" in check_workflow
+    assert "Validation result for ${target}: ${result.status}." in check_workflow
     # A cancelled/timed-out poll must not leave the refresh check spinning forever:
     # an always() finalizer closes an interrupted in_progress check.
     assert "if: always() && steps.validate.outputs.refresh_check_id != ''" in check_workflow
@@ -230,6 +237,40 @@ def test_mutation_workflow_commands_are_target_only() -> None:
         assert all(
             "appSlug: process.env.APP_SLUG" in step["with"]["script"]
             for step in privileged_steps
+        )
+
+        acknowledge = next(
+            step for step in job["steps"] if step.get("id") == "acknowledge"
+        )
+        assert acknowledge["if"] == "github.event_name == 'issue_comment'"
+        assert acknowledge["continue-on-error"] is True
+        assert acknowledge["with"]["retries"] == 3
+        assert "acknowledgeCommand" in acknowledge["with"]["script"]
+        assert "core.setOutput('reaction-id', reactionId)" in acknowledge["with"][
+            "script"
+        ]
+
+        complete = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Mark manual command complete"
+        )
+        terminal_step = "post" if job_name == "draft" else "publish"
+        assert "github.event_name == 'issue_comment'" in complete["if"]
+        assert "steps.acknowledge.outcome == 'success'" in complete["if"]
+        assert f"steps.{terminal_step}.outcome == 'success'" in complete["if"]
+        assert complete["continue-on-error"] is True
+        assert complete["with"]["retries"] == 3
+        assert complete["env"]["REACTION_ID"] == (
+            "${{ steps.acknowledge.outputs.reaction-id }}"
+        )
+        assert "completeCommand" in complete["with"]["script"]
+
+        step_names = [step.get("name") for step in job["steps"]]
+        assert step_names.index("Acknowledge manual command") < step_names.index(
+            "Prepare isolated drafting input"
+            if job_name == "draft"
+            else "Validate override and prepare changelog/body edits"
         )
 
     # No long-lived bot PAT: repository mutations go through short-lived App tokens.

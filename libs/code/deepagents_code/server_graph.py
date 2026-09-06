@@ -13,19 +13,40 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import dataclasses
 import logging
 import sys
-from typing import TYPE_CHECKING, Any
+from collections import OrderedDict
+from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, NamedTuple
 
+# Imported at runtime rather than under TYPE_CHECKING: the LangGraph server
+# classifies `make_graph` by resolving its annotations with
+# `typing.get_type_hints` at graph-load time. A name that only type checkers
+# can see fails to resolve, and the server then refuses to load the graph.
+from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime  # noqa: TC002
+
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
     STARTUP_ERROR_MARKER as _STARTUP_ERROR_MARKER,
     emit_startup_failure,
 )
+from deepagents_code.configuration.interpreter import InterpreterConfig
+from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
+
+    from deepagents.backends.composite import CompositeBackend
+
+    from deepagents_code.config import CredentialsSnapshot
+    from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.offload_middleware import OffloadOperation
+    from deepagents_code.workspace import WorkspaceBinding
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +90,9 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
 async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
+    *,
+    has_tavily: bool | None = None,
+    tavily_api_key: str | None = None,
 ) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
@@ -87,6 +111,8 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
+        has_tavily: Workspace credential availability override.
+        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
 
     Returns:
         Tuple of `(tools, mcp_server_info, mcp_tools)`.
@@ -95,12 +121,22 @@ async def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import settings
-    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
+    from deepagents_code.config import credentials
+    from deepagents_code.tools import (
+        create_web_search_tool,
+        fetch_url,
+        get_current_thread_id,
+        web_search,
+    )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
-        tools.append(web_search)
+    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
+    if tavily_available:
+        tools.append(
+            web_search
+            if has_tavily is None
+            else create_web_search_tool(tavily_api_key or "")
+        )
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -160,9 +196,10 @@ def _criteria_context_tools(
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, is_web_search_tool
 
-    allowed_ids = {id(fetch_url), id(web_search)}
+    allowed_ids = {id(fetch_url)}
+    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -185,17 +222,95 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
     return mcp_tool_is_coherently_read_only(tool)
 
 
-async def _make_graph() -> Any:  # noqa: ANN401
-    """Create the agent graph from environment-based configuration.
+class ServerRuntime(NamedTuple):
+    """The one-per-process result of building this server's agent.
+
+    A named tuple rather than a bare tuple so the three slots are addressed by
+    name: `agent` is structurally opaque to the type checker (the SDK exposes no
+    usable compiled-graph type here), so a positional transposition would hand
+    LangGraph the backend as its compiled graph with no complaint.
+    """
+
+    agent: Any
+    """Compiled LangGraph agent graph served as `agent`."""
+
+    backend: CompositeBackend
+    """Composite backend the agent and its operations were built with."""
+
+    offload: OffloadOperation
+    """Server-owned thread offload operation bound to `backend`."""
+
+
+async def _make_graphs(
+    *,
+    config_override: ServerConfig | None = None,
+    project_context_override: ProjectContext | None = None,
+) -> ServerRuntime:
+    """Create the agent graph and the backend carrying its shared resources.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
     (the inverse of `ServerConfig.to_env()` used by the app process), resolves a
     model, assembles tools, and compiles the agent graph.
 
     Returns:
-        Compiled LangGraph agent graph.
+        The agent graph, its configured composite backend, and the server-owned
+            offload operation bound to that backend.
     """
-    config = ServerConfig.from_env()
+    config = config_override or ServerConfig.from_env()
+    from deepagents_code.config import (
+        Credentials,
+        _preview_dotenv_environ,
+        use_environment,
+    )
+
+    workspace_path = (
+        project_context_override.user_cwd
+        if project_context_override is not None
+        else Path(config.cwd)
+        if config.cwd is not None
+        else None
+    )
+
+    # Offload the workspace environment snapshot off the event loop. Dotenv
+    # discovery walks parent directories (`Path.resolve()`, `is_file()`) and
+    # reads up to three files, and `snapshot_from_environment` adds
+    # `find_project_root()` -> `Path.cwd()` — all of which `blockbuster`
+    # rejects when invoked directly from the server loop (see issue #5043),
+    # for the same reason as the offload in `_make_graphs_in_environment`.
+    def _resolve_workspace_environment() -> tuple[
+        Mapping[str, str], CredentialsSnapshot
+    ]:
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        return environ, Credentials.snapshot_from_environment(
+            start_path=workspace_path,
+            environ=environ,
+        )
+
+    workspace_env, workspace_credentials = await asyncio.to_thread(
+        _resolve_workspace_environment
+    )
+
+    with use_environment(workspace_env):
+        return await _make_graphs_in_environment(
+            config=config,
+            project_context_override=project_context_override,
+            workspace_env=workspace_env,
+            workspace_credentials=workspace_credentials,
+        )
+
+
+async def _make_graphs_in_environment(
+    *,
+    config: ServerConfig,
+    project_context_override: ProjectContext | None,
+    workspace_env: Mapping[str, str],
+    workspace_credentials: CredentialsSnapshot,
+) -> ServerRuntime:
+    """Build one runtime while its immutable workspace environment is active.
+
+    Returns:
+        Agent graph and its workspace-bound resources.
+    """
 
     # Offload cwd/path resolution and the lazy settings bootstrap off the event
     # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
@@ -218,26 +333,24 @@ async def _make_graph() -> Any:  # noqa: ANN401
         Any,
         Any,
     ]:
-        project_context = get_server_project_context()
+        project_context = project_context_override or get_server_project_context()
 
         from deepagents_code.agent import create_cli_agent, load_async_subagents
         from deepagents_code.config import (
             configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
-            settings,
+            resolve_auto_classifier_model_for_provider,
         )
 
-        if project_context is not None:
-            settings.reload_from_environment(start_path=project_context.user_cwd)
         return (
             project_context,
             create_cli_agent,
             load_async_subagents,
             create_model,
             is_memory_auto_save_enabled,
-            settings,
             configure_langsmith_secret_redaction,
+            resolve_auto_classifier_model_for_provider,
         )
 
     (
@@ -246,8 +359,8 @@ async def _make_graph() -> Any:  # noqa: ANN401
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        settings,
         configure_langsmith_secret_redaction,
+        resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
 
@@ -260,10 +373,16 @@ async def _make_graph() -> Any:  # noqa: ANN401
         config.model,
         extra_kwargs=config.model_params,
         profile_overrides=config.profile_overrides,
+        cli_max_retries=config.cli_max_retries,
     )
-    result.apply_to_settings()
+    result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
+    tools, mcp_server_info, mcp_tools = await _build_tools(
+        config,
+        project_context,
+        has_tavily=workspace_credentials.has_tavily,
+        tavily_api_key=workspace_credentials.tavily_api_key,
+    )
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
     # Create sandbox backend if a sandbox provider is configured.
@@ -319,20 +438,23 @@ async def _make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
-    def _create_cli_agent_sync() -> Any:  # noqa: ANN401
+    extension_registry: ExtensionRegistry | None = None
+
+    def _create_cli_graphs_sync() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
-        # These process-global settings writes are safe here because `make_graph`
-        # is lock-serialized and caches one graph for the server process lifetime.
-        if config.interpreter_ptc is not None:
-            settings.interpreter_ptc = config.interpreter_ptc
-        if config.interpreter_ptc_acknowledge_unsafe:
-            settings.interpreter_ptc_acknowledge_unsafe = True
-        if config.enable_interpreter:
-            settings.enable_interpreter = True
+        interpreter_config = (
+            InterpreterConfig.from_resolver(
+                get_config_resolver(),
+                ptc=config.interpreter_ptc,
+                ptc_acknowledge_unsafe=config.interpreter_ptc_acknowledge_unsafe,
+            )
+            if config.enable_interpreter
+            else None
+        )
 
-        agent, _composite_backend = create_cli_agent(
+        agent, composite_backend = create_cli_agent(
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
@@ -352,9 +474,13 @@ async def _make_graph() -> Any:  # noqa: ANN401
             enable_skills=config.enable_skills,
             enable_shell=config.enable_shell,
             enable_interpreter=config.enable_interpreter,
+            interpreter_config=interpreter_config,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
-            auto_classifier_model=config.auto_classifier_model,
+            auto_classifier_model=resolve_auto_classifier_model_for_provider(
+                result.provider,
+                config.auto_classifier_model,
+            ),
             recursion_limit=config.recursion_limit,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
@@ -362,61 +488,309 @@ async def _make_graph() -> Any:  # noqa: ANN401
             async_subagents=async_subagents,
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
+            model_retries=result.model_retries,
+            cli_max_retries=result.cli_max_retries,
+            summarization_model=config.summarization_model,
+            extension_registry=extension_registry,
+            environ=workspace_env,
+            credentials_snapshot=workspace_credentials,
+            model_result=result,
         )
-        return agent
+        from deepagents_code.offload_middleware import offload_operation_from
 
-    return await asyncio.to_thread(_create_cli_agent_sync)
+        offload = offload_operation_from(composite_backend)
+        if offload is None:
+            msg = (
+                "Agent backend did not publish its offload operation; "
+                "/offload has no server implementation."
+            )
+            raise RuntimeError(msg)
+        return ServerRuntime(
+            agent=agent,
+            backend=composite_backend,
+            offload=offload,
+        )
+
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if is_env_truthy(EXPERIMENTAL, environ=workspace_env):
+        from deepagents_code.extensions import ExtensionMode, load_extensions
+        from deepagents_code.extensions.runtime import bind_server_extensions
+
+        extension_result = await load_extensions(
+            cwd=(
+                project_context.user_cwd
+                if project_context is not None
+                else Path(config.cwd)
+                if config.cwd is not None
+                else None
+            ),
+            mode=(
+                ExtensionMode.INTERACTIVE
+                if config.interactive
+                else ExtensionMode.HEADLESS
+            ),
+            project_root=(
+                project_context.project_root or project_context.user_cwd
+                if project_context is not None
+                else None
+            ),
+            project_trust_granted=config.trust_project_extensions,
+            cli_paths=tuple(Path(path) for path in config.extension_paths),
+        )
+        for message in extension_result.errors:
+            logger.warning("Extension not loaded: %s", message)
+        if extension_result.active:
+            extension_registry = extension_result.registry
+            bind_server_extensions(extension_result)
+    try:
+        return await asyncio.to_thread(_create_cli_graphs_sync)
+    except BaseException:
+        if extension_registry is not None:
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
+        raise
+
+
+def _build_runtime_factory(
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
+) -> Callable[[], Awaitable[ServerRuntime]]:
+    """Build the cached factory for all server-owned runtime resources.
+
+    The cache is load-bearing, not an optimization: MCP discovery, sandbox
+    creation, and `atexit` registration each must happen exactly once. Building
+    per request would re-discover MCP servers, leak sandbox sessions, and stack
+    duplicate `atexit` handlers. Two consumers now share this cache -- the
+    interactive graph and the offload HTTP route -- so both must resolve the
+    *same* agent, backend, and compaction policy for a server-side archive to be
+    readable by the agent.
+
+    The cache and its lock live in this closure rather than in module-level
+    globals, so importing this module introduces no shared mutable state; the
+    single process-wide instance is created explicitly at the bottom of the
+    module.
+
+    Args:
+        builder: Optional alternate builder used by unit tests.
+
+    Returns:
+        Async runtime factory shared by the graph and custom operation API.
+    """
+    runtime: ServerRuntime | None = None
+    lock = asyncio.Lock()
+
+    async def get_runtime() -> ServerRuntime:
+        """Return the cached interactive graph and operation resources."""
+        nonlocal runtime
+        if runtime is None:
+            async with lock:
+                if runtime is None:
+                    try:
+                        from deepagents_code.configuration.service import (
+                            require_healthy_managed_config,
+                        )
+
+                        await asyncio.to_thread(
+                            require_healthy_managed_config,
+                            refresh=True,
+                        )
+                        runtime = await (builder or _make_graphs)()
+                    except Exception as exc:  # noqa: BLE001  # startup barrier
+                        emit_startup_failure(exc)
+                        sys.exit(1)
+        return runtime
+
+    return get_runtime
 
 
 def _build_graph_factory(
-    builder: Callable[[], Awaitable[Any]] | None = None,
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
 ) -> Callable[[], Awaitable[Any]]:
-    """Build the cached async graph factory exposed to `langgraph dev`.
+    """Build a cached graph factory, for tests.
 
-    The returned coroutine function is what `langgraph.json` references. It keeps
-    its cache and lock in this closure rather than in module-level globals, so
-    importing the module (e.g. for import-only checks) introduces no shared
-    mutable state.
+    `langgraph.json` references the module-level `make_graph`, which delegates to
+    `get_server_runtime`; nothing in production calls this. It survives so unit
+    tests can inject a builder.
 
     Args:
-        builder: Optional alternate graph builder.
+        builder: Optional alternate runtime builder used by unit tests.
 
     Returns:
-        A zero-arg async factory that builds the graph once and returns the
-        cached instance on every subsequent call.
+        Async graph factory for the interactive `agent` graph.
     """
-    missing = object()
-    graph: Any = missing
-    lock = asyncio.Lock()
+    get_runtime = _build_runtime_factory(builder)
 
     async def make_graph() -> Any:  # noqa: ANN401
-        """Create (or return the cached) agent graph for `langgraph dev`.
-
-        LangGraph loads this async factory from the generated `langgraph.json`
-        and invokes it lazily on its event loop — and again on every run. The
-        built graph is cached for the process lifetime so MCP discovery, sandbox
-        creation, and `atexit` registration each happen exactly once; re-running
-        them per request would re-discover MCP servers, leak sandbox sessions,
-        and stack duplicate `atexit` handlers. Any construction failure is
-        converted into a startup-error marker (scraped by the parent app
-        process) before exiting.
+        """Create or return the cached agent graph for `langgraph dev`.
 
         Returns:
             Compiled LangGraph agent graph.
         """
-        nonlocal graph
-        if graph is not missing:
-            return graph
-        async with lock:
-            if graph is missing:
-                try:
-                    graph = await (builder or _make_graph)()
-                except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
-                    emit_startup_failure(exc)
-                    sys.exit(1)
-            return graph
+        return (await get_runtime()).agent
 
     return make_graph
 
 
-make_graph = _build_graph_factory()
+_get_runtime = _build_runtime_factory()
+_MAX_WORKSPACE_RUNTIMES = 32
+_workspace_runtimes: OrderedDict[str, ServerRuntime] = OrderedDict()
+_workspace_runtime_lock = asyncio.Lock()
+_sandbox_workspace_id: str | None = None
+
+
+def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None:
+    """Return and refresh a cached runtime for one workspace binding."""
+    cached = _workspace_runtimes.get(binding.resource_key)
+    if cached is None:
+        return None
+    _workspace_runtimes.move_to_end(binding.resource_key)
+    return cached
+
+
+def _claim_sandbox_workspace(
+    sandbox_type: str | None,
+    binding: WorkspaceBinding,
+) -> None:
+    """Reserve the process-wide sandbox for the first requesting workspace."""
+    global _sandbox_workspace_id  # noqa: PLW0603  # process-lifetime ownership
+    if not sandbox_type:
+        return
+    if _sandbox_workspace_id is None:
+        _sandbox_workspace_id = binding.workspace_id
+        return
+    if _sandbox_workspace_id == binding.workspace_id:
+        return
+    reason = (
+        "a runtime for another workspace already exists and the configured "
+        "sandbox is process-wide"
+    )
+    # Built into a local first: `raise X.from_reason(...)` reads as a
+    # `from_reason` raise to ruff's DOC501.
+    conflict = WorkspaceConflictError.from_reason(reason)
+    raise conflict
+
+
+def _remember_workspace_runtime(
+    binding: WorkspaceBinding,
+    runtime: ServerRuntime,
+) -> None:
+    """Cache one workspace runtime and enforce the bounded LRU size."""
+    _workspace_runtimes[binding.resource_key] = runtime
+    if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
+        _workspace_runtimes.popitem(last=False)
+
+
+async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding | None:
+    """Resolve the launch workspace represented by the server configuration.
+
+    Returns:
+        The canonical launch binding, or `None` without a configured workspace.
+    """
+    if config.cwd is None:
+        return None
+    return await asyncio.to_thread(
+        resolve_workspace,
+        config.cwd,
+        config.to_workspace_payload(),
+        config_fingerprint=config.workspace_fingerprint(),
+    )
+
+
+async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
+    """Build or reuse a runtime from the persisted workspace resource policy.
+
+    Returns:
+        The runtime selected by the binding's immutable resource key.
+    """
+    cached = _cached_workspace_runtime(binding)
+    if cached is not None:
+        return cached
+    async with _workspace_runtime_lock:
+        cached = _cached_workspace_runtime(binding)
+        if cached is not None:
+            return cached
+        config = ServerConfig.from_env()
+        current_config = dataclasses.replace(
+            config,
+            cwd=binding.cwd,
+            project_root=binding.project_root,
+        )
+        if (
+            current_config.workspace_fingerprint() != binding.config_fingerprint
+            or current_config.to_workspace_payload() != binding.workspace_config()
+        ):
+            reason = "the server configuration changed after this workspace was bound"
+            # Built into a local first: `raise X.from_reason(...)` reads as a
+            # `from_reason` raise to ruff's DOC501.
+            conflict = WorkspaceConflictError.from_reason(reason)
+            raise conflict
+        _claim_sandbox_workspace(current_config.sandbox_type, binding)
+        project_context = ProjectContext(
+            user_cwd=Path(binding.cwd),
+            project_root=Path(binding.project_root) if binding.project_root else None,
+        )
+        runtime = await _make_graphs(
+            config_override=current_config,
+            project_context_override=project_context,
+        )
+        _remember_workspace_runtime(binding, runtime)
+        return runtime
+
+
+async def get_server_runtime() -> ServerRuntime:
+    """Return resources shared by the graph and dcode operation routes.
+
+    Builds once and caches. A construction failure is converted into a
+    startup-error marker (scraped by the parent app process) before
+    `sys.exit(1)`, which is right for the `langgraph.json` graph factory at
+    startup. Callers in request scope must contain that exit -- `SystemExit` is a
+    `BaseException` -- as `offload_api._execute_offload` does, mapping it to a 503
+    rather than killing the server mid-request.
+
+    Returns:
+        The cached server runtime.
+    """
+    # Resolving the launch binding touches the filesystem and can raise, and
+    # claiming the sandbox can refuse. Both run before `_get_runtime`, so they
+    # sit outside its startup barrier and would exit without the marker the
+    # parent app process scrapes. Emit it here instead.
+    try:
+        config = ServerConfig.from_env()
+        binding = await _default_workspace_binding(config)
+    except Exception as exc:  # noqa: BLE001  # startup barrier
+        emit_startup_failure(exc)
+        sys.exit(1)
+    async with _workspace_runtime_lock:
+        if binding is None:
+            return await _get_runtime()
+        cached = _cached_workspace_runtime(binding)
+        if cached is not None:
+            return cached
+        _claim_sandbox_workspace(config.sandbox_type, binding)
+        runtime = await _get_runtime()
+        _remember_workspace_runtime(binding, runtime)
+        return runtime
+
+
+async def make_graph(
+    config: dict[str, Any] | None = None,
+    runtime: LangGraphServerRuntime[CLIContextSchema] | None = None,
+) -> Any:  # noqa: ANN401
+    """Return the graph after validating execution workspace context.
+
+    Raises:
+        ValueError: If execution context is missing or malformed.
+    """
+    execution = runtime.execution_runtime if runtime is not None else None
+    if execution is not None:
+        context = CLIContextSchema.from_payload(execution.context)
+        thread_id = (config or {}).get("configurable", {}).get("thread_id")
+        if context is None or not isinstance(thread_id, str) or not thread_id:
+            msg = "A thread id and workspace context are required for execution."
+            raise ValueError(msg)
+        from deepagents_code.workspace import require_thread_workspace
+
+        binding = await require_thread_workspace(thread_id, context.workspace)
+        return (await _workspace_runtime(binding)).agent
+    return (await get_server_runtime()).agent

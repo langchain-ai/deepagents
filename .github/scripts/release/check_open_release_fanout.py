@@ -8,7 +8,7 @@ component path — relative to the last *released package version* in
 
 What counts as lockfile-only unreleased delta:
     For each managed package path, resolve the manifest version to the package
-    release tag (e.g. `deepagents-cli==0.2.2`, matching `tag-separator` /
+    release tag (e.g. `deepagents-acp==0.2.2`, matching `tag-separator` /
     `include-component-in-tag` in `release-please-config.json`), then take
     `git diff --name-only <tag> HEAD` restricted to that path. If the component
     has an open release-please PR and every changed path under the package is a
@@ -71,12 +71,12 @@ def release_tag(component: str, version: str, *, separator: str = DEFAULT_TAG_SE
     `tag-separator: "=="` → `{component}=={version}`.
 
     Args:
-        component: release-please component name (e.g. `deepagents-cli`).
+        component: release-please component name (e.g. `deepagents-acp`).
         version: Manifest version string (e.g. `0.2.2`).
         separator: Tag separator from config.
 
     Returns:
-        Tag name such as `deepagents-cli==0.2.2`.
+        Tag name such as `deepagents-acp==0.2.2`.
     """
     return f"{component}{separator}{version}"
 

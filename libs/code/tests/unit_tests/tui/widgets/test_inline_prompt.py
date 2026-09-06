@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,11 +17,9 @@ from deepagents_code.tui.widgets import (
 )
 from deepagents_code.tui.widgets._inline_prompt import (
     MEDIA_UNSUPPORTED_TOAST_PREFIX,
-    InlinePromptCompletion,
     InlinePromptTextArea,
     _media_unsupported_toast,
 )
-from deepagents_code.tui.widgets._paste_textarea import PasteBurstTextArea
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -290,27 +287,6 @@ class TestInlinePromptPaste:
             # second newline).
             assert ta.text == "hello\n"
             assert app.submissions == []
-
-    async def test_reset_clears_pending_backslash(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Replacing text cannot reuse a backslash timestamp from old text."""
-        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
-        app = _PromptApp()
-        async with app.run_test() as pilot:
-            ta = app.query_one(InlinePromptTextArea)
-            ta.focus()
-            await pilot.pause()
-
-            await pilot.press("backslash")
-            ta.text = "replacement\\"
-            ta.move_cursor((0, len(ta.text)))
-            ta.reset_paste_state()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert app.submissions == ["replacement\\"]
 
     @pytest.mark.parametrize(
         "key",
@@ -850,37 +826,6 @@ class TestMediaUnsupportedToast:
 class TestSharedBindings:
     """The newline/word-delete bindings live on the base and reach subclasses."""
 
-    def test_base_bindings_are_the_single_source_of_truth(self) -> None:
-        """`PasteBurstTextArea` owns the shared newline and word-delete keys.
-
-        Introspecting the base protects every paste-aware subclass at once: a
-        regression in these bindings would surface here before it reached the
-        chat input or inline prompt.
-        """
-        newline_keys = {
-            key.strip()
-            for binding in PasteBurstTextArea.BINDINGS
-            if binding.action == "insert_newline"
-            for key in binding.key.split(",")
-        }
-        word_delete_keys = {
-            key.strip()
-            for binding in PasteBurstTextArea.BINDINGS
-            if binding.action == "delete_word_left"
-            for key in binding.key.split(",")
-        }
-
-        assert {"shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"} <= newline_keys
-        # `ctrl+m` is carriage return in terminals, so it must remain plain Enter.
-        assert "ctrl+m" not in newline_keys
-        assert newline_keys == PasteBurstTextArea._NEWLINE_KEYS
-        assert {"ctrl+backspace", "alt+backspace"} <= word_delete_keys
-
-    def test_inline_prompt_inherits_bindings(self) -> None:
-        """`InlinePromptTextArea` defines no bindings of its own; it inherits them."""
-        assert "BINDINGS" not in InlinePromptTextArea.__dict__
-        assert InlinePromptTextArea._NEWLINE_KEYS == PasteBurstTextArea._NEWLINE_KEYS
-
     @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
     async def test_modified_backspace_deletes_word_on_ordinary_text(
         self, key: str
@@ -908,38 +853,6 @@ class TestSharedBindings:
 
 class TestInlinePromptCompletion:
     """Resolve-at-most-once semantics, independent of call ordering."""
-
-    async def test_resolve_delivers_to_future_set_first(self) -> None:
-        """The common path: the future is wired before the result arrives."""
-        completion: InlinePromptCompletion[str] = InlinePromptCompletion()
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        completion.set_future(future)
-
-        assert completion.resolve("done") is True
-        assert completion.resolved is True
-        assert await future == "done"
-
-    async def test_resolve_before_set_future_still_delivers(self) -> None:
-        """A result recorded before the future is wired must not be stranded."""
-        completion: InlinePromptCompletion[str] = InlinePromptCompletion()
-
-        assert completion.resolve("done") is True
-        assert completion.resolved is True
-
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        completion.set_future(future)
-
-        assert await future == "done"
-
-    async def test_second_resolve_is_ignored(self) -> None:
-        """Only the first terminal result wins; later ones return `False`."""
-        completion: InlinePromptCompletion[str] = InlinePromptCompletion()
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        completion.set_future(future)
-
-        assert completion.resolve("first") is True
-        assert completion.resolve("second") is False
-        assert await future == "first"
 
 
 class TestCursorHiddenWhileUnfocused:

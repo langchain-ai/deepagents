@@ -6,7 +6,6 @@ import contextlib
 import importlib
 import importlib.util
 import logging
-import os
 import shlex
 import string
 import time
@@ -17,7 +16,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
-from deepagents_code.config import console, get_glyphs
+from deepagents_code.config import (
+    AWS_CREDENTIAL_ENV_SOURCES,
+    active_environment,
+    console,
+    get_glyphs,
+    resolve_env_kwargs,
+)
 from deepagents_code.integrations.sandbox_provider import (
     SandboxNotFoundError,
     SandboxProvider,
@@ -26,7 +31,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -57,9 +62,12 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     # Read script content
     script_content = script_path.read_text(encoding="utf-8")
 
-    # Expand ${VAR} syntax using local environment
+    # Expand ${VAR} syntax using the workspace environment. `create_sandbox`
+    # runs inside `use_environment`, so this must read the bound snapshot:
+    # `os.environ` here would expand the server process's values into the
+    # sandbox and hide the workspace's own `.env`.
     template = string.Template(script_content)
-    expanded_script = template.safe_substitute(os.environ)
+    expanded_script = template.safe_substitute(active_environment())
 
     # Execute expanded script in sandbox
     result = backend.execute(f"bash -c {shlex.quote(expanded_script)}")
@@ -711,6 +719,15 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
+def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
+    """Translate a workspace environment into explicit boto3 session arguments.
+
+    Returns:
+        Populated boto3 session keyword arguments.
+    """
+    return resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, environment.get)
+
+
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -729,16 +746,20 @@ class _AgentCoreProvider(SandboxProvider):
             ValueError: If boto3 is installed and AWS credentials cannot
                 be resolved.
         """
-        self._region = region or os.environ.get(
-            "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+        environment = active_environment()
+        self._region = region or environment.get(
+            "AWS_REGION", environment.get("AWS_DEFAULT_REGION", "us-west-2")
         )
+        self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session = boto3.Session()
-            credentials = session.get_credentials()
+            session_kwargs = _aws_session_kwargs(environment)
+            session_kwargs["region_name"] = self._region
+            self._session = boto3.Session(**session_kwargs)
+            credentials = self._session.get_credentials()
             if credentials is None:
                 msg = (
                     "AWS credentials not found. Configure via "
@@ -751,11 +772,18 @@ class _AgentCoreProvider(SandboxProvider):
         except ValueError:
             raise
         except Exception:
+            # Say what the failure costs, not just that it happened: without a
+            # session the interpreter resolves credentials itself, from the
+            # process environment rather than this workspace's.
             logger.warning(
-                "AWS credential pre-validation failed — the session may "
-                "fail to start. Check your AWS configuration.",
+                "Could not build an AWS session from the workspace environment "
+                "(region=%s). The sandbox will NOT use workspace AWS "
+                "credentials and may fail to start. Check your AWS "
+                "configuration.",
+                self._region,
                 exc_info=True,
             )
+            self._session = None
 
         self._active_interpreters: dict[str, Any] = {}
 
@@ -796,10 +824,16 @@ class _AgentCoreProvider(SandboxProvider):
             package="langchain-agentcore-codeinterpreter",
         )
 
-        interpreter = agentcore_module.CodeInterpreter(
-            region=self._region,
-            integration_source="deepagents-code",
-        )
+        # Pass `session` only when one was built. Handing over `None` would let
+        # "no workspace session" masquerade as "workspace session applied",
+        # since the SDK then falls back to its own credential resolution.
+        interpreter_kwargs: dict[str, Any] = {
+            "region": self._region,
+            "integration_source": "deepagents-code",
+        }
+        if self._session is not None:
+            interpreter_kwargs["session"] = self._session
+        interpreter = agentcore_module.CodeInterpreter(**interpreter_kwargs)
         try:
             interpreter.start()
         except Exception:
@@ -905,8 +939,12 @@ class _VercelProvider(SandboxProvider):
             credential resolution to the Vercel SDK.
         """
         prefix = "DEEPAGENTS_CODE_"
+        # Gate against the same mapping `resolve_env_var` resolves from. Reading
+        # `os.environ` here would miss a prefixed override that came from the
+        # workspace `.env`, silently falling back to default Vercel auth.
+        environment = active_environment()
         has_override = any(
-            f"{prefix}{name}" in os.environ for name in cls._CREDENTIAL_ENV_NAMES
+            f"{prefix}{name}" in environment for name in cls._CREDENTIAL_ENV_NAMES
         )
         if not has_override:
             return {}

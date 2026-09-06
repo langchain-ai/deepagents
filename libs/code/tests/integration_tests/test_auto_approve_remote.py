@@ -115,7 +115,7 @@ async def _run_auto_approve_write(
 
     model_config.clear_caches()
     try:
-        create_model("itest:fake").apply_to_settings()
+        create_model("itest:fake").apply_to_runtime_state()
         thread_id = generate_thread_id()
         target = project_dir / f"auto-approved-{suffix}.txt"
 

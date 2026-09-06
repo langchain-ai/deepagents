@@ -22,7 +22,10 @@ permissions:
   checks: write
   contents: read
   issues: write
-  pull-requests: read
+  # The new-entries courtesy comment targets the release PR, whose branch is owned
+  # by the release-bot GitHub App installation; issues: write alone intermittently
+  # 403s there, so request the pull-requests write scope too.
+  pull-requests: write
 
 concurrency:
   group: release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
@@ -99,7 +102,13 @@ jobs:
                 id: process.env.BOT_ID,
                 initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72,
               });
-              core.info(`Curated release-note state: ${result.status}.`);
+              // Name the package and version being validated so refresh runs (whose
+              // job and check names are package-agnostic) identify their target in
+              // the log and in the refreshed check's output.
+              const target = result.component
+                ? `the ${result.component} ${result.version} release PR`
+                : `PR #${number}`;
+              core.info(`Curated release-note state for ${target}: ${result.status}.`);
               if (refreshCheck !== null) {
                 // 'not-applicable' means the PR is no longer the release branch, so
                 // the gate isn't required — treat it as passing, matching the
@@ -113,10 +122,10 @@ jobs:
                   conclusion: passing.has(result.status) ? 'success' : 'failure',
                   output: {
                     title: passing.has(result.status)
-                      ? 'Curated release notes are valid'
+                      ? `Curated release notes are valid for ${target}`
                       : result.status === 'unapplied'
-                        ? 'Curated release notes are ready for review'
-                        : 'Curated release notes need attention',
+                        ? `Curated release notes are ready for review for ${target}`
+                        : `Curated release notes need attention for ${target}`,
                     summary: result.status === 'unapplied'
                       ? [
                           result.draftCommentUrl
@@ -127,7 +136,7 @@ jobs:
                           '@release-bot apply',
                           '```',
                         ].join('\n')
-                      : `Validation result: ${result.status}.`,
+                      : `Validation result for ${target}: ${result.status}.`,
                   },
                 });
               }

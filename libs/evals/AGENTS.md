@@ -173,6 +173,10 @@ Per-trial `evals_report_trial_NNN.json` files written by `pytest_reporter` conta
 }
 ```
 
+## Vendored data
+
+Files under `tests/evals/tau2_airline/data/` are vendored from [tau-bench](https://github.com/sierra-research/tau-bench) and must remain byte-identical to upstream. Do not reformat them or remove their exclusions from `.pre-commit-config.yaml`.
+
 ## Harbor LangGraph agent deps
 
 The Harbor agent config at `deepagents_harbor/langgraph_project/langgraph.json` is the source of truth for which packages the agent env installs. When changing its `dependencies` (especially provider packages):

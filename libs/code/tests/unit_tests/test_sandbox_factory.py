@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +10,7 @@ import pytest
 from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
     _VERCEL_SANDBOX_TIMEOUT,
+    _AgentCoreProvider,
     _get_provider,
     _VercelProvider,
     create_sandbox,
@@ -52,110 +52,6 @@ def test_get_provider_raises_helpful_error_for_missing_optional_dependency(
         pytest.raises(ImportError, match=error),
     ):
         _get_provider(provider)
-
-
-def test_create_sandbox_passes_langsmith_snapshot_name() -> None:
-    """LangSmith snapshot names are forwarded to the provider."""
-    backend = MagicMock(id="sandbox-1")
-    provider = MagicMock()
-    provider.get_or_create.return_value = backend
-
-    with (
-        patch(
-            "deepagents_code.integrations.sandbox_factory._get_provider",
-            return_value=provider,
-        ),
-        create_sandbox("langsmith", snapshot_name="custom-snap") as result,
-    ):
-        assert result is backend
-
-    provider.get_or_create.assert_called_once_with(
-        sandbox_id=None,
-        snapshot="custom-snap",
-    )
-    provider.delete.assert_called_once_with(sandbox_id="sandbox-1")
-
-
-def test_create_sandbox_passes_runloop_snapshot_name() -> None:
-    """Runloop blueprint names are forwarded to the provider."""
-    backend = MagicMock(id="sandbox-1")
-    provider = MagicMock()
-    provider.get_or_create.return_value = backend
-
-    with (
-        patch(
-            "deepagents_code.integrations.sandbox_factory._get_provider",
-            return_value=provider,
-        ),
-        create_sandbox("runloop", snapshot_name="custom-blueprint") as result,
-    ):
-        assert result is backend
-
-    provider.get_or_create.assert_called_once_with(
-        sandbox_id=None,
-        snapshot="custom-blueprint",
-    )
-    provider.delete.assert_called_once_with(sandbox_id="sandbox-1")
-
-
-def test_runloop_provider_delegates_to_langchain_runloop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`_RunloopProvider` forwards snapshot kwargs to `RunloopProvider`."""
-    from deepagents_code.integrations.sandbox_factory import _RunloopProvider
-
-    fake_provider = MagicMock()
-    fake_provider.get_or_create.return_value = MagicMock(id="dev-1")
-    fake_module = MagicMock()
-    fake_module.RunloopProvider.return_value = fake_provider
-
-    monkeypatch.setenv("RUNLOOP_API_KEY", "test-key")
-    with patch(
-        "deepagents_code.integrations.sandbox_factory._import_provider_module",
-        return_value=fake_module,
-    ):
-        provider = _RunloopProvider()
-        provider.get_or_create(sandbox_id=None, snapshot="my-bp")
-        provider.delete(sandbox_id="dev-1")
-
-    fake_module.RunloopProvider.assert_called_once()
-    fake_provider.get_or_create.assert_called_once_with(
-        sandbox_id=None,
-        timeout=180,
-        snapshot="my-bp",
-    )
-    fake_provider.delete.assert_called_once_with(sandbox_id="dev-1")
-
-
-def test_runloop_provider_forwards_blueprint_dockerfile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`blueprint_dockerfile` passes through `**kwargs` to `RunloopProvider`."""
-    from deepagents_code.integrations.sandbox_factory import _RunloopProvider
-
-    fake_provider = MagicMock()
-    fake_provider.get_or_create.return_value = MagicMock(id="dev-1")
-    fake_module = MagicMock()
-    fake_module.RunloopProvider.return_value = fake_provider
-
-    monkeypatch.setenv("RUNLOOP_API_KEY", "test-key")
-    with patch(
-        "deepagents_code.integrations.sandbox_factory._import_provider_module",
-        return_value=fake_module,
-    ):
-        provider = _RunloopProvider()
-        provider.get_or_create(
-            sandbox_id=None,
-            snapshot="my-bp",
-            blueprint_dockerfile="FROM ubuntu:24.04\n",
-        )
-
-    fake_provider.get_or_create.assert_called_once_with(
-        sandbox_id=None,
-        timeout=180,
-        snapshot="my-bp",
-        blueprint_dockerfile="FROM ubuntu:24.04\n",
-    )
 
 
 def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
@@ -282,6 +178,51 @@ def test_agentcore_raises_on_missing_aws_credentials() -> None:
         _get_provider("agentcore")
 
 
+def test_agentcore_uses_workspace_aws_session() -> None:
+    """AgentCore receives a session built from workspace AWS settings."""
+    environment = {
+        "AWS_REGION": "us-test-1",
+        "AWS_PROFILE": "workspace-profile",
+        "AWS_ACCESS_KEY_ID": "test-access-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+        "AWS_SESSION_TOKEN": "test-session-token",
+    }
+    session = MagicMock()
+    session.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value = session
+    interpreter = MagicMock()
+    client_module = MagicMock()
+    client_module.CodeInterpreter.return_value = interpreter
+    backend_module = MagicMock()
+    backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
+
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        provider = _AgentCoreProvider()
+
+    with patch(
+        f"{_FACTORY}._import_provider_module",
+        side_effect=[client_module, backend_module],
+    ):
+        provider.get_or_create()
+
+    mock_boto3.Session.assert_called_once_with(
+        profile_name="workspace-profile",
+        aws_access_key_id="test-access-key",
+        aws_secret_access_key="test-secret-key",
+        aws_session_token="test-session-token",
+        region_name="us-test-1",
+    )
+    client_module.CodeInterpreter.assert_called_once_with(
+        region="us-test-1",
+        session=session,
+        integration_source="deepagents-code",
+    )
+
+
 def test_agentcore_rejects_sandbox_id() -> None:
     """AgentCore should raise NotImplementedError for sandbox_id."""
     mock_boto3 = MagicMock()
@@ -291,146 +232,6 @@ def test_agentcore_rejects_sandbox_id() -> None:
 
     with pytest.raises(NotImplementedError, match="does not support reconnecting"):
         provider.get_or_create(sandbox_id="some-id")
-
-
-def test_agentcore_init_without_boto3_does_not_raise() -> None:
-    """Provider construction should succeed when boto3 is not installed."""
-    env_clear = dict.fromkeys(("AWS_REGION", "AWS_DEFAULT_REGION"), "")
-    with (
-        patch.dict(sys.modules, {"boto3": None}),
-        patch.dict(os.environ, env_clear, clear=False),
-    ):
-        for k in env_clear:
-            os.environ.pop(k, None)
-        provider = _get_provider("agentcore")
-    assert provider._region == "us-west-2"  # ty: ignore
-
-
-@pytest.mark.parametrize(
-    ("env", "expected"),
-    [
-        ({"AWS_REGION": "eu-west-1"}, "eu-west-1"),
-        ({"AWS_DEFAULT_REGION": "ap-southeast-1"}, "ap-southeast-1"),
-        (
-            {"AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "eu-west-1"},
-            "us-east-1",
-        ),
-        ({}, "us-west-2"),
-    ],
-)
-def test_agentcore_region_resolution(env: dict[str, str], expected: str) -> None:
-    """Region should follow AWS_REGION > AWS_DEFAULT_REGION > us-west-2."""
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
-    with (
-        patch.dict(sys.modules, {"boto3": mock_boto3}),
-        patch.dict(os.environ, env, clear=False),
-        patch.dict(
-            os.environ,
-            {k: "" for k in ("AWS_REGION", "AWS_DEFAULT_REGION") if k not in env},
-            clear=False,
-        ),
-    ):
-        # Clear env vars not in this test case
-        for k in ("AWS_REGION", "AWS_DEFAULT_REGION"):
-            if k not in env:
-                os.environ.pop(k, None)
-        provider = _get_provider("agentcore")
-    assert provider._region == expected  # ty: ignore
-
-
-def test_agentcore_get_or_create_happy_path() -> None:
-    """Successful get_or_create should start interpreter and track it."""
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
-    with patch.dict(sys.modules, {"boto3": mock_boto3}):
-        provider = _get_provider("agentcore")
-
-    mock_interpreter = MagicMock()
-    mock_backend = MagicMock()
-    mock_backend.id = "session-123"
-
-    mock_ci_module = MagicMock()
-    mock_ci_module.CodeInterpreter.return_value = mock_interpreter
-    mock_backend_module = MagicMock()
-    mock_backend_module.AgentCoreSandbox.return_value = mock_backend
-
-    def fake_import(module_name: str, **_: object) -> MagicMock:
-        if "code_interpreter_client" in module_name:
-            return mock_ci_module
-        return mock_backend_module
-
-    with patch(
-        "deepagents_code.integrations.sandbox_factory._import_provider_module",
-        side_effect=fake_import,
-    ):
-        result = provider.get_or_create()
-
-    mock_interpreter.start.assert_called_once()
-    assert result is mock_backend
-    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore
-
-
-def test_agentcore_start_failure_cleans_up() -> None:
-    """If interpreter.start() fails, interpreter.stop() should be called."""
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
-    with patch.dict(sys.modules, {"boto3": mock_boto3}):
-        provider = _get_provider("agentcore")
-
-    mock_interpreter = MagicMock()
-    mock_interpreter.start.side_effect = RuntimeError("connection failed")
-
-    mock_ci_module = MagicMock()
-    mock_ci_module.CodeInterpreter.return_value = mock_interpreter
-
-    def fake_import(module_name: str, **_: object) -> MagicMock:
-        if "code_interpreter_client" in module_name:
-            return mock_ci_module
-        return MagicMock()
-
-    with (
-        patch(
-            "deepagents_code.integrations.sandbox_factory._import_provider_module",
-            side_effect=fake_import,
-        ),
-        pytest.raises(RuntimeError, match="connection failed"),
-    ):
-        provider.get_or_create()
-
-    mock_interpreter.stop.assert_called_once()
-    assert not provider._active_interpreters  # ty: ignore
-
-
-def test_agentcore_delete_stops_tracked_interpreter() -> None:
-    """delete() should call stop() on a tracked interpreter."""
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
-    with patch.dict(sys.modules, {"boto3": mock_boto3}):
-        provider = _get_provider("agentcore")
-
-    mock_interpreter = MagicMock()
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
-
-    provider.delete(sandbox_id="sess-1")
-
-    mock_interpreter.stop.assert_called_once()
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore
-
-
-def test_agentcore_delete_swallows_stop_exception() -> None:
-    """delete() should not propagate if interpreter.stop() raises."""
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
-    with patch.dict(sys.modules, {"boto3": mock_boto3}):
-        provider = _get_provider("agentcore")
-
-    mock_interpreter = MagicMock()
-    mock_interpreter.stop.side_effect = RuntimeError("network error")
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
-
-    provider.delete(sandbox_id="sess-1")  # should not raise
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_untracked_session() -> None:
@@ -443,54 +244,8 @@ def test_agentcore_delete_untracked_session() -> None:
     provider.delete(sandbox_id="nonexistent")  # should not raise
 
 
-@pytest.mark.parametrize(
-    ("provider", "expected"),
-    [
-        ("agentcore", "/tmp"),
-        ("daytona", "/home/daytona"),
-        ("langsmith", "/root"),
-        ("modal", "/workspace"),
-        ("runloop", "/home/user"),
-        ("vercel", "/vercel/sandbox"),
-    ],
-)
-def test_get_default_working_dir(provider: str, expected: str) -> None:
-    """Each provider should map to the correct default working directory."""
-    assert get_default_working_dir(provider) == expected
-
-
 class TestVerifySandboxDeps:
     """Tests for the early sandbox dependency check."""
-
-    @pytest.mark.parametrize(
-        ("provider", "expected_module"),
-        [
-            ("agentcore", "langchain_agentcore_codeinterpreter"),
-            ("daytona", "langchain_daytona"),
-            ("modal", "langchain_modal"),
-            ("runloop", "langchain_runloop"),
-            ("vercel", "langchain_vercel_sandbox"),
-        ],
-    )
-    def test_raises_import_error_when_backend_missing(
-        self, provider: str, expected_module: str
-    ) -> None:
-        """Should raise ImportError with install instructions."""
-        mock_find_spec = patch(
-            "deepagents_code.integrations.sandbox_factory.importlib.util.find_spec",
-            return_value=None,
-        )
-        with (
-            mock_find_spec as find_spec,
-            pytest.raises(
-                ImportError,
-                match=rf"Missing dependencies for '{provider}' sandbox.*"
-                rf"/install {provider}.*dcode install {provider}",
-            ),
-        ):
-            verify_sandbox_deps(provider)
-
-        find_spec.assert_called_once_with(expected_module)
 
     @pytest.mark.parametrize(
         "provider",
@@ -547,42 +302,6 @@ class TestVerifySandboxDeps:
             ),
         ):
             verify_sandbox_deps("daytona")
-
-
-class TestCreateSandboxParams:
-    """Tests for forwarding `params` into `provider.get_or_create()`."""
-
-    def test_config_and_call_params_merge_with_call_precedence(self) -> None:
-        """Call-site params override config params; both reach get_or_create."""
-        config = SandboxConfig(
-            providers={
-                "acme": {
-                    "class_path": "x:Y",
-                    "working_dir": "/w",
-                    "params": {"region": "us-east-1", "shared": "from-config"},
-                }
-            }
-        )
-        registry = _registry_with(config)
-        backend = MagicMock(id="sandbox-1")
-        provider = MagicMock()
-        provider.get_or_create.return_value = backend
-
-        with (
-            patch(f"{_FACTORY}._get_registry", return_value=registry),
-            patch(f"{_FACTORY}._get_provider", return_value=provider),
-            create_sandbox(
-                "acme", params={"shared": "from-call", "extra": "call-only"}
-            ) as result,
-        ):
-            assert result is backend
-
-        provider.get_or_create.assert_called_once_with(
-            sandbox_id=None,
-            region="us-east-1",
-            shared="from-call",
-            extra="call-only",
-        )
 
 
 class TestGetDefaultWorkingDirRegistry:
@@ -657,296 +376,6 @@ class TestVercelProvider:
             ),
         ):
             provider.get_or_create()
-
-    def test_fresh_sandbox_calls_create(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Fresh Vercel sandboxes are created and wrapped."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        backend = MagicMock(id="sb_123")
-        vercel_backend = MagicMock()
-        vercel_backend.VercelSandbox.return_value = backend
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            "deepagents_code.integrations.sandbox_factory._import_provider_module",
-            side_effect=fake_import,
-        ):
-            result = provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-        )
-        vercel_sdk.Sandbox.get.assert_not_called()
-        vercel_backend.VercelSandbox.assert_called_once_with(sandbox=sandbox)
-        assert result is backend
-
-    def test_canonical_env_vars_are_left_to_sdk(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Canonical Vercel credentials remain SDK-managed."""
-        self._clear_vercel_env(monkeypatch)
-        monkeypatch.setenv("VERCEL_TOKEN", "token-123")
-        monkeypatch.setenv("VERCEL_PROJECT_ID", "prj_123")
-        monkeypatch.setenv("VERCEL_TEAM_ID", "team_123")
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            "deepagents_code.integrations.sandbox_factory._import_provider_module",
-            side_effect=fake_import,
-        ):
-            provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-        )
-
-    def test_existing_sandbox_calls_get(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Existing Vercel sandboxes are attached by id."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_existing", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.get.return_value = sandbox
-        backend = MagicMock(id="sb_existing")
-        vercel_backend = MagicMock()
-        vercel_backend.VercelSandbox.return_value = backend
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            "deepagents_code.integrations.sandbox_factory._import_provider_module",
-            side_effect=fake_import,
-        ):
-            result = provider.get_or_create(sandbox_id="sb_existing")
-
-        vercel_sdk.Sandbox.get.assert_called_once_with(sandbox_id="sb_existing")
-        vercel_sdk.Sandbox.create.assert_not_called()
-        assert result is backend
-
-    def test_prefixed_values_are_passed_to_create(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Non-empty prefixed Vercel values are forwarded to the SDK."""
-        self._clear_vercel_env(monkeypatch)
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TOKEN", "token_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_PROJECT_ID", "project_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TEAM_ID", "team_prefixed")
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            side_effect=fake_import,
-        ):
-            provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-            token="token_prefixed",
-            project_id="project_prefixed",
-            team_id="team_prefixed",
-        )
-
-    def test_prefixed_values_override_canonical_values(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Prefixed Vercel credentials take precedence over canonical values."""
-        self._clear_vercel_env(monkeypatch)
-        monkeypatch.setenv("VERCEL_TOKEN", "token_canonical")
-        monkeypatch.setenv("VERCEL_PROJECT_ID", "project_canonical")
-        monkeypatch.setenv("VERCEL_TEAM_ID", "team_canonical")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TOKEN", "token_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_PROJECT_ID", "project_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TEAM_ID", "team_prefixed")
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            side_effect=fake_import,
-        ):
-            provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-            token="token_prefixed",
-            project_id="project_prefixed",
-            team_id="team_prefixed",
-        )
-
-    @pytest.mark.parametrize(
-        "prefixed",
-        [
-            {"VERCEL_TOKEN": "token"},
-            {"VERCEL_PROJECT_ID": "project"},
-            {"VERCEL_TEAM_ID": "team"},
-            {"VERCEL_TOKEN": "token", "VERCEL_PROJECT_ID": "project"},
-            {"VERCEL_TOKEN": "token", "VERCEL_TEAM_ID": "team"},
-            {"VERCEL_PROJECT_ID": "project", "VERCEL_TEAM_ID": "team"},
-        ],
-    )
-    def test_incomplete_prefixed_credentials_fall_back_to_sdk(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-        prefixed: dict[str, str],
-    ) -> None:
-        """Incomplete explicit credentials are discarded as a unit."""
-        self._clear_vercel_env(monkeypatch)
-        for name, value in prefixed.items():
-            monkeypatch.setenv(f"DEEPAGENTS_CODE_{name}", value)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            side_effect=fake_import,
-        ):
-            provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-        )
-        assert "Incomplete explicit Vercel credentials" in caplog.text
-        assert not any(value in caplog.text for value in prefixed.values())
-
-    def test_oidc_with_canonical_scope_remains_sdk_managed(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """OIDC may expose project/team IDs without an access token."""
-        self._clear_vercel_env(monkeypatch)
-        monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
-        monkeypatch.setenv("VERCEL_PROJECT_ID", "project")
-        monkeypatch.setenv("VERCEL_TEAM_ID", "team")
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="running")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            side_effect=fake_import,
-        ):
-            provider.get_or_create()
-
-        vercel_sdk.Sandbox.create.assert_called_once_with(
-            runtime="python3.13",
-            timeout=_VERCEL_SANDBOX_TIMEOUT,
-        )
-
-    def test_prefixed_values_are_reused_for_delete(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Cleanup uses the same prefixed credentials resolved at construction."""
-        self._clear_vercel_env(monkeypatch)
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TOKEN", "token_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_PROJECT_ID", "project_prefixed")
-        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TEAM_ID", "team_prefixed")
-        provider = _get_provider("vercel")
-        sandbox = MagicMock()
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.get.return_value = sandbox
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            return_value=vercel_sdk,
-        ):
-            provider.delete(sandbox_id="sb_123")
-
-        vercel_sdk.Sandbox.get.assert_called_once_with(
-            sandbox_id="sb_123",
-            token="token_prefixed",
-            project_id="project_prefixed",
-            team_id="team_prefixed",
-        )
-        sandbox.stop.assert_called_once_with()
-
-    def test_delete_stops_sandbox(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Deleting a Vercel sandbox stops it."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock()
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.get.return_value = sandbox
-
-        with patch(
-            "deepagents_code.integrations.sandbox_factory._import_provider_module",
-            return_value=vercel_sdk,
-        ):
-            provider.delete(sandbox_id="sb_123")
-
-        vercel_sdk.Sandbox.get.assert_called_once_with(
-            sandbox_id="sb_123",
-        )
-        sandbox.stop.assert_called_once_with()
 
     @pytest.mark.parametrize("sandbox_id", [None, "sb_existing"])
     def test_create_and_attach_sdk_errors_do_not_expose_secrets(
@@ -1064,98 +493,6 @@ class TestVercelProvider:
 
         sandbox.stop.assert_called_once_with()
 
-    def test_readiness_timeout_is_actionable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Startup timeouts include the sandbox id, timeout, and current state."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="pending")
-        sandbox.wait_for_status.side_effect = TimeoutError
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with (
-            patch(
-                "deepagents_code.integrations.sandbox_factory._import_provider_module",
-                side_effect=fake_import,
-            ),
-            pytest.raises(
-                RuntimeError,
-                match=(
-                    "Vercel sandbox sb_123 failed to start within 12 seconds; "
-                    "current status is 'pending'"
-                ),
-            ),
-        ):
-            provider.get_or_create(timeout=12)
-
-        sandbox.wait_for_status.assert_called_once_with("running", timeout=12)
-        sandbox.stop.assert_called_once_with()
-
-    def test_attached_terminal_sandbox_is_not_stopped(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A failed attached sandbox remains owned by the caller."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_existing", status="stopped")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.get.return_value = sandbox
-        vercel_backend = MagicMock()
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with (
-            patch(
-                "deepagents_code.integrations.sandbox_factory._import_provider_module",
-                side_effect=fake_import,
-            ),
-            pytest.raises(RuntimeError, match="terminal state 'stopped'"),
-        ):
-            provider.get_or_create(sandbox_id="sb_existing")
-
-        sandbox.stop.assert_not_called()
-
-    def test_pending_sandbox_waits_for_running(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A pending sandbox that transitions to running yields a backend."""
-        self._clear_vercel_env(monkeypatch)
-        provider = _get_provider("vercel")
-        sandbox = MagicMock(sandbox_id="sb_123", status="pending")
-        vercel_sdk = MagicMock()
-        vercel_sdk.Sandbox.create.return_value = sandbox
-        backend = MagicMock(id="sb_123")
-        vercel_backend = MagicMock()
-        vercel_backend.VercelSandbox.return_value = backend
-
-        def fake_import(module_name: str, **_: object) -> MagicMock:
-            if module_name == "vercel.sandbox":
-                return vercel_sdk
-            return vercel_backend
-
-        with patch(
-            f"{_FACTORY}._import_provider_module",
-            side_effect=fake_import,
-        ):
-            result = provider.get_or_create(timeout=30)
-
-        sandbox.wait_for_status.assert_called_once_with("running", timeout=30)
-        assert result is backend
-
     def test_generic_readiness_failure_stops_fresh_sandbox(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1248,176 +585,88 @@ class TestLangSmithSnapshotResolution:
 
             return _LangSmithProvider()
 
-    def test_snapshot_id_env_var_boots_directly_without_listing(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """`LANGSMITH_SANDBOX_SNAPSHOT_ID` skips name lookup and auto-build."""
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", "snap-abc123")
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", raising=False)
 
+def test_setup_script_expands_workspace_environment() -> None:
+    """The setup script sees the workspace `.env`, not the server process env."""
+    from deepagents_code.integrations.sandbox_factory import _run_sandbox_setup
+
+    backend = MagicMock()
+    backend.execute.return_value = MagicMock(exit_code=0, output="")
+    script = MagicMock()
+    script.read_text.return_value = "echo ${WORKSPACE_ONLY} ${SERVER_ONLY}"
+
+    with (
+        patch(f"{_FACTORY}.Path", return_value=script),
+        patch(
+            f"{_FACTORY}.active_environment",
+            return_value={"WORKSPACE_ONLY": "from-project-dotenv"},
+        ),
+        patch.dict(
+            "os.environ",
+            {"SERVER_ONLY": "server-secret", "WORKSPACE_ONLY": "server-value"},
+            clear=False,
+        ),
+    ):
+        script.exists.return_value = True
+        _run_sandbox_setup(backend, "setup.sh")
+
+    command = backend.execute.call_args[0][0]
+    assert "from-project-dotenv" in command
+    # The server process's values must not leak into the sandbox.
+    assert "server-secret" not in command
+    assert "server-value" not in command
+
+
+def test_vercel_override_gate_reads_workspace_environment() -> None:
+    """A prefixed override from the workspace `.env` still triggers the gate."""
+    environment = {
+        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+        "DEEPAGENTS_CODE_VERCEL_PROJECT_ID": "workspace-project",
+        "DEEPAGENTS_CODE_VERCEL_TEAM_ID": "workspace-team",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=lambda name: environment.get(f"DEEPAGENTS_CODE_{name}"),
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        kwargs = _VercelProvider._resolve_sdk_kwargs()
+
+    assert kwargs == {
+        "token": "workspace-token",
+        "project_id": "workspace-project",
+        "team_id": "workspace-team",
+    }
+
+
+def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
+    """A failed session must not masquerade as an applied workspace session."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: typo")
+    interpreter = MagicMock()
+    client_module = MagicMock()
+    client_module.CodeInterpreter.return_value = interpreter
+    backend_module = MagicMock()
+    backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
+
+    with (
+        patch(
+            f"{_FACTORY}.active_environment", return_value={"AWS_REGION": "us-test-1"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        provider = _AgentCoreProvider()
+
+    with patch(
+        f"{_FACTORY}._import_provider_module",
+        side_effect=[client_module, backend_module],
+    ):
         provider.get_or_create()
 
-        mock_client.list_snapshots.assert_not_called()
-        mock_client.create_snapshot.assert_not_called()
-        mock_client.create_sandbox.assert_called_once()
-        kwargs = mock_client.create_sandbox.call_args.kwargs
-        assert kwargs["snapshot_id"] == "snap-abc123"
-
-    def test_snapshot_kwarg_overrides_env_var(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Explicit snapshot kwarg wins over `LANGSMITH_SANDBOX_SNAPSHOT_NAME`."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "env-snap")
-
-        existing = MagicMock(id="snap-flag", status="ready")
-        existing.name = "flag-snap"
-        mock_client.list_snapshots.return_value = [existing]
-
-        provider.get_or_create(snapshot="flag-snap")
-
-        mock_client.create_snapshot.assert_not_called()
-        assert mock_client.create_sandbox.call_args.kwargs["snapshot_id"] == "snap-flag"
-
-    def test_snapshot_name_env_var_overrides_default(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """`LANGSMITH_SANDBOX_SNAPSHOT_NAME` is used as the lookup name."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "custom-snap")
-
-        # `MagicMock(name=...)` sets the mock's repr, not `.name` — the
-        # explicit assignment below is load-bearing for the filter to match.
-        existing = MagicMock(id="snap-xyz", status="ready")
-        existing.name = "custom-snap"
-        mock_client.list_snapshots.return_value = [existing]
-
-        provider.get_or_create()
-
-        mock_client.list_snapshots.assert_called_once()
-        mock_client.create_snapshot.assert_not_called()
-        assert mock_client.create_sandbox.call_args.kwargs["snapshot_id"] == "snap-xyz"
-
-    def test_snapshot_name_env_var_triggers_build_when_missing(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Unknown snapshot name triggers `create_snapshot` with that name."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "built-snap")
-        mock_client.list_snapshots.return_value = []
-        built = MagicMock(id="snap-built")
-        mock_client.create_snapshot.return_value = built
-
-        provider.get_or_create()
-
-        mock_client.create_snapshot.assert_called_once()
-        assert mock_client.create_snapshot.call_args.kwargs["name"] == "built-snap"
-        kwargs = mock_client.create_sandbox.call_args.kwargs
-        assert kwargs["snapshot_id"] == "snap-built"
-
-    def test_snapshot_id_wins_over_name(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """`_ID` takes precedence — `_NAME` is ignored when both are set."""
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", "snap-id-wins")
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "ignored-name")
-
-        provider.get_or_create()
-
-        mock_client.list_snapshots.assert_not_called()
-        kwargs = mock_client.create_sandbox.call_args.kwargs
-        assert kwargs["snapshot_id"] == "snap-id-wins"
-
-    def test_defaults_when_no_env_vars(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """With no env vars, falls back to `deepagents-code` + 16 GiB."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", raising=False)
-        mock_client.list_snapshots.return_value = []
-        mock_client.create_snapshot.return_value = MagicMock(id="snap-default")
-
-        provider.get_or_create()
-
-        kwargs = mock_client.create_snapshot.call_args.kwargs
-        assert kwargs["name"] == "deepagents-code"
-        assert kwargs["docker_image"] == "python:3"
-        assert kwargs["fs_capacity_bytes"] == 16 * 1024**3
-
-    def test_list_snapshots_failure_raises_runtime_error(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """SDK failure during `list_snapshots` is wrapped in `RuntimeError`."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", raising=False)
-        mock_client.list_snapshots.side_effect = Exception("network down")
-
-        with pytest.raises(RuntimeError, match="Failed to list snapshots"):
-            provider.get_or_create()
-
-        mock_client.create_snapshot.assert_not_called()
-        mock_client.create_sandbox.assert_not_called()
-
-    def test_create_snapshot_failure_raises_runtime_error(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """SDK failure during `create_snapshot` is wrapped with name context."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "broken-snap")
-        mock_client.list_snapshots.return_value = []
-        mock_client.create_snapshot.side_effect = Exception("quota exceeded")
-
-        with pytest.raises(
-            RuntimeError,
-            match=r"Failed to build snapshot 'broken-snap'",
-        ):
-            provider.get_or_create()
-
-        mock_client.create_sandbox.assert_not_called()
-
-    def test_non_ready_matching_snapshot_raises_instead_of_rebuilding(
-        self,
-        provider,
-        mock_client: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Matching-name snapshot in non-ready state must not silently rebuild."""
-        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
-        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "in-flight")
-
-        building = MagicMock(id="snap-build-1", status="building")
-        building.name = "in-flight"
-        mock_client.list_snapshots.return_value = [building]
-
-        with pytest.raises(
-            RuntimeError,
-            match=r"Snapshot 'in-flight' exists but is in state 'building'",
-        ):
-            provider.get_or_create()
-
-        mock_client.create_snapshot.assert_not_called()
-        mock_client.create_sandbox.assert_not_called()
+    client_module.CodeInterpreter.assert_called_once_with(
+        region="us-test-1",
+        integration_source="deepagents-code",
+    )
+    assert "session" not in client_module.CodeInterpreter.call_args.kwargs

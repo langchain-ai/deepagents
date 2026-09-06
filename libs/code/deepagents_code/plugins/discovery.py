@@ -20,6 +20,7 @@ from deepagents_code.plugins.marketplace import (
     materialize_plugin_source,
     parse_marketplace_source,
     redact_urls_in_text,
+    unresolved_source_message,
 )
 from deepagents_code.plugins.models import (
     MarketplacePluginEntry,
@@ -219,14 +220,10 @@ def install_plugin(plugin_id: str) -> PluginInstance:
     load_installed_plugins(strict=True)
     load_enabled_plugin_ids(strict=True)
     marketplace, entry = _resolve_marketplace_and_entry(plugin_id)
-    source_root = materialize_plugin_source(marketplace, entry)
+    rejections: list[str] = []
+    source_root = materialize_plugin_source(marketplace, entry, rejections=rejections)
     if source_root is None:
-        msg = (
-            f"Plugin {plugin_id} has unsupported source "
-            f"{redact_urls_in_text(repr(entry.source))}; "
-            "use a local path, GitHub repository, or Git repository source"
-        )
-        raise MarketplaceError(msg)
+        raise MarketplaceError(unresolved_source_message(plugin_id, entry, rejections))
 
     try:
         manifest, _manifest_path, manifest_warnings = load_manifest(
@@ -324,16 +321,18 @@ def plugin_auto_update_setting() -> tuple[bool, str]:
         The enabled state and its configuration source.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         get_option,
-        load_config_toml,
-        resolve_scalar,
     )
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("plugins.auto_update")
     if option is None:
         return True, "default"
-    enabled, source = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(enabled), source
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value), _ranked_source(resolved)
 
 
 def auto_update_plugins() -> tuple[str, ...]:
@@ -415,10 +414,16 @@ def auto_update_plugins() -> tuple[str, ...]:
                                 f"{marketplace_name}"
                             )
                             raise MarketplaceError(msg)
-                        source_root = materialize_plugin_source(marketplace, entry)
+                        update_rejections: list[str] = []
+                        source_root = materialize_plugin_source(
+                            marketplace, entry, rejections=update_rejections
+                        )
                         if source_root is None:
-                            msg = f"Plugin {plugin_id} has an unsupported source"
-                            raise MarketplaceError(msg)
+                            raise MarketplaceError(
+                                unresolved_source_message(
+                                    plugin_id, entry, update_rejections
+                                )
+                            )
                         manifest, _manifest_path, _warnings = load_manifest(
                             source_root, fallback_name=entry.name
                         )

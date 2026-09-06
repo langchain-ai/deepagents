@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -8,7 +9,9 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
+from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -24,6 +27,7 @@ from deepagents_talon.runtime import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from langgraph.types import Command
@@ -51,6 +55,20 @@ class RecordingGraph:
         response = SimpleNamespace(content=f"seen:{len(messages)}")
         messages.append(response)
         return {"messages": list(messages)}
+
+
+class RecoverableGraph:
+    def __init__(self, messages: list[object] | None = None) -> None:
+        self.config = {"configurable": {"thread_id": "chat", "checkpoint_id": "latest"}}
+        self.values = {"messages": messages or []}
+        self.update: tuple[dict[str, Any], dict[str, Any]] | None = None
+
+    async def aget_state(self, config: dict[str, Any]) -> SimpleNamespace:
+        assert config == {"configurable": {"thread_id": "chat"}}
+        return SimpleNamespace(config=self.config, values=self.values)
+
+    async def aupdate_state(self, config: dict[str, Any], values: dict[str, Any]) -> None:
+        self.update = (config, values)
 
 
 class CronCallingGraph:
@@ -120,6 +138,103 @@ def web_search() -> str:
     return "searched"
 
 
+def refreshed_tool() -> str:
+    """Refreshed runtime tool stub."""
+    return "refreshed"
+
+
+async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[list[str]] = []
+
+    class AuthorizationGraph(RecordingGraph):
+        async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+            assert current_authorization_handler() is authorization_handler
+            return await super().ainvoke(payload, config)
+
+    def fake_create_deep_agent(**kwargs: Any) -> AuthorizationGraph:
+        created.append([_tool_name(item) for item in kwargs["tools"]])
+        return AuthorizationGraph()
+
+    refreshed = False
+
+    async def refresh_tools() -> list[Callable[..., object]] | None:
+        nonlocal refreshed
+        if refreshed:
+            return None
+        refreshed = True
+        return [refreshed_tool]
+
+    async def authorization_handler(_event: AuthorizationEvent) -> str | None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[custom_tool],
+        refresh_tools=refresh_tools,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="hello",
+            authorization_handler=authorization_handler,
+        )
+    )
+
+    assert created == [
+        ["current_time", "custom_tool"],
+        ["current_time", "refreshed_tool"],
+    ]
+    assert current_authorization_handler() is None
+
+
+async def test_runtime_reloads_mcp_tools_transactionally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[RecordingGraph] = []
+
+    def fake_create_deep_agent(**_kwargs: Any) -> RecordingGraph:
+        graph = RecordingGraph()
+        created.append(graph)
+        if len(created) == 3:
+            msg = "invalid replacement graph"
+            raise RuntimeError(msg)
+        return graph
+
+    async def reload_tools() -> list[Callable[..., object]]:
+        return [refreshed_tool]
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[custom_tool],
+        reload_tools=reload_tools,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is created[1]
+
+    previous_graph = runtime._graph
+    with pytest.raises(RuntimeError, match="invalid replacement graph"):
+        await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is previous_graph
+
+
 async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -158,6 +273,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert {
+        "current_time",
         "fetch_url",
         "web_search",
         "create_job",
@@ -243,7 +359,9 @@ async def test_runtime_merges_local_and_async_subagents(
     assistant_dir = tmp_path / "agent-home" / "agent"
     researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    (researcher_dir / "AGENTS.md").write_text(
+        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+    )
     async_subagent = {
         "name": "remote_reviewer",
         "description": "Remote review tasks",
@@ -271,8 +389,9 @@ async def test_runtime_merges_local_and_async_subagents(
     assert captured["subagents"] == [
         {
             "name": "researcher",
-            "description": "Use the researcher subagent.",
+            "description": "Research tasks",
             "system_prompt": "Research carefully.",
+            "mode": "fork",
         },
         async_subagent,
     ]
@@ -289,10 +408,12 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
     researcher_dir.mkdir(parents=True)
     reviewer_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\nmodel_id: openai:model\n---\nResearch carefully.",
+        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
         encoding="utf-8",
     )
-    (reviewer_dir / "AGENTS.md").write_text("Review changes.", encoding="utf-8")
+    (reviewer_dir / "AGENTS.md").write_text(
+        "---\ndescription: Review changes\n---\nReview carefully.", encoding="utf-8"
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
@@ -317,11 +438,13 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
             "description": "Research tasks",
             "system_prompt": "Research carefully.",
             "model": "openai:model",
+            "mode": "fork",
         },
         {
             "name": "reviewer",
-            "description": "Use the reviewer subagent.",
-            "system_prompt": "Review changes.",
+            "description": "Review changes",
+            "system_prompt": "Review carefully.",
+            "mode": "fork",
         },
     ]
 
@@ -334,7 +457,9 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
     assistant_dir = tmp_path / "imported-agent"
     researcher_dir = assistant_dir / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    (researcher_dir / "AGENTS.md").write_text(
+        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
@@ -356,34 +481,31 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
     assert captured["subagents"] == [
         {
             "name": "researcher",
-            "description": "Use the researcher subagent.",
+            "description": "Research tasks",
             "system_prompt": "Research carefully.",
+            "mode": "fork",
         },
     ]
 
 
-async def test_runtime_skips_unloadable_local_subagent_dirs(
+async def test_runtime_uses_user_defined_general_purpose_subagent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     captured: dict[str, Any] = {}
     assistant_dir = tmp_path / "agent-home" / "agent"
-    missing_dir = tmp_path / "agent-home" / "agents" / "missing"
-    bad_dir = tmp_path / "agent-home" / "agents" / "bad name"
-    good_dir = tmp_path / "agent-home" / "agents" / "good-name"
-    missing_dir.mkdir(parents=True)
-    bad_dir.mkdir(parents=True)
-    good_dir.mkdir(parents=True)
-    (bad_dir / "AGENTS.md").write_text("Bad prompt.", encoding="utf-8")
-    (good_dir / "AGENTS.md").write_text("Good prompt.", encoding="utf-8")
+    general_dir = tmp_path / "agent-home" / "agents" / "general-purpose"
+    general_dir.mkdir(parents=True)
+    (general_dir / "AGENTS.md").write_text(
+        "---\ndescription: Custom general agent\n---\nUse custom instructions.",
+        encoding="utf-8",
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
         return RecordingGraph()
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
 
     runtime = DeepAgentRuntime(
         model="test:model",
@@ -397,12 +519,46 @@ async def test_runtime_skips_unloadable_local_subagent_dirs(
 
     assert captured["subagents"] == [
         {
-            "name": "good-name",
-            "description": "Use the good-name subagent.",
-            "system_prompt": "Good prompt.",
+            "name": "general-purpose",
+            "description": "Custom general agent",
+            "system_prompt": "Use custom instructions.",
+            "mode": "fork",
         }
     ]
-    assert "unsafe subagent name 'bad name'" in caplog.text
+
+
+async def test_runtime_skips_invalid_local_subagent_definitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    invalid_dir = tmp_path / "agent-home" / "agents" / "invalid"
+    invalid_dir.mkdir(parents=True)
+    (invalid_dir / "AGENTS.md").write_text(
+        "---\ndescription: [not, text]\n---\nInvalid instructions.",
+        encoding="utf-8",
+    )
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] is None
+    assert "invalid name, description, or model" in caplog.text
 
 
 async def test_runtime_passes_middleware_to_create_deep_agent(
@@ -427,7 +583,7 @@ async def test_runtime_passes_middleware_to_create_deep_agent(
 
     await runtime.start()
 
-    assert captured["middleware"] == [middleware]
+    assert middleware in captured["middleware"]
 
 
 async def test_runtime_passes_interrupt_on_to_create_deep_agent(
@@ -716,7 +872,7 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     assert captured["model"] is model
     assert captured["compact_model"] is model
     assert captured["compact_backend"] is runtime.backend
-    assert captured["middleware"] == [compact]
+    assert compact in captured["middleware"]
 
 
 async def test_runtime_does_not_duplicate_existing_compact_tool_middleware(
@@ -763,7 +919,7 @@ async def test_runtime_does_not_duplicate_existing_compact_tool_middleware(
     await runtime.start()
 
     assert model.profile == {"max_input_tokens": 75_000}
-    assert captured["middleware"] == [existing]
+    assert captured["middleware"].count(existing) == 1
 
 
 async def test_runtime_rejects_invalid_context_size() -> None:
@@ -794,7 +950,34 @@ async def test_runtime_recursion_limit_defaults_when_env_unset(
 
     result = await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
     assert graph.calls[0][1]["recursion_limit"] == 500
+    assert "callbacks" not in graph.calls[0][1]
     assert result.text == "seen:1"
+
+
+async def test_runtime_adds_activity_callback_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING": "true"},
+    )
+    await runtime.start()
+
+    with caplog.at_level(logging.INFO, logger="deepagents_talon.runtime"):
+        result = await runtime.invoke(AgentRequest(conversation_id="private-chat", text="hi"))
+
+    callbacks = cast("list[object]", graph.calls[0][1]["callbacks"])
+    assert len(callbacks) == 1
+    assert result.text == "seen:1"
+    assert "agent.run.started" in caplog.text
+    assert "agent.run.completed" in caplog.text
+    assert "private-chat" not in caplog.text
 
 
 async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -841,6 +1024,53 @@ async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
             memory=(),
             env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "0"},
         )
+
+
+async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint() -> None:
+    graph = RecoverableGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    await runtime.recover_interrupted("chat")
+
+    assert graph.update is not None
+    config, values = graph.update
+    assert config is graph.config
+    messages = values["messages"]
+    assert len(messages) == 1
+    assert messages[0].type == "human"
+    assert messages[0].content == (
+        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+    )
+
+
+async def test_runtime_repairs_dangling_tool_call_before_interruption_marker() -> None:
+    tool_call = {"name": "search", "args": {"query": "test"}, "id": "call-1"}
+    graph = RecoverableGraph([AIMessage(content="", tool_calls=[tool_call])])
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    await runtime.recover_interrupted("chat")
+
+    assert graph.update is not None
+    messages = graph.update[1]["messages"]
+    assert isinstance(messages[0], RemoveMessage)
+    assert isinstance(messages[-2], ToolMessage)
+    assert messages[-2].tool_call_id == "call-1"
+    assert messages[-1].type == "human"
+    assert messages[-1].content == (
+        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+    )
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(
@@ -934,6 +1164,48 @@ async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     assert approvals[0].conversation_id == "chat"
     assert approvals[0].interrupt_id == "interrupt-1"
     assert approvals[0].action_requests[0]["name"] == "dangerous_tool"
+
+
+async def test_runtime_keeps_graph_stable_while_waiting_for_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = InterruptingGraph()
+    replacement = RecordingGraph()
+    approval_started = asyncio.Event()
+    release_approval = asyncio.Event()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approval_started.set()
+        await release_approval.wait()
+        return "approve"
+
+    invocation = asyncio.create_task(
+        runtime.invoke(
+            AgentRequest(
+                conversation_id="chat",
+                text="run",
+                approval_handler=approve,
+            )
+        )
+    )
+    await approval_started.wait()
+    monkeypatch.setattr(runtime, "_create_graph", lambda _tools: replacement)
+    runtime._replace_runtime_tools(())
+    release_approval.set()
+
+    result = await invocation
+
+    assert result.text == "approved"
+    assert graph.executed is True
+    assert runtime._graph is replacement
+    assert replacement.calls == []
 
 
 async def test_runtime_logs_tool_approval_without_argument_values(
@@ -1098,3 +1370,24 @@ def _talon_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
         for message in caplog.messages
         if message.startswith("talon_event ")
     ]
+
+
+async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    graph = RecordingGraph()
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return graph
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        cron_store=None,
+        include_web_tools=False,
+    )
+
+    await runtime.start()
+
+    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time"]

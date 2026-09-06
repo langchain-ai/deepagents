@@ -121,7 +121,10 @@ jobs:
           if [ "$PACKAGE_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON for the version it installed (3.14),
+          # which overrides VIRTUAL_ENV and makes `uv pip` demand a 3.14 venv
+          # even though the release package targets $PYTHON_VERSION.
+          env -u UV_PYTHON VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"
 
   manage-dependency-freshness-comment:
     name: "manage dependency freshness PR comment"

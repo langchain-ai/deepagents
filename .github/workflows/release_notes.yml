@@ -133,6 +133,30 @@ jobs:
           path: trusted-source
           persist-credentials: false
 
+      - name: Acknowledge manual command
+        id: acknowledge
+        if: github.event_name == 'issue_comment'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          retries: 3
+          script: |
+            const { acknowledgeCommand } = require('./trusted-source/.github/scripts/release/release-notes.js');
+            const reactionId = await acknowledgeCommand({
+              github,
+              ...context.repo,
+              commentId: context.payload.comment.id,
+              appSlug: process.env.APP_SLUG,
+              login: process.env.BOT_LOGIN,
+              id: process.env.BOT_ID,
+            });
+            core.setOutput('reaction-id', reactionId);
+
       - name: Prepare isolated drafting input
         id: prepare
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -244,6 +268,30 @@ jobs:
               throw error;
             }
 
+      - name: Mark manual command complete
+        if: ${{ github.event_name == 'issue_comment' && steps.acknowledge.outcome == 'success' && steps.post.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
+          REACTION_ID: ${{ steps.acknowledge.outputs.reaction-id }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          retries: 3
+          script: |
+            const { completeCommand } = require('./trusted-source/.github/scripts/release/release-notes.js');
+            await completeCommand({
+              github,
+              ...context.repo,
+              commentId: context.payload.comment.id,
+              reactionId: Number(process.env.REACTION_ID),
+              appSlug: process.env.APP_SLUG,
+              login: process.env.BOT_LOGIN,
+              id: process.env.BOT_ID,
+            });
+
       # Runs for any non-success in prepare/agent/post, including a hard failure in
       # `prepare` (which would otherwise skip a plain `success()`-gated step and
       # leave the maintainer with no PR feedback). `!cancelled()` keeps it firing
@@ -329,11 +377,36 @@ jobs:
           permission-pull-requests: write
 
       - name: Checkout trusted automation
+        id: checkout-trusted
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           path: trusted-source
           persist-credentials: false
+
+      - name: Acknowledge manual command
+        id: acknowledge
+        if: github.event_name == 'issue_comment'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          retries: 3
+          script: |
+            const { acknowledgeCommand } = require('./trusted-source/.github/scripts/release/release-notes.js');
+            const reactionId = await acknowledgeCommand({
+              github,
+              ...context.repo,
+              commentId: context.payload.comment.id,
+              appSlug: process.env.APP_SLUG,
+              login: process.env.BOT_LOGIN,
+              id: process.env.BOT_ID,
+            });
+            core.setOutput('reaction-id', reactionId);
 
       - name: Validate override and prepare changelog/body edits
         id: prepare-apply
@@ -428,11 +501,35 @@ jobs:
               throw error;
             }
 
-      # The apply steps have no continue-on-error, so any failure reds the job;
-      # this mirrors the draft job's failure comment so a maintainer who ran
-      # `apply` sees the reason on the PR instead of only a red Actions run.
+      - name: Mark manual command complete
+        if: ${{ github.event_name == 'issue_comment' && steps.acknowledge.outcome == 'success' && steps.publish.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
+          REACTION_ID: ${{ steps.acknowledge.outputs.reaction-id }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          retries: 3
+          script: |
+            const { completeCommand } = require('./trusted-source/.github/scripts/release/release-notes.js');
+            await completeCommand({
+              github,
+              ...context.repo,
+              commentId: context.payload.comment.id,
+              reactionId: Number(process.env.REACTION_ID),
+              appSlug: process.env.APP_SLUG,
+              login: process.env.BOT_LOGIN,
+              id: process.env.BOT_ID,
+            });
+
+      # Only an apply-operation failure should publish this notice. Reaction
+      # updates are best-effort and must not turn a successful apply into a
+      # misleading apply-failure comment.
       - name: Comment on apply failure
-        if: failure()
+        if: ${{ !cancelled() && (steps.prepare-apply.outcome != 'success' || steps.commit.outcome != 'success' || steps.publish.outcome != 'success') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}

@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (40)
+## Public (45)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -17,15 +17,17 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/auto` |  | Switch to Auto approval mode or manage its classifier model |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
-| `/clear` |  | Clear the chat and start a new thread |
+| `/clear` |  | Start a fresh thread |
 | `/context` |  | Show current context window usage |
+| `/context-doctor` |  | Audit what a session injects and its estimated token cost |
 | `/copy` |  | Copy the latest assistant message to clipboard |
 | `/cost` |  | Show estimated thread cost |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/effort` |  | Set reasoning effort for the current model |
+| `/extensions` |  | List loaded Python extensions and their provenance |
 | `/feedback` |  | Send feedback or report an issue |
-| `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
+| `/force-clear` |  | Recover a stuck session with a fresh thread |
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
@@ -33,9 +35,10 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/manual` |  | Switch to Manual approval mode |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
-| `/notifications` |  | Configure warning notifications |
+| `/notifications` |  | Review notifications and configure warning settings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
+| `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
@@ -43,12 +46,14 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
+| `/summarization-model` |  | Set the model used for context-compaction summaries |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |
 | `/tokens` |  | Show token usage |
 | `/tools` |  | List the tools available to the agent |
 | `/trace` |  | Open this thread in LangSmith |
+| `/uninstall` |  | Remove an installed optional extra |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
 | `/yolo` |  | Switch to YOLO approval mode (no review) |

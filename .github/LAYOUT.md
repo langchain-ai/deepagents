@@ -17,7 +17,7 @@ Quick map of CI/automation files in this folder.
 | `SECRETS.md` | Non-`GITHUB_TOKEN` CI credential inventory (names and scopes only) |
 | `images/` | Static assets referenced by workflows or docs |
 
-Package-level CI conventions and partner onboarding checklists live in root [`AGENTS.md`](../AGENTS.md).
+Repository-wide CI conventions live in root [`AGENTS.md`](../AGENTS.md). The partner onboarding checklist lives in [`libs/partners/AGENTS.md`](../libs/partners/AGENTS.md).
 
 ## Workflows (`workflows/`)
 
@@ -26,6 +26,27 @@ Package-level CI conventions and partner onboarding checklists live in root [`AG
 - Prefer extending an existing reusable workflow over pasting setup/checkout/`uv` boilerplate into a new entry file.
 
 Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring is in [`RELEASING.md`](./RELEASING.md).
+
+### Labeling workflows
+
+- `pr_labeler.yml` — unified PR labeler: size, file, title, external/internal, contributor tier.
+- `pr_labeler_backfill.yml` — manual backfill of those labels on open PRs.
+- `auto-label-by-package.yml` — labels issues by the package they name.
+- `tag-external-issues.yml` — classifies issues as external or internal and applies the contributor tier.
+
+The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because the release guardrails section lists every check a PR may hit; the labelers' output does not drive release gating. The two issue labelers are not release-gated either.
+
+### PR gate workflows
+
+Blocking pre-merge checks that read PR metadata and fail until it is fixed or a
+bypass label is applied. They consume labels rather than apply them.
+
+- `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `allow-scope-mismatch`.
+- `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `markdown-added: acknowledged`.
+- `project_readme_check.yml` — fails non-`docs` PRs that edit a project README; bypass with `readme: acknowledged`.
+
+None of these gate merges on their own — each must be added to the branch's
+required status checks.
 
 ## Local composite actions (`actions/`)
 
@@ -73,4 +94,5 @@ Special cases:
 
 - [`RELEASING.md`](./RELEASING.md) — version branches, release-please, fan-out guards, publishing
 - [`SECRETS.md`](./SECRETS.md) — secret/variable names and environment scopes
-- [`../AGENTS.md`](../AGENTS.md) — monorepo conventions, PR title scopes, "adding a new partner to CI"
+- [`../AGENTS.md`](../AGENTS.md) — monorepo conventions and PR title scopes
+- [`../libs/partners/AGENTS.md`](../libs/partners/AGENTS.md) — adding a new partner to CI

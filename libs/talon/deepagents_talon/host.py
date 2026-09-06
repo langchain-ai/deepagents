@@ -9,27 +9,44 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import signal
+import tempfile
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
+from deepagents_talon.authorization import (
+    AuthorizationBinding,
+    AuthorizationCompleted,
+    AuthorizationEvent,
+    AuthorizationFailed,
+    AuthorizationURL,
+    CallbackURLRequested,
+    DeviceCode,
+)
 from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
     AgentRuntime,
+    BackgroundRuntime,
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
+    ConversationHistoryRuntime,
     CronScheduler,
+    MCPReloadableRuntime,
     ReactionChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
+from deepagents_talon.mcp_auth import extract_oauth_callback_url
 from deepagents_talon.media import (
     MarkdownMediaRef,
     build_inbound_text,
@@ -42,7 +59,6 @@ from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
@@ -54,11 +70,37 @@ logger = logging.getLogger(__name__)
 
 _STOP_COMMAND = "/stop"
 _NEW_COMMAND = "/new"
+_MCP_RELOAD_COMMAND = "/mcp-reload"
+_HELP_COMMAND = "/help"
+_HELP_MESSAGE = (
+    "Talon is your personal agent in chat. Send a message to ask for help or get work done; "
+    "ask for reminders or recurring tasks to schedule them. "
+    "Each conversation keeps its context.\n\n"
+    "/help — Show this guide.\n"
+    "/new — Stop current work and start a fresh conversation.\n"
+    "/stop — Stop current work.\n"
+    "/mcp-reload — Reload MCP configuration after manual edits.\n\n"
+    "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
+    "then approve the change when prompted. Updated tools are available next turn.\n"
+    "OAuth: Ask to authenticate a configured MCP server. Open the sign-in link, "
+    "follow the prompts, and paste the full callback URL into the same chat when asked. "
+    "Send /stop to cancel."
+)
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
+_MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
+_MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
+_MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
+_CRON_THREAD_SUFFIX = ":talon-cron"
 _APPROVAL_LOG_RAW_IDS_ENV = "DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS"
+_TYPING_REFRESH_SECONDS = 4.0
+_CANCEL_TIMEOUT_SECONDS = 30.0
+_CANCEL_TIMEOUT_MESSAGE = (
+    "Could not stop the current run within 30 seconds. Your new message was not started. "
+    "Restart Talon to recover."
+)
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -71,14 +113,55 @@ _EMOJI_SKIN_TONES = frozenset(
 )
 
 
+class _CancelOutcome(StrEnum):
+    NONE = "none"
+    SUCCESS = "success"
+    TIMEOUT = "timeout"
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True, slots=True)
+class _Turn:
+    conversation_root: str
+    conversation_id: str
+    provider: str | None
+    generation: int
+    recovery_degraded: bool
+
+
+@dataclass(slots=True)
+class _CronControl:
+    lock: asyncio.Lock
+    users: int = 0
+
+
 @dataclass(slots=True)
 class _PendingToolApproval:
     future: asyncio.Future[ToolApprovalDecision]
     provider: str
     channel_conversation_id: str
     agent_conversation_id: str
+    prompt_text: str
     prompt_message_id: str | None
     sender_id: str | None
+
+
+@dataclass(slots=True)
+class _PendingAuthorization:
+    future: asyncio.Future[str]
+    binding: AuthorizationBinding
+    provider: str
+    channel_conversation_id: str
+    agent_conversation_id: str
+    sender_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizationFlow:
+    binding: AuthorizationBinding
+    provider: str
+    channel_conversation_id: str
+    sender_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,10 +199,20 @@ class TalonHost:
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._cron_controls: dict[str, _CronControl] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
-        self._conversation_resets: dict[str, int] = {}
+        self._generations: defaultdict[str, int] = defaultdict(int)
+        self._blocked: set[str] = set()
+        self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._pending_authorizations: dict[str, _PendingAuthorization] = {}
+        self._authorization_flows: dict[str, _AuthorizationFlow] = {}
+        self._terminal_authorizations: set[str] = set()
+        self._background_loop: asyncio.Task[None] | None = None
+        self._background_routes: dict[
+            str, tuple[ChannelAdapter, ChannelMessage, str, str | None]
+        ] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -151,6 +244,8 @@ class TalonHost:
 
         self._stopped.clear()
         self._running = True
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_loop = asyncio.create_task(self._process_background_results())
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
@@ -160,6 +255,10 @@ class TalonHost:
             return
 
         self._running = False
+        if self._background_loop is not None:
+            self._background_loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._background_loop
         await self._cancel_all()
 
         for channel in reversed(self.channels):
@@ -196,38 +295,99 @@ class TalonHost:
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
+        if command == _HELP_COMMAND:
+            await send_with_retry(
+                lambda: channel.send_message(channel_conversation_id, _HELP_MESSAGE)
+            )
+            return
+
         conversation_root = self._conversation_root(
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        agent_conversation_id = self._agent_conversation_id(conversation_root)
+        async with self._locks[conversation_root]:
+            agent_conversation_id = self._agent_conversation_id(conversation_root)
 
-        if command == _NEW_COMMAND:
-            await self._start_new_conversation(
+            if await self._handle_conversation_command(
                 channel,
-                channel_conversation_id,
+                message,
+                conversation_root=conversation_root,
+                provider=provider,
+            ):
+                return
+
+            pending = self._pending_tool_approvals.get(agent_conversation_id)
+            if pending is not None:
+                await self._handle_tool_approval_reply(channel, message, pending)
+                return
+
+            if await self._intercept_authorization_message(
+                channel,
+                message,
+                provider=_channel_key(channel, provider),
+                agent_conversation_id=agent_conversation_id,
+            ):
+                return
+
+            await self._replace_agent_turn(
+                channel,
+                message,
+                conversation_root,
+                agent_conversation_id,
+                provider,
+            )
+
+    async def _handle_conversation_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        conversation_root: str,
+        provider: str | None,
+    ) -> bool:
+        """Dispatch commands while the caller holds the conversation lock."""
+        command = _command_name(message.text)
+        if command == "/reset-all-history":
+            await self._reset_all_history(
+                channel,
+                message.conversation_id,
+                channel_key=_channel_key(channel, provider),
                 conversation_root=conversation_root,
             )
-            return
-
-        if command == _STOP_COMMAND:
+        elif command == _NEW_COMMAND:
+            await self._start_new_conversation(
+                channel,
+                message.conversation_id,
+                conversation_root=conversation_root,
+            )
+        elif command == _STOP_COMMAND:
             await self._cancel_conversation(
                 channel,
-                agent_conversation_id,
-                reply_conversation_id=channel_conversation_id,
+                self._agent_conversation_id(conversation_root),
+                reply_conversation_id=message.conversation_id,
             )
-            return
+        elif command == _MCP_RELOAD_COMMAND:
+            await self._reload_mcp_configuration(channel, message.conversation_id)
+        else:
+            return False
+        return True
 
-        pending = self._pending_tool_approvals.get(agent_conversation_id)
-        if pending is not None:
-            await self._handle_tool_approval_reply(channel, message, pending)
-            return
-
-        task = asyncio.create_task(
-            self._run_agent_turn(channel, message, agent_conversation_id, provider),
-            name=f"talon:{agent_conversation_id}",
-        )
-        self._track_conversation_task(agent_conversation_id, task)
+    async def _reload_mcp_configuration(
+        self,
+        channel: ChannelAdapter,
+        conversation_id: str,
+    ) -> None:
+        if not isinstance(self.agent, MCPReloadableRuntime):
+            message = _MCP_RELOAD_UNAVAILABLE_MESSAGE
+        else:
+            try:
+                await self.agent.reload_mcp_configuration()
+            except Exception:  # noqa: BLE001  # Do not disclose config or transport errors.
+                logger.warning("MCP configuration reload failed", exc_info=True)
+                message = _MCP_RELOAD_FAILURE_MESSAGE
+            else:
+                message = _MCP_RELOAD_SUCCESS_MESSAGE
+        await send_with_retry(lambda: channel.send_message(conversation_id, message))
 
     async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:
         """Handle one inbound channel reaction.
@@ -260,21 +420,106 @@ class TalonHost:
             env=self.config.env,
         )
 
+    async def _replace_agent_turn(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        conversation_root: str,
+        conversation_id: str,
+        provider: str | None,
+    ) -> None:
+        if conversation_id in self._blocked:
+            await send_with_retry(
+                lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+            )
+            return
+        active = self._tasks.get(conversation_id)
+        recovery_degraded = False
+        if active is not None and not active.done():
+            outcome = await self._cancel_active(conversation_id, active, recover=True)
+            if outcome is _CancelOutcome.TIMEOUT:
+                await send_with_retry(
+                    lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+                )
+                return
+            recovery_degraded = outcome is _CancelOutcome.DEGRADED
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_routes[conversation_id] = (
+                channel,
+                message,
+                conversation_root,
+                provider,
+            )
+        generation = self._generations[conversation_id] + 1
+        self._generations[conversation_id] = generation
+        task = asyncio.create_task(
+            self._run_agent_turn(
+                channel,
+                message,
+                _Turn(
+                    conversation_root,
+                    conversation_id,
+                    provider,
+                    generation,
+                    recovery_degraded,
+                ),
+            ),
+            name=f"talon:{conversation_id}",
+        )
+        self._tasks[conversation_id] = task
+        self._track_conversation_task(conversation_id, task)
+
+    async def _process_background_results(self) -> None:
+        while self._running:
+            await asyncio.sleep(1)
+            await self._dispatch_background_results()
+
+    async def _dispatch_background_results(self) -> None:
+        if not isinstance(self.agent, BackgroundRuntime):
+            return
+        for owner, (channel, message, root, provider) in list(self._background_routes.items()):
+            async with self._locks[root]:
+                active = self._tasks.get(owner)
+                if active is not None and not active.done():
+                    continue
+                if owner not in self.agent.background.owners():
+                    self._background_routes.pop(owner, None)
+                    continue
+                if owner in self._blocked or self._agent_conversation_id(root) != owner:
+                    continue
+                if self.agent.background.results(owner):
+                    await self._replace_agent_turn(
+                        channel,
+                        ChannelMessage(
+                            message.conversation_id,
+                            "Process the completed background subagent results.",
+                            sender_id=message.sender_id,
+                        ),
+                        root,
+                        owner,
+                        provider,
+                    )
+
     async def _run_agent_turn(
         self,
         channel: ChannelAdapter,
         message: ChannelMessage,
-        agent_conversation_id: str,
-        provider: str | None,
+        turn: _Turn,
     ) -> None:
+        agent_conversation_id = turn.conversation_id
         message = await transcribe_voice_message(self.voice_transcriber, message)
         message = _prepare_inbound_message(message)
         metadata: dict[str, object] = {
-            "channel": provider,
+            "channel": turn.provider,
             "sender_id": message.sender_id,
             "message_id": message.message_id,
             **message.metadata,
         }
+        if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
+            metadata["history_channel"] = _channel_key(channel, turn.provider)
+            metadata["history_chat"] = message.conversation_id
+        if turn.recovery_degraded:
+            metadata["interruption_recovery"] = "failed"
         origin_conversation_id = _origin_conversation_id(message)
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
@@ -282,20 +527,44 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
-        await _send_typing(channel, message.conversation_id)
-        result = await self._invoke_agent(
-            conversation_id=agent_conversation_id,
-            text=message.text,
-            metadata=metadata,
-            approval_handler=lambda approval: self._request_tool_approval(
-                channel,
-                approval,
-                provider=_channel_key(channel, provider),
-                reply_conversation_id=message.conversation_id,
-                sender_id=message.sender_id,
-            ),
+        typing_task = asyncio.create_task(
+            _typing_refresh_loop(channel, message.conversation_id),
         )
-        await self._deliver_agent_result(channel, message.conversation_id, result)
+        suppress_result = False
+        try:
+            result = await self._invoke_agent(
+                conversation_id=agent_conversation_id,
+                text=message.text,
+                metadata=metadata,
+                approval_handler=lambda approval: self._request_tool_approval(
+                    channel,
+                    approval,
+                    provider=_channel_key(channel, turn.provider),
+                    reply_conversation_id=message.conversation_id,
+                    sender_id=message.sender_id,
+                ),
+                authorization_handler=lambda event: self._handle_authorization_event(
+                    channel,
+                    event,
+                    provider=_channel_key(channel, turn.provider),
+                    reply_conversation_id=message.conversation_id,
+                    agent_conversation_id=agent_conversation_id,
+                    sender_id=message.sender_id,
+                ),
+            )
+            suppress_result = agent_conversation_id in self._terminal_authorizations
+        finally:
+            typing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing_task
+            self._clear_authorization(agent_conversation_id)
+        async with self._locks[turn.conversation_root]:
+            if (
+                self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
+                and self._generations[agent_conversation_id] == turn.generation
+                and not suppress_result
+            ):
+                await self._deliver_agent_result(channel, message.conversation_id, result)
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.
@@ -306,24 +575,28 @@ class TalonHost:
         Returns:
             Agent text output for scheduler delivery handling.
         """
-        conversation_root = self._conversation_root(
-            job.origin.channel or "cron",
-            job.origin.conversation_id,
-        )
-        conversation_id = self._agent_conversation_id(conversation_root)
-        result = await self._invoke_agent(
-            conversation_id=conversation_id,
-            text=job.prompt,
-            metadata={
-                "channel": job.origin.channel,
-                "cron_job_id": job.id,
-                "cron_job_name": job.name,
-                "origin_conversation_id": job.origin.conversation_id,
-                "cron_origin_message_id": job.origin.message_id,
-                "trigger": "cron",
-            },
-        )
-        return result.text
+        conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
+        control = self._cron_controls.setdefault(job.id, _CronControl(asyncio.Lock()))
+        control.users += 1
+        try:
+            async with control.lock:
+                result = await self._invoke_agent(
+                    conversation_id=conversation_id,
+                    text=job.prompt,
+                    metadata={
+                        "channel": job.origin.channel,
+                        "cron_job_id": job.id,
+                        "cron_job_name": job.name,
+                        "origin_conversation_id": job.origin.conversation_id,
+                        "cron_origin_message_id": job.origin.message_id,
+                        "trigger": "cron",
+                    },
+                )
+                return result.text
+        finally:
+            control.users -= 1
+            if control.users == 0 and self._cron_controls.get(job.id) is control:
+                del self._cron_controls[job.id]
 
     async def deliver_scheduled_result(
         self,
@@ -348,39 +621,66 @@ class TalonHost:
         metadata: dict[str, object],
         approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
         | None = None,
+        authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
     ) -> AgentResult:
-        lock = self._locks[conversation_id]
-        async with lock:
-            task = asyncio.current_task()
-            if task is not None:
-                self._tasks[conversation_id] = task
-
-            try:
-                with langsmith_trace_context(
-                    self.config.env,
-                    assistant_id=self.config.assistant_id,
-                    conversation_id=conversation_id,
-                    metadata=metadata,
-                ):
-                    return await self.agent.invoke(
-                        AgentRequest(
-                            conversation_id=conversation_id,
-                            text=text,
-                            metadata=metadata,
-                            approval_handler=approval_handler,
-                        ),
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "Unhandled agent error in conversation %s",
-                    conversation_id,
+        try:
+            with langsmith_trace_context(
+                self.config.env,
+                assistant_id=self.config.assistant_id,
+                conversation_id=conversation_id,
+                metadata=metadata,
+            ):
+                return await self.agent.invoke(
+                    AgentRequest(
+                        conversation_id=conversation_id,
+                        text=text,
+                        metadata=metadata,
+                        approval_handler=approval_handler,
+                        authorization_handler=authorization_handler,
+                    ),
                 )
-                raise
-            finally:
-                if self._tasks.get(conversation_id) is task:
-                    del self._tasks[conversation_id]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Unhandled agent error in conversation %s",
+                conversation_id,
+            )
+            raise
+
+    async def _reset_all_history(
+        self,
+        channel: ChannelAdapter,
+        chat: str,
+        *,
+        channel_key: str,
+        conversation_root: str,
+    ) -> None:
+        if not isinstance(self.agent, ConversationHistoryRuntime) or not self.agent.history_enabled:
+            await send_with_retry(
+                lambda: channel.send_message(chat, "History reset is unavailable.")
+            )
+            return
+        current = self._agent_conversation_id(conversation_root)
+        if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
+            await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
+            return
+        try:
+            await self.agent.clear_history(channel_key, chat)
+            next_resets = {
+                **self._conversation_resets,
+                conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+            }
+            _save_conversation_resets(self.config.conversation_state_path, next_resets)
+            self._conversation_resets = next_resets
+        except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
+            logger.warning("Conversation history reset failed", exc_info=True)
+            message = "Could not finish clearing history. Please try /reset-all-history again."
+        else:
+            message = (
+                "Cleared all conversation history for this chat. Started a fresh conversation."
+            )
+        await send_with_retry(lambda: channel.send_message(chat, message))
 
     async def _start_new_conversation(
         self,
@@ -390,9 +690,18 @@ class TalonHost:
         conversation_root: str,
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
-        await self._cancel_conversation_tasks(current_conversation_id)
-        next_reset = self._conversation_resets.get(conversation_root, 0) + 1
-        self._conversation_resets[conversation_root] = next_reset
+        outcome = await self._cancel_conversation_tasks(current_conversation_id)
+        if outcome is _CancelOutcome.TIMEOUT:
+            await send_with_retry(
+                lambda: channel.send_message(conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+            )
+            return
+        next_resets = {
+            **self._conversation_resets,
+            conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+        }
+        _save_conversation_resets(self.config.conversation_state_path, next_resets)
+        self._conversation_resets = next_resets
         await send_with_retry(
             lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
         )
@@ -405,33 +714,81 @@ class TalonHost:
         reply_conversation_id: str | None = None,
     ) -> None:
         target_conversation_id = reply_conversation_id or conversation_id
-        cancelled = await self._cancel_conversation_tasks(conversation_id)
-        if not cancelled:
-            await send_with_retry(
-                lambda: channel.send_message(target_conversation_id, "No in-flight run to stop.")
+        outcome = await self._cancel_conversation_tasks(conversation_id)
+        if outcome is _CancelOutcome.NONE:
+            message = "No in-flight run to stop."
+        elif outcome is _CancelOutcome.TIMEOUT:
+            message = _CANCEL_TIMEOUT_MESSAGE
+        elif outcome is _CancelOutcome.DEGRADED:
+            message = "Stopped current run."
+        else:
+            message = "Stopped current run."
+        await send_with_retry(lambda: channel.send_message(target_conversation_id, message))
+
+    async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
+        task = self._tasks.get(conversation_id)
+        outcome = _CancelOutcome.NONE
+        if task is not None and not task.done():
+            outcome = await self._cancel_active(conversation_id, task, recover=True)
+        if isinstance(self.agent, BackgroundRuntime):
+            had_workers = conversation_id in self.agent.background.owners()
+            if not await self.agent.background.cancel(conversation_id):
+                return self._mark_cancellation_timeout(conversation_id)
+            if had_workers and outcome is _CancelOutcome.NONE:
+                outcome = _CancelOutcome.SUCCESS
+        self._background_routes.pop(conversation_id, None)
+        return outcome
+
+    async def _cancel_active(
+        self,
+        conversation_id: str,
+        task: asyncio.Task[None],
+        *,
+        recover: bool,
+    ) -> _CancelOutcome:
+        self._generations[conversation_id] += 1
+        task.cancel()
+        deadline = asyncio.get_running_loop().time() + _CANCEL_TIMEOUT_SECONDS
+        try:
+            done, _ = await asyncio.wait({task}, timeout=_CANCEL_TIMEOUT_SECONDS)
+            if not done:
+                return self._mark_cancellation_timeout(conversation_id)
+            with contextlib.suppress(asyncio.CancelledError):
+                task.result()
+            if recover:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return self._mark_cancellation_timeout(conversation_id)
+                await asyncio.wait_for(
+                    self.agent.recover_interrupted(conversation_id),
+                    timeout=remaining,
+                )
+        except TimeoutError:
+            return self._mark_cancellation_timeout(conversation_id)
+        except Exception:
+            logger.exception(
+                "Failed to recover interrupted conversation %s",
+                stable_log_ref(conversation_id),
             )
-            return
-
-        await send_with_retry(
-            lambda: channel.send_message(target_conversation_id, "Stopped current run.")
+            return _CancelOutcome.DEGRADED
+        log_event(
+            logger,
+            "agent.interrupted",
+            conversation_ref=stable_log_ref(conversation_id),
         )
+        return _CancelOutcome.SUCCESS
 
-    async def _cancel_conversation_tasks(self, conversation_id: str) -> bool:
-        tasks = {
-            task
-            for task in {
-                *self._conversation_tasks.get(conversation_id, set()),
-                self._tasks.get(conversation_id),
-            }
-            if task is not None and not task.done()
-        }
-        if not tasks:
-            return False
-
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        return True
+    def _mark_cancellation_timeout(
+        self,
+        conversation_id: str,
+    ) -> _CancelOutcome:
+        self._blocked.add(conversation_id)
+        log_event(
+            logger,
+            "agent.interrupt_timeout",
+            conversation_ref=stable_log_ref(conversation_id),
+        )
+        return _CancelOutcome.TIMEOUT
 
     def _agent_conversation_id(self, conversation_id: str) -> str:
         reset = self._conversation_resets.get(conversation_id, 0)
@@ -444,7 +801,9 @@ class TalonHost:
         channel_key: str,
         conversation_id: str,
     ) -> str:
-        if len(self.channels) <= 1:
+        if len(self.channels) <= 1 and not (
+            isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled
+        ):
             return conversation_id
         return _conversation_key(channel_key, conversation_id)
 
@@ -467,6 +826,278 @@ class TalonHost:
             if not pending.future.done():
                 pending.future.cancel()
         self._pending_tool_approvals.clear()
+        for pending in self._pending_authorizations.values():
+            if not pending.future.done():
+                pending.future.cancel()
+        self._pending_authorizations.clear()
+        self._authorization_flows.clear()
+        self._terminal_authorizations.clear()
+
+    async def _handle_authorization_event(  # noqa: PLR0913  # binds all channel identities.
+        self,
+        channel: ChannelAdapter,
+        event: AuthorizationEvent,
+        *,
+        provider: str,
+        reply_conversation_id: str,
+        agent_conversation_id: str,
+        sender_id: str | None,
+    ) -> str | None:
+        if sender_id is None:
+            msg = "Channel authorization requires an identified operator"
+            raise RuntimeError(msg)
+        if isinstance(event, AuthorizationURL):
+            await self._begin_authorization(
+                channel,
+                event,
+                provider=provider,
+                reply_conversation_id=reply_conversation_id,
+                agent_conversation_id=agent_conversation_id,
+                sender_id=sender_id,
+            )
+            return None
+        if isinstance(event, CallbackURLRequested):
+            return await self._await_authorization_callback(event, agent_conversation_id)
+        if isinstance(event, DeviceCode):
+            self._register_authorization_flow(
+                agent_conversation_id,
+                event.binding,
+                provider=provider,
+                channel_conversation_id=reply_conversation_id,
+                sender_id=sender_id,
+            )
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    "\n".join(
+                        (
+                            f"Authorization required for MCP server `{event.binding.server_name}`.",
+                            f"Open: {event.verification_uri}",
+                            f"Enter code: `{event.user_code}`",
+                        )
+                    ),
+                )
+            )
+            return None
+        if isinstance(event, AuthorizationCompleted):
+            self._finish_authorization_flow(agent_conversation_id, event.binding)
+            result = await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    f"MCP server `{event.binding.server_name}` is authorized.",
+                )
+            )
+            if event.terminal and result.success:
+                self._terminal_authorizations.add(agent_conversation_id)
+            return None
+        if isinstance(event, AuthorizationFailed):
+            self._finish_authorization_flow(agent_conversation_id, event.binding)
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    f"Authorization for MCP server `{event.binding.server_name}` failed.",
+                )
+            )
+            return None
+        msg = "Unsupported authorization event"
+        raise TypeError(msg)
+
+    async def _begin_authorization(  # noqa: PLR0913  # persists all channel identities.
+        self,
+        channel: ChannelAdapter,
+        event: AuthorizationURL,
+        *,
+        provider: str,
+        reply_conversation_id: str,
+        agent_conversation_id: str,
+        sender_id: str,
+    ) -> None:
+        if event.binding.expires_at <= asyncio.get_running_loop().time():
+            msg = "MCP authorization request expired"
+            raise TimeoutError(msg)
+        existing = self._pending_authorizations.get(agent_conversation_id)
+        if existing is not None or agent_conversation_id in self._authorization_flows:
+            msg = "Another MCP authorization request is already pending"
+            raise RuntimeError(msg)
+        future = asyncio.get_running_loop().create_future()
+        pending = _PendingAuthorization(
+            future=future,
+            binding=event.binding,
+            provider=provider,
+            channel_conversation_id=reply_conversation_id,
+            agent_conversation_id=agent_conversation_id,
+            sender_id=sender_id,
+        )
+        self._pending_authorizations[agent_conversation_id] = pending
+        self._authorization_flows[agent_conversation_id] = _AuthorizationFlow(
+            binding=event.binding,
+            provider=provider,
+            channel_conversation_id=reply_conversation_id,
+            sender_id=sender_id,
+        )
+        result = await send_with_retry(
+            lambda: channel.send_message(
+                reply_conversation_id,
+                "\n".join(
+                    (
+                        f"Authorization required for MCP server `{event.binding.server_name}`.",
+                        "Open this link and approve access:",
+                        event.url,
+                        "Then paste the full callback URL here.",
+                    )
+                ),
+            )
+        )
+        if not result.success:
+            if self._pending_authorizations.get(agent_conversation_id) is pending:
+                del self._pending_authorizations[agent_conversation_id]
+            self._authorization_flows.pop(agent_conversation_id, None)
+            msg = "Could not deliver MCP authorization request"
+            raise RuntimeError(msg)
+
+    async def _await_authorization_callback(
+        self,
+        event: CallbackURLRequested,
+        agent_conversation_id: str,
+    ) -> str:
+        pending = self._pending_authorizations.get(agent_conversation_id)
+        if pending is None or pending.binding != event.binding:
+            msg = "MCP authorization request does not match the active invocation"
+            raise RuntimeError(msg)
+        try:
+            remaining = event.binding.expires_at - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                if pending.future.done():
+                    return pending.future.result()
+                msg = "MCP authorization request expired"
+                raise TimeoutError(msg)
+            return await asyncio.wait_for(asyncio.shield(pending.future), timeout=remaining)
+        finally:
+            if self._pending_authorizations.get(agent_conversation_id) is pending:
+                del self._pending_authorizations[agent_conversation_id]
+            if not pending.future.done():
+                pending.future.cancel()
+
+    async def _intercept_authorization_message(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        provider: str,
+        agent_conversation_id: str,
+    ) -> bool:
+        callback_url = _callback_url(message.text)
+        pending = self._pending_authorizations.get(agent_conversation_id)
+        if pending is None:
+            flow = self._authorization_flows.get(agent_conversation_id)
+            if flow is not None:
+                await self._remind_device_authorization(
+                    channel,
+                    message,
+                    provider=provider,
+                    flow=flow,
+                )
+            elif callback_url is None:
+                return False
+            else:
+                await send_with_retry(
+                    lambda: channel.send_message(
+                        message.conversation_id,
+                        "No matching MCP authorization request is pending.",
+                    )
+                )
+            return True
+        if (
+            provider != pending.provider
+            or message.conversation_id != pending.channel_conversation_id
+            or message.sender_id != pending.sender_id
+        ):
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Only the operator who started this authorization can complete it.",
+                )
+            )
+            return True
+        if asyncio.get_running_loop().time() >= pending.binding.expires_at:
+            if not pending.future.done():
+                msg = "MCP authorization request expired"
+                pending.future.set_exception(TimeoutError(msg))
+            return True
+        if callback_url is None:
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Paste the full callback URL to finish MCP authorization, or send `/stop`.",
+                )
+            )
+            return True
+        if not pending.future.done():
+            pending.future.set_result(callback_url)
+        return True
+
+    async def _remind_device_authorization(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        provider: str,
+        flow: _AuthorizationFlow,
+    ) -> None:
+        if (
+            provider != flow.provider
+            or message.conversation_id != flow.channel_conversation_id
+            or message.sender_id != flow.sender_id
+        ):
+            text = "Only the operator who started this authorization can complete it."
+        elif asyncio.get_running_loop().time() >= flow.binding.expires_at:
+            text = f"Authorization for MCP server `{flow.binding.server_name}` has expired."
+        else:
+            text = (
+                f"Complete authorization for MCP server `{flow.binding.server_name}` "
+                "in your browser, or send `/stop`."
+            )
+        await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+
+    def _register_authorization_flow(
+        self,
+        agent_conversation_id: str,
+        binding: AuthorizationBinding,
+        *,
+        provider: str,
+        channel_conversation_id: str,
+        sender_id: str,
+    ) -> None:
+        if binding.expires_at <= asyncio.get_running_loop().time():
+            msg = "MCP authorization request expired"
+            raise TimeoutError(msg)
+        if agent_conversation_id in self._authorization_flows:
+            msg = "Another MCP authorization request is already pending"
+            raise RuntimeError(msg)
+        self._authorization_flows[agent_conversation_id] = _AuthorizationFlow(
+            binding=binding,
+            provider=provider,
+            channel_conversation_id=channel_conversation_id,
+            sender_id=sender_id,
+        )
+
+    def _finish_authorization_flow(
+        self,
+        agent_conversation_id: str,
+        binding: AuthorizationBinding,
+    ) -> None:
+        flow = self._authorization_flows.get(agent_conversation_id)
+        if flow is None or flow.binding != binding:
+            msg = "MCP authorization status does not match the active invocation"
+            raise RuntimeError(msg)
+        del self._authorization_flows[agent_conversation_id]
+
+    def _clear_authorization(self, agent_conversation_id: str) -> None:
+        pending = self._pending_authorizations.pop(agent_conversation_id, None)
+        if pending is not None and not pending.future.done():
+            pending.future.cancel()
+        self._authorization_flows.pop(agent_conversation_id, None)
+        self._terminal_authorizations.discard(agent_conversation_id)
 
     async def _request_tool_approval(
         self,
@@ -484,22 +1115,27 @@ class TalonHost:
             provider=provider,
             channel_conversation_id=reply_conversation_id,
             agent_conversation_id=approval.conversation_id,
+            prompt_text=_format_tool_approval_prompt(approval),
             prompt_message_id=None,
             sender_id=sender_id,
         )
         self._pending_tool_approvals[approval.conversation_id] = pending
         try:
-            result = await send_with_retry(
-                lambda: channel.send_message(
-                    reply_conversation_id,
-                    _format_tool_approval_prompt(approval),
-                )
-            )
-            pending.prompt_message_id = result.message_id
+            await self._send_tool_approval_prompt(channel, pending)
             return await future
         finally:
             if self._pending_tool_approvals.get(approval.conversation_id) is pending:
                 del self._pending_tool_approvals[approval.conversation_id]
+
+    async def _send_tool_approval_prompt(
+        self,
+        channel: ChannelAdapter,
+        pending: _PendingToolApproval,
+    ) -> None:
+        result = await send_with_retry(
+            lambda: channel.send_message(pending.channel_conversation_id, pending.prompt_text)
+        )
+        pending.prompt_message_id = result.message_id
 
     async def _handle_tool_approval_reply(
         self,
@@ -518,12 +1154,7 @@ class TalonHost:
 
         decision = _parse_tool_approval_reply(message.text)
         if decision is None:
-            await send_with_retry(
-                lambda: channel.send_message(
-                    message.conversation_id,
-                    "Reply `approve` to run the tool call or `deny` to skip it.",
-                )
-            )
+            await self._send_tool_approval_prompt(channel, pending)
             return
 
         if not pending.future.done():
@@ -664,6 +1295,10 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
     )
 
 
+def _callback_url(text: str) -> str | None:
+    return extract_oauth_callback_url(text)
+
+
 def _command_name(text: str) -> str | None:
     parts = text.strip().split(maxsplit=1)
     if not parts:
@@ -751,6 +1386,13 @@ async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:
         logger.debug("Could not send typing indicator", exc_info=True)
 
 
+async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) -> None:
+    """Repeat the typing indicator for as long as an agent turn is in flight."""
+    while True:
+        await _send_typing(channel, conversation_id)
+        await asyncio.sleep(_TYPING_REFRESH_SECONDS)
+
+
 async def _channel_provider(channel: ChannelAdapter) -> str | None:
     """Return the channel provider for origin metadata, if available."""
     try:
@@ -784,6 +1426,44 @@ def _json_preview(value: object) -> str:
         return json.dumps(value, sort_keys=True, default=str)
     except (TypeError, ValueError):
         return str(value)
+
+
+def _load_conversation_resets(path: Path) -> dict[str, int]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load conversation state from {path}"
+        raise RuntimeError(msg) from exc
+    if not isinstance(state, dict) or any(
+        not isinstance(key, str)
+        or not isinstance(reset, int)
+        or isinstance(reset, bool)
+        or reset < 1
+        for key, reset in state.items()
+    ):
+        msg = f"invalid conversation state in {path}"
+        raise RuntimeError(msg)
+    return state
+
+
+def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(resets, file, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        temporary_path.replace(path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:

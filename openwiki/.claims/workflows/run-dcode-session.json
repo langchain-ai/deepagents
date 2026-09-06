@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:3a0c444d2b3cc392a5d0c3b909480d4f927c072d3dd138f6f606c5d5fa9800f1",
+  "claims": [
+    {
+      "id": "claim_9e14bfcc46384dcc9a94586a9ab62f88",
+      "statement": "dcode installs through the bundled curl installer and normally launches an interactive Textual TUI; it can instead run one headless task with `-n` or serve ACP over stdio with `--acp`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/README.md#L12-L28",
+          "version": "repo-lines-v1:sha256:f4376b8b86d5b74b659bcab89e9e4214162d9325cf79d33abcbd29743d53e6c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZDMzYWU0ZTRjMzY2ZWJjNDNhMThhMTRiNDM3M2U4NGE3MzRkNjE5ZTY1ZWI1MmM0NGQxN2M4NGMxYjc5YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhYmE1MTc0MTc4YTg1NWQwODNmMTU1MzMwZTA3YjI4MDRjNDk1ZDlmYWI5NmVhNTkxMzk2YjhiZDMxNTEyOTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlZjIyMjJiZGI5ZGM0OWU3ZDI0MWU2MzAyOTU5MWIwMzQ5MzVmY2UyZWZlODFlNzE5OTYyMWJmYjA1NmM1ZDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2566-L2613",
+          "version": "repo-lines-v1:sha256:f8aaebd0b8dbf16f79f383fe5dd7fa762cf5934f335fa92d82352715d65bc27a:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTQzOWE0NzUwMzQyN2E0Yzc5ZjliZDNjM2MzZmMxZjkzZmQxZTdiNGM3YTE1MWQ1YWZhZDA0MDJkMWE4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzNTZiNWQ4OTVhODk2NzVmNWI4ZjZlNWVkMDcwODU4YzU4MzkxN2Y4NzAxZmM4Nzk2YmJlM2Y3ZWQ5YTM3M2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3NjRhYWQ3MTVjMmJkMDJhMjMyYzRjMTk2ZjE1N2YwZTZhZWEyZDg5YTU5NTI1N2FlZWU0MDMyYTZhOWFlNmMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2868-L2872",
+          "version": "repo-lines-v1:sha256:52a614d445eb06ad751e4ec437f571f58b0730a967bc22775d2694f63970f607:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGUzNGZlYmEwNTg0NzExY2QzZmVhMzczOGZjNWMzOTAzMTgyY2E4NGE4ODgxN2ZkZGNlZmQ2MzZiZmYwOTE4NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmJlOWMyYTA3YTRiMTk4NGIwYjEzODViNmVlZDMzMzliMGIyYzM5NzVmODM3ZTAzYmY2Yjc0NGVmZDYyYWJhNCJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5405-L5481",
+          "version": "repo-lines-v1:sha256:5607b2212941bc010e716756b8e1353c2c83b6876289cf4b49228f5602d48fbe:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOTM2NTUyZDk1YTU4MjFhOGNkMWYwNjE4MmVlOGMwZTRlYjRkOGQxNzYwNzc5MjU3MzRlNGY0ODFkY2RkMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZWY0NmYxZTUxOThkMGExOWViNDA3M2FhYTM4MDQ3ZmEzMGVjMmYxYWFkMGNjYjc3NTY4OWFkNzFlMzgyMjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjYWYzZjNkNzllNGFmZTAzZDI0ZWIyZjFjNmEzMGNhYjkyZjczMmIwNDc1NzU5MzNiY2I4MmVjNGViNjljNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3NWZlNTBjZjE3OTA1ZDU3OTA5ZGIzOTVlYzcwMmE5OWUwMGVmNjAyNmMxNTgwMGUxYTFkZTM0NzYwMWZiZGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_86f2bf879d1d49cfb583543bcd32213e",
+      "statement": "Project artifacts are read before tool approval UI, so approvals do not make an untrusted checkout safe; use a remote sandbox to isolate execution from the host.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/README.md#L45-L49",
+          "version": "repo-lines-v1:sha256:67c2070ec798061d7b0adc89bbf3ad16b0b856bc2164d722071c2b88bc9b61aa:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGI1ZmU3ZjMyZjQ2OTI1MTQyNTQ2ZjI0YzQyZTY2OGMzYjU3NDk3MmU5YTVjY2E0NjczNTM5M2Y2ZTE3ZmZkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWIzMTBmOTUwN2NmMTIzZTY4MTM3NWQwMzMwYmNiMDZjZjU3ZjliZjQwYTQ4MTY4N2IwM2I5ZWY4ODYxNGYwZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjg4NmZjM2VlMjMyMDQ2MWZhZmIwYTRmNDc4YzNmZDc0ZDg1ZmY0MjY4ODNjNzEwOGRjMDhhODNiMjE2ZDQ1NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjc3M2ZkMzgxMWU0YTk3NjIwNjg4Y2I2YTYyYjA3MDEyMzQ2MjQxMDllZGY5MmE1NDNhMzM4OWYxMzkyNGU2ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e0bd34b1552f48f4abd1067a5f4812cc",
+      "statement": "Normal operations fail closed with exit 78 when managed configuration cannot be enforced, except diagnostic `config`, `doctor`, `auth path`, and help paths; thread listing and deletion dispatch without launching an agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5153-L5165",
+          "version": "repo-lines-v1:sha256:feabf0487b572660a2433b8fea1931ab1e074f0df7788aa168e44e3e29e2cbfb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlNTVkNmJlNmEyM2Y5MDRjMzI2ZjdkODRmNDc4ODNlNjhiYjhkZTE4MDc0OGMwY2VmNDIxMWVmNzE0ZGNiNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3MzE2ZmU2Mzc4MjlhYTcxYzUzYmU1ZmUxZjFlZGU3ZmE0YjZiMjViODQ0MWRhMTZkNTk5NDlmMzVjM2NmMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkZDU3OGExOGRiN2RhNWMxNzk2MjAyNmRhM2EzMWI1ZTVjOTE4OGU3ZTc0Y2VhM2NiMzk4OTg3Y2NjOTg5ZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0ZDljOWVhZGJjMTY1NGQxYTQ4YjUzMzgxNmFiYzlkZDRiYTUzMDU0ZTViNjE2NzdhZTQyOWU0YzYwM2NhMzkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5247-L5268",
+          "version": "repo-lines-v1:sha256:966d1512a932a6fd3b4b3dac2867668234c7fbc307159dd05b6fc1c995fca952:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNGE3ODgyYzI4ZTRhNDU1NWY2MTNiZDQwZDkwODUzYmM2N2M3YzJhNGZiMDliOGQ1NjI4MDExYTVhMzkyZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNjhmNmU3OWZhMjU4NTQ4ODYyOGNmMmEwNGFjZjY2OWVlMWQ0ZjU2ZTI2NmNiYTk3YjVhYWJjZDU5YWNlZGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZDM5MjZiNDdhODAzZDMwNjQ5NzVjNGUzYmE5ZDYwOWFhNjkxNTdjMTk5NzNlMDNiN2U0MDRjMDdmZjQ3OWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMzk0NDEwODlhN2FmOGY4OTU2NDhmNmQ4NzVhNDk4Y2Q5NTYxZDZhZDhiZDFmMzk3YzE1NmE4ZDI1ZmVmY2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L6101-L6153",
+          "version": "repo-lines-v1:sha256:ec454ee1b614fcd0cb92b123108be7e939f2b055349b5bbcd29d623bcac1f1df:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjYjQ4ZmQ4YjZkNzZmYTRlMTU1NjkzMWYzYTQxZTUxNTJmNDU5YTY1N2UxZjlkMWVlZDVlZGQzZGQwM2RiZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjZDZjZjMwNzMwYzA1MWUyZWM3NDVmNTgyZDM4ZWM0OTY4NmM5ZDNiMjk0ZDFiNjQxZWU0YjAxY2NlMDZlNTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ3NTkyNmZmYTcwZDNlMzBiOGQ1NzVhN2RlMmY5MTQ3NTEzM2UwMDVjMGFmN2FhNTZlNjhjNTYyOWJiZjViZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmZDM1NmEzYWVkM2I1MzUwYjkyZTdmOWY3MWJjOTViMjZhOTY3ZDUxOTNmYTRhNjQ0OWIxMjQ2YTA5NzlkNDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a56cd37529d14be7936532ada9bc18f6",
+      "statement": "Headless-only output, turn, timeout, and rubric controls require a headless task; shell is disabled without a shell allow-list, and turn or timeout budget expiry uses exit 124.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2595-L2607",
+          "version": "repo-lines-v1:sha256:d1d14a560ad4b13af2534b9ca7a9bc1b0559acf5ca38cbcc4f2c8cf44e8cceaa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTY0Yjk0NWNkYWRjOWIwZjI5NDc2ZjhlN2FiM2MyMTIwOTBhMTcxNTA3ZmY2ODY1MjNmZWYxYzE2NGI3MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMmE5MWM5ZWExZTQ3ZWU5MzIwZTFkMGFjMjBmMzNmOTVjZWJiMDc4NWRkYzI1NTVjZDNhNWY2ZjllNzJjNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiNzE5MTgzOTUxMzI0Zjg3MTI5MDBhYjc2MzFlZTM1OTcwNzM5NzFjNDllZTU3NTEzMGI4YjJkZWMyMDk2OGMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2590-L2675",
+          "version": "repo-lines-v1:sha256:3713697b6f39912557d31b0e084bfd700bd388f332415a501c32471ea28ee4d1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTQzOWE0NzUwMzQyN2E0Yzc5ZjliZDNjM2MzZmMxZjkzZmQxZTdiNGM3YTE1MWQ1YWZhZDA0MDJkMWE4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyYzJlYmZjYWMwYmYzNjdmMzI2MmQ3YTVhNjZjYTlmNGIxYjBhM2RkODhlOGQzMTQyZDYzNjRiZTBlNDY0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4MTg4MDRkMzI2YjJjMjM4Y2M1YzVlNTk2ZmNkOWE2MzUxZjJkNGYxMzVhMGVhMjljNmY2YTcxNGU3NWVjYzcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5615-L5723",
+          "version": "repo-lines-v1:sha256:791177e93e7b2fb51d14a8bbd12cea5e146ceafaf3ddefa30c1ec1a43dd6197c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDgxMTE1M2YyMmU4N2VkMzQ1MjU4NGVhZjBmMDk3OTlhZWM0OTNjNDJiYzk1MGE2N2Y0NGQ4MDFiYjk3ZjlhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzM2RmZTdmZTFhYjAxNzQ4NjkxMmIyM2YxMTRlM2ZjNTE1NGVhMDgzNWVlODdkMGYwMjdhMzZkNmMyY2NmY2RhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlMTRjMGUxYzY4YWU0Yzc2NWZjOTY3MWNjOTQyOTRjODkzNGI2MzBiMmJlNTVhNTVjOTE0ZWQ2YTFkYTRjZjJkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyY2NiYWZkYzlkZWU3ZGI2MzJjNmIwNGE4NmZmZDM0YjYyZmIwNjc0MTllZjQ3NjI1MDQ3ZDI0N2FlMzcyZDY5In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L6220-L6292",
+          "version": "repo-lines-v1:sha256:e62c3e9a1920c84e21d67ef10abf4480f5070b334c6b900990db0b9a59634867:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NzgwNWMzZmU3YWM2MzA3NGY2OWNkYjI1YjlhY2Q3YTg2NzkyZGZlNTQwODE4YWM0Zjg3NjRiNDllN2QxNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZWY0NmYxZTUxOThkMGExOWViNDA3M2FhYTM4MDQ3ZmEzMGVjMmYxYWFkMGNjYjc3NTY4OWFkNzFlMzgyMjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5NThiY2M3NGQ1MTYzNzAwYTViNGM1NDBjODc4MmNlZGJiZDMyZmZlMzQ2MDQxZjRmOTE0ZTM5MWE2NTRlYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNDBkMDk1YzQ4NmEyM2E1ZmFlYjFhMTY1ODA0MDMxZjZjMTEyOTc2ZmI5MTE4YzM4MTMwNjgxMjRhOWQ5YjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1c9aa010bf274652aa095378e3c2329e",
+      "statement": "Interactive approval has Manual, Auto, and YOLO modes; invalid persisted values fall back to Manual, Shift+Tab omits unavailable modes, and YOLO requires a versioned acknowledgement.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/approval_mode.py#L26-L38",
+          "version": "repo-lines-v1:sha256:5792061736008afb9cfc7936bf6d44a90007aa9f8a1b819cc6f2902148e7c3ca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGJjYmM5MzhhYTc3NjA2NzMyNTQwN2JlYjBjZjNjY2EyMGYyOWMwNDE0Yzc4NTY0ZDkxODAyNjJkMzVlYzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwZTVjNjliNTI3NTIwY2UwMzFiNTg1MDIwNTFjNTZhYmRiMDNhMGQxOGUxZjViYTE5NTY5NTk0MzJlN2E4MzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljY2MzMmI1YTlkZjdkMjVjN2NiZTM5NTEyMTAzNDA2NTQzMGQyM2RmZjA1NTYwZGJjZTc2MGRjMTljMmViZTgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/approval_mode.py#L48-L114",
+          "version": "repo-lines-v1:sha256:e4b0bdb0a2bee736d9e87315ec9174a51d7f3cca6b48b343869e66cc502f181c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzZjM5OGVjMjEwOWYyMTJiZWFkMGMxMjkwZGUyNzhjYzUxM2Y1Y2NiYTI5NzNlNTMwNmEzN2ZkMjVlNmI3YjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyYzVlNjc2Njk5YWM4Y2VhYmQ4MTE3N2Y1MWVhZjJlNTEzNjEwNmFjZDM2NGQ4ZGU1MTMyNjRlOGFmYzg0NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4ODYyZDU0YTUyNjkyNjUzMTczOTUyN2I3NTIxMjM5YmI5OTlkYjhlN2Y0NjMxOGZiOGM0YzQ3M2Q0MTk5NzUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L6402-L6421",
+          "version": "repo-lines-v1:sha256:dc12e5d6b3087465688d6e3513140c6076ed866d62413b6fe097ce0ffcc1b59b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzYTRlN2FiMzMwNTBhNDk1MWZjOGZiYmZhYmFiYTUyZGU2YjUzNGJhYjIwZjEyMGEzYThjZDk5ZDNmYTU2OTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViMWZiZWE1YjlhNGE5MmNmNjhmZjcwNDNlMzBiZTViMDk0ZWFjZjhiZGNlNDNhODYyZGFiNDM1ODZjZjM2OTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljYmI0Njg5OTA0ZDFjOTE0NjUzZDk5ZTU2MjVmMzMwNGE4MTg5ZmRhNGQ3ZmRmYmU0OGRlN2JjN2M2YjRlY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4MGQ4NDM2OTkwZTcwY2YwZWRlMGNiYmQzOWVjM2MwY2JhNGQ0M2M4OTFiZGQyMGZkM2NiNWNiMWM4MTc0NTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4dfd54887f864a4a97e4c4f73b498ff0",
+      "statement": "Interactive and headless clients start a temporary local LangGraph runtime via `server_session`, serialize resolved server configuration, preflight an explicit MCP configuration, wait for the graph, bind the RemoteAgent to the project workspace, and clean up failed startup or normal teardown.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L1-L13",
+          "version": "repo-lines-v1:sha256:5511c8c3ca7bde79f541db5aeabb89cf0006cddeb45f510ba4673ce58cf79eab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwNGY3ZjM4NmQ3MmI0ODg3ZTE4OTZmZDkwMDljMzZhYWE5N2RjNzQxMzViZDQ4NDI4M2IzZjNjNWFlY2JiNzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0NTlmZDM0YWYyZDYxN2VjNzEzYTJkMzNlNThmZWM1YWY3ZjA4OWQ0MzQxMjI2MGU2NTY2Y2VjYTY2OTcyYzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L242-L287",
+          "version": "repo-lines-v1:sha256:8e43656ab6c45adfd6673962cde64be6a6f7ce2a67c160cddd93091c0da906d2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZGRhMGIyNmIyZjdjNWU4Mzg5MDMzYmM2M2E4YzdkZjYxZGExODY2MTJiODkyYjA0NDI4Mjg5ODQwNTFhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkNGVmMDk3NjFiZThmOWNlOGI4NDg0YThlZjA4YzlkYmQ5YWY4ZWVkZDg5MGMxYzg3ZjFmNTFmNjI1ZjBmMWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmMjdjM2MzOGNjNGMzYWY1NDJhMjI3OWU2ZWNhZmJhMTg3YTEyYjVhMGUzMGE0YTU1NDRlOGZiMzFiYmYzY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5NzkyMGJhOWJhNDAzZTA3NWViZmNkNjY4ODE2NzhkNTFhOWQ2YTNjN2RmYjlmNjU0MzlhYzA3NTExODhlOWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L389-L487",
+          "version": "repo-lines-v1:sha256:d0e22ad9f95a8f47ee94d091819e3f9b7319e8cf3274d1682fe2b2c3ac50cc4d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNDE4ZWU1YTUyZWIzMDdlNjFhNDdmOTRjMTZiZmMzNDQ3ZDczOWNiODE4NmVlNzNkOGQ2M2IwY2Y1ZmUyY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmZDlhNTE0MTI3ODI1MjYwM2Q1ODdlZDA1MWFkNWRjNWUxNWQ2MzNmYzgzMTA2NmEyZmQ5MDA0ZWZkY2VlMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5NzkyMGJhOWJhNDAzZTA3NWViZmNkNjY4ODE2NzhkNTFhOWQ2YTNjN2RmYjlmNjU0MzlhYzA3NTExODhlOWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L495-L632",
+          "version": "repo-lines-v1:sha256:4b448aaa0b89c3025f53281507a922fce996a2838a2295ab3cc86754d401c786:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4N2NmZjNmMTc4NDJkZWM2ZTdlOTFjM2UzYjhmY2UwYTgyMmZjMzExMjczODFiMDBmNDRhOWYxMzMzMzAzYTJlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZmFkMGQxZTU4NGQ3NTk1NjVmMTliNDUzNjMwMmEwZTgyMjg0NWZkMWY4MDM0ZWMzYmQyNDk3MTg2NjdlNTQ2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjZjI3YzNjMzhjYzRjM2FmNTQyYTIyNzllNmVjYWZiYTE4N2ExMmI1YTBlMzBhNGE1NTQ0ZThmYjMxYmJmM2NkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2828-L2943",
+          "version": "repo-lines-v1:sha256:822bcdf018924a003969f19c91b2fe7e13c5baee532a71dd0518b1a23988048b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiMzQ2NTljNzRkNTE3NmQwNzAyNDE5ZjU5NzU1MjBlZDE0MWRlMzJmYjNlZWY4ODljN2E0MzIxMzIzY2YxOWFhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxZmU3OWY5YTU2MzM3ZDE0MDdjNGI5Nzg3NjIxZjRjZDUxZjdmZmMxMDZiN2I5OTQ5ZWM4OGVhNDg4NzQ1NjIwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxODhkZGM4ZWM0MDNmZTFkNTNjNTlkNmE1ZTMzOGJiY2MwNjY2YjQ5ZDhlNzBiMWMyNDhjNjI0NTcxODMzNWI5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTk0MmJlNWQ4NmRiNWFmMGQxYTRiYWNlZWE5ZjdiNjJkZmY1M2ZiNDkzNzAyOWExMmZkYTAzZDYyNDYxMGY1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a154d910870b4c25ba5d4300275d8f41",
+      "statement": "Session checkpoints reside in cached global SQLite state; UUID7 thread IDs are naturally time-sortable, and thread listing uses a covering index to avoid reading checkpoint blobs while retaining a slower correct fallback if index creation fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L341-L374",
+          "version": "repo-lines-v1:sha256:a3c1ca8995e91f56402a7170a757df829082cdb8d50255dde20a44c7342cbd99:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZWU0NTY2NTdiY2NmMTNlNTA2OWE3NGJmNmM5M2ZkZjU3MTBmMDY5NmJjOWY0MGVlMGJjZjRkNTk4OTJhYTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkOWQzNDBmNGJhZTdhY2U3ODc5ZDM5NDBjMGNmODg1MmU2NWY0NWNlYjgzNzY4ZDliNTczZjZiM2EwYWEwMzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkOGFiOTFlMDMzZDk0Y2YyYTNmNjY3ZWM2YTIwMmI2YWMxMzU4M2ExYjFkNGFmMzk3ZTc5YTZlNDRlODVmY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4MDhhNjAzOTRmMmFjMmE4ZDQyYTczZGQ4YzkyMDA1ZmNlZWMzY2MwOWEwZTA0ZjAwNzNmMzEzNzQ0OTQ4YTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L388-L475",
+          "version": "repo-lines-v1:sha256:fcfc78866ae0c11242d57f6db0550d16e9e45429e3d71d5a6c4a44acd96364af:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4MGI5MDc3NGYzNjAwNDYyN2NmZjJkZmM5MDlkMDU1NmZjOGE5YWFjYzVmZDI3OGJkNDAxYjc1ZjdkYjg5YjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzNjFmYWUxOWIzODRiM2Y4NjNiMjIwNjcxOWViMjE4YTU1NmRkMWYyMWU1M2YzMjQ3M2RhMTkzMTc0N2Q4ZjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmNjJlZDM1MjY5OTA2OTE4MDFjMTMyODFhYWU4MTMwYjM0MGU0ZjhiMmY5ZTMxNTM4NjhkZDI4MTY5YzYzZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2OWFjNTFiOWY4NTE3OGNlMjA0MDVlMWU4YThjNDlhZGIzMDc2Zjc4ZjcwY2JiMjgyYTZmNTQzNDgyNzdlZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e217e491f7374129b3f9fcb603e7b99a",
+      "statement": "TUI resume resolves bare `-r` as the recent thread and explicit IDs as named threads, offers a stored-cwd switch, suggests similar missing IDs, and falls back to a fresh thread on a miss or database error; headless always creates a new thread.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L5747-L5870",
+          "version": "repo-lines-v1:sha256:7e84d10a81ec4e71a387dbaa941674b632de39c5109dbb8b815886a617a17c33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNWJhOTgwMjI5ODJjZjRlYzU3M2RhYjBiYTFhOTBhYjA3NzY1YzNiM2Y0NTBiZjhjOTgwYWRiZmJmNmI1NWJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MDQ1ZWM3NGM4MmQ4YWJhZWE5OGNhMDM1NmE1NDM2YWNmOGNjNDZhNmRiZjhiMzAwOWU2MTNmOTExM2MxNDU1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1NjE5ODdmMzI3ZTY3YTgzNzIzMzEzMzYxMmIyMWI4ZWVlNWM2YTMxZDJmZTg1MzE1M2ZmYjJkNzQyNzhmOTQwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNGVhOWNlMzhkMzYwNmJiODVkNzY1NDRjYjIyNWVkNjk4Yjc5OTc2MzU3OGM1ZWIyNjJiMTdiYjE2OWE0YjVmIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2810-L2815",
+          "version": "repo-lines-v1:sha256:7291c5f2fecace7f415c829f4f0ef8e4562bb0bfb3667b3637362f69f2142888:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmUwZDExODQ5Y2ZlZDQ4ZjAwYmNkMDc5ZjM4ZGU3MjRiMGY1Yzg4ODYwNjEwNWM2NTNjMzVkMDkxZjA0MzRmZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmY4NzRlMWZkZDA5ZGUyMzY3NjQwNDYzZTNjZTVlZjEzOTk2M2ZkM2JkYTIxZmY4YWI3OWJkY2E1OTlkY2QyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTEwYzAwYzcxZWZmMDc3YzkwMzdjMThjNGQ5NGJhNjk4YjNhY2Y2NDZmNzVhNjI5ZDcyMzc5YzY0Yzc3ODcyOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODA1YWQ2ZmQ1ZGViYzFkZDcwNGQzZWEyOWVkZWM1NjcwNTYzNjM5Y2Q5ZTYyNjZjOTNmZTAxMDUwNzc4MWIwNiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2467-L2477",
+          "version": "repo-lines-v1:sha256:4a98cc55e17d649bbfe1cb039bf653ca06b3454eca884b3e44a86b934514b0e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4OTc1M2IxZGMwYzFjMmE0ZTVkYmI5ZTEwNGMyYzkzNjZjODYxZTMyMDA2NzkzZTlmYmQ4OWJhMGNiY2E2ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiOGZiNmIyZWY5YzFlYzFjNGM0MTk1OTU2MzdkYTBmNTA0NDU0NDg3ZTIyMzEzN2FjOTZmYzIxMmU1NTVlM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxZGE4ZDZlNzAxOThmNjM0MTc0MTU1NDgzOTZiMzY5MmJlNGM5MjYzZGNmZDcwYjY2ZDE3NTJkNjgyNWIyMjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkNjlhZjkxYmE1YzRiNDU3ODVjMDc4ZTM2MDEyNzA4YmQyNGJiYjgxYzEyMDA3NDE5YzE5NjdkNWM4ZDAwMWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3db5107513c044a89c501e6572b5ac30",
+      "statement": "Hook handlers run trusted user-privilege commands with JSON lifecycle payloads; project hooks require workspace trust, matching handlers execute concurrently but reduce project-user-plugin, and exit code 2 is event-specific blocking.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/HOOKS.md#L1-L25",
+          "version": "repo-lines-v1:sha256:9e29d25af8c6f0302231ea4ad4763ea17f5898e21e55913e3f9b0565361f5fe9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwNzlhNTY3OWVhYjNjMmFjMDNhODU5MGViNDcwMmJiNTM5ZjYyM2JkNGQ0N2E4MjU0NWNhOTVmZDJkMzE4NGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjZWI5Yzg4ZGRjNDNiYjYyMGUxMzQ1ZmI0ODMyYzIyZjM1YjA3OTYyZTk2YWRjMGM5Nzc0ZTFhNzUwMzM1OTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyMTc4OGU1MzY2NGMxMWY5Mzg5MjI0NjFkYWRmZWY2OWU5ZjBlZGZiNTM3NmQ2MWI0MzA3NWU5ZDQxODM4MjYifQ"
+        },
+        {
+          "resource": "repo://libs/code/HOOKS.md#L127-L135",
+          "version": "repo-lines-v1:sha256:3a3b05aa413365902bb26a768e5de21f38df0ac6d4fa4c74160e3f848d1c3eca:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjA0NjI4ZWMxZDY2NGQ0MzM1MDc2MWVkM2RhOGIwMmQzY2E0OTRmY2JjMWM5MDNlNGQyZjg4MDcxZDViMGUxYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzI1YzY0YWI3ZGJhZmM1YmE1ZTY3MDgwMmViMDg3M2JlOGNmZmVhYzQzMTg0OTBjYWRjZGM5YWE3MTM1NjdkNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODgwOTE4YWM2NDMwNzA0MDMwMDQzMjc4YWJiMTY3MDAxYzY4MzQzZmM1YTNhZGY3ZjgyYjYxNjk1MjliODRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAxNzYyMGMzNDVmOWZiMTk0OTBkYjFhZDNkYWFmODE2OTE5ZmRlNjRiYzFlM2JhMDE3ZTUzNWIyNTQzNTE1YiJ9"
+        },
+        {
+          "resource": "repo://libs/code/HOOKS.md#L43-L62",
+          "version": "repo-lines-v1:sha256:a41d90e4f9cd301b451380da580a7e2d6fb942df8232451a6b2e3332c57554a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NWZjNTJjNTk1ZGFkMThjODA4NzQ5YzIzYTkyMTQ5MTAyMGI2NmFlNDZmM2E2ZmY5N2Y5YWU3OTE3ZWQ2M2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlNmVhNTFiNzk0M2U4MDZjOWE2MmY4MjBmMWQ5NjUwOGEwYWY2OWQwMDFkNzljYzhiOTdiNzEyODZjODViNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5MDBkMDAzYWExMGI0N2NiYjViNDUzY2Q5NDU0OWE0OTM2M2RkMDc2N2YzNjFmZjUxMWEyYzAzNzFhMzE3MDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMDgxYjAxOWI3MmNkZWFlMzlhZDNjZDRlNzg0ZTlhOGY3MzM1MDQwNDk2OWQ5NDc3MjUxN2U0NDMyYzhhMDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a61a48e65e1e45c2b00d379d14cfbc9a",
+      "statement": "Explicit MCP configuration has highest precedence, `--no-mcp` disables MCP loading, and project MCP servers require trust; experimental project Python extensions also require trust and extension tools are not automatically in dcode's human-approval map.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/EXTENSIONS.md#L106-L113",
+          "version": "repo-lines-v1:sha256:2e79b40df6d7e48a4402777413a72fb94646ad265264b91bf19fbd89169934df:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk4OTJkZjRkOTQ4NjY0N2NjNTc1NGFkMjE1NTg4N2Q4NzljNzIwNDA4YWZhMDliNjE2MDA2MDkzYzQwNjBhMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGQ3YWUyNmZkMjM1MjJiYTA2MjhlNjg3NWUxZWI5Y2JjMzU4ZDAyNjBiYmNhNmRmMWJlOWEwNWU1ZjZhNzg5NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTFjOTQwNjU3OWM3YTU4YTM2ZmM0ZTE2MDQ1YTg1NGRhNjhiNGQ4Y2IwNTc4ZWFlYzczMDRkYWQ2NGQ1NTk0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTdkN2FmMzgwYzBkNmU2OGI3ZjRhOWFlYzVjMzA5M2QzMTc5YWQ2M2RkZDNiZDJiYTE1M2JlNmEwMTBlNjI2MyJ9"
+        },
+        {
+          "resource": "repo://libs/code/EXTENSIONS.md#L134-L142",
+          "version": "repo-lines-v1:sha256:8109cfec35eeb68d7ceb19208a8f77dd58d21365577a6f8fbc432a09a7bad600:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjU3YTc4ZWIxZWYzMGRkOThlMjY2MjMxZmY0MzQ2ODY2ODk4ZTJmN2ZmOTI2ZTUwZGQ2OGZlOGIwNTE1ZGVmZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWNjNjg0N2VlZDZhNzhkNjM5OTFjYThkNTZhMjQ2ZjgwMjZhODMzNjEyMzg2YTg0ZDYyNzI0NGZjMzhlOTFmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjViYzlkYmE5NmNhODIwNGY2NzlkYzJhMjg0MzQ1Zjk2ZDZhY2ZlOGRjN2RkODIwNTQwNzhkNTE0OTY2YjQ4NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGZiMjhmOWQxNmQwY2MzMWJiNDRmZWI5MzZhNmMyYmQ4YWIyMmFmZTQ4N2E0OWNkNjRiM2FlMzdjZjBjOGQ1MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2758-L2785",
+          "version": "repo-lines-v1:sha256:47f94fc0b7c02e3149dfde22a695cae968b3b967877337eed05dae4a50e63944:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTQzOWE0NzUwMzQyN2E0Yzc5ZjliZDNjM2MzZmMxZjkzZmQxZTdiNGM3YTE1MWQ1YWZhZDA0MDJkMWE4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4MzM2YzM0YWVhNWI1NDg1MjJhZDRhZTJkYjNiMjc0NWU2N2IwM2E5MjliOTc3YjBlNWFkZjMwYzJkMTAzMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5MmY5MTJlZWEwNDBmYjFkMjAyYjE5ZmE0ZjA2ZGE5M2EyMzc5MmI3OGJmNmZmYjM2ZDAzNjliZWFlNmJiM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhODY1OTMzYjQxMTcyOTQyYzg1MmQ2YWM3ZWVmZjU3ZWUxYWE0NDVlZWQ3OWMxNmU5N2NmZjYyYTM5ZGFjOTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_886ba0b7586849529ff556bde8ddb44e",
+      "statement": "A bare `--sandbox` resolves the configured default while an omitted sandbox remains local; sandbox ID, snapshot, and setup options select or provision the remote environment.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2715-L2748",
+          "version": "repo-lines-v1:sha256:7d9ed3365296c536754214ab63834769c5bbdfdaae91b2e59d09e97f67986143:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTQzOWE0NzUwMzQyN2E0Yzc5ZjliZDNjM2MzZmMxZjkzZmQxZTdiNGM3YTE1MWQ1YWZhZDA0MDJkMWE4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyZWNlZWFmZGI2Mjc4OTViZDBlZDYwNGM5ZmNlZGI2ODY5Nzg2NTYxOGNiZDI0NDlhMDY2YzAwM2U5NDhiZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhNjk0Zjg2MWEyOWY5YTY3NDg0NzRiODEyNzM3OWM0YjAyNGY2NTg0MzgwNDYwMDE0ZjExNWM2Mjk5YTUyNDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a8299ff9d6a34cf0a06dc81eeb326c61",
+      "statement": "Focused unit tests exercise thread-list cwd handling, persisted cwd behavior, and thread deletion cleanup of offloaded history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_main.py#L2711-L2800",
+          "version": "repo-lines-v1:sha256:0d6181ce038cdf3ce43d4bf276fdcb60ed12f07e532605850595ccb8f2a39a61:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlN2MzYWZhYWZkYjYxMmFmZjcxZjIzOGNjYzVlYjY0NjdlMWZjMDk5MmNhMTRiMDNlMjkwYmRkMjE4ZTA0YTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViN2M1YmE4OTc5YmUxZDNiNDFmYTljZjJjNzAwZTIzM2RiZWM4YTY1OGE2NGM1OTE2MGI3N2I0OGYzOTkyMjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwNmI5MmVmNmY3NmVkZTQ1NmY3MThjYzU0NDJjOTA0YTI0MmNkODMxNTI1MjIyNWJmZTYyOTFmZTU1NzkxZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmOGNlNTI3ZmEwZjRkN2ZkNDA1NWZjNTMwZGY0MjEzZDU4OWFiMmUyYWM4MjgyNTdmYjdjZGRjOTU5MTZkNmMifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_main_args.py#L961-L1040",
+          "version": "repo-lines-v1:sha256:850aa3812cccdb4b33e48876a07fdccf40a7a77a9bb7849e02f513773aaabe62:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4YTkzZDk3MWJhNTY4NTlkYmY1NDg2MDdhYWFiOGRjYWM5MjU4MzY3YTAwZjhjMzFhNDQ0ZDQ4MzA0MWQyYmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjNDczZDk1MTY4MmNkZWU0NGM3MDc3NTZlNjJlZDg1NjMyMTlmOGU5OTAxMzY1NGU0M2RiODJiMzU2MDRjMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5ZDQ1NWViYmMzZDZjZjI3NDcxN2NhZTkwMjAxMzE3YTE5ZWJlNWY4YzYyMjg4OGQ2NTkwZTM5MzlkMmQxYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYzk4Mjc2YzdlNTg1NGE4MmUxNGUzMmYyY2YzMGQ1YmYzYTEwMTY4YzU1YWQ5MTJlNzVhZGVlM2MzMjE3ZWUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sessions.py#L165-L247",
+          "version": "repo-lines-v1:sha256:8c39f1772e2f8bd518fec3b864b3024f1a1e784bec26b751fdba082cabdc14fe:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MjRmNjc1NWRiNGVhNDZhZmIwOTcyMjE1ZWY2MjBhZDE5NmU0OGZlZTc1MjI0NTlkMGMyMDg1ZmM4N2YxZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5MWNiOTgxMTgzMDNlNzUwY2M5OTkxMDM4YmMwM2EzMjEyNDRkNTRmM2FkZmRjYjA0OTFhNzE5OTgyMTFlYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3MmU1ZTc3YzFmN2U1ZjAxMDU2NDNhNjRjZjc3ZTY2NDhhNDAyNDUwN2RhZGQzNmVkNWJhNTI0MDY4M2U2MWUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-02T08:05:45.554Z"
+  }
+}

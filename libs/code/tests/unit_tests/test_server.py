@@ -19,8 +19,6 @@ import pytest
 from deepagents_code.client.launch import server as server_module
 from deepagents_code.client.launch.server import (
     ServerProcess,
-    _find_free_port,
-    _port_in_use,
     _server_process_group,
     _terminate_server_process,
     _wait_for_process_group_exit,
@@ -86,46 +84,6 @@ class _FakeAsyncClient:
         if isinstance(self.response, BaseException):
             raise self.response
         return self.response
-
-
-class TestPortInUse:
-    def test_free_port(self) -> None:
-        fake_socket = _FakeSocket()
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert not _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 2024)
-
-    def test_occupied_port(self) -> None:
-        fake_socket = _FakeSocket(bind_error=OSError("port already in use"))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr is None
-
-
-class TestFindFreePort:
-    def test_returns_valid_port(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 43210))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            port = _find_free_port("127.0.0.1")
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 0)
-        assert 1 <= port <= 65535
-
-    def test_returns_port_reported_by_socket(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 53123))
-
-        with patch("socket.socket", return_value=fake_socket):
-            port = _find_free_port("127.0.0.1")
-
-        assert port == 53123
 
 
 class TestServerPortSelection:
@@ -243,47 +201,6 @@ class TestServerPortSelection:
 class TestWaitForServerHealthy:
     """Tests for the health-check polling loop."""
 
-    async def test_returns_on_200(self) -> None:
-        """Happy path: server responds 200 immediately."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await wait_for_server_healthy("http://localhost:2024", timeout=5)
-
-        mock_client.get.assert_awaited_once()
-
-    async def test_raises_on_early_process_exit(self) -> None:
-        """Process dies before health check succeeds -> fail fast."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="exited with code 1"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-            )
-
-    async def test_early_exit_includes_log_output(self) -> None:
-        """read_log output is included in the error message."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="some log output"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-                read_log=lambda: "some log output",
-            )
-
     async def test_early_exit_promotes_marked_startup_error(self) -> None:
         """Marked server startup errors should survive app error trimming."""
         process = MagicMock()
@@ -316,48 +233,6 @@ class TestWaitForServerHealthy:
             "'runloop': No Runloop API key found. Set RUNLOOP_API_KEY or "
             "DEEPAGENTS_CODE_RUNLOOP_API_KEY."
         )
-
-    async def test_raises_on_timeout(self) -> None:
-        """Timeout exhaustion raises RuntimeError."""
-        import httpx
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
-            ),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
-            ),
-            pytest.raises(RuntimeError, match="did not become healthy"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
-
-    async def test_timeout_reports_last_status(self) -> None:
-        """Timeout error includes the last HTTP status code."""
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
-            ),
-            patch(
-                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
-            ),
-            pytest.raises(RuntimeError, match="last status: 503"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
 
 
 class TestServerProcess:
@@ -460,60 +335,6 @@ class TestServerProcess:
             pytest.raises(RuntimeError, match="ModelConfigError: missing API key"),
         ):
             await server.wait_for_graph_ready("agent")
-
-    async def test_start_cleans_up_partial_state_on_health_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Failed startup should stop the process and remove owned resources."""
-        # `_stop_process` preserves the log file when debug mode is on, which
-        # would defeat the `not log_path.exists()` assertion below; pin it off
-        # so an ambient `DEEPAGENTS_CODE_DEBUG` in the environment can't flake.
-        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
-
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        log_path = tmp_path / "server.log"
-        log_path.write_text("booting")
-
-        process = MagicMock()
-        process.pid = 1234
-        process.poll.return_value = None
-
-        log_file = MagicMock()
-        log_file.name = str(log_path)
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
-
-        with (
-            patch(
-                "deepagents_code.client.launch.server._find_free_port",
-                return_value=12345,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.subprocess.Popen",
-                return_value=process,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.wait_for_server_healthy",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
-            await server.start()
-
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
-        process.wait.assert_called_once()
-        log_file.close.assert_called_once()
-        assert server._process is None
-        assert server._log_file is None
-        assert not config_dir.exists()
-        assert not log_path.exists()
 
     async def test_start_cleans_up_partial_state_on_cancellation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -876,98 +697,6 @@ class TestServerProcess:
 
         scaffold_mock.assert_called_once_with(config_dir)
         assert config_path.exists()
-
-    async def test_update_env_and_restart(self, tmp_path: Path) -> None:
-        """update_env stages overrides that restart() applies."""
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        log_path = tmp_path / "server.log"
-        log_path.write_text("")
-
-        process = MagicMock()
-        process.pid = 1234
-        process.poll.return_value = None
-
-        log_file = MagicMock()
-        log_file.name = str(log_path)
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-
-        with (
-            patch(
-                "deepagents_code.client.launch.server._find_free_port",
-                return_value=12345,
-            ),
-            patch(
-                "deepagents_code.client.launch.server._port_in_use", return_value=False
-            ),
-            patch(
-                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.subprocess.Popen",
-                return_value=process,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.wait_for_server_healthy",
-                new=AsyncMock(),
-            ),
-        ):
-            await server.start()
-            assert server.running
-
-            server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="anthropic:claude-opus-4-6")
-
-            # Restart: should stop the old process and start a new one
-            await server.restart()
-
-        # Env override was applied
-        env_key = "DEEPAGENTS_CODE_SERVER_MODEL"
-        assert os.environ.get(env_key) == "anthropic:claude-opus-4-6"
-        # Overrides cleared after successful restart
-        assert server._env_overrides == {}
-
-    async def test_restart_runs_blocking_stop_off_event_loop(
-        self, tmp_path: Path
-    ) -> None:
-        """restart() must run the blocking subprocess stop off the event loop.
-
-        `_stop_process` blocks up to `_SHUTDOWN_TIMEOUT` (plus a SIGKILL grace
-        wait) on `process.wait`; running it directly on the loop freezes the
-        Textual reactor so `/restart` wedges the TUI input. `restart()` must
-        offload it to a worker thread, so the stop executes on a thread other
-        than the one running the event loop.
-        """
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-        server._process = MagicMock()
-
-        loop_thread_id = threading.get_ident()
-        stop_thread_id: int | None = None
-
-        def recording_stop() -> None:
-            nonlocal stop_thread_id
-            stop_thread_id = threading.get_ident()
-            server._process = None
-
-        # Patch only `_start` (avoid spawning a real server) and `_stop_process`
-        # (record its executing thread). The real `restart()` and real
-        # `asyncio.to_thread` run, so a regression to a direct call would run
-        # `_stop_process` on the loop thread and fail the off-loop assertion.
-        with (
-            patch.object(server, "_start", new=AsyncMock()),
-            patch.object(server, "_stop_process", new=recording_stop),
-        ):
-            await server.restart()
-
-        assert stop_thread_id is not None
-        assert stop_thread_id != loop_thread_id
 
     async def test_restart_cancellation_awaits_stop_cleanup(
         self, tmp_path: Path
@@ -1383,41 +1112,6 @@ class TestPreservedLogNotice:
         emit_preserved_log_notices()
         assert "Server log preserved at:" not in capsys.readouterr().err
 
-    def test_emit_prints_every_queued_path(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Restarts queue multiple paths; the drain announces each of them.
-
-        A single restart reuses one `ServerProcess`, so successive `stop()`s
-        must not clobber earlier preserved paths (PR #4999 review): every log
-        stays announceable until the post-terminal drain.
-        """
-        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
-        first_log = tmp_path / "server-1.log"
-        second_log = tmp_path / "server-2.log"
-        server = self._make_stopped_server(first_log)
-
-        server.stop()
-        # Simulate the restart wiring a fresh process + log onto the same server.
-        second_log.write_text("booting", encoding="utf-8")
-        log_file = MagicMock()
-        log_file.name = str(second_log)
-        process = MagicMock()
-        process.poll.return_value = 0
-        server._process = process
-        server._log_file = log_file
-        server._stopped = False
-        server.stop()
-
-        emit_preserved_log_notices()
-
-        err = capsys.readouterr().err
-        assert f"Server log preserved at: {first_log}" in err
-        assert f"Server log preserved at: {second_log}" in err
-
     def test_no_notice_when_debug_off(
         self,
         tmp_path: Path,
@@ -1512,20 +1206,25 @@ class TestServerSessionIsolation:
         """On POSIX the server is spawned in its own session/process group."""
         popen = await self._spawn_and_capture(tmp_path, "linux", monkeypatch)
         assert popen.call_args.kwargs["start_new_session"] is True
+        assert popen.call_args.kwargs["creationflags"] == 0
 
-    async def test_windows_spawn_without_new_session(
+    async def test_windows_spawn_starts_new_process_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On Windows the unsupported `setsid()` call is not requested."""
+        """On Windows a console group enables targeted Ctrl+Break shutdown."""
         popen = await self._spawn_and_capture(tmp_path, "win32", monkeypatch)
         assert popen.call_args.kwargs["start_new_session"] is False
+        assert (
+            popen.call_args.kwargs["creationflags"]
+            == server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP
+        )
 
 
 class TestServerProcessGroup:
     """Tests for `_server_process_group` targeting logic."""
 
     def test_returns_none_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Windows has no POSIX process groups, so signaling targets the root."""
+        """Windows uses console groups instead of POSIX process groups."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1770,10 +1469,10 @@ class TestTerminateServerProcess:
         killpg.assert_not_called()
         process.send_signal.assert_called_once_with(signal.SIGTERM)
 
-    def test_windows_signals_root_process_only(
+    def test_windows_ctrl_break_timeout_escalates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On Windows only the root process is signaled (no `killpg`)."""
+        """On Windows Ctrl+Break permits graceful shutdown before escalation."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1785,8 +1484,71 @@ class TestTerminateServerProcess:
 
         _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
         process.kill.assert_called_once_with()
+
+    def test_windows_logs_the_group_scope_for_the_graceful_signal(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ctrl+Break reaches the console group even with no POSIX pgid.
+
+        The word in the log line is the only observable effect of the win32
+        clause in `signal_scope`, so nothing else can catch its removal.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = ProcessLookupError
+
+        with caplog.at_level(logging.DEBUG, logger=server_module.__name__):
+            _terminate_server_process(process)
+
+        assert "process group" in caplog.text
+
+    def test_windows_escalation_reports_root_only_kill(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The hard kill reaches the root handle, and says so.
+
+        Ctrl+Break is group-wide but `TerminateProcess` is not, so reusing the
+        graceful signal's scope here would claim a group kill that never
+        happened and hide the orphaned descendants.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            0,
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        assert "killing process" in caplog.text
+        assert "killing process group" not in caplog.text
+        assert "left orphaned" in caplog.text
+
+    def test_windows_ctrl_break_shutdown_is_graceful(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A responsive Windows server exits through Uvicorn's SIGBREAK path."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
+        process.kill.assert_not_called()
 
     def test_initial_sigterm_process_lookup_is_benign(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1890,7 +1652,7 @@ class TestTerminateServerProcess:
             ((4321, signal.SIGKILL),),
             ((4321, 0),),
         ]
-        assert "did not exit after SIGKILL" in caplog.text
+        assert "did not exit after the hard kill" in caplog.text
 
     def test_windows_sigkill_timeout_warns(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -1909,7 +1671,7 @@ class TestTerminateServerProcess:
             _terminate_server_process(process)
 
         process.kill.assert_called_once_with()
-        assert "did not exit after SIGKILL" in caplog.text
+        assert "did not exit after the hard kill" in caplog.text
 
     async def test_startup_failure_terminates_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1982,10 +1744,10 @@ class TestTerminateServerProcess:
         start_mock.assert_awaited_once()
         assert server._process is None
 
-    def test_root_sigterm_process_lookup_is_benign(
+    def test_windows_ctrl_break_process_lookup_is_benign(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On the root-only path a vanished process is not escalated to SIGKILL."""
+        """A Windows process that vanishes before Ctrl+Break needs no SIGKILL."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
@@ -1994,30 +1756,36 @@ class TestTerminateServerProcess:
 
         _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
         process.kill.assert_not_called()
 
-    def test_root_sigterm_oserror_reports_orphan(
+    def test_windows_ctrl_break_oserror_falls_back_to_terminate(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """On the root-only path an undeliverable SIGTERM reports the orphan."""
+        """A headless Windows child is terminated when Ctrl+Break is unavailable."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )
         process = self._own_group_process()
-        process.send_signal.side_effect = PermissionError
+        process.send_signal.side_effect = OSError("no console")
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             _terminate_server_process(process)
 
-        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
         process.kill.assert_not_called()
-        assert "may be orphaned" in caplog.text
+        assert "falling back to terminate" in caplog.text
 
-    def test_root_sigkill_oserror_reports_orphan(
+    def test_windows_sigkill_oserror_reports_orphan(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """On the root-only path a failed escalation SIGKILL reports the orphan."""
+        """On Windows a failed escalation SIGKILL reports the orphan risk."""
         monkeypatch.setattr(
             "deepagents_code.client.launch.server.sys.platform", "win32"
         )

@@ -12,10 +12,15 @@
 # release (intentional prerelease coordination) is never lowered.
 #
 # Triggering:
-# - Runs on a weekly cron (Monday 09:00 UTC) for every release package
+# - Runs on a daily cron (09:00 UTC) for every release package
 #   (`package = all`).
 # - Can also be run manually from the Actions UI / `gh` CLI against a single
-#   package or `all`.
+#   package or `all`. The optional `dependencies` CSV input narrows the run to
+#   the listed PyPI distribution names (e.g. `langchain-core,langsmith`); when
+#   empty, every `langchain*`/`langgraph*`/`langsmith*`/`deepagents*`
+#   dependency is in scope. A narrowed run fails if any requested name is not
+#   a raiseable PyPI requirement of the package, so a typo cannot come back
+#   green with the bump silently skipped.
 #
 # Notes:
 # - One PR is opened per run containing every raised bound plus the regenerated
@@ -33,32 +38,35 @@
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent per package: if a PR is already open for the selected package (or
-#   no bound needs raising), the workflow exits without creating a duplicate. A
-#   cron `all` run and a manual single-package run use different branches, so
-#   they are not serialized against each other.
+# - Idempotent per run identity: if a PR is already open for the selected
+#   package and dependency set (or no bound needs raising), the workflow exits
+#   without creating a duplicate. A cron `all` run, a manual broad run, and
+#   narrowed runs over different dependency sets each use their own branch.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
 
-name: "Raise dependency minimums"
+name: "📦 Raise dependency minimums"
+
+# Run list shows the selected package (and dependency set, when narrowed)
+# instead of the bare workflow name; cron runs have no inputs and read `all`.
+run-name: "Raise dependency minimums for ${{ inputs.package || 'all' }}${{ inputs.dependencies && format(' [{0}]', inputs.dependencies) || '' }}"
 
 on:
   schedule:
-    # Monday 09:00 UTC.
-    - cron: "0 9 * * 1"
+    # Daily 09:00 UTC.
+    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       package:
         description: "Release package whose dependency minimums to raise"
         required: true
         type: choice
-        default: "deepagents-code"
+        default: "all"
         options:
           - "deepagents-code"
           - "all"
           - "deepagents"
-          - "deepagents-cli"
           - "deepagents-acp"
           - "deepagents-talon"
           - "langchain-daytona"
@@ -66,18 +74,26 @@ on:
           - "langchain-quickjs"
           - "langchain-runloop"
           - "langchain-vercel-sandbox"
+      dependencies:
+        description: "Optional comma-separated PyPI distribution names to restrict the run to (e.g. 'langchain-core,langsmith'). Names are matched exactly; the usual `langchain*`/`langgraph*`/`langsmith*`/`deepagents*` scope prefixes no longer apply. Empty raises every in-scope dependency."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
-# Cron runs have no `inputs.package`, so they fall back to `all`.
+# Cron runs have no `inputs.package`, so they fall back to `all`. GitHub Actions
+# expressions cannot canonicalize the free-text dependency CSV, so serialize at
+# package granularity. The `raise` step derives the canonical branch identity;
+# serializing here prevents equivalent spellings from racing its open-PR guard.
 concurrency:
-  group: raise-dependency-minimums-${{ inputs.package || 'all' }}
+  group: "raise-dependency-minimums-${{ inputs.package || 'all' }}"
   cancel-in-progress: false
 
 jobs:
   raise:
-    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}"
+    name: "Raise dependency minimums"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -111,12 +127,26 @@ jobs:
         id: raise
         env:
           PACKAGE: ${{ inputs.package || 'all' }}
+          DEPENDENCIES: ${{ inputs.dependencies || '' }}
         run: |
           set -euo pipefail
+          # Validate the free-text CSV before it is used as a shell argument.
+          # PEP 508 distribution names start and end alphanumeric and may carry
+          # `.`, `-`, `_` between, separated by commas and optional spaces.
+          # Matched with bash `=~` rather than `grep`: `grep` is line-oriented,
+          # so a multi-line value passes whenever any single line matches.
+          name='[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?'
+          if [ -n "$DEPENDENCIES" ] && ! [[ "$DEPENDENCIES" =~ ^${name}( *, *${name})*$ ]]; then
+            echo "::error::dependencies must be a comma-separated list of PyPI distribution names (letters, digits, '.', '-', '_'; each starting and ending alphanumeric); got: $DEPENDENCIES"
+            exit 1
+          fi
+          args=(--package "$PACKAGE")
+          if [ -n "$DEPENDENCIES" ]; then
+            args+=(--dependencies "$DEPENDENCIES")
+          fi
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
-            --package "$PACKAGE"
-          echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+            "${args[@]}"
 
       - name: Regenerate lockfiles for affected packages
         # Raising a floor makes a package's uv.lock stale (it embeds the direct
@@ -167,7 +197,7 @@ jobs:
           echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
           echo "No in-scope minimum needed raising; no PR opened." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skip if PR already open for this package
+      - name: Skip if PR already open for this branch
         id: existing
         if: steps.raise.outputs.changed == 'true'
         env:
@@ -182,10 +212,11 @@ jobs:
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
             echo "::notice::Open dependency minimums PR already exists: $pr_url"
-            # The "Raise dependency minimums" step already wrote its raised-bounds
-            # summary; append the outcome link so it is visible without digging
-            # through the step log for the ::notice:: annotation.
-            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            # Record the outcome for the `if: always()` summary step below:
+            # `GITHUB_STEP_SUMMARY` is a per-step file uploaded when the step
+            # ends, so the only way the link can lead the table is for one
+            # later step to emit both.
+            printf '**PR:** %s (already open; no new PR created)\n' "$pr_url" > .minimums-pr-line
           fi
 
       - name: Generate GitHub App token
@@ -209,6 +240,9 @@ jobs:
           SUMMARY: ${{ steps.raise.outputs.summary }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          DEPENDENCIES: ${{ inputs.dependencies || '' }}
         run: |
           set -euo pipefail
 
@@ -267,25 +301,64 @@ jobs:
           for dir in "${dirs[@]}"; do
             lockfiles+=("$dir/uv.lock")
           done
+          # A narrowed run must not be titled or described as a full
+          # ecosystem bump: the title is what a reviewer reads before deciding
+          # this is "the usual automated bump", and the trailing attribution
+          # line is too late to correct that impression.
+          title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
+          if [ -n "$DEPENDENCIES" ]; then
+            title="$title (\`$DEPENDENCIES\` only)"
+            lead="Raises the dependency lower bounds for \`$DEPENDENCIES\` only"
+          fi
+
           git add -- "${files[@]}" "${lockfiles[@]}"
-          git commit -m "chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          git commit -m "$title"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
           {
-            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
+            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE"
             printf '%s\n\n' "$SUMMARY"
-            printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
+            # Say which trigger opened the PR. The workflow link alone cannot
+            # distinguish the daily cron from a human clicking "Run workflow",
+            # and a narrowed manual run otherwise reads as a complete bump.
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s), manually dispatched by @%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml" "$ACTOR"
+              if [ -n "$DEPENDENCIES" ]; then
+                printf ' and restricted to `%s`' "$DEPENDENCIES"
+              fi
+              printf '.\n'
+            else
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s) on its daily schedule.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
+            fi
+            printf 'Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
           } > "$body_file"
 
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): raise dependency minimums for \`$PACKAGE\`" \
+            --title "$title" \
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
-          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+          printf '**PR:** %s\n' "$pr_url" > .minimums-pr-line
+
+      - name: Write the job summary
+        # Runs even when an intermediate step failed (e.g. `uv lock`), so the
+        # raised-bounds table is never lost: the raise step holds it back in
+        # its `summary` output, and this step replays it — after the PR link
+        # when an outcome step recorded one.
+        if: always() && steps.raise.outputs.changed == 'true'
+        env:
+          SUMMARY: ${{ steps.raise.outputs.summary }}
+        run: |
+          set -euo pipefail
+          if [ -f .minimums-pr-line ]; then
+            cat .minimums-pr-line >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either
@@ -304,7 +377,7 @@ jobs:
             const title = 'Dependency minimums raising is failing';
             const body = [
               marker,
-              '`raise_langchain_minimums.yml` failed, so LangChain-ecosystem dependency lower bounds are no longer being raised weekly.',
+              '`raise_langchain_minimums.yml` failed, so LangChain-ecosystem dependency lower bounds are no longer being raised daily.',
               '',
               `Most recent failed run: ${runUrl}`,
               '',

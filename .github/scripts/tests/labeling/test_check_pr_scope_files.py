@@ -19,17 +19,16 @@ from check_pr_scope_files import (
 CONFIG = {
     "scopeToLabel": {
         "ci": "infra",
-        "cli": "cli",
         "code": "dcode",
-        "deepagents-cli": "cli",
         "deepagents-code": "dcode",
         "docs": "documentation",
+        "evals": "evals",
         "infra": "infra",
         "sdk": "deepagents",
     },
     "fileRules": [
         {"label": "deepagents", "prefix": "libs/deepagents/"},
-        {"label": "cli", "prefix": "libs/cli/"},
+        {"label": "evals", "prefix": "libs/evals/"},
         {"label": "dcode", "prefix": "libs/code/"},
         {"label": "github_actions", "prefix": ".github/workflows/"},
         {"label": "dependencies", "suffix": "pyproject.toml"},
@@ -43,10 +42,10 @@ def test_matching_scope_files_pass() -> None:
     assert find_offenders("fix(code): repair startup", changed, CONFIG) == []
 
 
-def test_cli_scope_with_code_files_blocks() -> None:
-    """`fix(cli):` does not cover files under `libs/code/`."""
+def test_sdk_scope_with_code_files_blocks() -> None:
+    """`fix(sdk):` does not cover files under `libs/code/`."""
     changed = ["libs/code/deepagents_code/app.py"]
-    assert find_offenders("fix(cli): repair startup", changed, CONFIG) == [
+    assert find_offenders("fix(sdk): repair startup", changed, CONFIG) == [
         {"package": "dcode", "dirs": ["libs/code/"]}
     ]
 
@@ -54,20 +53,20 @@ def test_cli_scope_with_code_files_blocks() -> None:
 def test_multi_scope_title_covers_multiple_package_dirs() -> None:
     """Comma-separated scopes cover every matching package label."""
     changed = [
-        "libs/cli/deepagents_cli/main.py",
+        "libs/evals/deepagents_evals/main.py",
         "libs/code/deepagents_code/app.py",
     ]
-    assert find_offenders("feat(cli,code): share option", changed, CONFIG) == []
+    assert find_offenders("feat(evals,code): share option", changed, CONFIG) == []
 
 
 def test_multi_scope_title_blocks_uncovered_package_dir() -> None:
     """A third package remains an offender when absent from a multi-scope title."""
     changed = [
-        "libs/cli/deepagents_cli/main.py",
+        "libs/evals/deepagents_evals/main.py",
         "libs/code/deepagents_code/app.py",
         "libs/deepagents/deepagents/graph.py",
     ]
-    assert find_offenders("feat(cli,code): share option", changed, CONFIG) == [
+    assert find_offenders("feat(evals,code): share option", changed, CONFIG) == [
         {"package": "deepagents", "dirs": ["libs/deepagents/"]}
     ]
 
@@ -94,7 +93,7 @@ def test_unscoped_title_type_and_non_package_paths_pass() -> None:
 
 def test_non_package_path_with_package_scope_passes() -> None:
     """A package scope plus only non-package paths has no touched package offender."""
-    assert find_offenders("fix(cli): repair action", ["action.yml"], CONFIG) == []
+    assert find_offenders("fix(sdk): repair action", ["action.yml"], CONFIG) == []
 
 
 def test_package_scope_aliases_resolve_to_same_package_label() -> None:
@@ -114,7 +113,7 @@ def test_package_scope_aliases_resolve_to_same_package_label() -> None:
 
 def test_parse_title_scopes_variants() -> None:
     """Scopes are parsed from conventional-commit-shaped titles only."""
-    assert parse_title_scopes("feat(cli, code): x") == ("cli", "code")
+    assert parse_title_scopes("feat(evals, code): x") == ("evals", "code")
     assert parse_title_scopes("fix(deepagents-code)!: x") == ("deepagents-code",)
     assert parse_title_scopes("fix: x") == ()
     assert parse_title_scopes("not conventional") == ()
@@ -140,17 +139,18 @@ def test_changed_packages_ignores_prefix_collision() -> None:
 def test_breaking_change_title_still_detects_offender() -> None:
     """A breaking-change `!` title parses its scope for offender detection."""
     assert find_offenders(
-        "feat(cli)!: drop option", ["libs/code/deepagents_code/app.py"], CONFIG
+        "feat(sdk)!: drop option", ["libs/code/deepagents_code/app.py"], CONFIG
     ) == [{"package": "dcode", "dirs": ["libs/code/"]}]
 
 
 def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
     """Release PRs can touch generated/version files across package dirs.
 
-    `libs/cli/` is touched and the `deepagents-code` title scope does not cover
-    it, so absent the bypass `cli` is a genuine offender. The assertion can
-    therefore only pass via the release bypass, not ordinary scope coverage —
-    deleting the early-return in `find_offenders` makes this test fail.
+    `libs/evals/` is touched and the `deepagents-code` title scope does not
+    cover it, so absent the bypass `evals` is a genuine offender. The
+    assertion can therefore only pass via the release bypass, not ordinary
+    scope coverage — deleting the early-return in `find_offenders` makes this
+    test fail.
     """
     assert is_release_title("release(deepagents-code): 0.1.22")
     assert (
@@ -158,7 +158,7 @@ def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
             "release(deepagents-code): 0.1.22",
             [
                 "libs/code/deepagents_code/_version.py",
-                "libs/cli/deepagents_cli/_version.py",
+                "libs/deepagents/deepagents/_version.py",
             ],
             CONFIG,
         )
@@ -169,7 +169,7 @@ def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
 def test_release_title_with_source_change_still_blocks_mismatch() -> None:
     """An author-controlled release title cannot hide ordinary package edits."""
     assert find_offenders(
-        "release(cli): anything",
+        "release(sdk): anything",
         ["libs/code/deepagents_code/app.py"],
         CONFIG,
     ) == [{"package": "dcode", "dirs": ["libs/code/"]}]
@@ -189,10 +189,10 @@ def test_release_pr_change_requires_release_files_only() -> None:
     # The manifest match is anchored to the repo root, not matched by name.
     assert not is_release_file("libs/code/.release-please-manifest.json")
     assert not is_release_pr_change(
-        "release(cli): anything",
+        "release(sdk): anything",
         ["libs/code/deepagents_code/app.py"],
     )
-    assert not is_release_pr_change("release(cli): anything", [])
+    assert not is_release_pr_change("release(sdk): anything", [])
 
 
 def test_release_file_covers_partner_generated_files() -> None:
@@ -262,7 +262,7 @@ def test_release_uv_lock_only_still_validates_release_config(tmp_path) -> None:
     with pytest.raises(ValueError, match="could not read release-please config"):
         is_release_pr_change(
             "release(deepagents-code): 0.1.22",
-            ["libs/code/uv.lock", "libs/cli/uv.lock"],
+            ["libs/code/uv.lock", "libs/evals/uv.lock"],
             release_config_path=bad,
         )
 
@@ -299,7 +299,7 @@ def test_main_uv_lock_only_fails_closed_on_bad_release_config(capsys, tmp_path) 
 
     rc = main(
         "release(deepagents-code): 0.1.22",
-        ["libs/code/uv.lock", "libs/cli/uv.lock"],
+        ["libs/code/uv.lock", "libs/evals/uv.lock"],
         config_path=labeler,
         release_config_path=release,
     )
@@ -356,8 +356,8 @@ def test_release_title_ignores_lockfile_churn_for_other_package_dirs() -> None:
 def test_release_title_with_mixed_files_does_not_bypass() -> None:
     """A release artifact cannot launder an accompanying source edit."""
     changed = ["libs/code/CHANGELOG.md", "libs/code/deepagents_code/app.py"]
-    assert not is_release_pr_change("release(cli): 0.1.22", changed)
-    assert find_offenders("release(cli): 0.1.22", changed, CONFIG) == [
+    assert not is_release_pr_change("release(sdk): 0.1.22", changed)
+    assert find_offenders("release(sdk): 0.1.22", changed, CONFIG) == [
         {"package": "dcode", "dirs": ["libs/code/"]}
     ]
 
@@ -379,19 +379,19 @@ def test_release_bypass_does_not_validate_component() -> None:
 
 def test_is_release_title_boundaries() -> None:
     """Only `release(<scope>):` shapes trigger the bypass title gate."""
-    assert is_release_title("release(cli): 1.0.0")
+    assert is_release_title("release(sdk): 1.0.0")
     assert is_release_title("release(): 1.0.0")  # empty scope still matches
     assert not is_release_title("release: 1.0.0")  # scope required
     assert not is_release_title("release(scope)!: 1.0.0")  # breaking marker excluded
-    assert not is_release_title("  release(cli): 1.0.0")  # anchored; no leading ws
-    assert not is_release_title("Release(cli): 1.0.0")  # case-sensitive
+    assert not is_release_title("  release(sdk): 1.0.0")  # anchored; no leading ws
+    assert not is_release_title("Release(sdk): 1.0.0")  # case-sensitive
 
 
 def test_partner_package_dir_detected_with_real_config() -> None:
     """Partner packages under `libs/partners/` are package dirs too."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
     assert find_offenders(
-        "fix(cli): repair startup",
+        "fix(sdk): repair startup",
         ["libs/partners/daytona/langchain_daytona/sandbox.py"],
         config,
     ) == [{"package": "daytona", "dirs": ["libs/partners/daytona/"]}]
@@ -408,7 +408,7 @@ def test_non_dict_file_rule_raises() -> None:
     """A non-object `fileRules` entry is config corruption, not a skip."""
     config = {"scopeToLabel": CONFIG["scopeToLabel"], "fileRules": ["libs/code/"]}
     with pytest.raises(ValueError, match="not an object"):
-        find_offenders("fix(cli): x", ["libs/code/file.py"], config)
+        find_offenders("fix(sdk): x", ["libs/code/file.py"], config)
 
 
 def test_non_string_prefix_file_rule_raises() -> None:
@@ -418,7 +418,7 @@ def test_non_string_prefix_file_rule_raises() -> None:
         "fileRules": [{"label": "dcode", "prefix": 123}],
     }
     with pytest.raises(ValueError, match="non-string label/prefix"):
-        find_offenders("fix(cli): x", ["libs/code/file.py"], config)
+        find_offenders("fix(sdk): x", ["libs/code/file.py"], config)
 
 
 def test_main_partially_malformed_file_rules_returns_2(capsys, tmp_path) -> None:
@@ -430,13 +430,13 @@ def test_main_partially_malformed_file_rules_returns_2(capsys, tmp_path) -> None
                 "scopeToLabel": CONFIG["scopeToLabel"],
                 "fileRules": [
                     {"label": "dcode", "prefix": 123},
-                    {"label": "cli", "prefix": "libs/cli/"},
+                    {"label": "evals", "prefix": "libs/evals/"},
                 ],
             }
         ),
         encoding="utf-8",
     )
-    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=config_path)
+    rc = main("fix(sdk): x", ["libs/code/file.py"], config_path=config_path)
     assert rc == 2
     assert "::error::" in capsys.readouterr().err
 
@@ -471,7 +471,7 @@ def test_main_stdout_is_json_array(capsys, tmp_path) -> None:
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
     rc = main(
-        "fix(cli): repair startup",
+        "fix(sdk): repair startup",
         ["libs/code/deepagents_code/app.py"],
         config_path=config_path,
     )
@@ -494,8 +494,8 @@ def test_main_clean_stdout_is_empty_json_array(capsys, tmp_path) -> None:
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
     rc = main(
-        "fix(cli): repair startup",
-        ["libs/cli/deepagents_cli/main.py"],
+        "fix(evals): repair startup",
+        ["libs/evals/deepagents_evals/main.py"],
         config_path=config_path,
     )
     captured = capsys.readouterr()
@@ -529,7 +529,7 @@ def test_main_release_bypass_emits_notice(capsys, tmp_path) -> None:
 
 def test_main_missing_config_returns_2(capsys, tmp_path) -> None:
     """A missing config fails closed instead of silently passing."""
-    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=tmp_path / "nope.json")
+    rc = main("fix(sdk): x", ["libs/code/file.py"], config_path=tmp_path / "nope.json")
     assert rc == 2
     assert "::error::" in capsys.readouterr().err
 
@@ -538,7 +538,7 @@ def test_main_malformed_config_returns_2(capsys, tmp_path) -> None:
     """Invalid JSON fails closed."""
     config_path = tmp_path / "pr-labeler-config.json"
     config_path.write_text("{not json", encoding="utf-8")
-    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=config_path)
+    rc = main("fix(sdk): x", ["libs/code/file.py"], config_path=config_path)
     assert rc == 2
     assert "::error::" in capsys.readouterr().err
 
@@ -550,7 +550,7 @@ def test_main_empty_file_rules_returns_2(capsys, tmp_path) -> None:
         json.dumps({"scopeToLabel": CONFIG["scopeToLabel"], "fileRules": []}),
         encoding="utf-8",
     )
-    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=config_path)
+    rc = main("fix(sdk): x", ["libs/code/file.py"], config_path=config_path)
     assert rc == 2
     assert "fileRules" in capsys.readouterr().err
 
@@ -562,7 +562,7 @@ def test_main_missing_scope_map_returns_2(capsys, tmp_path) -> None:
         json.dumps({"scopeToLabel": {}, "fileRules": CONFIG["fileRules"]}),
         encoding="utf-8",
     )
-    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=config_path)
+    rc = main("fix(sdk): x", ["libs/code/file.py"], config_path=config_path)
     assert rc == 2
     assert "scopeToLabel" in capsys.readouterr().err
 
@@ -570,10 +570,10 @@ def test_main_missing_scope_map_returns_2(capsys, tmp_path) -> None:
 def test_real_config_has_package_scope_and_dir_mappings() -> None:
     """The committed PR labeler config exposes the maps this check reads."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
-    assert declared_packages("fix(cli): x", config) == {"cli"}
+    assert declared_packages("fix(sdk): x", config) == {"deepagents"}
     assert declared_packages("fix(code): x", config) == {"dcode"}
-    assert changed_packages(["libs/cli/deepagents_cli/main.py"], config) == {
-        "cli": ["libs/cli/"]
+    assert changed_packages(["libs/deepagents/deepagents/graph.py"], config) == {
+        "deepagents": ["libs/deepagents/"]
     }
     assert changed_packages(["libs/code/deepagents_code/app.py"], config) == {
         "dcode": ["libs/code/"]

@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from unittest.mock import patch
 
 import anyio
@@ -77,7 +77,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect `Path.home()` and `DEFAULT_STATE_DIR` into a temp directory.
 
     `Path.home` is patched for code that resolves it at call time;
-    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth._tokens_dir`)
+    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth.token_store_dir`)
     that pulls from the import-time-frozen constant in `model_config`.
     """
     fake = tmp_path / "home"
@@ -973,66 +973,6 @@ class TestExpiryAwareOAuthClientProvider:
         discovery_request = await flow.asend(httpx.Response(401, request=first_request))
         assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
         await flow.aclose()
-
-    @pytest.mark.parametrize(
-        ("interactive", "expected"),
-        [(False, True), (True, False)],
-    )
-    async def test_delegated_flow_toggles_reauth_log_suppression(
-        self,
-        fake_home: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        interactive: bool,
-        expected: bool,
-    ) -> None:
-        """The contextvar is set during delegation only for non-interactive runs.
-
-        Guards the wiring between `build_oauth_provider(interactive=...)` and the
-        filter: the SDK flow logs synchronously inside the delegated generator,
-        so the suppression flag must be visible there. A fake SDK flow records
-        what the contextvar reads at that point.
-        """
-        del fake_home
-        import httpx
-        from mcp.client.auth import OAuthClientProvider
-
-        from deepagents_code.mcp_auth import (
-            _SUPPRESS_EXPECTED_REAUTH_LOGS,
-            build_oauth_provider,
-        )
-
-        observed: dict[str, bool] = {}
-
-        async def fake_flow(
-            self: OAuthClientProvider,
-            request: httpx.Request,
-        ):
-            del self
-            observed["suppressed"] = _SUPPRESS_EXPECTED_REAUTH_LOGS.get()
-            _ = yield request
-
-        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_flow)
-
-        storage = FileTokenStorage("notion")
-        await storage.set_client_info(_make_client_info())
-        await storage.set_tokens(_make_tokens())
-
-        provider = build_oauth_provider(
-            server_name="notion",
-            server_url="https://mcp.notion.com/mcp",
-            storage=storage,
-            interactive=interactive,
-        )
-        flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
-        )
-        await anext(flow)
-        await flow.aclose()
-
-        assert observed["suppressed"] is expected
-        # The flag never leaks past the flow.
-        assert _SUPPRESS_EXPECTED_REAUTH_LOGS.get() is False
 
     async def test_delegated_flow_forwards_responses_on_every_iteration(
         self,
@@ -2588,34 +2528,6 @@ class TestBuildOAuthProvider:
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
 
-    def test_interactive_mode_maps_to_reauth_log_suppression(
-        self,
-        fake_home: Path,
-    ) -> None:
-        """Only non-interactive providers suppress expected reauth SDK logs.
-
-        Interactive sessions keep the SDK's OAuth diagnostics; non-interactive
-        runs replace the expected reauth noise with our login hint.
-        """
-        del fake_home
-        from deepagents_code.mcp_auth import build_oauth_provider
-
-        non_interactive = build_oauth_provider(
-            server_name="notion",
-            server_url="https://mcp.notion.com/mcp",
-            storage=FileTokenStorage("notion"),
-            interactive=False,
-        )
-        interactive = build_oauth_provider(
-            server_name="notion",
-            server_url="https://mcp.notion.com/mcp",
-            storage=FileTokenStorage("notion"),
-            interactive=True,
-        )
-
-        assert cast("Any", non_interactive)._suppress_expected_reauth_logs is True
-        assert cast("Any", interactive)._suppress_expected_reauth_logs is False
-
     async def test_refresh_uses_cached_oauth_metadata_endpoint(
         self,
         fake_home: Path,
@@ -3671,6 +3583,81 @@ class TestLogin:
         tokens = await storage.get_tokens()
         assert tokens is not None
         assert tokens.access_token == "new"
+
+    async def test_login_forces_fresh_auth_when_stored_token_is_valid(self) -> None:
+        """Re-auth must re-authorize, not ride the still-valid stored token.
+
+        A healthy server has a valid token on disk. If the provider can see
+        it, the handshake succeeds without ever prompting and the user is
+        told they logged in again when nothing happened.
+        """
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        url = "https://mcp.notion.com/mcp"
+        storage = FileTokenStorage("notion", server_url=url)
+        await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
+        await storage.set_client_info(_make_client_info())
+
+        seen: dict[str, Any] = {}
+
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            provider_storage = connection["auth"].context.storage
+            seen["tokens"] = await provider_storage.get_tokens()
+            seen["expiry"] = await provider_storage.get_tokens_with_expiry()
+            seen["client_info"] = await provider_storage.get_client_info()
+            fresh = FileTokenStorage(server_name, server_url=connection["url"])
+            await fresh.set_tokens(OAuthToken(access_token="new", token_type="Bearer"))
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
+            await login(
+                server_name="notion",
+                server_config={"transport": "http", "url": url, "auth": "oauth"},
+                ui=CliOAuthInteraction(),
+            )
+
+        # The provider saw no token, so it had to run the full flow.
+        assert seen["tokens"] is None
+        assert seen["expiry"] == (None, None)
+        # Client registration still resolves, so the handshake reuses it
+        # rather than re-running DCR against a new redirect URI.
+        assert seen["client_info"] is not None
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "new"
+
+    async def test_login_keeps_stored_token_when_handshake_fails(self) -> None:
+        """An aborted re-auth leaves the working credential on disk."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        url = "https://mcp.notion.com/mcp"
+        storage = FileTokenStorage("notion", server_url=url)
+        await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
+        await storage.set_client_info(_make_client_info())
+
+        async def _failing_handshake(connections: dict) -> None:
+            msg = "user aborted"
+            raise RuntimeError(msg)
+
+        with (
+            patch("deepagents_code.mcp_auth._drive_handshake", _failing_handshake),
+            pytest.raises(RuntimeError, match="user aborted"),
+        ):
+            await login(
+                server_name="notion",
+                server_config={"transport": "http", "url": url, "auth": "oauth"},
+                ui=CliOAuthInteraction(),
+            )
+
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "old"
 
     async def test_login_allows_http_server_without_explicit_oauth(self) -> None:
         """Auto-detected servers (no `auth: oauth`) can still run OAuth login."""

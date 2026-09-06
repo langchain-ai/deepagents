@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    InvalidGlobPatternError,
     _copy_file_data_with_content,
     _get_backend_read_file_type,
     _glob_search_files,
@@ -285,14 +286,22 @@ class StateBackend(BackendProtocol):
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob, max_count=max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Get `FileInfo` for files matching glob pattern."""
+        """Get `FileInfo` for files matching glob pattern.
+
+        Matching follows the shared backend contract -- see `BackendProtocol.glob`.
+        A bare pattern is basename-at-any-depth, so `*.py` matches nested files.
+        A refused pattern is returned as `GlobResult(error=...)`, not raised.
+        """
         files = self._read_files()
         try:
             result = _glob_search_files(files, pattern, path)
-        except ValueError as exc:
+        except InvalidGlobPatternError as exc:
             # `glob` is a tool boundary: report a refused pattern as a result
             # rather than raising, matching FilesystemBackend and SandboxBackend.
-            return GlobResult(error=f"Invalid glob pattern: {exc}")
+            # Catch the specific type -- a bare `ValueError` here would also
+            # capture path-normalization failures and mislabel them as pattern
+            # errors, sending the model off rewriting a glob that was fine.
+            return GlobResult(error=str(exc))
         if result == "No files found":
             return GlobResult(matches=[])
         paths = result.split("\n")

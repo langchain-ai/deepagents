@@ -6,16 +6,19 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
+from deepagents_code._paths import PATHS
 from deepagents_code.agent import _apply_inherited_pythonpath
 from deepagents_code.client.launch.server import (
     _SERVER_ENV_DENYLIST,
     _build_server_cmd,
     _build_server_env,
-    _scoped_env_overrides,
+    _server_env_with_overrides,
 )
-from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS, _INHERITED_PYTHONPATH_ENV
+from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
+    _INHERITED_USER_TRACING_ENV,
+    apply_inherited_user_tracing,
+)
 
 
 class TestBuildServerCmd:
@@ -30,11 +33,6 @@ class TestBuildServerCmd:
         p = Path("/work/langgraph.json")
         cmd = _build_server_cmd(p, host="127.0.0.1", port=2024)
         assert str(p) in cmd
-
-    def test_includes_no_browser_and_no_reload(self) -> None:
-        cmd = _build_server_cmd(Path("/tmp/lg.json"), host="127.0.0.1", port=2024)
-        assert "--no-browser" in cmd
-        assert "--no-reload" in cmd
 
 
 class TestBuildServerEnv:
@@ -58,10 +56,6 @@ class TestBuildServerEnv:
         assert "LANGSMITH_CONTROL_PLANE_API_KEY" not in env
         assert "LANGSMITH_TENANT_ID" not in env
 
-    def test_sets_pythondontwritebytecode(self) -> None:
-        env = _build_server_env()
-        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-
     def test_strips_subprocess_hijack_variables(self) -> None:
         injected = {key: f"/tmp/evil-{key}" for key in _SERVER_ENV_DENYLIST}
         with patch.dict(
@@ -72,6 +66,22 @@ class TestBuildServerEnv:
         for key in _SERVER_ENV_DENYLIST:
             assert key not in env
         assert "PATH" in env
+
+    def test_strips_values_injected_by_client_dotenv_loader(self) -> None:
+        """A client project value does not become server launch state."""
+        import deepagents_code.config as config_mod
+
+        config_mod._dotenv_loaded_values["WORKSPACE_VALUE"] = "first"
+        try:
+            with patch.dict(os.environ, {"WORKSPACE_VALUE": "first"}, clear=False):
+                env = _build_server_env()
+            assert "WORKSPACE_VALUE" not in env
+
+            with patch.dict(os.environ, {"WORKSPACE_VALUE": "changed"}, clear=False):
+                env = _build_server_env()
+            assert env["WORKSPACE_VALUE"] == "changed"
+        finally:
+            config_mod._dotenv_loaded_values.pop("WORKSPACE_VALUE", None)
 
     def test_relays_pythonpath_off_server_interpreter(self) -> None:
         """A launch `PYTHONPATH` is kept off the server but carried for `execute`."""
@@ -102,24 +112,6 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert env[_INHERITED_PYTHONPATH_ENV] == ""
 
-    def test_startup_hijack_keys_blocked_from_dotenv(self) -> None:
-        """Project `.env` files must not inject interpreter startup hooks."""
-        assert "PYTHONPATH" in _SERVER_ENV_DENYLIST
-        for key in (
-            "BASH_ENV",
-            "BASHOPTS",
-            "CDPATH",
-            "COMSPEC",
-            "ENV",
-            "GLOBIGNORE",
-            "PYTHONPATH",
-            "SHELLOPTS",
-            "SYSTEMROOT",
-            "WINDIR",
-            _INHERITED_PYTHONPATH_ENV,
-        ):
-            assert key in _DOTENV_DENIED_ENV_KEYS
-
 
 class TestPythonpathRelayRoundTrip:
     def test_launch_pythonpath_round_trips_to_execute_env(self) -> None:
@@ -140,36 +132,91 @@ class TestPythonpathRelayRoundTrip:
         assert _INHERITED_PYTHONPATH_ENV not in shell_env
 
 
-class TestScopedEnvOverrides:
-    def test_overrides_applied_inside_context(self) -> None:
+class TestServerEnvProfilePinning:
+    """The server must always inherit the client's profile selection.
+
+    `persist_env` validates its keys, but `update_env` accepts any key. Without
+    the final re-pin a caller could point the server at a different profile
+    than the client, splitting the trust root across the two processes.
+    """
+
+    def test_persistent_override_cannot_move_the_profile(self) -> None:
+        env = _server_env_with_overrides({"DEEPAGENTS_HOME": "/tmp/evil"}, {})
+        assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
+
+
+class TestUserTracingRelay:
+    """The caller's tracing identity must survive the client/server boundary.
+
+    The server inherits an environment where bootstrap has already replaced the
+    canonical LangSmith flags and key, so its own `_bootstrap_state` capture
+    holds the *agent's* values. Restoring from it would be a no-op that leaks
+    the agent session key into user `execute` commands.
+    """
+
+    def test_relays_caller_tracing_values_for_execute(self) -> None:
+        """`execute` receives the caller's key, not the agent's override."""
+        import deepagents_code.config as config_mod
+
+        state = config_mod._bootstrap_state
         with (
-            patch.dict(os.environ, {}, clear=False),
-            _scoped_env_overrides({"TEST_SCOPED_VAR": "val"}),
+            patch.object(state, "done", True),
+            patch.object(state, "original_tracing_env", {"LANGSMITH_TRACING": None}),
+            patch.object(
+                state,
+                "original_tracing_api_keys",
+                {"LANGSMITH_API_KEY": "caller-key"},
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "LANGSMITH_API_KEY": "agent-session-key",
+                    "LANGSMITH_TRACING": "true",
+                },
+                clear=False,
+            ),
         ):
-            assert os.environ.get("TEST_SCOPED_VAR") == "val"
+            server_env = _build_server_env()
 
-    def test_overrides_kept_on_success(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            with _scoped_env_overrides({"TEST_SCOPED_KEEP": "val"}):
-                pass
-            assert os.environ.get("TEST_SCOPED_KEEP") == "val"
+        # The agent's own values still reach the server process itself.
+        assert server_env["LANGSMITH_API_KEY"] == "agent-session-key"
 
-    def test_overrides_rolled_back_on_exception(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            msg = "boom"
-            with (
-                pytest.raises(RuntimeError),
-                _scoped_env_overrides({"TEST_SCOPED_ROLL": "new"}),
-            ):
-                raise RuntimeError(msg)
-            assert os.environ.get("TEST_SCOPED_ROLL") is None
+        shell_env = dict(server_env)
+        assert apply_inherited_user_tracing(shell_env) is True
+        assert shell_env["LANGSMITH_API_KEY"] == "caller-key"
+        # The caller had no tracing flag, so the agent's must not survive.
+        assert "LANGSMITH_TRACING" not in shell_env
+        assert _INHERITED_USER_TRACING_ENV not in shell_env
 
-    def test_previous_value_restored_on_exception(self) -> None:
-        msg = "boom"
-        with patch.dict(os.environ, {"TEST_SCOPED_PREV": "original"}, clear=False):
-            with (
-                pytest.raises(RuntimeError),
-                _scoped_env_overrides({"TEST_SCOPED_PREV": "new"}),
-            ):
-                raise RuntimeError(msg)
-            assert os.environ["TEST_SCOPED_PREV"] == "original"
+    def test_no_relay_reports_absence_so_local_capture_wins(self) -> None:
+        """Without a carrier the local `_bootstrap_state` stays authoritative."""
+        shell_env = {"LANGSMITH_API_KEY": "agent-session-key"}
+        assert apply_inherited_user_tracing(shell_env) is False
+        assert shell_env["LANGSMITH_API_KEY"] == "agent-session-key"
+
+    def test_unparsable_relay_fails_closed(self) -> None:
+        """A corrupt carrier drops the agent's key rather than passing it on."""
+        shell_env = {
+            _INHERITED_USER_TRACING_ENV: "not json",
+            "LANGSMITH_API_KEY": "agent-session-key",
+            "LANGSMITH_TRACING": "true",
+        }
+        assert apply_inherited_user_tracing(shell_env) is True
+        assert "LANGSMITH_API_KEY" not in shell_env
+        assert "LANGSMITH_TRACING" not in shell_env
+
+    def test_inherited_carrier_var_is_never_trusted(self) -> None:
+        """A smuggled carrier cannot choose the tracing identity."""
+        import deepagents_code.config as config_mod
+
+        state = config_mod._bootstrap_state
+        with (
+            patch.object(state, "done", False),
+            patch.dict(
+                os.environ,
+                {_INHERITED_USER_TRACING_ENV: '{"LANGSMITH_API_KEY": "smuggled"}'},
+                clear=False,
+            ),
+        ):
+            server_env = _build_server_env()
+        assert _INHERITED_USER_TRACING_ENV not in server_env

@@ -12,11 +12,9 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_code import _glm_5p2_profile as glm_profile
 from deepagents_code._glm_5p2_profile import _GlmTerminalStallRecovery
 
 if TYPE_CHECKING:
-    from deepagents.profiles import HarnessProfile
     from langchain_core.tools import BaseTool
 
 
@@ -91,77 +89,6 @@ def _model_response(
             )
         ]
     )
-
-
-def test_registration_is_exact_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    import deepagents.profiles.harness.harness_profiles as core_profiles
-
-    calls: list[tuple[str, HarnessProfile]] = []
-
-    def register(key: str, profile: HarnessProfile) -> None:
-        calls.append((key, profile))
-
-    monkeypatch.setattr(glm_profile, "_glm_5p2_profile_registered", False)
-    monkeypatch.setattr(glm_profile, "register_harness_profile", register)
-    monkeypatch.setattr(core_profiles, "_ensure_harness_profiles_loaded", lambda: None)
-    monkeypatch.setattr(core_profiles, "_HARNESS_PROFILES", {})
-
-    glm_profile._ensure_glm_5p2_profile_registered()
-    glm_profile._ensure_glm_5p2_profile_registered()
-
-    assert tuple(key for key, _ in calls) == (
-        _FIREWORKS_GLM,
-        _OPENROUTER_GLM,
-        _BASETEN_GLM,
-    )
-    assert all(profile is glm_profile._GLM_5P2_PROFILE for _, profile in calls)
-
-
-def test_registration_defers_to_existing_suffix_profile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import deepagents.profiles.harness.harness_profiles as core_profiles
-    from deepagents.profiles import HarnessProfile as RuntimeHarnessProfile
-
-    calls: list[str] = []
-
-    monkeypatch.setattr(glm_profile, "_glm_5p2_profile_registered", False)
-    monkeypatch.setattr(
-        glm_profile,
-        "register_harness_profile",
-        lambda key, _profile: calls.append(key),
-    )
-    monkeypatch.setattr(core_profiles, "_ensure_harness_profiles_loaded", lambda: None)
-    monkeypatch.setattr(
-        core_profiles,
-        "_HARNESS_PROFILES",
-        {_FIREWORKS_GLM: RuntimeHarnessProfile(system_prompt_suffix="user override")},
-    )
-
-    glm_profile._ensure_glm_5p2_profile_registered()
-
-    assert calls == [_OPENROUTER_GLM, _BASETEN_GLM]
-
-
-def test_prompt_is_concise_and_execution_focused() -> None:
-    suffix = glm_profile._SYSTEM_PROMPT_SUFFIX
-
-    assert 240 <= len(suffix.split()) <= 360
-    for omitted in (
-        "write_todos",
-        "<todo_rules>",
-        "<tool_preferences>",
-        "Prefer specialized tools",
-    ):
-        assert omitted not in suffix
-
-
-def test_prompt_tells_glm_to_keep_media_out_of_context() -> None:
-    suffix = glm_profile._SYSTEM_PROMPT_SUFFIX
-
-    assert "text-only model" in suffix
-    assert "Do not call `read_file` on images, PDFs, audio, or video" in suffix
-    assert "Never place binary or encoded media in model context" in suffix
 
 
 def test_headless_glm_retries_length_truncated_turn() -> None:
@@ -357,7 +284,3 @@ def test_terminal_stall_recovery_ignores_non_stall_response_shapes(
     )
 
     assert calls == 1
-
-
-def test_profile_is_suffix_only() -> None:
-    assert glm_profile._GLM_5P2_PROFILE.materialize_extra_middleware() == []

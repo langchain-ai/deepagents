@@ -1,16 +1,22 @@
 """Auto-install pinned upstream binaries for optional tools.
 
 Today this only manages `ripgrep`. The SDK shells out to `rg` via `PATH`,
-so installing into `~/.deepagents/bin/` and prepending that directory to
-`os.environ["PATH"]` is sufficient — no SDK change required.
+so installing inside the dcode tool environment and prepending that directory
+to `os.environ["PATH"]` is sufficient — no SDK change required. Keeping helper
+binaries installation-scoped lets multiple profiles reuse one verified binary.
 
-The pinned `RIPGREP_VERSION` and `RIPGREP_ASSETS` table is the single
-source of truth for what gets downloaded and verified. When bumping the
-version, refresh both the version and the SHA-256 entries together.
+`FALLBACK_BIN_DIR` covers the case where that shared directory is not writable
+(a system or root-owned `sys.prefix`). Run `dcode doctor` to see which of the
+two locations is actually in use.
+
+The pinned `RIPGREP_VERSION`, archive hashes in `RIPGREP_ASSETS`, and extracted
+binary hashes in `RIPGREP_BINARY_SHA256` are the source of truth for what gets
+downloaded and executed. Refresh all three together when bumping the version.
 """
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import sys
@@ -18,14 +24,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
+from deepagents_code._paths import (
+    PATHS,
+    PathState,
+    classify_path,
+    first_writable,
+)
 
 if TYPE_CHECKING:
+    import tempfile
     import zipfile
 
 logger = logging.getLogger(__name__)
 
 RIPGREP_VERSION = "14.1.1"
-"""Pinned upstream ripgrep release. Bump alongside `RIPGREP_ASSETS`."""
+"""Pinned release. Bump alongside both SHA-256 tables."""
 
 _RELEASE_URL_PREFIX = (
     "https://github.com/BurntSushi/ripgrep/releases/download/" + RIPGREP_VERSION
@@ -62,8 +75,61 @@ RIPGREP_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
 }
 """`(sys.platform, normalized arch) -> (asset filename, sha256 hex)`."""
 
-BIN_DIR: Path = Path.home() / ".deepagents" / "bin"
-"""Directory holding managed binaries. Prepended to `PATH` on startup."""
+RIPGREP_BINARY_SHA256: dict[tuple[str, str], str] = {
+    ("darwin", "arm64"): (
+        "0e0cb83f5195f1f51bb8feef1fff5b0b171e82bd1db6bd35deee701a3e7102f8"
+    ),
+    ("darwin", "x86_64"): (
+        "923dcc25cab57d33f4e7dd0476d4b74a554401a38817e246a8d6101dcd51c50f"
+    ),
+    ("linux", "arm64"): (
+        "e07d5c85fa9ca740ff4ab8bbac60a1e11c7a5ce242435f7820a03f7c20ef6276"
+    ),
+    ("linux", "x86_64"): (
+        "f401154e2393f9002ac77e419f9ee5521c18f4f8cd3e32293972f493ba06fce7"
+    ),
+    ("win32", "arm64"): (
+        "f162b54de2adfc72d78adb1dbada2dedda111ae0a5e2f6e9500f4f909664c5d2"
+    ),
+    ("win32", "x86_64"): (
+        "f162b54de2adfc72d78adb1dbada2dedda111ae0a5e2f6e9500f4f909664c5d2"
+    ),
+}
+"""SHA-256 of the extracted `rg` binary in each pinned release asset."""
+
+BIN_DIR: Path = PATHS.installation.managed_bin_dir
+"""Preferred directory for managed binaries, shared by every profile.
+
+Prepended to `PATH` on startup. Tied to the installation rather than the
+profile so relocating `DEEPAGENTS_HOME` reuses one verified download.
+"""
+
+FALLBACK_BIN_DIR: Path = PATHS.profile.bin_dir
+"""Profile-scoped bin directory used when `BIN_DIR` is not writable.
+
+A system or root-owned install prefix (`pip install --break-system-packages`,
+a packaged interpreter) leaves `BIN_DIR` unwritable for a normal user, which
+would otherwise mean no managed ripgrep at all.
+"""
+
+_FALLBACK_SHIM: (
+    tuple[tempfile.TemporaryDirectory[str], tuple[str, tuple[int, int, int]]] | None
+) = None
+"""Process-private `PATH` shim and the fallback binary identity it exposes."""
+
+
+def managed_bin_dirs() -> tuple[Path, ...]:
+    """Return both managed bin locations in preference order.
+
+    Read from the module globals on each call rather than frozen into a
+    constant, so a test (or a future runtime override) that patches `BIN_DIR`
+    is honored by lookup, `PATH` assembly, and install alike.
+
+    Returns:
+        The preferred installation directory followed by the profile fallback.
+    """
+    return (BIN_DIR, FALLBACK_BIN_DIR)
+
 
 _DOWNLOAD_TIMEOUT_SECONDS = 120
 _VERSION_CHECK_TIMEOUT_SECONDS = 5
@@ -87,7 +153,7 @@ class ChecksumMismatchError(Exception):
     """
 
 
-UnavailableReason = Literal["unsupported", "artifact_not_found"]
+UnavailableReason = Literal["unsupported", "artifact_not_found", "permission_denied"]
 """Stable reason token for logging and telemetry."""
 
 
@@ -140,6 +206,26 @@ def _unsupported_ripgrep_error(
     )
 
 
+def _unwritable_bin_dir_error() -> ManagedToolUnavailableError:
+    """Return a clear write-failure error naming both managed bin directories.
+
+    The wording covers every reason a write can fail, not permissions alone.
+    A read-only filesystem, a full disk, and an exceeded quota all reach this
+    error, and telling those users to "check the permissions" sends them after
+    the wrong cause.
+    """
+    return ManagedToolUnavailableError(
+        tool="ripgrep",
+        reason="permission_denied",
+        message=(
+            f"Could not write ripgrep to {BIN_DIR} or {FALLBACK_BIN_DIR}. "
+            "Check that one of them is writable and that the filesystem is "
+            "not full or read-only, or install ripgrep with your package "
+            "manager."
+        ),
+    )
+
+
 def _artifact_not_found_error(
     platform_name: str, arch: str
 ) -> ManagedToolUnavailableError:
@@ -155,10 +241,38 @@ def _artifact_not_found_error(
     )
 
 
+def managed_rg_filename() -> str:
+    """Return the managed ripgrep filename for this platform."""
+    return "rg.exe" if sys.platform == "win32" else "rg"
+
+
 def managed_rg_path() -> Path:
-    """Return the managed ripgrep binary path (`.exe` on Windows)."""
-    name = "rg.exe" if sys.platform == "win32" else "rg"
-    return BIN_DIR / name
+    """Return the managed ripgrep binary path (`.exe` on Windows).
+
+    Returns:
+        A current candidate across both locations, the first existing stale
+        candidate, or the preferred location when neither exists.
+
+    Note:
+        The version probe runs only when both locations hold a binary, which
+        is the one case where the answer is not already determined. That probe
+        starts a subprocess, and this function is called several times per
+        launch, so `_managed_binary_is_current` memoizes on file identity.
+    """
+    candidates = [directory / managed_rg_filename() for directory in managed_bin_dirs()]
+    existing = [
+        candidate
+        for candidate in candidates
+        if classify_path(candidate) is PathState.EXISTS
+    ]
+    if not existing:
+        return candidates[0]
+    if len(existing) == 1:
+        return existing[0]
+    return next(
+        (candidate for candidate in existing if _managed_binary_is_current(candidate)),
+        existing[0],
+    )
 
 
 def is_offline() -> bool:
@@ -210,44 +324,177 @@ def prefers_system_ripgrep() -> bool:
 
 
 def prepend_managed_bin_to_path() -> None:
-    """Idempotently prepend `BIN_DIR` to `os.environ["PATH"]`.
+    """Idempotently expose managed ripgrep through `os.environ["PATH"]`.
 
-    Safe to call on every startup. Callers do not need to check whether
-    the directory exists — adding a non-existent directory to `PATH` is
-    harmless and matches behavior of common version managers.
+    Safe to call on every startup. The installation-scoped directory is
+    prepended directly. A verified profile fallback is exposed through a
+    process-private shim containing only `rg`, because the profile may be
+    repository-controlled. Both managed directories are removed from the rest
+    of `PATH` so neither a stale copy nor a fallback sibling can shadow it.
+
+    Prepending only one directory matters for the profile fallback. TB14
+    permits a `DEEPAGENTS_HOME` inside a checkout, so `<profile>/bin` can be a
+    repository-controlled directory. Verifying `rg` does not make siblings
+    such as `git` trustworthy, so that directory never enters `PATH`.
     """
-    bin_str = str(BIN_DIR)
+    candidate = managed_rg_path()
+    active_dir = candidate.parent
+    if active_dir == FALLBACK_BIN_DIR:
+        active_dir = _verified_fallback_shim(candidate) or BIN_DIR
+    active = str(active_dir)
+    managed = {str(directory) for directory in managed_bin_dirs()}
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
-    if parts and parts[0] == bin_str:
+    desired = [active, *(p for p in parts if p not in managed)]
+    if parts == desired:
         return
-    parts = [bin_str, *(p for p in parts if p != bin_str)]
-    os.environ["PATH"] = os.pathsep.join(parts)
+    os.environ["PATH"] = os.pathsep.join(desired)
+
+
+def _verified_fallback_shim(binary: Path) -> Path | None:
+    """Return a private directory exposing only a checksum-verified `binary`."""
+    global _FALLBACK_SHIM  # noqa: PLW0603  # process-lifetime shim cache
+
+    identity = _binary_identity(binary)
+    if identity is None:
+        return None
+    source = (str(binary), identity)
+    if _FALLBACK_SHIM is not None and _FALLBACK_SHIM[1] == source:
+        return Path(_FALLBACK_SHIM[0].name)
+    shim = _create_verified_fallback_shim(binary)
+    if shim is None:
+        return None
+    previous = _FALLBACK_SHIM
+    _FALLBACK_SHIM = (shim, source)
+    if previous is not None:
+        previous[0].cleanup()
+    return Path(shim.name)
+
+
+def _create_verified_fallback_shim(
+    binary: Path,
+) -> tempfile.TemporaryDirectory[str] | None:
+    """Create a private snapshot that contains no profile-controlled siblings.
+
+    Returns:
+        The live temporary directory, or `None` if the entrypoint cannot be
+        created and verified.
+    """
+    import shutil
+    import tempfile
+
+    shim = tempfile.TemporaryDirectory(
+        prefix="deepagents-rg-shim-", ignore_cleanup_errors=True
+    )
+    target = Path(shim.name) / managed_rg_filename()
+    try:
+        shutil.copy2(binary, target)
+        if _managed_binary_is_verified(target):
+            return shim
+    except OSError:
+        logger.warning(
+            "Could not create an isolated PATH shim for ripgrep at %s",
+            binary,
+            exc_info=True,
+        )
+    shim.cleanup()
+    return None
+
+
+def _cleanup_fallback_shim() -> None:
+    """Remove the process-private fallback shim at interpreter shutdown."""
+    global _FALLBACK_SHIM  # noqa: PLW0603  # process-lifetime shim cache
+
+    if _FALLBACK_SHIM is not None:
+        _FALLBACK_SHIM[0].cleanup()
+        _FALLBACK_SHIM = None
+
+
+atexit.register(_cleanup_fallback_shim)
 
 
 def _path_without_managed_bin() -> str | None:
-    """Return `PATH` with `BIN_DIR` removed."""
+    """Return `PATH` with every managed bin dir removed."""
     current = os.environ.get("PATH")
     if not current:
         return None
 
-    managed_dir = BIN_DIR.resolve()
+    managed_dirs = {d.resolve() for d in managed_bin_dirs()}
     parts = [
         part
         for part in current.split(os.pathsep)
-        if not part or Path(part).resolve() != managed_dir
+        if not part or Path(part).resolve() not in managed_dirs
     ]
     return os.pathsep.join(parts)
+
+
+def _binary_identity(binary: Path) -> tuple[int, int, int] | None:
+    """Return a stat identity for `binary`, or `None` when it cannot be read.
+
+    Used as a memo key for the version probe. An install replaces the file, so
+    the inode, size, or mtime changes and the next probe misses the memo.
+
+    Returns:
+        The inode, size, and mtime in nanoseconds, or `None`.
+    """
+    try:
+        stat_result = binary.stat()
+    except OSError:
+        return None
+    return (stat_result.st_ino, stat_result.st_size, stat_result.st_mtime_ns)
 
 
 def _managed_binary_is_current(binary: Path) -> bool:
     """Return whether the on-disk managed `rg` matches `RIPGREP_VERSION`.
 
-    Returns `False` on any concrete failure (`OSError`, non-zero exit,
-    empty stdout, version mismatch) so a corrupted or wrong-arch
-    binary written by a previously crashed install gets re-fetched. Only
-    `TimeoutExpired` "falls open" — that case suggests a sandboxed
-    subprocess rather than a broken binary.
+    The binary's pinned SHA-256 is checked before it is executed. Returns
+    `False` on any concrete failure (checksum mismatch, `OSError`, non-zero
+    exit, empty stdout, version mismatch) so an unverified profile fallback or
+    a corrupted install gets replaced. Only `TimeoutExpired` "falls open" —
+    after checksum verification, that case suggests a sandboxed subprocess
+    rather than a broken binary.
+
+    The result is memoized on the binary's stat identity. `managed_rg_path`
+    calls this whenever both bin directories hold a binary, and several call
+    sites reach `managed_rg_path` on one launch, so an uncached probe starts
+    the same subprocess four to six times.
+    """
+    identity = _binary_identity(binary)
+    if identity is not None:
+        memo_key = (str(binary), identity)
+        cached = _VERSION_PROBE_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
+        result_is_current = _managed_binary_is_verified(
+            binary
+        ) and _probe_managed_binary_version(binary)
+        _VERSION_PROBE_MEMO[memo_key] = result_is_current
+        return result_is_current
+    return _managed_binary_is_verified(binary) and _probe_managed_binary_version(binary)
+
+
+_VERSION_PROBE_MEMO: dict[tuple[str, tuple[int, int, int]], bool] = {}
+"""Memo for `_managed_binary_is_current`, keyed on path and stat identity."""
+
+
+def _managed_binary_is_verified(binary: Path) -> bool:
+    """Return whether `binary` matches the pinned upstream executable bytes."""
+    arch = _normalized_arch()
+    expected = None if arch is None else RIPGREP_BINARY_SHA256.get((sys.platform, arch))
+    if expected is None:
+        return False
+    try:
+        return _sha256(binary) == expected
+    except OSError:
+        logger.debug("Could not checksum managed ripgrep at %s", binary, exc_info=True)
+        return False
+
+
+def _probe_managed_binary_version(binary: Path) -> bool:
+    """Run `rg --version` and report whether it matches `RIPGREP_VERSION`.
+
+    Returns:
+        Whether the binary reports the pinned version.
     """
     import subprocess  # noqa: S404  # fixed-argv probe of a managed binary
 
@@ -326,6 +573,17 @@ def _download_to(url: str, dest: Path) -> None:
             fh.write(chunk)
 
 
+def _sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest of `path`."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _verify_sha256(path: Path, expected_hex: str) -> None:
     """Verify `path` matches `expected_hex`.
 
@@ -333,13 +591,7 @@ def _verify_sha256(path: Path, expected_hex: str) -> None:
         ChecksumMismatchError: When the SHA-256 of `path` differs from
             `expected_hex`.
     """
-    import hashlib
-
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    actual = digest.hexdigest()
+    actual = _sha256(path)
     if actual != expected_hex:
         msg = (
             f"Checksum mismatch for {path.name}: expected {expected_hex}, got {actual}"
@@ -404,15 +656,54 @@ def _extract_zip_validated(zf: zipfile.ZipFile, extract_root: Path) -> None:
     zf.extractall(extract_root)  # noqa: S202  # validated above
 
 
+class _NoWritableBinDirError(OSError):
+    """Raised when no managed bin directory can be created or written.
+
+    Its own type rather than a bare `OSError` because the caller must map this
+    to a visible message regardless of why the write failed. Selecting on
+    `PermissionError` catches EACCES and EPERM only, so a read-only filesystem
+    or a full disk would fall through to the generic handler and produce the
+    "ripgrep is not installed" hint for a problem no package manager can fix.
+    """
+
+
+def _resolve_install_bin_dir() -> Path:
+    """Return the first managed bin dir that can be created.
+
+    Returns:
+        A usable, existing bin directory.
+
+    Raises:
+        _NoWritableBinDirError: If no candidate can be created or written. Its
+            message names both directories; `first_writable` has already logged
+            each candidate's own `OSError` with a traceback.
+    """
+    directory = first_writable(managed_bin_dirs(), what="Managed bin")
+    if directory is None:
+        msg = (
+            f"No managed bin directory could be created or written: tried "
+            f"{BIN_DIR} and {FALLBACK_BIN_DIR}."
+        )
+        raise _NoWritableBinDirError(msg)
+    if directory != BIN_DIR:
+        logger.warning(
+            "Installing ripgrep to the profile directory %s because the "
+            "shared installation directory %s is not writable",
+            directory,
+            BIN_DIR,
+        )
+    return directory
+
+
 def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     """Download, verify, extract, and install ripgrep atomically.
 
-    Staging happens *inside* `BIN_DIR` so the final rename is on the same
-    filesystem and therefore atomic on POSIX. Windows keeps replacing the
-    user-facing `rg.exe` directly because symlink support varies by developer
-    mode and policy. POSIX installs use a versioned real binary plus a relative
-    `rg` symlink so moving or bind-mounting `~/.deepagents` does not bake in
-    the original home directory path. `_verify_sha256` propagates
+    Staging happens *inside* the chosen bin directory so the final rename is on
+    the same filesystem and therefore atomic on POSIX. Windows keeps replacing
+    the user-facing `rg.exe` directly because symlink support varies by
+    developer mode and policy. POSIX installs use a versioned real binary plus a
+    relative `rg` symlink so moving or bind-mounting the tool environment does
+    not bake in its original absolute path. `_verify_sha256` propagates
     `ChecksumMismatchError` to abort install before any move.
 
     Returns:
@@ -421,9 +712,9 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     import os
     import tempfile
 
-    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    bin_dir = _resolve_install_bin_dir()
     url = f"{_RELEASE_URL_PREFIX}/{asset}"
-    with tempfile.TemporaryDirectory(prefix=".deepagents-rg-", dir=BIN_DIR) as tmp_str:
+    with tempfile.TemporaryDirectory(prefix=".deepagents-rg-", dir=bin_dir) as tmp_str:
         tmp = Path(tmp_str)
         archive = tmp / asset
         _download_to(url, archive)
@@ -431,15 +722,16 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
         extracted = _extract_rg(archive, tmp / "unpacked")
         if sys.platform != "win32":
             extracted.chmod(0o755)
-        dest = managed_rg_path()
+        name = "rg.exe" if sys.platform == "win32" else "rg"
+        dest = bin_dir / name
         if sys.platform == "win32":
             extracted.replace(dest)
             return dest
 
-        real = BIN_DIR / f"rg-{RIPGREP_VERSION}"
+        real = bin_dir / f"rg-{RIPGREP_VERSION}"
         extracted.replace(real)
         link = tmp / "rg-link"
-        link.symlink_to(os.path.relpath(real, start=BIN_DIR))
+        link.symlink_to(os.path.relpath(real, start=bin_dir))
         link.replace(dest)
         return dest
 
@@ -465,10 +757,11 @@ async def ensure_ripgrep() -> Path | None:
         `ManagedToolUnavailableError` so callers can explain that retrying will
         not help.
     6. Otherwise download → SHA-256 verify → extract → install →
-        prepend `BIN_DIR` to `PATH` → return the installed path. On a
+        prepend the active managed bin dir to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
-        surface a loud notice. On a 404, raises `ManagedToolUnavailableError`;
-        other failures log and return `None`.
+        surface a loud notice. On a 404, or when neither managed bin directory
+        is writable, raises `ManagedToolUnavailableError`; other failures log
+        and return `None`.
 
     A stale managed binary is never proactively deleted. The atomic
     replace in `_install_ripgrep_sync` overwrites it on success, and on
@@ -582,11 +875,21 @@ async def ensure_ripgrep() -> Path | None:
             "ripgrep install failed: archive error (%s)", type(exc).__name__
         )
         return None
-    except PermissionError:
+    except (_NoWritableBinDirError, PermissionError) as exc:
+        # The bin directory could not be written. That happens before the
+        # download (`_resolve_install_bin_dir`) or after it (the install
+        # itself), and both reach here. Returning None would send the user the
+        # caller's generic "ripgrep is not installed — brew install ripgrep"
+        # hint for a problem `brew` cannot fix. Raise instead: every caller
+        # renders this message visibly, while the log line here is invisible
+        # without --debug.
         logger.exception(
-            "ripgrep install failed: cannot write to %s — check permissions", BIN_DIR
+            "ripgrep install failed: cannot write to %s or %s",
+            BIN_DIR,
+            FALLBACK_BIN_DIR,
         )
-        return None
+        error = _unwritable_bin_dir_error()
+        raise error from exc
     except OSError as exc:
         logger.exception(
             "ripgrep install failed: %s (errno=%s)", type(exc).__name__, exc.errno

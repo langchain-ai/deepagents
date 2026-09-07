@@ -493,9 +493,8 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """`limit` bounds source lines; wrapped continuations don't displace later lines."""
-        # 18k chars wraps into 4 rows (2, 2.1, 2.2, 2.3) but still counts as one
-        # source line against `limit`.
+        """`limit` bounds source lines; an oversized line doesn't displace later lines."""
+        # 18k chars is one source line against `limit`, however wide it renders.
         very_long_line = "x" * 18000
         lines = [
             "short line 0",
@@ -509,7 +508,7 @@ class TestDeepAgentEndToEnd:
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # `limit=3` source lines → lines 1, 2 (all 4 wrapped chunks), 3.
+        # `limit=3` source lines → lines 1, 2 (whole), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -544,10 +543,9 @@ class TestDeepAgentEndToEnd:
         file_content = tool_messages[0].content
 
         assert "short line 0" in file_content
-        assert "xxx" in file_content
-        # All four wrapped chunks of source line 2 render in order.
-        for marker in ("  2  ", "2.1  ", "2.2  ", "2.3  "):
-            assert marker in file_content, f"missing continuation marker {marker!r}"
+        # The oversized source line renders whole, inside the reported range.
+        assert file_content.startswith("@@ lines 1-3 @@\n")
+        assert "x" * 18000 in file_content
         # Source line 3 is the third source line and must be included.
         assert "short line 2" in file_content
         # Source lines 4 and 5 fall outside `limit=3`.
@@ -1175,14 +1173,11 @@ class TestDeepAgentEndToEnd:
         assert len(file_content) < 85000
 
     def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """`limit` bounds source lines, not formatted rows.
+        """`limit` bounds source lines, not characters.
 
-        When a source line is wider than `MAX_LINE_LENGTH`, every continuation
-        chunk for that line is rendered — `limit=1` returns the full set of
-        chunks rather than just the first one. The byte-budget guard still
-        clamps the result when the formatted output exceeds the size cap.
+        A source line wider than the size cap is still one line against
+        `limit`, so the byte-budget guard is what clamps the result.
         """
-        # 85k characters in one line → 17 continuation chunks at 5k each.
         single_long_line = "x" * 85000
 
         file_path = "/single_long_line.txt"
@@ -1221,18 +1216,16 @@ class TestDeepAgentEndToEnd:
         assert len(tool_messages) > 0
         file_content = tool_messages[0].content
 
-        # `limit=1` (one source line) renders the wrapped chunks; size cap
-        # still trims when the formatted result exceeds the byte budget.
-        assert "1.1" in file_content
+        # `limit=1` admits the whole source line; the size cap then trims it.
+        assert file_content.startswith("@@ lines 1-1 @@\n")
         assert "Output was truncated due to size limits" in file_content
         assert len(file_content) <= 80000
 
     def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Wrapped long lines must not displace later source lines across pagination.
+        """Long lines must not displace later source lines across pagination.
 
-        Regression for #2453: previously `limit` re-truncated formatted output
-        after wrapping, so a 15k-char line on page 1 pushed `important
-        instruction` off the page, and page 2 resumed past it.
+        Regression for #2453: a 15k-char line on page 1 must not push
+        `important instruction` off the page and have page 2 resume past it.
         """
         long_line = "x" * 15000
         content = f"line1\n{long_line}\nimportant instruction\nline4"
@@ -1281,16 +1274,10 @@ class TestDeepAgentEndToEnd:
         combined = tool_messages[0].content + tool_messages[1].content
         assert "important instruction" in combined
         assert "line4" in combined
-        # The primary row and both continuation chunks of the wrapped line 2
-        # must render in order, before `important instruction`, with nothing
-        # dropped at the page boundary.
-        for marker in ("  2  ", "2.1  ", "2.2  "):
-            assert marker in combined, f"missing continuation marker {marker!r}"
-        idx_first = combined.index("  2  ")
-        idx_cont1 = combined.index("2.1  ")
-        idx_cont2 = combined.index("2.2  ")
-        idx_next = combined.index("important instruction")
-        assert idx_first < idx_cont1 < idx_cont2 < idx_next
+        # Source line 2 renders whole and in place, before `important
+        # instruction`, with nothing dropped at the page boundary.
+        assert long_line in combined
+        assert combined.index(long_line) < combined.index("important instruction")
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

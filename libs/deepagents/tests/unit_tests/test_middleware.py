@@ -2453,7 +2453,9 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content != EMPTY_CONTENT_WARNING
         numbered_content = result.content.partition("\n\n[Read")[0]
-        assert numbered_content == "\n".join(f"{line_number}  " for line_number in expected_rows)
+        marker = f"{expected_rows[0]}-{expected_rows[-1]}"
+        blank_rows = "\n".join("" for _ in expected_rows)
+        assert numbered_content == f"@@ lines {marker} @@\n{blank_rows}\n@@ end lines {marker} @@"
 
     @pytest.mark.parametrize(
         ("content", "serialization"),
@@ -2482,7 +2484,7 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         numbered_content = result.content.partition("\n\n[Read")[0]
-        assert numbered_content == "1  a\n2  b\n3  \n4  ", serialization
+        assert numbered_content == "@@ lines 1-4 @@\na\nb\n\n\n@@ end lines 1-4 @@", serialization
         assert "Read 4 lines" in result.content
 
     def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
@@ -2522,7 +2524,9 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         numbered_content = result.content.partition("\n\n[Read")[0]
-        assert numbered_content == "\n".join(f"{line_number}  " for line_number in range(2, end_line + 1))
+        marker = f"2-{end_line}"
+        blank_rows = "\n".join("" for _ in range(2, end_line + 1))
+        assert numbered_content == f"@@ lines {marker} @@\n{blank_rows}\n@@ end lines {marker} @@"
 
     def test_read_file_keeps_backend_truncation_banner_past_window(self):
         """Rows a backend appends beyond `end_line` survive padding."""

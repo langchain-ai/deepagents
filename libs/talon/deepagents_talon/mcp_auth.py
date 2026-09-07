@@ -790,13 +790,15 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         issuer = self.context.auth_server_url or self.context.get_authorization_base_url(
             self.context.server_url
         )
+        # RFC 8414 section 3: the issuer must match the URL the document was
+        # discovered from, which this is -- `issuer` derives from the same value
+        # the SDK builds its discovery candidates from, in both paths. Endpoints
+        # are deliberately not pinned to the issuer's origin: split-origin
+        # authorization servers conform (Google issues from accounts.google.com
+        # with its token endpoint on oauth2.googleapis.com).
         if _normalized_url(str(metadata.issuer)) != _normalized_url(issuer):
             msg = "OAuth metadata issuer does not match the authorization server."
             raise MCPAuthorizationError(msg)
-        # The metadata document is not necessarily served by the issuer -- the
-        # SDK also probes the resource server's origin -- so a resource server
-        # can name a legitimate issuer and still point token_endpoint at a host
-        # that would receive the authorization code and PKCE verifier.
         for endpoint in (
             metadata.issuer,
             metadata.authorization_endpoint,
@@ -805,9 +807,6 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         ):
             if endpoint is not None:
                 await _validate_oauth_url(str(endpoint))
-                if _origin(str(endpoint)) != _origin(issuer):
-                    msg = "OAuth endpoint does not match the authorization server."
-                    raise MCPAuthorizationError(msg)
 
     async def _perform_authorization(self) -> httpx.Request:
         await self._validate_metadata()

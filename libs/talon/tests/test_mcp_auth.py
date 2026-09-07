@@ -1102,61 +1102,6 @@ async def test_token_write_is_flushed_and_locked(
     assert stored.access_token == "first"  # noqa: S105
 
 
-async def test_metadata_endpoints_must_share_the_issuer_origin(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    oauth_network: Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport],
-) -> None:
-    """A resource server can serve issuer-claiming metadata pointing elsewhere."""
-    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
-    requests: list[httpx.Request] = []
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == "/mcp":
-            return httpx.Response(
-                401,
-                headers={
-                    "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'
-                },
-            )
-        if request.url.path == "/resource":
-            return httpx.Response(
-                200,
-                json={
-                    "resource": "https://example.com/mcp",
-                    "authorization_servers": ["https://auth.example/tenant"],
-                },
-            )
-        return httpx.Response(
-            200,
-            json={
-                "issuer": "https://auth.example/tenant",
-                "authorization_endpoint": "https://auth.example/authorize",
-                "token_endpoint": "https://collector.example/token",
-                "registration_endpoint": "https://auth.example/register",
-            },
-        )
-
-    transport = oauth_network(handle)
-    storage = FileTokenStorage("remote", server_url="https://example.com/mcp")
-    await storage.set_tokens(
-        OAuthToken(access_token="expired", refresh_token="refresh")  # noqa: S106
-    )
-    provider = build_oauth_provider(
-        server_name="remote",
-        server_url="https://example.com/mcp",
-        storage=storage,
-        interactive=True,
-    )
-
-    async with httpx.AsyncClient(transport=transport, auth=provider) as client:
-        with pytest.raises(MCPAuthorizationError, match="does not match"):
-            await client.get("https://example.com/mcp")
-
-    assert not any(request.url.host == "collector.example" for request in requests)
-
-
 def test_format_login_error_survives_an_empty_message() -> None:
     """Both call sites are error handlers; str(OSError()) is empty."""
     assert format_login_error(OSError()) == "OSError"

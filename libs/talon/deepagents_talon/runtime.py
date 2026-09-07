@@ -367,28 +367,16 @@ class DeepAgentRuntime:
                     cast("str", local["model"]), self.env, context_size=context_size
                 )
         general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
-        attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
-        main_tools = {
-            spec["name"]: cast("LocalSubAgent", spec)["main_tools"]
-            for spec in resolved
-            if "main_tools" in spec
-        }
-        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
-        delegated = {
-            name
-            for attachment in attachments
-            if attachment["name"] in main_tools
-            for name in attachment["tools"] or []
-            if name not in main_tools[attachment["name"]]
-        }
-        tools = [
-            item
-            for item in tools
-            if getattr(item, "name", getattr(item, "__name__", "")) not in delegated
+        local_subagents = [
+            spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
+        attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
-        task_tools = TaskTools(model, interrupt_on, cast("SubAgent | None", general))
+        task_tools = TaskTools(
+            model, interrupt_on, cast("SubAgent | None", general), subagents=local_subagents
+        )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
         interrupt_on = _interrupt_on_with_async_subagents(
@@ -1315,17 +1303,7 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
     if frontmatter.get("mode", "fresh") != "fresh":
         msg = "Talon subagents use fresh context; remove the mode setting"
         raise ValueError(msg)
-    spec["tool_names"] = _local_tool_names(frontmatter.get("tools", []))
-    if "optional_tools" in frontmatter:
-        spec["optional_tool_names"] = _local_tool_names(frontmatter["optional_tools"])
-    if set(spec["tool_names"]) & set(spec.get("optional_tool_names", [])):
-        msg = "Required and optional subagent tools must not overlap"
-        raise ValueError(msg)
-    if "main_tools" in frontmatter:
-        spec["main_tools"] = _local_tool_names(frontmatter["main_tools"])
-
-
-def _local_tool_names(names: object) -> list[str]:
+    names = frontmatter.get("tools", [])
     if (
         not isinstance(names, list)
         or any(not isinstance(name, str) or not name.strip() for name in names)
@@ -1333,7 +1311,7 @@ def _local_tool_names(names: object) -> list[str]:
     ):
         msg = "Local subagent tools must be unique, nonempty exact names"
         raise ValueError(msg)
-    return cast("list[str]", names)
+    spec["tool_names"] = cast("list[str]", names)
 
 
 def _normalize_subagent_metadata(

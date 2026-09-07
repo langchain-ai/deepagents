@@ -30,8 +30,6 @@ class LocalSubAgent(SubAgent):
     """Local frontmatter additions resolved before SDK graph construction."""
 
     tool_names: NotRequired[list[str]]
-    optional_tool_names: NotRequired[list[str]]
-    main_tools: NotRequired[list[str]]
 
 
 class Attachment(TypedDict):
@@ -58,18 +56,21 @@ _DELEGATION_TOOLS = frozenset(
 
 
 class TaskTools(AgentMiddleware):
-    """Let the main agent select general-purpose capabilities for each task."""
+    """Let the main agent add local subagent capabilities for each task."""
 
     def __init__(
         self,
         model: str | BaseChatModel,
         interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
         general: SubAgent | None = None,
+        *,
+        subagents: Sequence[SubAgent] = (),
     ) -> None:
         """Retain this graph's model and operator approval policy."""
         self._model = model
         self._interrupt_on = dict(interrupt_on or {})
         self._general = general or {}
+        self._locals = {spec["name"]: cast("LocalSubAgent", spec.copy()) for spec in subagents}
         self._task: BaseTool | None = None
 
     def bind(self, catalog: Mapping[str, BaseTool]) -> list[str]:
@@ -91,7 +92,8 @@ class TaskTools(AgentMiddleware):
                 " For general-purpose, tools defaults to none: choose exact tool names "
                 "from get_agent_tools, including execute for shell access. Supply task context "
                 "and skill instructions in description, or select read_file to read the skill. "
-                "No parent history or skills are inherited. Named agents use configured tools."
+                "No parent history or skills are inherited. For named local agents, tools adds "
+                "to configured tools for this task only; it does not replace them."
             ),
         )
         async def task(
@@ -100,9 +102,7 @@ class TaskTools(AgentMiddleware):
             runtime: ToolRuntime,
             tools: list[str] | None = None,
         ) -> str | Command:
-            if subagent_type != "general-purpose":
-                if tools is not None:
-                    return "Named subagent tools are fixed by configuration."
+            if subagent_type != "general-purpose" and not tools:
                 return await original.ainvoke(
                     {
                         "description": description,
@@ -113,6 +113,8 @@ class TaskTools(AgentMiddleware):
             tools = tools or []
             if len(tools) != len(set(tools)) or any(name not in available for name in tools):
                 return "Specify tools as a list of unique names from get_agent_tools."
+            if subagent_type != "general-purpose" and subagent_type not in self._locals:
+                return "Additional tools require a named local subagent."
             spec: LocalSubAgent = {
                 "name": "general-purpose",
                 "description": "Complete the delegated task.",
@@ -123,6 +125,16 @@ class TaskTools(AgentMiddleware):
                 spec["model"] = self._general["model"]
             if "system_prompt" in self._general:
                 spec["system_prompt"] = self._general["system_prompt"]
+            if subagent_type != "general-purpose":
+                spec = self._locals[subagent_type].copy()
+                names = spec.pop("tool_names", [])
+                if any(name not in available for name in names):
+                    return "Configured subagent tools are unavailable for this launch."
+                configured = _tool_map(spec.get("tools", []))
+                configured.update({name: available[name] for name in names})
+                spec["tools"] = list(configured.values()) + [
+                    available[name] for name in tools if name not in configured
+                ]
             agent = _compile_fresh(spec, self._model, self._interrupt_on)["runnable"]
             result = await agent.ainvoke({"messages": [HumanMessage(description)]})
             if result.get("__interrupt__"):
@@ -227,12 +239,6 @@ def prepare_subagents(
                 msg = "Subagent attachment is unavailable; previous configuration retained"
                 raise ValueError(msg)
             spec["tools"] = [available[name] for name in names]
-        if "optional_tool_names" in spec:
-            optional = spec.pop("optional_tool_names")
-            spec["tools"] = [
-                *spec.get("tools", []),
-                *(available[name] for name in optional if name in available),
-            ]
         opaque = "graph_id" in spec or "runnable" in spec
         inventory.append(
             {

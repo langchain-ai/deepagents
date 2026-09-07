@@ -248,17 +248,14 @@ optional.
 
 ## Research defaults
 
-Fresh assistant homes receive ordinary `AGENTS.md` files for main, `internal-research`,
-and `external-research`, loaded through the existing agent loader. Research gets fresh
-context, defensive prompts, and only available reads: common GitHub/Notion/mail/calendar
-operations internally; `fetch_url`, Tavily-backed `web_search`, and Tavily retrieval externally.
-No integrations are auto-connected. Review exact names and source scope for your setup.
-
-In agent frontmatter, `optional_tools: [exact_name]` skips unavailable tools without fallback;
-`tools` remains strict. `main_tools: []` removes that agent's attached tools from main;
-list names to retain direct access, or omit the field to preserve main's existing tools.
-Main retains filesystem, shell, configuration, and actions under existing approval controls.
-It chooses placement from the workflow and mediates minimal internal-to-external context.
+Fresh homes receive ordinary `AGENTS.md` files for main, `internal-research`, and
+`external-research`, with defensive prompts and `tools: []`. Main passes available
+research reads through `task(..., tools=[...])`: web/Tavily retrieval externally;
+applicable GitHub, Notion, email, and calendar reads internally. No integrations are
+connected automatically. Set persistent tools with standard `tools` frontmatter;
+launch-time additions apply only to that task. Main retains its tools and existing
+approval controls, chooses placement from the workflow, and mediates minimal
+internal-to-external context.
 
 Existing homes are unchanged. Review the packaged `deepagents_talon/defaults/` files,
 back up affected instructions, and merge the selected changes without replacing custom
@@ -282,12 +279,12 @@ edits retain the last valid configuration; running subagents keep their original
 configuration.
 
 Subagents use fresh task context; fork is unsupported. Attach local tools with
-`tools: [exact_tool_name]` (omitted means none); named agents use those configured tools.
+`tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
 `general-purpose` defaults to no tools. Pass a `tools` list to `task` on each launch
-to grant capabilities, including `execute` for shell access. Supply context and skill
+to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill
 instructions in `description` or select
 `read_file` to load them. `get_agent_tools` shows available attachments and inactive
-edits; `list_subagents` shows per-task selections.
+edits; `list_subagents` shows launch-time additions.
 
 `task` launches local subagents and `start_async_task` launches remote subagents.
 Both return immediately. The user can continue chatting while the main agent uses

@@ -381,6 +381,14 @@ optional.
 
 ## Research defaults
 
+Talon also installs the `configuration-hardening` skill and its reference under the
+assistant home's `skills/` directory, preserving existing files. Ask it to review
+tool separation or minimize tools; the default main instructions also trigger a
+placement review when tools or subagents change. The skill proposes scoped changes,
+uses existing confirmation controls, and verifies active attachments after reload.
+Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
+Existing customized main instructions need a reviewed update to add this trigger.
+
 On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research owns `fetch_url` and
 Tavily-backed `web_search`, attached at construction by default. Search is added

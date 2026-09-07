@@ -249,11 +249,12 @@ optional.
 ## Research defaults
 
 Fresh homes receive ordinary `AGENTS.md` files for main, `internal-research`, and
-`external-research`, with defensive prompts and `tools: []`. Main passes available
-research reads through `task(..., tools=[...])`: web/Tavily retrieval externally;
+`external-research`, with defensive prompts. External research owns `fetch_url` and
+Tavily-backed `web_search`; those tools are removed from main. Internal research starts
+with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as
 applicable GitHub, Notion, email, and calendar reads internally. No integrations are
 connected automatically. Set persistent tools with standard `tools` frontmatter;
-launch-time additions apply only to that task. Main retains its tools and existing
+launch-time additions apply only to that task. Main retains filesystem, action tools, and existing
 approval controls, chooses placement from the workflow, and mediates minimal
 internal-to-external context.
 

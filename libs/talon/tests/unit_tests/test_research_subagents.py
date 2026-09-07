@@ -58,9 +58,8 @@ def _runtime(root, monkeypatch, parent, child, **kwargs: object):
     return DeepAgentRuntime(
         model="test:parent",
         assistant_dir=root,
-        include_web_tools=False,
         skills=(),
-        **{"memory": (), **kwargs},
+        **{"include_web_tools": False, "memory": (), **kwargs},
     )
 
 

@@ -41,24 +41,25 @@ def test_install_only_on_fresh_setup(tmp_path):
 async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
     _install_defaults(tmp_path)
     model = ToolModel(responses=[AIMessage(content="Done")])
-    runtime = _runtime(tmp_path, monkeypatch, model, model)
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=True)
     await runtime.start()
     try:
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
-        assert agents["internal-research"] == agents["external-research"] == []
+        assert agents["internal-research"] == []
+        assert agents["external-research"] == ["fetch_url", "web_search"]
+        assert not {"fetch_url", "web_search"} & set(agents["main"])
         assert {"read_file", "write_file", "execute"} <= set(agents["main"])
         path = tmp_path / "agents" / "external-research" / "AGENTS.md"
         original = path.read_text()
-        path.write_text(original.replace("tools: []", "tools: [fetch_url, web_search]"))
+        path.write_text(original.replace("tools: [fetch_url, web_search]", "tools: [fetch_url]"))
         assert _inventory(runtime)["saved_changes_inactive"]
-        runtime.include_web_tools = True
         await runtime.reload_subagent_configuration()
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
-        assert agents["external-research"] == ["fetch_url", "web_search"]
-        assert "fetch_url" in agents["main"]
+        assert agents["external-research"] == ["fetch_url"]
+        assert "fetch_url" not in agents["main"]
         assert "web_search" in agents["main"]
         active = runtime._graph
-        path.write_text(original.replace("tools: []", "tools: null"))
+        path.write_text(original.replace("tools: [fetch_url, web_search]", "tools: null"))
         assert (await runtime._subagent_reload_tool().ainvoke({}))["status"] == "failed"
         assert runtime._graph is active
         assert _inventory(runtime)["saved_changes_inactive"]
@@ -67,7 +68,7 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
         path.write_text(original)
         await runtime.reload_subagent_configuration()
         assert not _inventory(runtime)["saved_changes_inactive"]
-        assert {"fetch_url", "web_search"} <= set(_inventory(runtime)["agents"][0]["tools"])
+        assert not {"fetch_url", "web_search"} & set(_inventory(runtime)["agents"][0]["tools"])
     finally:
         await runtime.stop()
 
@@ -115,15 +116,16 @@ async def test_research_injection_cannot_gain_tools(tmp_path, monkeypatch, fixtu
             AIMessage(content="Delegated"),
         ]
     )
-    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[source])
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[source], include_web_tools=True)
     await runtime.start()
     try:
         await runtime.invoke(AgentRequest("chat", "Find the deadline. Private marker: PRIVATE-123"))
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
-        assert agents[fixture["role"]] == []
+        base = ["fetch_url", "web_search"] if fixture["role"] == "external-research" else []
+        assert agents[fixture["role"]] == base
         assert source.name in agents["main"]
-        assert child._tools[-1] == [source.name]
+        assert set(child._tools[-1]) == {*base, source.name}
         assert "PRIVATE-123" not in str(child._seen)
         assert fixture["text"] in str(child._seen)
         denied = {
@@ -158,7 +160,13 @@ async def test_main_injection_cannot_fabricate_approval(tmp_path, monkeypatch, f
         ]
     )
     runtime = _runtime(
-        tmp_path, monkeypatch, parent, parent, tools=[send_email], interrupt_on={"send_email": True}
+        tmp_path,
+        monkeypatch,
+        parent,
+        parent,
+        tools=[send_email],
+        interrupt_on={"send_email": True},
+        include_web_tools=True,
     )
     if fixture["surface"] == "returned-evidence":
         parent.responses = parent.responses[1:]

@@ -57,7 +57,13 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
-from deepagents_talon.subagents import Attachment, LocalSubAgent, TaskTools, prepare_subagents
+from deepagents_talon.subagents import (
+    Attachment,
+    LocalSubAgent,
+    TaskTools,
+    _tool_map,
+    prepare_subagents,
+)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -372,6 +378,23 @@ class DeepAgentRuntime:
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
         resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
+        catalog = _tool_map(attachments_tools)
+        for spec in local_subagents:
+            local = cast("LocalSubAgent", spec)
+            if "tool_names" in local:
+                local["tools"] = [catalog[name] for name in local.pop("tool_names")]
+        delegated_web = {
+            name
+            for attachment in attachments
+            if attachment["name"] == "external-research"
+            for name in attachment["tools"] or []
+            if name in {"fetch_url", "web_search"}
+        }
+        tools = [
+            item
+            for item in tools
+            if getattr(item, "name", getattr(item, "__name__", "")) not in delegated_web
+        ]
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(

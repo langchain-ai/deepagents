@@ -13,7 +13,8 @@ import os
 import signal
 import tempfile
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -133,6 +134,12 @@ class _Turn:
 
 
 @dataclass(slots=True)
+class _ConversationLock:
+    lock: asyncio.Lock
+    holders: int = 0
+
+
+@dataclass(slots=True)
 class _BackgroundRetry:
     attempts: int
     deadline: float
@@ -207,7 +214,7 @@ class TalonHost:
         self.channels = tuple(channels)
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
-        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._locks: dict[str, _ConversationLock] = {}
         self._cron_controls: dict[str, _CronControl] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
@@ -225,6 +232,51 @@ class TalonHost:
         self._background_retries: dict[str, _BackgroundRetry] = {}
         self._stopped = asyncio.Event()
         self._running = False
+
+    @asynccontextmanager
+    async def _conversation_lock(self, conversation_root: str) -> AsyncIterator[None]:
+        """Serialize one conversation's work and forget it once nothing is left.
+
+        Args:
+            conversation_root: Conversation whose turns must not overlap.
+        """
+        control = self._locks.setdefault(conversation_root, _ConversationLock(asyncio.Lock()))
+        control.holders += 1
+        try:
+            async with control.lock:
+                yield
+        finally:
+            control.holders -= 1
+            # Nothing holds or awaits this lock, so replacing it cannot split
+            # mutual exclusion between an old object and a new one.
+            if control.holders == 0 and self._locks.get(conversation_root) is control:
+                del self._locks[conversation_root]
+                for conversation_id in {
+                    conversation_root,
+                    self._agent_conversation_id(conversation_root),
+                }:
+                    self._forget_idle_conversation(conversation_id)
+
+    def _forget_idle_conversation(self, conversation_id: str) -> None:
+        """Drop turn state for a conversation with nothing left in flight.
+
+        Args:
+            conversation_id: Agent conversation whose turn state may be dropped.
+        """
+        task = self._tasks.get(conversation_id)
+        if (
+            (task is not None and not task.done())
+            or conversation_id in self._conversation_tasks
+            or conversation_id in self._blocked
+            or conversation_id in self._background_routes
+            or conversation_id in self._pending_tool_approvals
+            or conversation_id in self._pending_authorizations
+            or conversation_id in self._authorization_flows
+            or conversation_id in self._terminal_authorizations
+        ):
+            return
+        self._tasks.pop(conversation_id, None)
+        self._generations.pop(conversation_id, None)
 
     @property
     def running(self) -> bool:
@@ -354,7 +406,7 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        async with self._locks[conversation_root]:
+        async with self._conversation_lock(conversation_root):
             agent_conversation_id = self._agent_conversation_id(conversation_root)
 
             if await self._handle_conversation_command(
@@ -530,7 +582,12 @@ class TalonHost:
         if not isinstance(self.agent, BackgroundRuntime):
             return
         for owner, (channel, message, root, provider) in list(self._background_routes.items()):
-            async with self._locks[root]:
+            control = self._locks.get(root)
+            if control is not None and control.lock.locked():
+                # A turn or a command owns this conversation, and cancelling one can
+                # take 30 seconds. Leave it and retry on the next tick.
+                continue
+            async with self._conversation_lock(root):
                 active = self._tasks.get(owner)
                 if active is not None and not active.done():
                     continue
@@ -635,7 +692,7 @@ class TalonHost:
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
             self._clear_authorization(agent_conversation_id)
-        async with self._locks[turn.conversation_root]:
+        async with self._conversation_lock(turn.conversation_root):
             if (
                 self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
                 and self._generations[agent_conversation_id] == turn.generation
@@ -743,13 +800,16 @@ class TalonHost:
             await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
             return
         try:
-            await self.agent.clear_history(channel_key, chat)
+            # Persist the counter first: a failure here clears nothing, so the retry the
+            # user is told to send still has an archive to clear. The reverse order can
+            # erase history while leaving the conversation on its old thread id.
             next_resets = {
                 **self._conversation_resets,
                 conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
             }
             _save_conversation_resets(self.config.conversation_state_path, next_resets)
             self._conversation_resets = next_resets
+            await self.agent.clear_history(channel_key, chat)
         except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
             logger.warning("Conversation history reset failed", exc_info=True)
             message = "Could not finish clearing history. Please try /reset-all-history again."
@@ -1331,6 +1391,7 @@ class TalonHost:
             tasks.discard(task)
             if not tasks:
                 del self._conversation_tasks[conversation_id]
+        self._forget_idle_conversation(conversation_id)
         if task.cancelled():
             return
         exc = task.exception()

@@ -84,6 +84,37 @@ class FailingStopAgent(BlockingAgent):
         raise RuntimeError(message)
 
 
+class StubBackground:
+    def __init__(self) -> None:
+        self.pending: set[str] = set()
+
+    def owners(self) -> set[str]:
+        return set(self.pending)
+
+    def results(self, owner: str) -> dict[str, str]:
+        return {f"{owner}-task": "result"} if owner in self.pending else {}
+
+    async def cancel(self, owner: str | None = None) -> bool:
+        self.pending.discard(owner) if owner else self.pending.clear()
+        return True
+
+
+class ArchiveAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history_enabled = True
+        self.cleared: list[tuple[str, str]] = []
+
+    async def clear_history(self, channel: str, chat: str) -> None:
+        self.cleared.append((channel, chat))
+
+
+class RoutedAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.background = StubBackground()
+
+
 class BackgroundAgent(BlockingAgent):
     def __init__(self) -> None:
         super().__init__()
@@ -1555,3 +1586,83 @@ async def test_background_delivery_survives_a_failing_tick(
     assert ticks == 2
     assert "dispatch exploded" in caplog.text
     await host.stop()
+
+
+async def test_one_locked_conversation_does_not_stall_delivery_for_others(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    agent = RoutedAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        for owner in ("stuck", "waiting"):
+            agent.background.pending.add(owner)
+            host._background_routes[owner] = (
+                channel,
+                ChannelMessage(owner, "research"),
+                owner,
+                "test",
+            )
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold() -> None:
+            async with host._conversation_lock("stuck"):
+                held.set()
+                await release.wait()
+
+        holder = asyncio.create_task(hold())
+        await asyncio.wait_for(held.wait(), 2)
+
+        await asyncio.wait_for(host._dispatch_background_results(), 2)
+
+        assert "waiting" in host._tasks
+        assert "stuck" not in host._tasks
+    finally:
+        release.set()
+        await asyncio.gather(holder, return_exceptions=True)
+        await host.stop()
+
+
+async def test_finished_conversations_do_not_accumulate_state(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        for index in range(3):
+            await host.receive_message(channel, ChannelMessage(f"chat{index}", "hello"))
+            await asyncio.wait_for(host._tasks[f"chat{index}"], 2)
+        await asyncio.sleep(0)
+
+        assert len(channel.sent) == 3
+        assert host._locks == {}
+        assert host._tasks == {}
+        assert dict(host._generations) == {}
+    finally:
+        await host.stop()
+
+
+async def test_history_reset_keeps_the_archive_when_the_counter_cannot_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = RecordingChannel()
+    agent = ArchiveAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        message = "disk full"
+        raise OSError(message)
+
+    monkeypatch.setattr("deepagents_talon.host._save_conversation_resets", refuse)
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage("chat", "/reset-all-history"))
+
+        assert agent.cleared == []
+        assert "try /reset-all-history again" in channel.sent[-1][1]
+        assert host._agent_conversation_id("chat") == "chat"
+    finally:
+        await host.stop()

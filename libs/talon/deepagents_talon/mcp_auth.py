@@ -12,7 +12,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
@@ -48,7 +48,7 @@ from deepagents_talon.authorization import (
     current_authorization_handler,
     current_authorization_invocation,
 )
-from deepagents_talon.mcp_config import warn_agent_workspace_path
+from deepagents_talon.mcp_config import locked_path, warn_agent_workspace_path
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -77,6 +77,27 @@ _REDIRECT_STATUS = 300
 _BAD_REQUEST_STATUS = 400
 _SERVER_ERROR_STATUS = 500
 _UNSAFE_ENDPOINT_MESSAGE = "OAuth endpoint is not a safe public HTTPS URL."
+
+
+def _no_authorization_channel_error(server_name: str) -> MCPAuthorizationError:
+    """Return the failure for a run with nowhere to send an authorization prompt.
+
+    The conversation may well be interactive; what is missing is a handler for
+    this run. Scheduled jobs invoke the agent without one, and a background
+    subagent does not inherit it, so name the remedy instead of the channel.
+
+    Args:
+        server_name: Configured MCP server name, for the login command.
+
+    Returns:
+        The error to raise.
+    """
+    msg = (
+        "MCP authorization has no conversation to prompt in: this run was not "
+        "started by a channel message (a scheduled job or a background subagent). "
+        f"Authorize from a chat, or run: deepagents-talon mcp login {server_name}"
+    )
+    return MCPAuthorizationError(msg)
 
 
 class _AuthorizationServerMetadata(BaseModel):
@@ -192,12 +213,18 @@ class FileTokenStorage:
         return float(raw)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Persist OAuth tokens and their absolute expiry time."""
+        """Persist OAuth tokens and their absolute expiry time.
+
+        RFC 6749 section 6 lets a refresh response omit `refresh_token`, meaning
+        "keep the one you have", and many servers do. Replacing the whole blob
+        would destroy the long-lived credential on the first such refresh and
+        force a full interactive login, so the stored value is carried forward.
+        """
         values = {
             "tokens": json.loads(tokens.model_dump_json()),
             "expires_at": _token_expiry(tokens),
         }
-        await asyncio.to_thread(self._update_values, values)
+        await asyncio.to_thread(self._update_values, values, keep_refresh_token=True)
         _mark_authorization_complete()
 
     async def set_tokens_and_client_info(
@@ -211,7 +238,7 @@ class FileTokenStorage:
             "expires_at": _token_expiry(tokens),
             "client_info": json.loads(client_info.model_dump_json(exclude_none=True)),
         }
-        await asyncio.to_thread(self._update_values, values)
+        await asyncio.to_thread(self._update_values, values, keep_refresh_token=True)
         _mark_authorization_complete()
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
@@ -238,7 +265,9 @@ class FileTokenStorage:
     def _update(self, key: str, value: object) -> None:
         self._update_values({key: value})
 
-    def _update_values(self, values: dict[str, object]) -> None:
+    def _update_values(
+        self, values: dict[str, object], *, keep_refresh_token: bool = False
+    ) -> None:
         directory = self.path.parent
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         for parent in self._directories[:-1]:
@@ -247,23 +276,52 @@ class FileTokenStorage:
             with contextlib.suppress(OSError):
                 parent.chmod(0o700)
         directory.chmod(0o700)
-        data = self._read() or {}
-        data.update(values)
+        # Two concurrent refreshes read-modify-write the same file, so without
+        # the lock one side's tokens and client_info are silently dropped.
+        with locked_path(self.path):
+            data = self._read() or {}
+            if keep_refresh_token:
+                values = _with_stored_refresh_token(values, data)
+            data.update(values)
+            self._write(data, directory)
+
+    def _write(self, data: dict[str, object], directory: Path) -> None:
         descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".tokens-", text=True)
         try:
             os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            stream = os.fdopen(descriptor, "w", encoding="utf-8")
+            # fdopen owns the descriptor from here, and this runs on a worker
+            # thread: closing it twice could close an unrelated reused fd.
+            descriptor = -1
+            with stream as file:
                 json.dump(data, file)
+                file.flush()
+                os.fsync(file.fileno())
             Path(temporary).replace(self.path)
         except BaseException:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
+            if descriptor != -1:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
             Path(temporary).unlink(missing_ok=True)
             raise
 
 
 def _token_expiry(tokens: OAuthToken) -> float | None:
     return time.time() + tokens.expires_in if tokens.expires_in is not None else None
+
+
+def _with_stored_refresh_token(
+    values: dict[str, object], data: dict[str, object]
+) -> dict[str, object]:
+    incoming = values.get("tokens")
+    stored = data.get("tokens")
+    if not isinstance(incoming, dict) or not isinstance(stored, dict):
+        return values
+    current = cast("dict[str, object]", incoming)
+    previous = cast("dict[str, object]", stored)
+    if current.get("refresh_token") is not None or previous.get("refresh_token") is None:
+        return values
+    return {**values, "tokens": {**current, "refresh_token": previous["refresh_token"]}}
 
 
 def _mark_authorization_complete() -> None:
@@ -490,8 +548,7 @@ async def _present_device_code(
     invocation_id = current_authorization_invocation()
     attempt = current_authorization_attempt()
     if handler is None or invocation_id is None or attempt is None:
-        msg = "MCP authorization requires an interactive Talon channel"
-        raise MCPAuthorizationError(msg)
+        raise _no_authorization_channel_error(server_name)
     binding = AuthorizationBinding(
         server_name=server_name,
         invocation_id=invocation_id,
@@ -736,6 +793,10 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         if _normalized_url(str(metadata.issuer)) != _normalized_url(issuer):
             msg = "OAuth metadata issuer does not match the authorization server."
             raise MCPAuthorizationError(msg)
+        # The metadata document is not necessarily served by the issuer -- the
+        # SDK also probes the resource server's origin -- so a resource server
+        # can name a legitimate issuer and still point token_endpoint at a host
+        # that would receive the authorization code and PKCE verifier.
         for endpoint in (
             metadata.issuer,
             metadata.authorization_endpoint,
@@ -744,6 +805,9 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         ):
             if endpoint is not None:
                 await _validate_oauth_url(str(endpoint))
+                if _origin(str(endpoint)) != _origin(issuer):
+                    msg = "OAuth endpoint does not match the authorization server."
+                    raise MCPAuthorizationError(msg)
 
     async def _perform_authorization(self) -> httpx.Request:
         await self._validate_metadata()
@@ -882,8 +946,7 @@ def _channel_handlers(
         invocation_id = current_authorization_invocation()
         attempt = current_authorization_attempt()
         if handler is None or invocation_id is None or attempt is None:
-            msg = "MCP authorization requires an interactive Talon channel"
-            raise MCPAuthorizationError(msg)
+            raise _no_authorization_channel_error(server_name)
         binding = AuthorizationBinding(
             server_name=server_name,
             invocation_id=invocation_id,
@@ -996,9 +1059,21 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
 
 
 def format_login_error(exc: BaseException) -> str:
-    """Return a credential-safe OAuth failure message."""
+    """Return a credential-safe OAuth failure message.
+
+    Args:
+        exc: Failure to describe.
+
+    Returns:
+        The first line of the message for exception types whose text is known
+        not to embed credentials, and the type name otherwise -- including when
+        the message is empty, as `str(OSError())` is. Both call sites are
+        themselves error handlers, so this must not raise.
+    """
     if isinstance(exc, (OSError, ValidationError, TypeError, ValueError)):
-        return str(exc).splitlines()[0]
+        first = str(exc).splitlines()
+        if first and first[0]:
+            return first[0]
     return type(exc).__name__
 
 

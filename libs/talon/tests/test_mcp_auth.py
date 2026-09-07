@@ -4,8 +4,10 @@ import asyncio
 import ipaddress
 import json
 import logging
+import os
 import socket
 import stat
+import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -26,12 +28,14 @@ from deepagents_talon.mcp_auth import (
     _discover_device_metadata,
     _issuer_endpoint,
     _OAuthSafeTransport,
+    _present_device_code,
     build_oauth_provider,
     extract_oauth_callback_url,
+    format_login_error,
     prepare_device_client,
     prepare_oauth_login,
 )
-from deepagents_talon.mcp_config import WORKSPACE_ENV
+from deepagents_talon.mcp_config import WORKSPACE_ENV, locked_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -981,3 +985,202 @@ async def test_token_storage_tightens_intermediate_directories(
     assert stat.S_IMODE(state.stat().st_mode) == 0o700
     assert stat.S_IMODE(storage.path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(storage.path.stat().st_mode) == 0o600
+
+
+async def test_refresh_without_a_refresh_token_keeps_the_stored_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RFC 6749 section 6 lets a refresh response omit refresh_token."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(access_token="first", refresh_token="long-lived")  # noqa: S106
+    )
+
+    await storage.set_tokens(OAuthToken(access_token="second"))  # noqa: S106
+
+    stored = await storage.get_tokens()
+    assert stored is not None
+    assert stored.access_token == "second"  # noqa: S105
+    assert stored.refresh_token == "long-lived"  # noqa: S105
+
+
+async def test_refresh_with_a_new_refresh_token_replaces_the_stored_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(access_token="first", refresh_token="rotated-away")  # noqa: S106
+    )
+
+    await storage.set_tokens(
+        OAuthToken(access_token="second", refresh_token="rotated-in")  # noqa: S106
+    )
+
+    stored = await storage.get_tokens()
+    assert stored is not None
+    assert stored.refresh_token == "rotated-in"  # noqa: S105
+
+
+async def test_failed_token_write_closes_its_descriptor_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second close on a worker thread can land on an unrelated reused fd."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    descriptors: list[int] = []
+    mkstemp = tempfile.mkstemp
+
+    def record_mkstemp(**kwargs: object) -> tuple[int, str]:
+        descriptor, name = mkstemp(**kwargs)
+        descriptors.append(descriptor)
+        return descriptor, name
+
+    closed: list[int] = []
+    real_close = os.close
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.tempfile.mkstemp", record_mkstemp)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.os.close", record_close)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.json.dump", explode)
+
+    with pytest.raises(OSError, match="disk full"):
+        await storage.set_tokens(OAuthToken(access_token="secret"))  # noqa: S106
+
+    assert descriptors
+    # The stream owns the descriptor once fdopen succeeds and closes it on exit.
+    assert [descriptor for descriptor in closed if descriptor in descriptors] == []
+    assert list(storage.path.parent.glob(".tokens-*")) == []
+
+
+async def test_token_write_is_flushed_and_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent refreshes must not interleave a read-modify-write."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("deepagents_talon.mcp_config._LOCK_TIMEOUT_SECONDS", 0.1)
+    synced: list[int] = []
+    real_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced.append(descriptor)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.os.fsync", record_fsync)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(OAuthToken(access_token="first"))  # noqa: S106
+    assert synced
+
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold_the_lock() -> None:
+        with locked_path(storage.path):
+            holding.set()
+            release.wait(5.0)
+
+    holder = threading.Thread(target=hold_the_lock)
+    holder.start()
+    try:
+        assert holding.wait(5.0)
+        with pytest.raises(TimeoutError):
+            await storage.set_tokens(OAuthToken(access_token="second"))  # noqa: S106
+    finally:
+        release.set()
+        holder.join(5.0)
+
+    stored = await storage.get_tokens()
+    assert stored is not None
+    assert stored.access_token == "first"  # noqa: S105
+
+
+async def test_metadata_endpoints_must_share_the_issuer_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_network: Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport],
+) -> None:
+    """A resource server can serve issuer-claiming metadata pointing elsewhere."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'
+                },
+            )
+        if request.url.path == "/resource":
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://example.com/mcp",
+                    "authorization_servers": ["https://auth.example/tenant"],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "issuer": "https://auth.example/tenant",
+                "authorization_endpoint": "https://auth.example/authorize",
+                "token_endpoint": "https://collector.example/token",
+                "registration_endpoint": "https://auth.example/register",
+            },
+        )
+
+    transport = oauth_network(handle)
+    storage = FileTokenStorage("remote", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(access_token="expired", refresh_token="refresh")  # noqa: S106
+    )
+    provider = build_oauth_provider(
+        server_name="remote",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+
+    async with httpx.AsyncClient(transport=transport, auth=provider) as client:
+        with pytest.raises(MCPAuthorizationError, match="does not match"):
+            await client.get("https://example.com/mcp")
+
+    assert not any(request.url.host == "collector.example" for request in requests)
+
+
+def test_format_login_error_survives_an_empty_message() -> None:
+    """Both call sites are error handlers; str(OSError()) is empty."""
+    assert format_login_error(OSError()) == "OSError"
+    assert format_login_error(ValueError("first line\nsecond")) == "first line"
+
+
+async def test_authorization_without_a_conversation_names_the_remedy() -> None:
+    """Scheduled jobs and background subagents run without an authorization handler."""
+    device = _DeviceCodeResponse(
+        device_code=SecretStr("device-secret"),
+        user_code=SecretStr("ABCD-1234"),
+        verification_uri="https://auth.example/activate",
+        expires_in=120,
+    )
+
+    with pytest.raises(MCPAuthorizationError) as caught:
+        await _present_device_code(
+            "notion",
+            device,
+            deadline=0.0,
+            interactive=False,
+        )
+
+    message = str(caught.value)
+    assert "scheduled job or a background subagent" in message
+    assert "deepagents-talon mcp login notion" in message
+    assert "device-secret" not in message

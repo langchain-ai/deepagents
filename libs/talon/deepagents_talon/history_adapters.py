@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import logging
 import math
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -31,6 +32,10 @@ EMBEDDING_CACHE: ContextVar[dict[tuple[bool, str], list[float]] | None] = Contex
     "talon_history_embeddings", default=None
 )
 _REQUEST_TIMEOUT = 30
+# A Store worker thread must never wait on the event loop indefinitely, so the
+# bridge polls for a loop that has stopped and enforces an overall deadline.
+_BRIDGE_TIMEOUT_SECONDS = 300
+_BRIDGE_POLL_SECONDS = 1
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +171,22 @@ class BoundedEmbeddings(Embeddings):
             operation.close()
             msg = "Use async history embeddings on the event loop"
             raise RuntimeError(msg)
-        return asyncio.run_coroutine_threadsafe(operation, self.loop).result()
+        future = asyncio.run_coroutine_threadsafe(operation, self.loop)
+        deadline = time.monotonic() + _BRIDGE_TIMEOUT_SECONDS
+        while True:
+            try:
+                return future.result(timeout=_BRIDGE_POLL_SECONDS)
+            except TimeoutError:
+                # A loop that has stopped will never run the coroutine, and waiting on
+                # it holds the Store's worker thread open through its own shutdown.
+                if self.loop.is_closed() or not self.loop.is_running():
+                    future.cancel()
+                    msg = "History embeddings stopped; the event loop is no longer running"
+                    raise RuntimeError(msg) from None
+                if time.monotonic() >= deadline:
+                    future.cancel()
+                    msg = "History embedding exceeded its deadline waiting for the event loop"
+                    raise RuntimeError(msg) from None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Bridge Store worker threads to the owned async client."""

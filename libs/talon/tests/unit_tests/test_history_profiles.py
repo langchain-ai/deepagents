@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -578,6 +580,61 @@ async def test_threaded_store_uses_native_async_embeddings(tmp_path):
     assert result[0].key == "one"
     assert raw.documents == ["document"]
     assert set(raw.queries) == {"question"}
+
+
+async def test_sync_store_api_is_refused_rather_than_embedding_in_the_lock(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    raw = RecordingEmbeddings()
+    embed = BoundedEmbeddings(raw, configuration(tmp_path).history_embedding_profile)
+    store = PreparedVectorStore(
+        InMemoryStore(index={"dims": 2, "embed": embed, "fields": ["text"]}), embed
+    )
+    # Delegating would embed from the Store's worker thread inside the database lock.
+    with pytest.raises(NotImplementedError, match="async Store API"):
+        store.put(("test",), "one", {"text": "document"})
+    assert raw.documents == []
+
+
+async def test_prepared_store_indexes_configured_fields_without_assuming_text(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    raw = RecordingEmbeddings()
+    embed = BoundedEmbeddings(raw, configuration(tmp_path).history_embedding_profile)
+    store = PreparedVectorStore(
+        InMemoryStore(index={"dims": 2, "embed": embed, "fields": ["body"]}), embed
+    )
+    await store.aput(("test",), "one", {"body": "document"}, index=["body"])
+    assert raw.documents == ["document"]
+
+
+async def test_bridge_gives_up_when_the_loop_cannot_run_the_coroutine(tmp_path, monkeypatch):
+    # raising=False so an unbounded bridge fails on the hang itself, not the constant.
+    monkeypatch.setattr(history_adapters, "_BRIDGE_TIMEOUT_SECONDS", 0.1, raising=False)
+    monkeypatch.setattr(history_adapters, "_BRIDGE_POLL_SECONDS", 0.02, raising=False)
+    profile = configuration(tmp_path).history_embedding_profile
+    embed = BoundedEmbeddings(RecordingEmbeddings(), profile)
+    outcome = []
+
+    def call():
+        try:
+            embed.embed_documents(["text"])
+        except RuntimeError as error:
+            outcome.append(error)
+
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    # Never awaiting keeps the loop from serving the worker's coroutine at all, which
+    # is the state a stopping loop leaves it in. Without a bound the worker would wait
+    # here forever, holding the Store's own shutdown open.
+    time.sleep(0.5)  # noqa: ASYNC251  # Stalling the loop is what this test reproduces.
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert "deadline" in str(outcome[0])
 
 
 async def test_adapter_client_is_closed_when_the_archive_closes(tmp_path, monkeypatch):

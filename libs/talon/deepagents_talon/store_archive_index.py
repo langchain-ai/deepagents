@@ -139,13 +139,19 @@ class StoreVectorArchive:
             return False
 
     async def lexical(self, scope: ArchiveScope, query: str, limit: int) -> list[str]:
-        """Find literal keyword candidates without backend-specific full-text operators."""
+        """Find literal keyword candidates without backend-specific full-text operators.
+
+        Stops at the archive's scan budget rather than raising: these candidates are
+        fused with the semantic ranking, so a short list degrades recall while a
+        raised error would fail a search the semantic leg had already answered.
+        """
         entries = await self.archive._text_entries(  # noqa: SLF001  # Storage adapter shares archive retrieval.
             scope,
             query=query,
             session_id="",
             after=0,
             limit=limit,
+            partial=True,
         )
         return [str(entry["cursor"]) for entry in entries]
 

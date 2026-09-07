@@ -45,7 +45,15 @@ class PreparedVectorStore(BaseStore):
         }
         for op in operations:
             if isinstance(op, SearchOp) and op.query is not None:
-                cache[True, op.query] = await self.embed.aembed_query(op.query)
+                vector = await self.embed.aembed_query(op.query)
+                cache[True, op.query] = vector
+                # Only some Stores embed a search through aembed_query; SQLite and
+                # PostgreSQL route it through aembed_documents instead. Publishing the
+                # query vector under the document key too keeps query prompts and
+                # provider input types backend-neutral, without a second round trip.
+                # A document in this same batch keeps its own vector: that one is
+                # stored durably, while a query vector is used once and discarded.
+                cache.setdefault((False, op.query), vector)
         token = EMBEDDING_CACHE.set(cache)
         try:
             return await self.store.abatch(operations)

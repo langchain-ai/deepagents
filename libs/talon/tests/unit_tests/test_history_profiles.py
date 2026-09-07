@@ -599,6 +599,31 @@ async def test_threaded_store_uses_native_async_embeddings(tmp_path):
     assert set(raw.queries) == {"question"}
 
 
+async def test_query_prompt_reaches_stores_that_embed_searches_as_documents(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    class DocumentSearchStore(InMemoryStore):
+        # PostgreSQL and SQLite both embed a search through aembed_documents; only the
+        # SQLite subclass marks those calls as queries, so this stands in for the rest.
+        async def _aembed_search_queries(self, search_ops):
+            queries = list({op.query for op, _ in search_ops.values() if op.query})
+            return dict(zip(queries, await self.embeddings.aembed_documents(queries), strict=True))
+
+    raw = RecordingEmbeddings()
+    profile = configuration(tmp_path, QUERY_PROMPT="Instruct: ").history_embedding_profile
+    embed = BoundedEmbeddings(raw, profile)
+    store = PreparedVectorStore(
+        DocumentSearchStore(index={"dims": 2, "embed": embed, "fields": ["text"]}), embed
+    )
+    await store.aput(("test",), "one", {"text": "document"})
+    assert (await store.asearch(("test",), query="question"))[0].key == "one"
+    assert raw.queries == ["Instruct: question"]
+    # The query must not be re-embedded as an unprefixed document inside the batch.
+    assert raw.documents == ["document"]
+
+
 async def test_vector_plugin_receives_generation_and_deletion_mode(tmp_path, monkeypatch):
     from contextlib import asynccontextmanager  # noqa: PLC0415
 

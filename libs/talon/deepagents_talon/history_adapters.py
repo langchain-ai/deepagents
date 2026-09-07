@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
+import inspect
 import logging
 import math
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -16,9 +16,10 @@ from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
 from deepagents_talon.config import TalonConfigError
+from deepagents_talon.history_drivers import load_driver
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine
+    from collections.abc import AsyncIterator, Callable, Coroutine
     from types import ModuleType
 
     from deepagents_talon.config import TalonConfig
@@ -49,17 +50,33 @@ async def open_profile(config: TalonConfig) -> AsyncIterator[EmbeddingProfile | 
         except Exception:  # noqa: BLE001  # Provider validation can include API keys.
             msg = "Could not initialize history embeddings; check the selected adapter and settings"
             raise TalonConfigError(msg) from None
+        # Registered here rather than per adapter: `atlas` and `voyage` previously
+        # had no cleanup at all, and a reindex reopens the archive, so a client that
+        # keeps its pool past close leaks sockets on every cycle.
+        _register_close(stack, embed)
         if profile.client_side:
             embed = BoundedEmbeddings(embed, profile)
         yield replace(profile, embed=embed)
 
 
+async def _close_client(closer: Callable[[], object]) -> None:
+    # A synchronous close tears down sockets, so it runs off the event loop; an
+    # async one only builds its coroutine there and is awaited here.
+    result = await asyncio.to_thread(closer)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _register_close(stack: AsyncExitStack, embed: object) -> None:
+    for name in ("aclose", "close"):
+        closer = getattr(embed, name, None)
+        if callable(closer):
+            stack.push_async_callback(_close_client, closer)
+            return
+
+
 def _driver(module: str, extra: str) -> ModuleType:
-    try:
-        return importlib.import_module(module)
-    except ImportError:
-        msg = f"History embeddings require deepagents-talon[{extra}]: uv sync --extra {extra}"
-        raise ImportError(msg) from None
+    return load_driver(module, extra, "History embeddings require")
 
 
 async def _adapter(
@@ -69,14 +86,12 @@ async def _adapter(
         _driver("sentence_transformers", "history-local")
         from deepagents_talon.history_embeddings import HistoryEmbeddings  # noqa: PLC0415
 
-        embed = HistoryEmbeddings(
+        return HistoryEmbeddings(
             model=profile.model,
             max_input_tokens=profile.max_input_tokens,
             batch_size=profile.batch_size,
             query_prompt="",
         )
-        stack.push_async_callback(embed.aclose)
-        return embed
     if profile.adapter == "atlas":
         driver = _driver("langchain_mongodb.embeddings", "mongodb")
         return driver.AutoEmbeddings(model=profile.model)

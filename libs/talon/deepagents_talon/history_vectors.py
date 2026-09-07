@@ -38,6 +38,13 @@ _MAX_SEARCH_PAGES = 32
 _BATCH_SIZE = 4
 _RETRY_SECONDS = 30
 _SEARCH_TIMEOUT_SECONDS = 2
+# One indexing batch embeds up to 500 chunks in sequential provider requests, each
+# already bounded by the adapter's own request timeout, so this only has to catch a
+# Store write that never returns at all.
+_BATCH_TIMEOUT_SECONDS = 300
+# Unacknowledged work is retried from durable state on the next start, so abandoning
+# a wedged batch at shutdown costs a repeat, never data.
+_CLOSE_TIMEOUT_SECONDS = 10
 
 
 @dataclass
@@ -70,8 +77,9 @@ class HistoryVectorIndex:
     ) -> None:
         """Keep indexing separate from checkpoint persistence."""
         self.profile = profile
-        self._slots = asyncio.Semaphore(profile.concurrency if profile else 1)
-        # Indexing can occupy every configured slot, so a search holds its own.
+        # Indexing needs no permit of its own: every non-query caller holds `self.lock`
+        # for the whole batch, so at most one is ever outstanding. Provider concurrency
+        # is bounded by `BoundedEmbeddings.slots` instead.
         self._query_slots = asyncio.Semaphore(1)
         self._pending: set[asyncio.Task[list[Result]]] = set()
         self.search_visibility = search_visibility
@@ -91,13 +99,28 @@ class HistoryVectorIndex:
         self.task = asyncio.create_task(self._run(), name="talon-history-index")
 
     async def close(self) -> None:
-        """Finish the active batch before the caller closes database connections."""
+        """Finish the active batch before the caller closes database connections.
+
+        A Store write that never returns must not hold host shutdown open forever, so
+        the batch is abandoned once the deadline passes and retried on the next start.
+        """
         self.stopping = True
         self.wake.set()
-        if self.task is not None:
-            await self.task
-        if self._pending:
-            await asyncio.gather(*self._pending, return_exceptions=True)
+        tasks = [task for task in (self.task, *self._pending) if task is not None]
+        if not tasks:
+            return
+        _, unfinished = await asyncio.wait(tasks, timeout=_CLOSE_TIMEOUT_SECONDS)
+        if unfinished:
+            logger.warning(
+                "History vector indexing did not stop within %ss; abandoning the active batch "
+                "for the next start to retry",
+                _CLOSE_TIMEOUT_SECONDS,
+            )
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*unfinished, return_exceptions=True)
+        if self.task is not None and not self.task.cancelled() and (error := self.task.exception()):
+            raise error
 
     def namespace(self, channel: str, chat: str) -> tuple[str, ...]:
         """Build a collision-resistant namespace without Store-specific escaping.
@@ -109,8 +132,9 @@ class HistoryVectorIndex:
         return ("talon_history", self.identity, _digest(channel), _digest(chat))
 
     async def _batch(self, operations: Sequence[Op], *, query: bool = False) -> list[Result]:
-        slots = self._query_slots if query else self._slots
-        await slots.acquire()
+        slots = self._query_slots if query else None
+        if slots is not None:
+            await slots.acquire()
         task = asyncio.create_task(self._call_store(operations, slots))
         self._pending.add(task)
         task.add_done_callback(self._finished)
@@ -123,11 +147,15 @@ class HistoryVectorIndex:
             return await task
         return await asyncio.shield(task)
 
-    async def _call_store(self, operations: Sequence[Op], slots: asyncio.Semaphore) -> list[Result]:
+    async def _call_store(
+        self, operations: Sequence[Op], slots: asyncio.Semaphore | None
+    ) -> list[Result]:
         try:
-            return await self.store.abatch(operations)
+            async with asyncio.timeout(_BATCH_TIMEOUT_SECONDS):
+                return await self.store.abatch(operations)
         finally:
-            slots.release()
+            if slots is not None:
+                slots.release()
 
     def _finished(self, task: asyncio.Task[list[Result]]) -> None:
         self._pending.discard(task)
@@ -174,7 +202,12 @@ class HistoryVectorIndex:
             except Exception as error:  # noqa: BLE001  # Optional indexing must not stop conversation writes.
                 failures += 1
                 delay = _retry_delay(error, failures)
-                logger.warning("History vector indexing failed; pending work will be retried")
+                # Without the cause a permanently broken backend repeats an identical
+                # line forever; the adapter's dimension and credential errors name the
+                # exact settings that fix them.
+                logger.warning(
+                    "History vector indexing failed; retrying in %.0fs", delay, exc_info=error
+                )
             if failures:
                 await self._backoff(delay)
             else:
@@ -286,10 +319,13 @@ class HistoryVectorIndex:
             items = cast("list[SearchItem]", results[0])
             keys = [item.key for item in items if item.score is not None]
         except TimeoutError:
-            logger.warning("History vector search timed out; using keyword search")
+            logger.warning(
+                "History vector search timed out after %ss; using keyword search",
+                _SEARCH_TIMEOUT_SECONDS,
+            )
             return [], "timeout"
         except Exception:  # noqa: BLE001  # Search remains usable without the optional backend.
-            logger.warning("History vector search unavailable; using keyword search")
+            logger.warning("History vector search unavailable; using keyword search", exc_info=True)
             return [], "error"
         else:
             return keys, "unavailable" if items and not keys else "completed"

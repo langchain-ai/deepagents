@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,7 @@ from deepagents_talon.history_backends import open_history
 from deepagents_talon.history_embeddings import QUERY_PROMPT, HistoryEmbeddings
 from deepagents_talon.history_profiles import EmbeddingProfile
 from deepagents_talon.sqlite_history import _HistorySqliteStore, sqlite_store
+from deepagents_talon.store_archive import StoreConversationArchive
 from tests.archive_helpers import open_vector_archive
 from tests.store_archive_contract import StaticEmbeddings as Embedding
 
@@ -150,6 +152,80 @@ async def test_failed_indexing_is_retried_after_restart(tmp_path):
         assert (
             ((await archive.search_page(SCOPE, query="automobile"))["results"])[0]["text"] == "car"
         )
+
+
+async def test_indexing_failure_logs_the_underlying_cause(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("deepagents_talon.history_vectors._RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("deepagents_talon.history_vectors.secrets.randbelow", lambda _bound: 0)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.history_vectors")
+    failing = FailingEmbedding()
+    async with (
+        vector_store("memory", None, failing) as store,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
+    ):
+        await append(archive, "car")
+        await asyncio.wait_for(failing.failed.wait(), 2)
+        async with asyncio.timeout(3):
+            while True:
+                if any("indexing failed" in item.message for item in caplog.records):
+                    break
+                await asyncio.sleep(0.01)
+    # A permanently broken backend otherwise repeats one identical line forever.
+    record = next(item for item in caplog.records if "indexing failed" in item.message)
+    assert "embedding unavailable" in str(record.exc_info[1])
+
+
+async def test_close_abandons_a_wedged_indexing_batch(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("deepagents_talon.history_vectors._CLOSE_TIMEOUT_SECONDS", 0.2)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.history_vectors")
+    started = asyncio.Event()
+
+    class WedgedStore(InMemoryStore):
+        async def abatch(self, ops):
+            operations = list(ops)
+            if any(isinstance(op, PutOp) and op.value is not None for op in operations):
+                started.set()
+                await asyncio.Event().wait()
+            return await super().abatch(operations)
+
+    store = WedgedStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
+    # A Store write that never returns must not hold host shutdown open forever.
+    async with asyncio.timeout(5):
+        async with open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive:
+            await append(archive, "car")
+            await asyncio.wait_for(started.wait(), 2)
+    assert any("abandoning the active batch" in item.message for item in caplog.records)
+
+
+async def test_indexing_batches_never_overlap_so_they_need_no_permit():
+    active, peak = 0, 0
+
+    class CountingBatch(InMemoryStore):
+        async def abatch(self, ops):
+            nonlocal active, peak
+            operations = list(ops)
+            indexing = any(isinstance(op, PutOp) for op in operations)
+            active += indexing
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(0)
+                return await super().abatch(operations)
+            finally:
+                active -= indexing
+
+    store = CountingBatch(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
+    # Concurrency above one must not produce overlapping Store batches: the worker
+    # holds its lock across each one, which is why it carries no permit of its own.
+    profile = EmbeddingProfile(
+        adapter="openai-compatible", model="test", dims=2, max_input_tokens=512, concurrency=8
+    )
+    async with StoreConversationArchive(
+        InMemoryStore(), namespace=("serial",), vector_store=store, embedding_profile=profile
+    ).open() as archive:
+        for index in range(12):
+            await append(archive, f"car {index}", session=f"session-{index}")
+        await settled(archive)
+    assert peak == 1
 
 
 async def test_existing_vectors_survive_restart_and_do_not_reembed(tmp_path):
@@ -481,7 +557,8 @@ async def test_search_tool_pages_preserve_status_and_report_expired_cursors(tmp_
         assert expired["results"] == []
 
 
-async def test_search_backend_failure_reports_error(tmp_path):
+async def test_search_backend_failure_reports_error(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.history_vectors")
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", FailingEmbedding()) as store,
         open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
@@ -490,6 +567,9 @@ async def test_search_backend_failure_reports_error(tmp_path):
         page = await archive.search_page(SCOPE, query="automobile")
         assert page["semantic_status"] == "error"
         assert page["results"] == []
+    # An operator needs the cause; the fallback alone cannot be diagnosed.
+    record = next(item for item in caplog.records if "search unavailable" in item.message)
+    assert "embedding unavailable" in str(record.exc_info[1])
 
 
 async def test_search_reports_store_without_semantic_support(tmp_path):

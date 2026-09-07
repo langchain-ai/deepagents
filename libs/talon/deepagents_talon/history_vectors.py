@@ -20,8 +20,8 @@ from deepagents_talon.archive import (
     SearchPage,
     SearchVisibility,
     SemanticStatus,
-    _indexing_status,
-    _search_page,
+    build_search_page,
+    indexing_status,
 )
 
 if TYPE_CHECKING:
@@ -256,7 +256,7 @@ class HistoryVectorIndex:
         if after and (
             snapshot is None or snapshot.query != cache_key or cursor not in snapshot.keys
         ):
-            return _search_page(
+            return build_search_page(
                 [],
                 limit,
                 "not_requested",
@@ -277,13 +277,13 @@ class HistoryVectorIndex:
         if len(self._pages) > _MAX_SEARCH_PAGES:
             self._pages.popitem(last=False)
         hits = await self.archive.ranked(scope, snapshot.keys, int(cursor or 0), limit + 1)
-        page = _search_page(
+        page = build_search_page(
             hits,
             limit,
             snapshot.status,
             pending=pending or snapshot.pending,
         )
-        page["indexing_status"] = _indexing_status(
+        page["indexing_status"] = indexing_status(
             snapshot.status, pending=page["indexing_pending"], visibility=self.search_visibility
         )
         if page["next_after"] is not None:

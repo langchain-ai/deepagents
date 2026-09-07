@@ -14,9 +14,8 @@ from langgraph.store.base import PutOp
 
 from deepagents_talon.config import TalonConfigError
 from deepagents_talon.history_vectors import HistoryVectorIndex
-from deepagents_talon.store_archive import number
 from deepagents_talon.store_archive_index import StoreVectorArchive
-from deepagents_talon.store_records import finish
+from deepagents_talon.store_records import finish, number
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable

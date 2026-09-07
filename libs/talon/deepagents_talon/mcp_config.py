@@ -89,7 +89,8 @@ class MCPConfigStore:
                 expected_revision: Revision returned by get_mcp_configuration.
 
             Changes can execute commands or send credentials to configured URLs.
-            Successful changes become available on the next agent turn.
+            Saved changes activate only after a successful reload before the next turn.
+            Use get_agent_tools to verify activation. Running tasks retain old capabilities.
             """
             return self._update(server_name, server, expected_revision)
 
@@ -144,7 +145,7 @@ class MCPConfigStore:
                 "message": "Cannot update MCP configuration; check settings.",
             }
         self._on_update()
-        return {"status": "updated", "available": "next_turn"}
+        return {"status": "updated", "available": "after_successful_reload"}
 
     @contextmanager
     def _locked(self) -> Iterator[None]:

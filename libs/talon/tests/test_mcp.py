@@ -428,7 +428,7 @@ async def test_mcp_reload_tool_schedules_refresh_without_configuration(
     result = reload_tool.invoke({})
 
     assert reload_tool.name == "reload_mcp_configuration"
-    assert result == {"status": "scheduled", "available": "next_turn"}
+    assert result == {"status": "scheduled", "available": "after_successful_reload"}
 
     async def load() -> SimpleNamespace:
         return SimpleNamespace(tools=(DummyTool("refreshed"),))

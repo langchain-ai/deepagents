@@ -189,8 +189,8 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
     )
 
     assert created == [
-        ["current_time", "custom_tool"],
-        ["current_time", "refreshed_tool"],
+        ["current_time", "custom_tool", "get_agent_tools"],
+        ["current_time", "refreshed_tool", "get_agent_tools"],
     ]
     assert current_authorization_handler() is None
 
@@ -527,7 +527,7 @@ async def test_runtime_uses_user_defined_general_purpose_subagent(
     ]
 
 
-async def test_runtime_skips_invalid_local_subagent_definitions(
+async def test_runtime_rejects_invalid_local_subagent_definitions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -555,9 +555,10 @@ async def test_runtime_skips_invalid_local_subagent_definitions(
         memory=(),
     )
 
-    await runtime.start()
+    with pytest.raises(ValueError, match="Invalid or duplicate local subagent"):
+        await runtime.start()
 
-    assert captured["subagents"] is None
+    assert not captured
     assert "invalid name, description, or model" in caplog.text
 
 
@@ -1390,4 +1391,4 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
 
     await runtime.start()
 
-    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time"]
+    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time", "get_agent_tools"]

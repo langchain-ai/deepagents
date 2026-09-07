@@ -261,6 +261,17 @@ changes on subsequent turns. Ordinary turns reuse the loaded definitions. Invali
 edits retain the last valid configuration; running subagents keep their original
 configuration.
 
+Set `mode: fresh` and `tools: [exact_tool_name]` in local frontmatter for task-only
+context without inherited tools or middleware. Omitted tools mean no tools;
+unknown names reject activation. Existing approval gates and main-agent filesystem
+access remain intact. With fresh roles, `general-purpose` must also be fresh;
+the automatic fallback has no tools. Fork remains the default. Invalid definitions
+reject startup.
+
+`get_agent_tools` shows main/fresh attachments and inactive edits; other inventories
+are unknown. MCP edits require successful reload. Cancel running tasks to revoke
+their old capabilities.
+
 `task` launches local subagents and `start_async_task` launches remote subagents.
 Both return immediately. The user can continue chatting while the main agent uses
 `list_subagents` to inspect work and `cancel_subagent` to cancel it. When work

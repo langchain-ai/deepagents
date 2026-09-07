@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 
 import pytest
 from langchain_core._api import LangChainBetaWarning
@@ -17,10 +18,14 @@ class ToolModel(FakeMessagesListChatModel):
         return self
 
 
-async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["fork", "fresh"])
+async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode):
     path = tmp_path / "agents" / "researcher" / "AGENTS.md"
     path.parent.mkdir(parents=True)
-    path.write_text("---\ndescription: Research\nmodel: test:child\n---\nResearch carefully.")
+    path.write_text(
+        f"---\ndescription: Research\nmodel: test:child\nmode: {mode}\n"
+        "tools: [sensitive_effect]\n---\nResearch carefully."
+    )
     effects = []
 
     @tool
@@ -77,7 +82,11 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
         approvals.extend(item["name"] for item in request.action_requests)
         return "approve"
 
-    with pytest.warns(LangChainBetaWarning, match="forked subagents"):
+    with (
+        pytest.warns(LangChainBetaWarning, match="forked subagents")
+        if mode == "fork"
+        else nullcontext()
+    ):
         await runtime.start()
     try:
         result = await runtime.invoke(AgentRequest("chat", "delegate", approval_handler=approve))

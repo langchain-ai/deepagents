@@ -219,12 +219,13 @@ class MCPToolProvider:
             "reload_mcp_configuration",
             description=(
                 "Reload Talon's configured MCP servers before the next agent turn. "
-                "Use after the operator changes the MCP configuration."
+                "Use after the operator changes the MCP configuration. Verify activation "
+                "with get_agent_tools; running tasks retain their original capabilities."
             ),
         )
         def reload_mcp_configuration() -> dict[str, str]:
             self.request_refresh()
-            return {"status": "scheduled", "available": "next_turn"}
+            return {"status": "scheduled", "available": "after_successful_reload"}
 
         return reload_mcp_configuration
 

@@ -75,9 +75,10 @@ class EmbeddingProfile:
             self.model,
             self.dims,
             self.max_input_tokens,
-            self.bytes_per_token,
             self.base_url,
-            "utf8-weighted-mean-v1",
+            # Splitting and pooling run only where Talon computes vectors, so their
+            # settings cannot change what a server-side adapter already stored.
+            [self.bytes_per_token, "utf8-weighted-mean-v1"] if self.client_side else [],
         )
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 

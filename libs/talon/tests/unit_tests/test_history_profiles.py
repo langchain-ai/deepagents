@@ -100,6 +100,16 @@ def test_instruction_prompt_follows_the_model_not_the_adapter(tmp_path, adapter,
     assert profile.query_prompt.startswith("Instruct:") is prompted
 
 
+def test_client_preprocessing_does_not_gate_server_side_indexes(tmp_path):
+    served = configuration(
+        tmp_path, ADAPTER="atlas", MODEL="voyage-3-large", DIMS="1024", MAX_INPUT_TOKENS="16256"
+    ).history_embedding_profile
+    assert served.client_side is False
+    assert served.fingerprint == replace(served, bytes_per_token=3).fingerprint
+    computed = configuration(tmp_path).history_embedding_profile
+    assert computed.fingerprint != replace(computed, bytes_per_token=3).fingerprint
+
+
 def test_byte_ratio_widens_the_budget_without_changing_the_token_limit(tmp_path):
     narrow = configuration(tmp_path).history_embedding_profile
     wide = configuration(tmp_path, BYTES_PER_TOKEN="3").history_embedding_profile  # noqa: S106

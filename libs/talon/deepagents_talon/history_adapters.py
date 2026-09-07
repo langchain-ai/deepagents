@@ -10,6 +10,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
+from urllib.parse import urlsplit
 
 from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
@@ -108,18 +109,15 @@ async def _openai(
     driver = _driver("langchain_openai", "history-openai")
     import httpx  # noqa: PLC0415  # Optional provider transport.
 
-    key = (
-        "OPENROUTER_API_KEY"
-        if profile.base_url == "https://openrouter.ai/api/v1"
-        else "OPENAI_API_KEY"
-    )
+    host = urlsplit(profile.base_url).hostname or ""
+    key = "OPENROUTER_API_KEY" if host.lower() == "openrouter.ai" else "OPENAI_API_KEY"
     sync = stack.enter_context(httpx.Client(timeout=_REQUEST_TIMEOUT, follow_redirects=False))
     asynchronous = await stack.enter_async_context(
         httpx.AsyncClient(timeout=_REQUEST_TIMEOUT, follow_redirects=False)
     )
     return driver.OpenAIEmbeddings(
         model=profile.model,
-        dimensions=profile.dims,
+        dimensions=profile.dims if profile.send_dimensions else None,
         base_url=profile.base_url,
         api_key=_key(config, key),
         max_retries=0,
@@ -140,6 +138,7 @@ class BoundedEmbeddings(Embeddings):
         self.profile = profile
         self.loop = asyncio.get_running_loop()
         self.slots = asyncio.Semaphore(profile.concurrency)
+        self.query_slot = asyncio.Semaphore(1)
         self.reported_pooling = False
 
     def _bridge[T](self, operation: Coroutine[object, object, T]) -> T:
@@ -170,7 +169,7 @@ class BoundedEmbeddings(Embeddings):
         if len(query.encode()) > self.profile.input_budget:
             msg = "History embedding query exceeds the configured input budget"
             raise ValueError(msg)
-        async with self.slots, asyncio.timeout(_REQUEST_TIMEOUT):
+        async with self.query_slot, asyncio.timeout(_REQUEST_TIMEOUT):
             vector = await self.embed.aembed_query(query)
         self._validate([vector], 1)
         return vector
@@ -216,7 +215,7 @@ class BoundedEmbeddings(Embeddings):
     async def _documents(self, texts: list[str]) -> list[list[float]]:
         size = self.profile.batch_size
         output: list[list[float]] = []
-        concurrency = max(1, self.profile.concurrency - 1)
+        concurrency = self.profile.concurrency
         for start in range(0, len(texts), size * concurrency):
             async with asyncio.TaskGroup() as group:
                 tasks = [
@@ -233,11 +232,18 @@ class BoundedEmbeddings(Embeddings):
         return vectors
 
     def _validate(self, vectors: list[list[float]], count: int) -> None:
-        if len(vectors) != count or any(
-            len(vector) != self.profile.dims or not all(math.isfinite(value) for value in vector)
-            for vector in vectors
+        if len(vectors) != count or not all(
+            all(math.isfinite(value) for value in vector) for vector in vectors
         ):
-            msg = "History embedding response has invalid dimensions, values, or count"
+            msg = "History embedding response has an invalid count or values"
+            raise ValueError(msg)
+        widths = {len(vector) for vector in vectors}
+        if widths - {self.profile.dims}:
+            msg = (
+                f"History embedding provider returned {sorted(widths)}-dimensional vectors "
+                f"but {_PREFIX}DIMS is {self.profile.dims}; set DIMS to the model's native "
+                f"width, or {_PREFIX}SEND_DIMENSIONS=0 if the model cannot resize output"
+            )
             raise ValueError(msg)
 
 

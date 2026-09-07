@@ -71,6 +71,8 @@ class HistoryVectorIndex:
         """Keep indexing separate from checkpoint persistence."""
         self.profile = profile
         self._slots = asyncio.Semaphore(profile.concurrency if profile else 1)
+        # Indexing can occupy every configured slot, so a search holds its own.
+        self._query_slots = asyncio.Semaphore(1)
         self._pending: set[asyncio.Task[list[Result]]] = set()
         self.search_visibility = search_visibility
         self.indexing = indexing
@@ -106,18 +108,19 @@ class HistoryVectorIndex:
         """
         return ("talon_history", self.identity, _digest(channel), _digest(chat))
 
-    async def _batch(self, operations: Sequence[Op]) -> list[Result]:
-        await self._slots.acquire()
-        task = asyncio.create_task(self._call_store(operations))
+    async def _batch(self, operations: Sequence[Op], *, query: bool = False) -> list[Result]:
+        slots = self._query_slots if query else self._slots
+        await slots.acquire()
+        task = asyncio.create_task(self._call_store(operations, slots))
         self._pending.add(task)
         task.add_done_callback(self._finished)
         return await asyncio.shield(task)
 
-    async def _call_store(self, operations: Sequence[Op]) -> list[Result]:
+    async def _call_store(self, operations: Sequence[Op], slots: asyncio.Semaphore) -> list[Result]:
         try:
             return await self.store.abatch(operations)
         finally:
-            self._slots.release()
+            slots.release()
 
     def _finished(self, task: asyncio.Task[list[Result]]) -> None:
         self._pending.discard(task)
@@ -255,9 +258,11 @@ class HistoryVectorIndex:
                 and len(query.encode()) > self.profile.input_budget
             ):
                 return [], "error"
-            # asyncio.Lock is fair: a waiting query runs before the next indexing
-            # batch. The deadline covers both waiting and query execution.
-            guard = nullcontext() if self.profile and self.profile.concurrency > 1 else self.lock
+            # Remote adapters hold a dedicated query slot, so a search never waits on
+            # indexing whatever the configured concurrency. Local inference is
+            # single-flight, so the fair lock orders a waiting query ahead of the
+            # next indexing batch. The deadline covers waiting and execution alike.
+            guard = nullcontext() if self.profile and self.profile.adapter != "local" else self.lock
             async with asyncio.timeout(_SEARCH_TIMEOUT_SECONDS), guard:
                 results = await self._batch(
                     [
@@ -268,7 +273,8 @@ class HistoryVectorIndex:
                             query=query,
                             limit=_CANDIDATES,
                         )
-                    ]
+                    ],
+                    query=True,
                 )
             items = cast("list[SearchItem]", results[0])
             keys = [item.key for item in items if item.score is not None]

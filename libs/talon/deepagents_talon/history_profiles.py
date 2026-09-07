@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -42,6 +43,7 @@ class EmbeddingProfile:
     batch_size: int = 4
     concurrency: int = 1
     bytes_per_token: int = 1
+    send_dimensions: bool = True
     query_prompt: str = LOCAL_PROMPT
     base_url: str = ""
     query_model: str = ""
@@ -110,6 +112,7 @@ def parse_profile(env: Mapping[str, str]) -> EmbeddingProfile:
         batch_size=_number(env, "BATCH_SIZE", 4 if local else 32, 4 if local else 96),
         concurrency=_number(env, "CONCURRENCY", 1 if local else 4, 1 if local else 16),
         bytes_per_token=_number(env, "BYTES_PER_TOKEN", 1, 4),
+        send_dimensions=_flag(env, "SEND_DIMENSIONS", default=True),
         query_prompt=env.get(_PREFIX + "QUERY_PROMPT", _default_prompt(adapter, model)),
         base_url=_endpoint(env, adapter),
         query_model=env.get(_PREFIX + "QUERY_MODEL", ""),
@@ -131,13 +134,29 @@ def _default_prompt(adapter: str, model: str) -> str:
     return LOCAL_PROMPT if _INSTRUCTION_FAMILY in model.lower() else ""
 
 
+def _flag(env: Mapping[str, str], name: str, *, default: bool) -> bool:
+    value = env.get(_PREFIX + name, "1" if default else "0").strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    msg = f"{_PREFIX}{name} must be a boolean"
+    raise TalonConfigError(msg)
+
+
 def _number(env: Mapping[str, str], name: str, default: int | None, maximum: int) -> int:
+    raw = env.get(_PREFIX + name)
+    if raw is None:
+        if default is None:
+            msg = f"{_PREFIX}{name} is required for this adapter"
+            raise TalonConfigError(msg)
+        return default
     try:
-        value = int(env.get(_PREFIX + name, str(default)))
-        if 1 <= value <= maximum:
-            return value
+        value = int(raw)
     except ValueError:
-        pass
+        value = 0
+    if 1 <= value <= maximum:
+        return value
     msg = f"{_PREFIX}{name} must be an integer between 1 and {maximum}"
     raise TalonConfigError(msg)
 
@@ -158,11 +177,40 @@ def _endpoint(env: Mapping[str, str], adapter: str) -> str:
             and not any(char.isspace() for char in url)
         ):
             _ = parsed.port
-            return url.rstrip("/")
+            if _routable(parsed.hostname):
+                return url.rstrip("/")
     except ValueError:
         pass
-    msg = f"{_PREFIX}BASE_URL must be an HTTPS URL without credentials, query, or fragment"
+    msg = (
+        f"{_PREFIX}BASE_URL must be an HTTPS URL without credentials, query, or fragment, "
+        "naming a routable host"
+    )
     raise TalonConfigError(msg)
+
+
+def _routable(hostname: str) -> bool:
+    """Reject endpoints that address this host or its private network.
+
+    The configured endpoint receives the provider API key, so a misconfigured
+    base URL should not deliver it to a metadata service or an internal listener.
+    Only address literals and `localhost` are checked: a public name that resolves
+    to a private address still connects, which needs resolution-time control the
+    embedding clients do not expose.
+    """
+    if hostname.lower() in {"localhost", "localhost."}:
+        return False
+    try:
+        address = ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
 
 
 def _validate_profile(profile: EmbeddingProfile) -> None:

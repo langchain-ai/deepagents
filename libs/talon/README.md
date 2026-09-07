@@ -120,10 +120,11 @@ Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
 | `DIMS` | Output width; required for remote client adapters |
 | `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
 | `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
-| `CONCURRENCY` | Local uses 1; remote defaults to 4 (maximum 16) |
+| `CONCURRENCY` | Indexing requests in flight; local uses 1, remote defaults to 4 (maximum 16) |
 | `BYTES_PER_TOKEN` | UTF-8 bytes budgeted per token, 1-4; defaults to the worst case of 1 |
 | `QUERY_PROMPT` | Optional query instruction; Qwen3-Embedding models default to Qwen's prefix |
-| `BASE_URL` | Optional HTTPS endpoint without credentials, query parameters, or fragments |
+| `SEND_DIMENSIONS` | Send the OpenAI `dimensions` parameter; set `0` for models that reject it |
+| `BASE_URL` | Optional HTTPS endpoint, routable host, without credentials, query, or fragments |
 | `API_KEY` | Optional environment override for the adapter's standard API key |
 | `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
 
@@ -144,6 +145,15 @@ with a length-weighted mean, which is logged once per run because pooled documen
 are compared against unpooled queries. Transcript pagination stays unchanged.
 Oversized queries fall back to keyword search. Atlas requires a budget
 large enough for a complete archive chunk because embedding happens server-side.
+A search holds a slot of its own at both the store and the provider, so it never
+queues behind indexing and may add one request above `CONCURRENCY`.
+
+`BASE_URL` must name a routable host: address literals in loopback, private,
+link-local, or reserved ranges are refused, as is `localhost`, because the
+configured endpoint receives the provider API key. A public name that resolves
+to a private address still connects, which needs resolution-time control the
+embedding clients do not expose.
+
 Remote indexing uses bounded batches and concurrency; errors retain pending work
 for retry. Selecting a remote adapter sends archived text and queries to that
 provider and may incur charges.

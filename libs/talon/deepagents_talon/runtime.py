@@ -33,7 +33,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
-from deepagents_code.tools import fetch_url, web_search
+from deepagents_code.tools import create_web_search_tool, fetch_url
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.authorization import (
@@ -377,7 +377,10 @@ class DeepAgentRuntime:
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
         catalog = _tool_map(attachments_tools)
-        web_tools = _tool_map([fetch_url, web_search]) if self.include_web_tools else {}
+        web_tools = _tool_map([fetch_url]) if self.include_web_tools else {}
+        tavily_key = self.env.get("TAVILY_API_KEY", "").strip()
+        if self.include_web_tools and tavily_key:
+            web_tools["web_search"] = create_web_search_tool(tavily_key)
         for spec in local_subagents:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
         resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)

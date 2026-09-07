@@ -371,7 +371,9 @@ optional.
 
 Fresh homes receive ordinary `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research owns `fetch_url` and
-Tavily-backed `web_search`, attached at construction when web tools are enabled.
+Tavily-backed `web_search`, attached at construction by default. Search is added
+only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
+startup and reload still work and `fetch_url` remains available.
 Main and internal research are constructed without them; disabling web tools leaves
 external research usable without built-in web access. Internal research starts
 with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as

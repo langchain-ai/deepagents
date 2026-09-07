@@ -59,15 +59,21 @@ def test_interrupted_install_does_not_publish_partial_home(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("web_enabled", [False, True])
-async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enabled):
+@pytest.mark.parametrize("tavily_key", [None, "", "  ", "test-key"])
+async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enabled, tavily_key):
+    monkeypatch.setenv("TAVILY_API_KEY", "unrelated-process-key")
     _install_defaults(tmp_path)
     model = ToolModel(responses=[AIMessage(content="Done")])
-    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=web_enabled)
+    env = {} if tavily_key is None else {"TAVILY_API_KEY": tavily_key}
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=web_enabled, env=env)
+    expected = ["fetch_url"] if web_enabled else []
+    if web_enabled and tavily_key and tavily_key.strip():
+        expected.append("web_search")
     await runtime.start()
     try:
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
         assert agents["internal-research"] == []
-        assert agents["external-research"] == (["fetch_url", "web_search"] if web_enabled else [])
+        assert agents["external-research"] == expected
         assert not {"fetch_url", "web_search"} & set(agents["main"])
         assert {"read_file", "write_file", "execute"} <= set(agents["main"])
         path = tmp_path / "agents" / "internal-research" / "AGENTS.md"
@@ -77,6 +83,7 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enab
         await runtime.reload_subagent_configuration()
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
         assert agents["internal-research"] == ["current_time"]
+        assert agents["external-research"] == expected
         assert not {"fetch_url", "web_search"} & set(agents["main"])
         active = runtime._graph
         path.write_text(original.replace("tools: []", "tools: null"))
@@ -136,7 +143,15 @@ async def test_research_injection_cannot_gain_tools(tmp_path, monkeypatch, fixtu
             AIMessage(content="Delegated"),
         ]
     )
-    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[source], include_web_tools=True)
+    runtime = _runtime(
+        tmp_path,
+        monkeypatch,
+        parent,
+        child,
+        tools=[source],
+        include_web_tools=True,
+        env={"TAVILY_API_KEY": "test-key"},
+    )
     await runtime.start()
     try:
         await runtime.invoke(AgentRequest("chat", "Find the deadline. Private marker: PRIVATE-123"))

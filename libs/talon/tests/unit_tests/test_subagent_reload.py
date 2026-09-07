@@ -30,6 +30,7 @@ def _graph_factory(entered=None, release=None):
         names = ",".join(
             agent.get("system_prompt", agent.get("graph_id", ""))
             for agent in kwargs["subagents"] or []
+            if agent["name"] != "general-purpose"
         )
 
         async def reply(state):

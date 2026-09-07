@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import socket
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -199,9 +200,8 @@ def _routable(hostname: str) -> bool:
     """
     if hostname.lower() in {"localhost", "localhost."}:
         return False
-    try:
-        address = ipaddress.ip_address(hostname.strip("[]"))
-    except ValueError:
+    address = _address(hostname)
+    if address is None:
         return True
     return not (
         address.is_private
@@ -211,6 +211,24 @@ def _routable(hostname: str) -> bool:
         or address.is_multicast
         or address.is_unspecified
     )
+
+
+def _address(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Resolve an address literal, including the abbreviated IPv4 forms.
+
+    `ipaddress` accepts only dotted quads, but the C resolver behind every HTTP
+    client also accepts `127.1`, `2130706433`, `0177.0.0.1`, and `0x7f000001`, all
+    of which reach the loopback interface. Treating those as hostnames would let
+    them past the routability check.
+    """
+    try:
+        return ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        pass
+    try:
+        return ipaddress.ip_address(socket.inet_aton(hostname))
+    except (OSError, ValueError):
+        return None
 
 
 def _validate_profile(profile: EmbeddingProfile) -> None:

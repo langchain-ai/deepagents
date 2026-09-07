@@ -150,7 +150,9 @@ queues behind indexing and may add one request above `CONCURRENCY`.
 
 `BASE_URL` must name a routable host: address literals in loopback, private,
 link-local, or reserved ranges are refused, as is `localhost`, because the
-configured endpoint receives the provider API key. A public name that resolves
+configured endpoint receives the provider API key. Abbreviated IPv4 spellings
+that the C resolver still accepts, such as `127.1` and `2130706433`, are
+refused as the addresses they reach. A public name that resolves
 to a private address still connects, which needs resolution-time control the
 embedding clients do not expose.
 

@@ -114,6 +114,13 @@ class HistoryVectorIndex:
         task = asyncio.create_task(self._call_store(operations, slots))
         self._pending.add(task)
         task.add_done_callback(self._finished)
+        if query:
+            # Indexing writes are shielded so a cancelled caller cannot leave a
+            # partial batch, but a search that timed out has no result worth
+            # keeping. Awaiting it directly cancels the request and frees the
+            # single query permit, instead of holding it until the provider's own
+            # timeout and stalling every later search behind it.
+            return await task
         return await asyncio.shield(task)
 
     async def _call_store(self, operations: Sequence[Op], slots: asyncio.Semaphore) -> list[Result]:

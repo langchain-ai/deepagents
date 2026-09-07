@@ -276,6 +276,21 @@ async def test_default_store_adds_qwen_instruction_only_to_queries(tmp_path):
             await asyncio.gather(store._task, return_exceptions=True)
 
 
+def test_local_embeddings_do_not_prefix_queries_on_their_own(monkeypatch):
+    calls = []
+
+    def embed(_self, texts):
+        calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(HistoryEmbeddings, "embed_documents", embed)
+    assert HistoryEmbeddings().query_prompt == ""
+    assert HistoryEmbeddings().embed_query("automobile") == [1.0, 0.0]
+    assert calls == [["automobile"]]
+    assert HistoryEmbeddings(query_prompt=QUERY_PROMPT).embed_query("automobile") == [1.0, 0.0]
+    assert calls[-1] == [QUERY_PROMPT + "automobile"]
+
+
 @pytest.mark.parametrize("value", ["1", "true", "YES", " on "])
 def test_vector_environment_opt_in(tmp_path, value):
     config = TalonConfig.from_env(

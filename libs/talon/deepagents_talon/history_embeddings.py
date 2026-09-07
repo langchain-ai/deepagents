@@ -46,9 +46,15 @@ class HistoryEmbeddings(Embeddings):
         model: str = MODEL,
         max_input_tokens: int = 8192,
         batch_size: int = 4,
-        query_prompt: str = QUERY_PROMPT,
+        query_prompt: str = "",
     ) -> None:
-        """Defer optional imports and model downloads until embedding is requested."""
+        """Defer optional imports and model downloads until embedding is requested.
+
+        `query_prompt` defaults to none because the caller that owns the profile
+        applies the model's instruction format before delegating here. Defaulting
+        to Qwen's prefix instead would embed it twice whenever a caller forgot to
+        pass an empty string.
+        """
         self.model = model
         self.max_input_tokens = max_input_tokens
         self.batch_size = batch_size

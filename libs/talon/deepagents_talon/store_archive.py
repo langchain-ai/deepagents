@@ -299,7 +299,7 @@ class StoreConversationArchive:
             return None
         return entry
 
-    async def _text_entries(
+    async def _text_entries(  # noqa: PLR0913  # Preserve existing arguments when adding partial scans.
         self,
         scope: ArchiveScope,
         *,
@@ -307,6 +307,7 @@ class StoreConversationArchive:
         session_id: str,
         after: int,
         limit: int,
+        partial: bool = False,
     ) -> list[ArchiveEntry]:
         async with self.records.access():
             if session_id:
@@ -327,7 +328,7 @@ class StoreConversationArchive:
                     msg = "Conversation archive contains an invalid ordering link"
                     raise RuntimeError(msg)
             hits: list[ArchiveEntry] = []
-            async for _, record in self._retrieval_chain(cursor, link):
+            async for _, record in self._retrieval_chain(cursor, link, partial=partial):
                 entry = await self.visible(record, scope)
                 if (
                     entry is not None
@@ -339,12 +340,20 @@ class StoreConversationArchive:
                         break
             return hits
 
-    async def _retrieval_chain(self, cursor: int, link: str) -> AsyncIterator[tuple[int, Record]]:
+    async def _retrieval_chain(
+        self, cursor: int, link: str, *, partial: bool = False
+    ) -> AsyncIterator[tuple[int, Record]]:
         scanned = 0
         async for identifier, record in self.records.chain(cursor, link):
             yield identifier, record
             scanned += 1
             if scanned == _MAX_SCAN and number(record, link):
+                # Ranked retrieval already scores a bounded candidate pool, so a
+                # truncated scan only narrows it. A page from entries() or
+                # conversations() claims completeness, so truncating one there
+                # would report "no more results" while records remain.
+                if partial:
+                    return
                 msg = (
                     "Conversation history scan limit exceeded (500 records); "
                     "no partial page returned"
@@ -516,27 +525,40 @@ class StoreConversationArchive:
             return
         root = await self.records.root()
         deletion = number(root, "last") + 1
-        await self.records.commit(
-            [
-                (
-                    str(session["cursor"]),
-                    {**session, "deleting": True, "delete_cursor": session["head"]},
-                ),
-                (
-                    str(deletion),
-                    {"owner": session["cursor"], "previous_deleting": number(root, "deleting")},
-                ),
-                (
-                    "root",
-                    {
-                        **root,
-                        "last": deletion,
-                        "deletions": number(root, "deletions") + 1,
-                        "deleting": deletion,
-                    },
-                ),
-            ]
-        )
+        previous = number(root, "deleting")
+        writes: list[Write] = [
+            (
+                str(session["cursor"]),
+                {
+                    **session,
+                    "deleting": True,
+                    "delete_cursor": session["head"],
+                    "delete_marker": deletion,
+                },
+            ),
+            (
+                str(deletion),
+                # Linked in both directions so a completed marker leaves the chain
+                # without a walk; see `_unlink_deletion`.
+                {
+                    "owner": session["cursor"],
+                    "previous_deleting": previous,
+                    "next_deleting": 0,
+                },
+            ),
+            (
+                "root",
+                {
+                    **root,
+                    "last": deletion,
+                    "deletions": number(root, "deletions") + 1,
+                    "deleting": deletion,
+                },
+            ),
+        ]
+        if previous and (marker := await self.records.get(str(previous))) is not None:
+            writes.append((str(previous), {**marker, "next_deleting": deletion}))
+        await self.records.commit(writes)
 
     async def delete_text(self, session_id: str) -> None:
         """Erase text and dedup records after vector deletion, under the records lock."""
@@ -552,17 +574,50 @@ class StoreConversationArchive:
             writes.extend((str(record[key]), None) for key in ("dedup", "message"))
             await self.records.commit(writes)
         root = await self.records.root()
+        deletions = number(root, "deletions") - 1
+        markers, deleting = await self._unlink_deletion(session, root, drained=deletions <= 0)
         links = {"previous_scope": session["previous_scope"]}
         scoped = await self.records.get(scope_key(cast("ArchiveScope", session["scope"]))) or {}
         others = await self._other_sessions(scoped, number(session, "cursor"))
         await self.records.commit(
             [
+                *markers,
                 (scope_key(cast("ArchiveScope", session["scope"])), scoped if others else None),
                 (str(session["cursor"]), links),
                 ("session:" + digest(session_id), None),
-                ("root", {**root, "deletions": number(root, "deletions") - 1}),
+                ("root", {**root, "deletions": deletions, "deleting": deleting}),
             ]
         )
+
+    async def _unlink_deletion(
+        self, session: Record, root: Record, *, drained: bool
+    ) -> tuple[list[Write], int]:
+        """Remove a completed deletion marker, returning its writes and the new chain head.
+
+        The chain exists so an interrupted deletion can be found again after a restart.
+        Retaining completed markers would instead record every deletion the assistant
+        has ever performed, and the indexing worker re-walks that chain on every poll
+        for as long as any one deletion is still outstanding. Archives written before
+        markers were linked in both directions have no `delete_marker`; their chain is
+        abandoned wholesale once the last outstanding deletion drains.
+        """
+        deleting = 0 if drained else number(root, "deleting")
+        cursor = number(session, "delete_marker")
+        marker = await self.records.get(str(cursor)) if cursor else None
+        if marker is None:
+            return [], deleting
+        previous, following = number(marker, "previous_deleting"), number(marker, "next_deleting")
+        writes: list[Write] = [(str(cursor), None)]
+        if not following and deleting == cursor:
+            deleting = previous
+        neighbors = (
+            (following, "previous_deleting", previous),
+            (previous, "next_deleting", following),
+        )
+        for neighbor, field, value in neighbors:
+            if neighbor and (record := await self.records.get(str(neighbor))) is not None:
+                writes.append((str(neighbor), {**record, field: value}))
+        return writes, deleting
 
     async def _other_sessions(self, scoped: Record, cursor: int) -> bool:
         async for identifier, record in self.records.chain(

@@ -18,6 +18,8 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 from langgraph_sdk import get_client
 
+from deepagents_talon.authorization import set_authorization_handler
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
@@ -190,6 +192,12 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        # The copied context carries the host's history scope and cron origin, which the
+        # tools a subagent may hold require. It must not carry the authorization handler:
+        # a flow started once the originating turn has ended would outlive the host's
+        # `_clear_authorization`, stranding a pending prompt in the conversation. Enabling
+        # background authorization needs host-side cleanup first.
+        set_authorization_handler(None)
         config: RunnableConfig = {"configurable": {"thread_id": task_id}, "recursion_limit": 500}
         runtime = replace(request.runtime, config=config, state=dict(request.runtime.state))
         call = {**request.tool_call, "args": {**request.tool_call["args"], "runtime": runtime}}

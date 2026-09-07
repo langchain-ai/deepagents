@@ -13,10 +13,17 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
+from deepagents_talon.archive import ArchiveScope
+from deepagents_talon.authorization import (
+    current_authorization_handler,
+    reset_authorization_handler,
+    set_authorization_handler,
+)
 from deepagents_talon.background import _IN_SUBAGENT, BackgroundSubagents
+from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.runtime import _CRON_ORIGIN, _HISTORY_SCOPE, DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import _config
 
@@ -439,3 +446,29 @@ async def test_repeatedly_failing_turns_drop_the_unprocessed_result(monkeypatch)
         assert "research result" in job.result
     finally:
         await runtime.stop()
+
+
+async def test_background_worker_keeps_scoped_state_but_not_the_authorization_handler():
+    async def authorize(_event):
+        return None
+
+    @tool
+    async def task() -> str:
+        """Report the scoped state this worker inherited."""
+        return f"{_HISTORY_SCOPE.get()}|{_CRON_ORIGIN.get()}|{current_authorization_handler()}"
+
+    scope = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
+    origin = CronOrigin("chat")
+    background = BackgroundSubagents()
+    _HISTORY_SCOPE.set(scope)
+    _CRON_ORIGIN.set(origin)
+    token = set_authorization_handler(authorize)
+    try:
+        await background.awrap_tool_call(_request("one", task), _unused_handler)
+        await asyncio.gather(*(job.worker for job in background._jobs.values()))
+        assert current_authorization_handler() is authorize
+    finally:
+        reset_authorization_handler(token)
+
+    (job,) = background._jobs.values()
+    assert job.result == f"{scope}|{origin}|None"

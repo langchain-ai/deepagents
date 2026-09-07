@@ -25,7 +25,9 @@ dependencies = [
     "langchain-anthropic>=1.7.1,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
     "langsmith>=0.12.1",
+    "markdownify>=1.2.3,<2.0.0",
     "packaging>=23.2",
+    "requests>=2.34.2,<3.0.0",
     "wcmatch>=11.0",
 ]
 
@@ -57,6 +59,7 @@ test = [
   "ruff>=0.15.22,<0.16.0",
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
+  "responses>=0.26.2,<1.0.0",
   "langchain-tests>=1.1.9",
   "langchain-openai",
   "twine",

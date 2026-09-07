@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -81,6 +82,58 @@ def test_remote_adapters_name_the_settings_they_require(tmp_path, missing):
     del env[PREFIX + missing]
     with pytest.raises(TalonConfigError, match=f"{missing} is required"):
         TalonConfig.from_env(env, base_home=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"ADAPTER": "local", "MODEL": "BAAI/bge-m3", "BASE_URL": "https://api.example.org/v1"},
+        {"ADAPTER": "local", "MODEL": "BAAI/bge-m3", "SEND_DIMENSIONS": "0"},
+        {"ADAPTER": "atlas", "MODEL": "voyage-3-large", "MAX_INPUT_TOKENS": "16256"},
+    ],
+)
+def test_settings_an_adapter_cannot_honour_are_refused(tmp_path, settings):
+    # Silently ignoring these is worse than refusing: BASE_URL enters the fingerprint
+    # and forces a reindex, and SEND_DIMENSIONS is advertised as the fix for a
+    # dimension mismatch it cannot repair on these adapters.
+    if settings["ADAPTER"] == "atlas":
+        settings = {**settings, "DIMS": "1024", "SEND_DIMENSIONS": "0"}
+    with pytest.raises(TalonConfigError, match=r"BASE_URL|SEND_DIMENSIONS"):
+        configuration(tmp_path, **settings)
+
+
+@pytest.mark.parametrize(("flag", "expected"), [("1", 1024), ("0", None)])
+async def test_voyage_honours_send_dimensions(tmp_path, monkeypatch, flag, expected):
+    captured = {}
+
+    class FakeVoyage(Embeddings):
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def embed_documents(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+        def embed_query(self, _text):
+            return [1.0, 0.0]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepagents_talon.history_voyage",
+        SimpleNamespace(HistoryVoyageEmbeddings=FakeVoyage),
+    )
+    monkeypatch.setattr(history_adapters, "_driver", lambda *_args: SimpleNamespace())
+    config = configuration(
+        tmp_path,
+        ADAPTER="voyage",
+        MODEL="voyage-3-large",
+        DIMS="1024",
+        BASE_URL="",
+        SEND_DIMENSIONS=flag,
+        API_KEY="test-key",
+    )
+    async with open_profile(config) as profile:
+        assert profile is not None
+    assert captured["output_dimension"] == expected
 
 
 def test_public_endpoints_remain_configurable(tmp_path):

@@ -57,6 +57,7 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
+from deepagents_talon.research import ResearchProfile, load_research_profile
 from deepagents_talon.subagents import Attachment, LocalSubAgent, TaskTools, prepare_subagents
 
 if TYPE_CHECKING:
@@ -312,6 +313,7 @@ class DeepAgentRuntime:
         self.subagents = tuple(subagents) if subagents is not None else None
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+        self._research_profile: ResearchProfile | None = None
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -341,12 +343,15 @@ class DeepAgentRuntime:
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
         self._resolved_subagents = self._resolve_subagents(strict=True)
-        self._graph = self._create_graph()
+        profile = load_research_profile(self.assistant_dir)
+        self._graph = self._create_graph(profile=profile)
+        self._research_profile = profile
 
     def _create_graph(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
         *,
+        profile: ResearchProfile | None,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     ) -> object:
         resolved = [
@@ -368,6 +373,24 @@ class DeepAgentRuntime:
                 )
         general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        if profile is not None:
+            available = {getattr(item, "name", getattr(item, "__name__", "")) for item in tools}
+            if any(
+                spec["name"] in {agent["name"] for agent in profile.agents} for spec in resolved
+            ):
+                msg = "Research profile roles conflict with configured subagents"
+                raise ValueError(msg)
+            for agent in profile.agents:
+                spec = agent.copy()
+                spec["tool_names"] = [name for name in agent["tool_names"] if name in available]
+                resolved.append(spec)
+            delegated = {name for agent in profile.agents for name in agent["tool_names"]}
+            tools = [
+                item
+                for item in tools
+                if getattr(item, "name", getattr(item, "__name__", ""))
+                not in delegated - set(profile.direct_tools)
+            ]
         resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
@@ -382,7 +405,11 @@ class DeepAgentRuntime:
         graph = create_deep_agent(
             model=model,
             tools=tools,
-            system_prompt=self._resolve_system_prompt(),
+            system_prompt=(
+                "\n\n".join(filter(None, [self._resolve_system_prompt(), profile.main_prompt]))
+                if profile is not None
+                else self._resolve_system_prompt()
+            ),
             subagents=resolved or None,
             backend=self.backend,
             skills=self._resolve_skills(),
@@ -536,7 +563,7 @@ class DeepAgentRuntime:
         tools: Sequence[BaseTool | Callable[..., object]],
     ) -> None:
         replacement = tuple(tools)
-        graph = self._create_graph(replacement)
+        graph = self._create_graph(replacement, profile=self._research_profile)
         self.tools = replacement
         self._graph = graph
         self._mcp_reload_failed = False
@@ -545,8 +572,10 @@ class DeepAgentRuntime:
         """Activate validated definitions for subsequent turns, preserving active graphs."""
         async with self._tools_lock:
             replacement = self._resolve_subagents(strict=True)
-            graph = self._create_graph(subagents=replacement)
+            profile = load_research_profile(self.assistant_dir)
+            graph = self._create_graph(subagents=replacement, profile=profile)
             self._resolved_subagents = replacement
+            self._research_profile = profile
             self._graph = graph
 
     def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
@@ -559,7 +588,10 @@ class DeepAgentRuntime:
             use list_subagents and cancel_subagent before claiming revocation is complete.
             """
             try:
-                changed = self._resolve_subagents(strict=True) != self._resolved_subagents
+                changed = (
+                    self._resolve_subagents(strict=True) != self._resolved_subagents
+                    or load_research_profile(self.assistant_dir) != self._research_profile
+                )
             except Exception:  # noqa: BLE001  # never return configuration contents
                 changed = True
             return {

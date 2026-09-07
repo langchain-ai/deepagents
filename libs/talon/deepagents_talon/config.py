@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deepagents_talon.research import install_research_defaults
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -92,6 +94,7 @@ class TalonConfig:
         Returns:
             The created per-assistant home directory.
         """
+        fresh = not self.home.exists()
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
         for child in (
@@ -103,6 +106,8 @@ class TalonConfig:
         ):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
+        if fresh:
+            install_research_defaults(self.home)
         return self.home
 
     @property

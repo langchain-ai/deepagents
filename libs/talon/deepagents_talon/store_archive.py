@@ -17,8 +17,17 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_talon.archive import CHUNK_SIZE, _search_page
-from deepagents_talon.store_records import Record, StoreRecords, Write, digest
+from deepagents_talon.archive import CHUNK_SIZE, build_search_page
+from deepagents_talon.history_vectors import HistoryVectorIndex
+from deepagents_talon.store_archive_index import StoreVectorArchive
+from deepagents_talon.store_records import (
+    Record,
+    StoreRecords,
+    Write,
+    digest,
+    number,
+    scope_key,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Sequence
@@ -38,16 +47,6 @@ if TYPE_CHECKING:
 _MAX_PAGE_SIZE = 20
 _MAX_SCAN = 500
 _MAX_SEARCH_PAGES = 32
-
-
-def number(record: Record, key: str) -> int:
-    """Read a numeric ordering field from a versioned archive record."""
-    return cast("int", record.get(key, 0))
-
-
-def scope_key(scope: ArchiveScope) -> str:
-    """Encode a trusted chat scope as a backend-independent lookup key."""
-    return "scope:" + digest(scope["talon_history_channel"], scope["talon_history_chat"])
 
 
 def _bounds(after: int, limit: int) -> None:
@@ -120,9 +119,6 @@ class StoreConversationArchive:
         self._setup_lock = asyncio.Lock()
         self.vectors = None
         if vector_store is not None:
-            from deepagents_talon.history_vectors import HistoryVectorIndex  # noqa: PLC0415
-            from deepagents_talon.store_archive_index import StoreVectorArchive  # noqa: PLC0415
-
             self.vectors = HistoryVectorIndex(
                 StoreVectorArchive(self),
                 vector_store,
@@ -299,7 +295,7 @@ class StoreConversationArchive:
             return None
         return entry
 
-    async def _text_entries(  # noqa: PLR0913  # Preserve existing arguments when adding partial scans.
+    async def text_entries(  # noqa: PLR0913  # Preserve existing arguments when adding partial scans.
         self,
         scope: ArchiveScope,
         *,
@@ -309,6 +305,20 @@ class StoreConversationArchive:
         limit: int,
         partial: bool = False,
     ) -> list[ArchiveEntry]:
+        """Read scoped transcripts by ordering link, for this archive's own adapters.
+
+        Args:
+            scope: Trusted channel and chat identity.
+            query: Literal words to match against complete message revisions.
+            session_id: Read this session chronologically when supplied.
+            after: Previous result cursor.
+            limit: Maximum entries to return.
+            partial: Stop at the scan budget instead of raising; only for ranked
+                candidate generation, never for a page that claims completeness.
+
+        Raises:
+            RuntimeError: The scan budget is exhausted and `partial` is not set.
+        """
         async with self.records.access():
             if session_id:
                 session = await self.session(session_id)
@@ -385,7 +395,7 @@ class StoreConversationArchive:
         """
         _bounds(after, limit)
         await self.setup()
-        return await self._text_entries(
+        return await self.text_entries(
             scope, query=query, session_id=session_id, after=after, limit=limit
         )
 
@@ -413,12 +423,12 @@ class StoreConversationArchive:
         continuation = self._pages.get(after) if after else None
         status = "disabled" if query.strip() else "not_requested"
         if after and (continuation is None or continuation[:3] != context):
-            return _search_page([], limit, status, expired=True)
+            return build_search_page([], limit, status, expired=True)
         cursor = continuation[3] if continuation else 0
-        hits = await self._text_entries(
+        hits = await self.text_entries(
             scope, query=query, session_id="", after=cursor, limit=limit + 1
         )
-        page = _search_page(hits, limit, status, expired=bool(after and not hits))
+        page = build_search_page(hits, limit, status, expired=bool(after and not hits))
         if page["has_more"]:
             token = uuid4().hex
             self._pages[token] = (*context, page["results"][-1]["cursor"])

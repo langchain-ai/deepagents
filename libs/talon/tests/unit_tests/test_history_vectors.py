@@ -228,6 +228,20 @@ async def test_indexing_batches_never_overlap_so_they_need_no_permit():
     assert peak == 1
 
 
+def test_worker_protocol_is_declared_and_no_longer_needs_deferred_imports():
+    from deepagents_talon import store_archive as module  # noqa: PLC0415
+    from deepagents_talon.history_index import VectorArchive  # noqa: PLC0415
+    from deepagents_talon.store_archive_index import StoreVectorArchive  # noqa: PLC0415
+
+    # Declared rather than merely structural, so a drifting signature fails the type
+    # check instead of silently diverging from the worker's expectations.
+    assert VectorArchive in StoreVectorArchive.__mro__
+    # The store_archive <-> store_archive_index cycle that forced function-level
+    # imports is gone, so the workers resolve at module scope.
+    assert module.HistoryVectorIndex is not None
+    assert module.StoreVectorArchive is not None
+
+
 async def test_vector_erase_recovers_an_interrupted_journal_before_reading():
     from deepagents_talon.history_vector_backends import _erase_vectors  # noqa: PLC0415
 

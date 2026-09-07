@@ -941,7 +941,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Hello world\nAsync Line 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
-        assert result.artifact == {"exit_code": 0}
+        assert result.artifact == {"exit_code": 0, "truncated": False}
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -985,7 +985,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
-        assert result.artifact == {"exit_code": 127}
+        assert result.artifact == {"exit_code": 127, "truncated": False}
 
     async def test_aexecute_tool_omits_artifact_exit_code_when_unknown(self):
         """Test async execute tool omits `exit_code` when the backend reports none."""
@@ -1018,7 +1018,7 @@ class TestFilesystemMiddlewareAsync:
 
         assert "async output" in result.content
         assert "exit code" not in result.content
-        assert result.artifact == {}
+        assert result.artifact == {"truncated": False}
 
     async def test_aexecute_tool_error_paths_carry_no_artifact(self):
         """Test async execute tool returns no artifact when no command ran."""
@@ -1097,3 +1097,4 @@ class TestFilesystemMiddlewareAsync:
 
         assert "Async Very long output..." in result.content
         assert "truncated" in result.content
+        assert result.artifact == {"exit_code": 0, "truncated": True}

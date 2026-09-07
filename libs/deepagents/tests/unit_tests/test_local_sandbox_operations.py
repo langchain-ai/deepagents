@@ -1708,7 +1708,7 @@ class TestExecuteCaptureOffload:
 
         assert "oops" in result.content
         assert "exit code 3" in result.content
-        assert result.artifact == {"exit_code": 3}
+        assert result.artifact == {"exit_code": 3, "truncated": False}
 
     async def test_offloaded_result_carries_exit_code_artifact(self, tools: tuple, invoke: Callable) -> None:
         # When the output is offloaded, `_interpret_capture_output` replaces the
@@ -1718,7 +1718,7 @@ class TestExecuteCaptureOffload:
         result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 3", "runtime": self._runtime("c_off_ec")})
 
         assert self._capture_path("c_off_ec") in result.content  # actually offloaded
-        assert result.artifact == {"exit_code": 3}
+        assert result.artifact == {"exit_code": 3, "truncated": False}
 
     async def test_runaway_output_is_capped_and_flagged(
         self,
@@ -1742,7 +1742,7 @@ class TestExecuteCaptureOffload:
 
         assert "exceeded the capture size limit" in result.content
         assert "succeeded with exit code 0" in result.content
-        assert result.artifact == {"exit_code": 0}
+        assert result.artifact == {"exit_code": 0, "truncated": True}
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)

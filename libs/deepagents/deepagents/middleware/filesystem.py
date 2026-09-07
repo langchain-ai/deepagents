@@ -2856,12 +2856,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     def _execute_artifact(response: ExecuteResponse) -> ExecuteArtifact:
         """Build the `ExecuteArtifact` for an execute result.
 
-        See `ExecuteArtifact` for why an unknown exit code is omitted rather
-        than published as `None`.
+        `truncated` is always present so callers can distinguish incomplete
+        output without parsing the model-facing status text. An unknown exit
+        code remains omitted rather than published as `None`.
         """
-        if response.exit_code is None:
-            return {}
-        return {"exit_code": response.exit_code}
+        artifact: ExecuteArtifact = {"truncated": response.truncated}
+        if response.exit_code is not None:
+            artifact["exit_code"] = response.exit_code
+        return artifact
 
     def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""

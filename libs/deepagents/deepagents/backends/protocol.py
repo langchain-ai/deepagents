@@ -846,6 +846,9 @@ class ExecuteArtifact(TypedDict):
     Omitted when the exit code could not be determined.
     """
 
+    truncated: bool
+    """Whether the backend truncated the command output."""
+
 
 @dataclass(frozen=True, slots=True)
 class ExecuteOffloadResult:

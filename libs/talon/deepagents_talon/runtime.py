@@ -356,7 +356,11 @@ class DeepAgentRuntime:
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         for spec in resolved:
-            if spec.get("fresh") and isinstance(spec.get("model"), str):
+            if (
+                "runnable" not in spec
+                and "graph_id" not in spec
+                and isinstance(spec.get("model"), str)
+            ):
                 local = cast("LocalSubAgent", spec)
                 local["model"] = _resolve_model_from_env(
                     cast("str", local["model"]), self.env, context_size=context_size
@@ -548,7 +552,7 @@ class DeepAgentRuntime:
         def get_agent_tools() -> dict[str, object]:
             """Inspect active tool attachments without credentials or prompt contents.
 
-            Null tools mean an opaque legacy/remote agent has not been inspected.
+            Null tools mean an opaque compiled/remote agent has not been inspected.
             Saved edits require reload. Running turns and tasks retain old capabilities;
             use list_subagents and cancel_subagent before claiming revocation is complete.
             """
@@ -1281,7 +1285,6 @@ def _subagent_from_frontmatter(
         "name": name,
         "description": description,
         "system_prompt": prompt.strip(),
-        "mode": "fork",
     }
     if model:
         subagent["model"] = model
@@ -1290,23 +1293,18 @@ def _subagent_from_frontmatter(
 
 
 def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object]) -> None:
-    mode = frontmatter.get("mode", "fork")
-    if mode not in ("fork", "fresh"):
-        msg = "Local subagent mode must be fork or fresh"
+    if frontmatter.get("mode", "fresh") != "fresh":
+        msg = "Talon subagents use fresh context; remove the mode setting"
         raise ValueError(msg)
-    if mode == "fresh":
-        spec["mode"] = "isolated"
-        spec["fresh"] = True
-    if "tools" in frontmatter or mode == "fresh":
-        names = frontmatter.get("tools", [])
-        if (
-            not isinstance(names, list)
-            or any(not isinstance(name, str) or not name.strip() for name in names)
-            or len(names) != len(set(names))
-        ):
-            msg = "Local subagent tools must be unique, nonempty exact names"
-            raise ValueError(msg)
-        spec["tool_names"] = cast("list[str]", names)
+    names = frontmatter.get("tools", [])
+    if (
+        not isinstance(names, list)
+        or any(not isinstance(name, str) or not name.strip() for name in names)
+        or len(names) != len(set(names))
+    ):
+        msg = "Local subagent tools must be unique, nonempty exact names"
+        raise ValueError(msg)
+    spec["tool_names"] = cast("list[str]", names)
 
 
 def _normalize_subagent_metadata(

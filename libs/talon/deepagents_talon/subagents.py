@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 class LocalSubAgent(SubAgent):
     """Local frontmatter additions resolved before SDK graph construction."""
 
-    fresh: NotRequired[bool]
     tool_names: NotRequired[list[str]]
 
 
@@ -156,7 +155,7 @@ class TaskTools(AgentMiddleware):
     ) -> ToolMessage | Command:
         """Select the wrapper before background dispatch snapshots the tool."""
         if request.tool_call["name"] == "task" and self._task:
-            if _IN_SUBAGENT.get() or request.runtime.state.get("_deepagents_forked_context"):
+            if _IN_SUBAGENT.get():
                 return ToolMessage(
                     "Delegate from the main agent.", tool_call_id=request.tool_call["id"]
                 )
@@ -206,15 +205,17 @@ def prepare_subagents(
         SDK definitions and a safe inventory; opaque agents have unknown tools.
 
     Raises:
-        ValueError: An attachment is unavailable or the fallback is privileged.
+        ValueError: An attachment is unavailable or fork mode is requested.
     """
     available = _tool_map(tools)
     candidates = list(specs)
-    if any(spec.get("fresh") is True for spec in candidates):
-        _add_fresh_fallback(candidates)
+    _add_general_subagent(candidates)
     prepared: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
     inventory: list[Attachment] = []
     for original in candidates:
+        if original.get("mode") == "fork":
+            msg = "Talon subagents use fresh context; fork mode is unsupported"
+            raise ValueError(msg)
         spec = cast("LocalSubAgent", original.copy())
         if "tool_names" in spec:
             names = spec.pop("tool_names")
@@ -222,19 +223,29 @@ def prepare_subagents(
                 msg = "Subagent attachment is unavailable; previous configuration retained"
                 raise ValueError(msg)
             spec["tools"] = [available[name] for name in names]
-        fresh = spec.pop("fresh", False)
+        opaque = "graph_id" in spec or "runnable" in spec
         inventory.append(
             {
                 "name": spec["name"],
-                "mode": "fresh"
-                if fresh
-                else str(spec.get("mode", "remote" if "graph_id" in spec else "isolated")),
-                "tools": sorted(_tool_map(spec.get("tools", []))) if fresh else None,
+                "mode": "remote" if "graph_id" in spec else "fresh",
+                "tools": None if opaque else sorted(_tool_map(spec.get("tools", []))),
             }
         )
-        prepared.append(_compile_fresh(spec, model, interrupt_on) if fresh else spec)
-    if not any(spec["name"] == "general-purpose" for spec in candidates):
-        inventory.append({"name": "general-purpose", "mode": "isolated", "tools": None})
+        if "runnable" in original:
+            compiled = cast("CompiledSubAgent", original.copy())
+            compiled.pop("mode", None)
+            compiled["runnable"] = RunnableLambda(_task_only) | compiled["runnable"]
+            prepared.append(compiled)
+        elif spec["name"] == "general-purpose":
+            prepared.append(
+                {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "runnable": RunnableLambda(_task_only),
+                }
+            )
+        else:
+            prepared.append(original if opaque else _compile_fresh(spec, model, interrupt_on))
     return prepared, inventory
 
 
@@ -249,18 +260,14 @@ def _tool_map(tools: Sequence[BaseTool | Callable[..., object]]) -> dict[str, Ba
     return result
 
 
-def _add_fresh_fallback(specs: list[SubAgent | CompiledSubAgent | AsyncSubAgent]) -> None:
+def _add_general_subagent(specs: list[SubAgent | CompiledSubAgent | AsyncSubAgent]) -> None:
     existing = next((spec for spec in specs if spec["name"] == "general-purpose"), None)
     if existing is not None:
-        if existing.get("fresh") is not True:
-            msg = "Fresh subagents require a fresh general-purpose fallback"
-            raise ValueError(msg)
         return
     fallback: LocalSubAgent = {
         "name": "general-purpose",
         "description": "Complete a task with tools explicitly selected by the main agent.",
         "system_prompt": "Answer only the delegated question using the supplied information.",
-        "fresh": True,
         "tool_names": [],
     }
     specs.append(fallback)

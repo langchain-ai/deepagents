@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from pydantic import PrivateAttr
 
@@ -32,11 +33,11 @@ def _call(name, **args: object):
     return {"name": name, "id": name, "args": args}
 
 
-def _write_agent(root, tools="[]", *, mode="fresh", name="researcher"):
+def _write_agent(root, tools="[]", *, name="researcher"):
     path = root / "agents" / name / "AGENTS.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"---\ndescription: Research\nmodel: test:child\nmode: {mode}\ntools: {tools}\n"
+        f"---\ndescription: Research\nmodel: test:child\ntools: {tools}\n"
         "---\nAnswer the delegated question."
     )
     return path
@@ -158,6 +159,23 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
 
 def _inventory(runtime):
     return runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
+
+
+@pytest.mark.parametrize("source", ["local", "supplied", "compiled"])
+async def test_fork_is_rejected(tmp_path, source):
+    spec = {"name": "researcher", "description": "Research", "mode": "fork"}
+    if source == "local":
+        path = _write_agent(tmp_path)
+        path.write_text(
+            path.read_text().replace("description: Research", "mode: fork\ndescription: Research")
+        )
+    elif source == "compiled":
+        spec["runnable"] = RunnableLambda(lambda state: state)
+    runtime = DeepAgentRuntime(
+        model="test:model", assistant_dir=tmp_path, subagents=[] if source == "local" else [spec]
+    )
+    with pytest.raises(ValueError, match="fresh context"):
+        await runtime.start()
 
 
 @pytest.mark.parametrize("selection", [{}, {"tools": ["missing"]}, {"tools": ["task"]}])

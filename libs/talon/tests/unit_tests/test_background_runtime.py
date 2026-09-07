@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
 
 import pytest
 from langchain.agents import create_agent
-from langchain_core._api import LangChainBetaWarning
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
@@ -19,15 +17,12 @@ class ToolModel(FakeMessagesListChatModel):
         return self
 
 
-@pytest.mark.parametrize(
-    ("mode", "name"),
-    [("fork", "researcher"), ("fresh", "researcher"), ("fresh", "general-purpose")],
-)
-async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode, name):
+@pytest.mark.parametrize("name", ["researcher", "general-purpose"])
+async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name):
     path = tmp_path / "agents" / "researcher" / "AGENTS.md"
     path.parent.mkdir(parents=True)
     path.write_text(
-        f"---\ndescription: Research\nmodel: test:child\nmode: {mode}\n"
+        "---\ndescription: Research\nmodel: test:child\n"
         "tools: [sensitive_effect]\n---\nResearch carefully."
     )
     effects = []
@@ -93,12 +88,7 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode,
         approvals.extend(item["name"] for item in request.action_requests)
         return "approve"
 
-    with (
-        pytest.warns(LangChainBetaWarning, match="forked subagents")
-        if mode == "fork"
-        else nullcontext()
-    ):
-        await runtime.start()
+    await runtime.start()
     try:
         result = await runtime.invoke(AgentRequest("chat", "delegate", approval_handler=approve))
         assert result.text == "Started background work"

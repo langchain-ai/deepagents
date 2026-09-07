@@ -11,6 +11,11 @@ from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
 
 
+@pytest.fixture(autouse=True)
+def stub_child_compilation(monkeypatch):
+    monkeypatch.setattr("deepagents_talon.subagents._compile_fresh", lambda spec, *_args: spec)
+
+
 def _write_agent(path, prompt):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---\ndescription: Research tasks\n---\n{prompt}")
@@ -21,6 +26,7 @@ def _graph_factory(entered=None, release=None):
         names = ",".join(
             agent.get("system_prompt", agent.get("graph_id", ""))
             for agent in kwargs["subagents"] or []
+            if agent["name"] != "general-purpose"
         )
 
         async def reply(state):

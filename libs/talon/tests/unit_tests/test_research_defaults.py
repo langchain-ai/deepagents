@@ -19,7 +19,7 @@ _FIXTURES = json.loads(
 )
 
 
-def test_install_only_on_fresh_setup(tmp_path):
+def test_install_defaults_preserves_existing_files(tmp_path: Path) -> None:
     fresh = TalonConfig("fresh", tmp_path / "fresh")
     fresh.ensure_home()
     instructions = fresh.home / "AGENTS.md"
@@ -29,13 +29,31 @@ def test_install_only_on_fresh_setup(tmp_path):
     assert (fresh.agents_dir / "external-research" / "AGENTS.md").is_file()
     instructions.write_text("User instructions")
     fresh.ensure_home()
-    _install_defaults(fresh.home)
     assert instructions.read_text() == "User instructions"
     existing = TalonConfig("existing", tmp_path / "existing")
     existing.home.mkdir()
     existing.ensure_home()
-    assert not (existing.home / "AGENTS.md").exists()
-    assert not list(existing.agents_dir.iterdir())
+    assert (existing.home / "AGENTS.md").is_file()
+    assert (existing.agents_dir / "internal-research" / "AGENTS.md").is_file()
+    assert (existing.agents_dir / "external-research" / "AGENTS.md").is_file()
+
+
+def test_existing_home_backfills_missing_research_defaults(tmp_path: Path) -> None:
+    config = TalonConfig("existing", tmp_path / "existing")
+    internal = config.agents_dir / "internal-research" / "AGENTS.md"
+    internal.parent.mkdir(parents=True)
+    internal.write_text("Custom internal research")
+    instructions = config.home / "AGENTS.md"
+    instructions.write_text("Custom main instructions")
+    external = config.agents_dir / "external-research" / "AGENTS.md"
+    external.parent.mkdir()
+
+    for _ in range(2):
+        config.ensure_home()
+        assert internal.read_text() == "Custom internal research"
+        assert instructions.read_text() == "Custom main instructions"
+        assert external.is_file()
+        assert external.stat().st_mode & 0o777 == 0o600
 
 
 def test_interrupted_install_does_not_publish_partial_home(tmp_path, monkeypatch):

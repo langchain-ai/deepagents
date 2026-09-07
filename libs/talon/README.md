@@ -381,7 +381,7 @@ optional.
 
 ## Research defaults
 
-Fresh homes receive ordinary `AGENTS.md` files for main, `internal-research`, and
+On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research owns `fetch_url` and
 Tavily-backed `web_search`, attached at construction by default. Search is added
 only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
@@ -395,7 +395,7 @@ launch-time additions apply only to that task. Main retains filesystem, action t
 approval controls, chooses placement from the workflow, and mediates minimal
 internal-to-external context.
 
-Existing files are unchanged; built-in web access now needs an `external-research` definition.
+Existing files are unchanged; missing research definitions are installed automatically.
 Review the packaged `deepagents_talon/defaults/` files,
 back up affected instructions, and merge the selected changes without replacing custom
 content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back

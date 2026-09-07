@@ -114,6 +114,7 @@ class TalonConfig:
             _create_home(self.home)
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
+        _install_defaults(self.home)
         for child in (
             self.manifest_dir,
             self.agents_dir,

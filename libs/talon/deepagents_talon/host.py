@@ -101,6 +101,9 @@ _CANCEL_TIMEOUT_MESSAGE = (
     "Could not stop the current run within 30 seconds. Your new message was not started. "
     "Restart Talon to recover."
 )
+_AGENT_FAILURE_MESSAGE = "Something went wrong while working on that. Check Talon logs."
+_BACKGROUND_RETRY_BASE_SECONDS = 2.0
+_BACKGROUND_RETRY_MAX_SECONDS = 60.0
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -127,6 +130,12 @@ class _Turn:
     provider: str | None
     generation: int
     recovery_degraded: bool
+
+
+@dataclass(slots=True)
+class _BackgroundRetry:
+    attempts: int
+    deadline: float
 
 
 @dataclass(slots=True)
@@ -213,6 +222,7 @@ class TalonHost:
         self._background_routes: dict[
             str, tuple[ChannelAdapter, ChannelMessage, str, str | None]
         ] = {}
+        self._background_retries: dict[str, _BackgroundRetry] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -222,25 +232,31 @@ class TalonHost:
         return self._running
 
     async def start(self) -> None:
-        """Start the agent runtime, scheduler, and channels."""
+        """Start the agent runtime, scheduler, and channels.
+
+        Raises:
+            Exception: Whatever a managed component raised while starting. The
+                components already started are stopped in reverse order first,
+                so a partial start never leaves connections or subprocesses open.
+        """
         if self._running:
             return
 
         self.config.ensure_home()
         await self.agent.start()
-
-        for channel in self.channels:
-            channel.set_message_handler(
-                lambda message, current=channel: self.receive_message(current, message),
-            )
-            if isinstance(channel, ReactionChannelAdapter):
-                channel.set_reaction_handler(
-                    lambda reaction, current=channel: self.receive_reaction(current, reaction),
-                )
-            await channel.start()
-
-        if self.scheduler is not None:
-            await self.scheduler.start()
+        started: list[ChannelAdapter] = []
+        scheduler: CronScheduler | None = None
+        try:
+            for channel in self.channels:
+                self._bind_channel(channel)
+                await channel.start()
+                started.append(channel)
+            if self.scheduler is not None:
+                await self.scheduler.start()
+                scheduler = self.scheduler
+        except BaseException:
+            await self._unwind_start(started, scheduler)
+            raise
 
         self._stopped.clear()
         self._running = True
@@ -249,7 +265,11 @@ class TalonHost:
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
-        """Stop managed components and cancel in-flight agent work."""
+        """Stop managed components and cancel in-flight agent work.
+
+        Every component is stopped even when an earlier one fails, so shutdown
+        always completes and always releases the host.
+        """
         if not self._running:
             self._stopped.set()
             return
@@ -257,19 +277,48 @@ class TalonHost:
         self._running = False
         if self._background_loop is not None:
             self._background_loop.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._background_loop
+            await asyncio.gather(self._background_loop, return_exceptions=True)
         await self._cancel_all()
 
         for channel in reversed(self.channels):
-            await channel.stop()
+            await self._stop_component(channel.stop, "channel")
 
         if self.scheduler is not None:
-            await self.scheduler.stop()
+            await self._stop_component(self.scheduler.stop, "scheduler")
 
-        await self.agent.stop()
+        await self._stop_component(self.agent.stop, "agent runtime")
         self._stopped.set()
         logger.info("Talon host stopped for assistant %s", self.config.assistant_id)
+
+    def _bind_channel(self, channel: ChannelAdapter) -> None:
+        channel.set_message_handler(
+            lambda message, current=channel: self.receive_message(current, message),
+        )
+        if isinstance(channel, ReactionChannelAdapter):
+            channel.set_reaction_handler(
+                lambda reaction, current=channel: self.receive_reaction(current, reaction),
+            )
+
+    async def _unwind_start(
+        self,
+        channels: list[ChannelAdapter],
+        scheduler: CronScheduler | None,
+    ) -> None:
+        if scheduler is not None:
+            await self._stop_component(scheduler.stop, "scheduler")
+        for channel in reversed(channels):
+            await self._stop_component(channel.stop, "channel")
+        await self._stop_component(self.agent.stop, "agent runtime")
+
+    async def _stop_component(
+        self,
+        stop: Callable[[], Awaitable[None]],
+        component: str,
+    ) -> None:
+        try:
+            await stop()
+        except Exception:
+            logger.exception("Failed to stop Talon %s", component)
 
     async def run_until_stopped(self) -> None:
         """Start the host and keep it alive until shutdown is requested."""
@@ -472,7 +521,10 @@ class TalonHost:
     async def _process_background_results(self) -> None:
         while self._running:
             await asyncio.sleep(1)
-            await self._dispatch_background_results()
+            try:
+                await self._dispatch_background_results()
+            except Exception:
+                logger.exception("Failed to deliver background subagent results")
 
     async def _dispatch_background_results(self) -> None:
         if not isinstance(self.agent, BackgroundRuntime):
@@ -484,10 +536,14 @@ class TalonHost:
                     continue
                 if owner not in self.agent.background.owners():
                     self._background_routes.pop(owner, None)
+                    self._background_retries.pop(owner, None)
                     continue
                 if owner in self._blocked or self._agent_conversation_id(root) != owner:
                     continue
-                if self.agent.background.results(owner):
+                if not self.agent.background.results(owner):
+                    self._background_retries.pop(owner, None)
+                    continue
+                if self._claim_background_turn(owner):
                     await self._replace_agent_turn(
                         channel,
                         ChannelMessage(
@@ -499,6 +555,25 @@ class TalonHost:
                         owner,
                         provider,
                     )
+
+    def _claim_background_turn(self, owner: str) -> bool:
+        """Take a delivery slot for one conversation, spacing out repeat attempts.
+
+        Args:
+            owner: Conversation whose pending results need a main-agent turn.
+
+        Returns:
+            Whether a turn may start now. A conversation that keeps failing to
+            consume its results waits longer before each further attempt.
+        """
+        now = asyncio.get_running_loop().time()
+        retry = self._background_retries.get(owner)
+        if retry is not None and now < retry.deadline:
+            return False
+        attempts = 0 if retry is None else retry.attempts + 1
+        delay = min(_BACKGROUND_RETRY_BASE_SECONDS * 2**attempts, _BACKGROUND_RETRY_MAX_SECONDS)
+        self._background_retries[owner] = _BackgroundRetry(attempts, now + delay)
+        return True
 
     async def _run_agent_turn(
         self,
@@ -553,6 +628,8 @@ class TalonHost:
                 ),
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
+        except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
+            result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

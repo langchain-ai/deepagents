@@ -10,6 +10,7 @@ import pytest
 from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
 from deepagents_talon.cron import CronJobStore
@@ -1350,3 +1351,36 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
     await runtime.start()
 
     assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time", "get_agent_tools"]
+
+
+async def test_stop_releases_the_checkpointer_when_workers_refuse_to_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[str] = []
+
+    class Checkpointer(InMemorySaver):
+        def close(self) -> None:
+            closed.append("closed")
+
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        checkpointer=Checkpointer(),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    async def refuse(_owner: str | None = None) -> bool:
+        return False
+
+    monkeypatch.setattr(runtime.background, "cancel", refuse)
+
+    with pytest.raises(RuntimeError, match="Background subagents did not stop"):
+        await runtime.stop()
+
+    assert closed == ["closed"]
+    assert runtime._graph is None

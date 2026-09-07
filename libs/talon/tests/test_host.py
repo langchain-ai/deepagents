@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING, cast
 
+from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
@@ -66,6 +68,32 @@ class BlockingAgent:
         if request.text == "block":
             await self.released.wait()
         return AgentResult(text=f"reply:{request.text}")
+
+
+class ExplodingAgent(BlockingAgent):
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        message = "sensitive upstream detail"
+        raise RuntimeError(message)
+
+
+class FailingStopAgent(BlockingAgent):
+    async def stop(self) -> None:
+        self.stopped = True
+        message = "agent stop failed"
+        raise RuntimeError(message)
+
+
+class BackgroundAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.background = BackgroundSubagents()
+
+
+class FailingStartChannel(RecordingChannel):
+    async def start(self) -> None:
+        message = "channel start failed"
+        raise RuntimeError(message)
 
 
 class FailingRecoveryAgent(BlockingAgent):
@@ -1412,3 +1440,118 @@ def _talon_events(caplog, event: str) -> list[dict[str, object]]:
         for payload in [json.loads(message.removeprefix("talon_event "))]
         if payload.get("event") == event
     ]
+
+
+async def test_failed_turn_replies_without_leaking_the_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel = RecordingChannel()
+    agent = ExplodingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="deepagents_talon.host"):
+            await host.receive_message(channel, ChannelMessage("chat", "hello"))
+            await asyncio.wait_for(host._tasks["chat"], 2)
+
+        assert [conversation for conversation, _ in channel.sent] == ["chat"]
+        assert channel.sent[0][1]
+        assert "sensitive upstream detail" not in channel.sent[0][1]
+        assert "sensitive upstream detail" in caplog.text
+    finally:
+        await host.stop()
+
+
+async def test_start_unwinds_started_components_when_a_channel_fails(tmp_path: Path) -> None:
+    first = RecordingChannel()
+    second = FailingStartChannel(provider="broken")
+    agent = BlockingAgent()
+    scheduler = RecordingScheduler()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[first, second],
+        scheduler=scheduler,
+    )
+
+    with pytest.raises(RuntimeError, match="channel start failed"):
+        await host.start()
+
+    assert first.started is True
+    assert first.stopped is True
+    assert second.stopped is False
+    assert agent.stopped is True
+    assert scheduler.started is False
+    assert host.running is False
+
+
+async def test_stop_completes_when_a_component_fails_to_stop(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    scheduler = RecordingScheduler()
+    agent = FailingStopAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[channel],
+        scheduler=scheduler,
+    )
+    await host.start()
+
+    await host.stop()
+
+    assert channel.stopped is True
+    assert scheduler.stopped is True
+    assert host._stopped.is_set()
+
+
+async def test_stop_completes_when_the_background_loop_already_died(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BackgroundAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    assert host._background_loop is not None
+    host._background_loop.cancel()
+    await asyncio.sleep(0)
+
+    async def died() -> None:
+        message = "dispatcher died"
+        raise RuntimeError(message)
+
+    host._background_loop = asyncio.create_task(died())
+    await asyncio.sleep(0)
+
+    await host.stop()
+
+    assert channel.stopped is True
+    assert agent.stopped is True
+    assert host._stopped.is_set()
+
+
+async def test_background_delivery_survives_a_failing_tick(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=BackgroundAgent(), channels=[channel])
+    ticks = 0
+
+    async def dispatch() -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks == 1:
+            message = "dispatch exploded"
+            raise RuntimeError(message)
+        host._running = False
+
+    monkeypatch.setattr(host, "_dispatch_background_results", dispatch)
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.host"):
+        await host.start()
+        assert host._background_loop is not None
+        await asyncio.wait_for(host._background_loop, 5)
+
+    assert ticks == 2
+    assert "dispatch exploded" in caplog.text
+    await host.stop()

@@ -580,6 +580,23 @@ async def test_threaded_store_uses_native_async_embeddings(tmp_path):
     assert set(raw.queries) == {"question"}
 
 
+async def test_adapter_client_is_closed_when_the_archive_closes(tmp_path, monkeypatch):
+    closed = []
+
+    class ClosingEmbeddings(RecordingEmbeddings):
+        async def aclose(self):
+            closed.append(True)
+
+    raw = ClosingEmbeddings()
+    fake_adapter(monkeypatch, raw)
+    config = configuration(tmp_path)
+    async with open_history(config) as archive:
+        await archive.append(SCOPE, "session", "time", [HumanMessage("car")])
+        await settled(archive)
+    # A reindex reopens the archive, so an unclosed pool leaks sockets per cycle.
+    assert closed == [True]
+
+
 async def test_query_prompt_reaches_stores_that_embed_searches_as_documents(tmp_path):
     from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
 

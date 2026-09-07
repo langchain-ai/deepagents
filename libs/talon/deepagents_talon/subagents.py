@@ -31,6 +31,7 @@ class LocalSubAgent(SubAgent):
     """Local frontmatter additions resolved before SDK graph construction."""
 
     tool_names: NotRequired[list[str]]
+    web: NotRequired[bool]
 
 
 class Attachment(TypedDict):
@@ -41,6 +42,9 @@ class Attachment(TypedDict):
     tools: list[str] | None
     selectable_tools: NotRequired[list[str]]
 
+
+# Mirrors the limit background workers use; a fresh agent has no checkpointer.
+_FRESH_AGENT_RECURSION_LIMIT = 500
 
 _DELEGATION_TOOLS = frozenset(
     {
@@ -57,7 +61,15 @@ _DELEGATION_TOOLS = frozenset(
 
 
 class TaskTools(AgentMiddleware):
-    """Let the main agent add local subagent capabilities for each task."""
+    """Let the main agent add local subagent capabilities for each task.
+
+    The name deliberately collides with the SDK's `SubAgentMiddleware` so that
+    `create_deep_agent` replaces that instance with this one instead of running
+    both and binding two `task` tools. The replaced instance is the only one
+    `create_deep_agent` builds with `state_schema` and the harness profile's
+    `task` description, so both are dropped: Talon passes neither today, but a
+    harness profile registered for Talon's model would lose its override here.
+    """
 
     name = "SubAgentMiddleware"
 
@@ -133,10 +145,14 @@ class TaskTools(AgentMiddleware):
                 available[name] for name in tools if name not in configured
             ]
             agent = _compile_fresh(spec, self._model, self._interrupt_on)["runnable"]
-            result = await agent.ainvoke({"messages": [HumanMessage(description)]})
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(description)]},
+                {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT},
+            )
             if result.get("__interrupt__"):
                 return "Subagent needs tool approval; the protected action has not run."
-            return str(result["messages"][-1].content)
+            messages = result.get("messages") or []
+            return str(messages[-1].content) if messages else "Subagent returned no result."
 
         self._task = task
         return sorted(available)
@@ -197,15 +213,16 @@ def _compile_fresh(
 
 def prepare_subagents(
     specs: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent],
-    tools: Sequence[BaseTool | Callable[..., object]],
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
 ) -> tuple[list[SubAgent | CompiledSubAgent | AsyncSubAgent], list[Attachment]]:
     """Resolve exact attachments, compiling fresh roles without inherited middleware.
 
+    Frontmatter tool names are resolved against the runtime catalog before this
+    runs, so every spec arriving here already carries resolved tool objects.
+
     Args:
         specs: Loaded local, compiled, or remote definitions.
-        tools: Currently available tools, including loaded MCP tools.
         model: Default model for fresh agents.
         interrupt_on: Operator approval policy retained by fresh agents.
 
@@ -213,9 +230,8 @@ def prepare_subagents(
         SDK definitions and a safe inventory; opaque agents have unknown tools.
 
     Raises:
-        ValueError: An attachment is unavailable or a configuration is unsupported.
+        ValueError: A configuration is unsupported.
     """
-    available = _tool_map(tools)
     prepared: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
     inventory: list[Attachment] = []
     for original in specs:
@@ -223,12 +239,6 @@ def prepare_subagents(
             msg = "Talon subagents use fresh context; fork mode is unsupported"
             raise ValueError(msg)
         spec = cast("LocalSubAgent", original.copy())
-        if "tool_names" in spec:
-            names = spec.pop("tool_names")
-            if any(name not in available for name in names):
-                msg = "Subagent attachment is unavailable; previous configuration retained"
-                raise ValueError(msg)
-            spec["tools"] = [available[name] for name in names]
         opaque = "graph_id" in spec or "runnable" in spec
         inventory.append(
             {

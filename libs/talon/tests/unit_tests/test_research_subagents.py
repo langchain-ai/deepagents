@@ -146,7 +146,7 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
         assert {message.name for message in denied} == (
             {call["name"] for call in forbidden} if attached else set()
         )
-        inventory = runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
+        inventory = await _inventory(runtime)
         agent = next(item for item in inventory["agents"] if item["name"] == name)
         if name == "prepared":
             assert "read_file" in agent["selectable_tools"]
@@ -194,8 +194,8 @@ async def test_explicit_shell_access(tmp_path, monkeypatch, name):
         await runtime.stop()
 
 
-def _inventory(runtime):
-    return runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
+async def _inventory(runtime):
+    return await runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].ainvoke({})
 
 
 @pytest.mark.parametrize("configured", [False, True])
@@ -227,7 +227,7 @@ async def test_no_implicit_general_purpose_agent(tmp_path, monkeypatch, configur
     try:
         tools = runtime._graph.nodes["tools"].bound.tools_by_name
         assert ("task" in tools) == configured
-        assert {agent["name"] for agent in _inventory(runtime)["agents"]} == (
+        assert {agent["name"] for agent in (await _inventory(runtime))["agents"]} == (
             {"main", "researcher"} if configured else {"main"}
         )
         if configured:
@@ -360,9 +360,9 @@ async def test_named_task_adds_tools_without_changing_defaults(tmp_path, monkeyp
         assert effects == (["first", "first"] if protected else ["first", "second", "first"])
         assert child._tools[-1] == ["first"]
         assert path.read_text() == original
-        assert next(item for item in _inventory(runtime)["agents"] if item["name"] == "researcher")[
-            "tools"
-        ] == ["first"]
+        assert next(
+            item for item in (await _inventory(runtime))["agents"] if item["name"] == "researcher"
+        )["tools"] == ["first"]
     finally:
         await runtime.stop()
 
@@ -386,12 +386,12 @@ async def test_attachment_reload_and_invalid_edits_retain_effective_graph(tmp_pa
     try:
         old_view = runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"]
         _write_agent(tmp_path, "[second]")
-        assert _inventory(runtime)["saved_changes_inactive"]
+        assert (await _inventory(runtime))["saved_changes_inactive"]
         assert runtime._attachments[1]["tools"] == ["first"]
         await runtime.reload_subagent_configuration()
-        assert not _inventory(runtime)["saved_changes_inactive"]
+        assert not (await _inventory(runtime))["saved_changes_inactive"]
         assert runtime._attachments[1]["tools"] == ["second"]
-        previous = old_view.invoke({})
+        previous = await old_view.ainvoke({})
         assert previous["current_turn_uses_previous_graph"]
         assert previous["agents"][1]["tools"] == ["first"]
         assert previous["latest_agents"][1]["tools"] == ["second"]
@@ -402,7 +402,92 @@ async def test_attachment_reload_and_invalid_edits_retain_effective_graph(tmp_pa
             assert result["status"] == "failed"
             assert "inactive" in result["message"]
             assert runtime._graph is active
-            assert _inventory(runtime)["saved_changes_inactive"]
+            assert (await _inventory(runtime))["saved_changes_inactive"]
             assert runtime._attachments[1]["tools"] == ["second"]
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("declared", [False, True])
+async def test_web_tools_follow_the_declared_capability_not_the_agent_name(
+    tmp_path, monkeypatch, declared
+):
+    path = tmp_path / "agents" / "external-research" / "AGENTS.md"
+    path.parent.mkdir(parents=True)
+    frontmatter = "---\ndescription: Public research\ntools: []\n"
+    path.write_text(
+        f"{frontmatter}web: true\n---\nResearch." if declared else f"{frontmatter}---\nResearch."
+    )
+    model = ToolModel(responses=[AIMessage(content="Done")])
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=True)
+    await runtime.start()
+    try:
+        agents = {item["name"]: item["tools"] for item in (await _inventory(runtime))["agents"]}
+        assert agents["external-research"] == (["fetch_url"] if declared else [])
+    finally:
+        await runtime.stop()
+
+
+async def test_declared_web_capability_travels_with_a_renamed_agent(tmp_path, monkeypatch):
+    path = tmp_path / "agents" / "public-digging" / "AGENTS.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ndescription: Public research\ntools: []\nweb: true\n---\nResearch.")
+    model = ToolModel(responses=[AIMessage(content="Done")])
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=True)
+    await runtime.start()
+    try:
+        agents = {item["name"]: item["tools"] for item in (await _inventory(runtime))["agents"]}
+        assert agents["public-digging"] == ["fetch_url"]
+    finally:
+        await runtime.stop()
+
+
+async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messages(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    class Recorder:
+        async def ainvoke(self, payload, config=None):
+            captured["config"] = config
+            captured["payload"] = payload
+            return {"messages": []}
+
+    _write_agent(tmp_path)
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call(
+                        "task",
+                        subagent_type="researcher",
+                        description="Find evidence",
+                        tools=["current_time"],
+                    )
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    child = ToolModel(responses=[AIMessage(content="Must not run")])
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    await runtime.start()
+    # Patched after the graph is built so only the per-task compile is intercepted.
+    monkeypatch.setattr(
+        "deepagents_talon.subagents._compile_fresh",
+        lambda *_args, **_kwargs: {
+            "name": "researcher",
+            "description": "x",
+            "runnable": Recorder(),
+        },
+    )
+    try:
+        await runtime.invoke(AgentRequest("chat", "Work"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        results = list(runtime.background.results("chat").values())
+    finally:
+        await runtime.stop()
+
+    assert captured["config"] == {"recursion_limit": 500}
+    assert "Subagent returned no result." in results[0]

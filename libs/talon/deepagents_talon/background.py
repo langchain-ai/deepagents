@@ -39,6 +39,15 @@ _MAX_DELIVERIES = 3
 _TASK_TIMEOUT_SECONDS = 3600
 _FAILED_RESULT = "Subagent failed before returning a result."
 _TIMED_OUT_RESULT = "Subagent ran out of time before returning a result."
+# Async task tools the main agent never sees, so approval gates on them can never fire.
+HIDDEN_ASYNC_TOOLS = frozenset(
+    {
+        "check_async_task",
+        "list_async_tasks",
+        "cancel_async_task",
+        "update_async_task",
+    }
+)
 _UNDELIVERED_RESULT = (
     f"The conversation failed to process this result {_MAX_DELIVERIES} times, "
     "so it was dropped and never reached the user."
@@ -134,13 +143,7 @@ class BackgroundSubagents(AgentMiddleware):
                 tools=[
                     tool
                     for tool in request.tools
-                    if getattr(tool, "name", "")
-                    not in {
-                        "check_async_task",
-                        "list_async_tasks",
-                        "cancel_async_task",
-                        "update_async_task",
-                    }
+                    if getattr(tool, "name", "") not in HIDDEN_ASYNC_TOOLS
                 ],
             )
         )

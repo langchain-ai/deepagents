@@ -382,8 +382,9 @@ optional.
 ## Research defaults
 
 On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
-`external-research`, with defensive prompts. External research owns `fetch_url` and
-Tavily-backed `web_search`, attached at construction by default. Search is added
+`external-research`, with defensive prompts. External research declares `web: true` in its
+frontmatter, which is what attaches `fetch_url` and Tavily-backed `web_search` at
+construction; the capability follows the declaration, not the directory name. Search is added
 only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
 startup and reload still work and `fetch_url` remains available.
 Main and internal research are constructed without them; disabling web tools leaves
@@ -419,6 +420,8 @@ configuration.
 
 Subagents use fresh task context; fork is unsupported. Attach local tools with
 `tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
+Add `web: true` to grant whichever web tools the runtime has, without naming them; an agent
+without it never receives them, whatever its directory is called.
 There is no automatic general-purpose agent; delegate to a research role or another
 configured agent. Pass a `tools` list to `task` on each launch
 to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill

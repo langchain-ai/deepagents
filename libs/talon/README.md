@@ -121,16 +121,28 @@ Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
 | `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
 | `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
 | `CONCURRENCY` | Local uses 1; remote defaults to 4 (maximum 16) |
-| `QUERY_PROMPT` | Optional query instruction; only local Qwen has a default prefix |
+| `BYTES_PER_TOKEN` | UTF-8 bytes budgeted per token, 1-4; defaults to the worst case of 1 |
+| `QUERY_PROMPT` | Optional query instruction; Qwen3-Embedding models default to Qwen's prefix |
 | `BASE_URL` | Optional HTTPS endpoint without credentials, query parameters, or fragments |
 | `API_KEY` | Optional environment override for the adapter's standard API key |
 | `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
 
-Queries retain each provider's query/document semantics on all three databases.
+Queries retain each provider's query/document semantics on all three databases,
+and the instruction prefix follows the model rather than the adapter, so a
+Qwen3-Embedding model reached through OpenRouter is prompted like a local one.
+
 Inputs use UTF-8 byte counts as a conservative token bound, reserving 128 tokens
-for provider instructions. Oversized documents are split without losing text and
-their vectors are combined with a length-weighted mean; transcript pagination stays
-unchanged. Oversized queries fall back to keyword search. Atlas requires a budget
+for provider instructions. `BYTES_PER_TOKEN` converts the token limit into that
+byte measure and defaults to 1, which assumes every byte can become its own token.
+Natural non-ASCII text is far cheaper than that -- a CJK character is roughly three
+bytes but about one token -- so the default splits transcripts a model could embed
+whole. Raising it trades safety margin for fewer splits; the value is part of the
+embedding fingerprint, so a change rebuilds the index.
+
+Oversized documents are split without losing text and their vectors are combined
+with a length-weighted mean, which is logged once per run because pooled documents
+are compared against unpooled queries. Transcript pagination stays unchanged.
+Oversized queries fall back to keyword search. Atlas requires a budget
 large enough for a complete archive chunk because embedding happens server-side.
 Remote indexing uses bounded batches and concurrency; errors retain pending work
 for retry. Selecting a remote adapter sends archived text and queries to that

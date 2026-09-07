@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import math
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
@@ -22,11 +23,14 @@ if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.history_profiles import EmbeddingProfile
 
+_PREFIX = "DEEPAGENTS_TALON_HISTORY_EMBED_"
 QUERY_EMBEDDING: ContextVar[bool] = ContextVar("talon_history_query", default=False)
 EMBEDDING_CACHE: ContextVar[dict[tuple[bool, str], list[float]] | None] = ContextVar(
     "talon_history_embeddings", default=None
 )
 _REQUEST_TIMEOUT = 30
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -136,6 +140,7 @@ class BoundedEmbeddings(Embeddings):
         self.profile = profile
         self.loop = asyncio.get_running_loop()
         self.slots = asyncio.Semaphore(profile.concurrency)
+        self.reported_pooling = False
 
     def _bridge[T](self, operation: Coroutine[object, object, T]) -> T:
         # MongoDBStore invokes sync embeddings from its worker thread.
@@ -162,7 +167,7 @@ class BoundedEmbeddings(Embeddings):
         if (cached := (EMBEDDING_CACHE.get() or {}).get((True, text))) is not None:
             return cached
         query = self.profile.query_prompt + text
-        if len(query.encode()) > self.profile.max_input_tokens - 128:
+        if len(query.encode()) > self.profile.input_budget:
             msg = "History embedding query exceeds the configured input budget"
             raise ValueError(msg)
         async with self.slots, asyncio.timeout(_REQUEST_TIMEOUT):
@@ -177,7 +182,8 @@ class BoundedEmbeddings(Embeddings):
         cache = EMBEDDING_CACHE.get() or {}
         if all((False, text) in cache for text in texts):
             return [cache[False, text] for text in texts]
-        chunks = [_chunks(text, self.profile.max_input_tokens - 128) for text in texts]
+        chunks = [_chunks(text, self.profile.input_budget) for text in texts]
+        self._report_pooling(chunks)
         flattened = [chunk for document in chunks for chunk in document]
         vectors = await self._documents(flattened)
         output: list[list[float]] = []
@@ -187,6 +193,25 @@ class BoundedEmbeddings(Embeddings):
             output.append(_pool(group, [len(chunk.encode()) for chunk in document]))
             cursor += len(document)
         return output
+
+    def _report_pooling(self, chunks: list[list[str]]) -> None:
+        """Announce, once, that documents no longer fit one request and are averaged.
+
+        Pooled documents are compared against unpooled queries, so retrieval quality
+        degrades quietly. Raising the token budget or the byte/token ratio removes it.
+        """
+        widest = max((len(document) for document in chunks), default=1)
+        if widest > 1 and not self.reported_pooling:
+            self.reported_pooling = True
+            logger.warning(
+                "History documents exceed the %d-byte embedding budget and are averaged "
+                "across up to %d requests; raise %sMAX_INPUT_TOKENS or %sBYTES_PER_TOKEN "
+                "to embed them whole",
+                self.profile.input_budget,
+                widest,
+                _PREFIX,
+                _PREFIX,
+            )
 
     async def _documents(self, texts: list[str]) -> list[list[float]]:
         size = self.profile.batch_size

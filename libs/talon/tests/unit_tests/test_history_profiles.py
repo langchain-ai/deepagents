@@ -60,17 +60,73 @@ def test_invalid_profile_fails_during_configuration(tmp_path, settings):
 def test_fingerprint_covers_vector_space_but_not_keys_or_throughput(tmp_path):
     config = configuration(tmp_path, API_KEY="test-key")
     profile = config.history_embedding_profile
-    assert profile.fingerprint == replace(profile, batch_size=8, concurrency=2).fingerprint
+    for unchanged in (
+        {"batch_size": 8, "concurrency": 2},
+        {"query_prompt": "query: "},
+        {"query_model": "other"},
+    ):
+        assert profile.fingerprint == replace(profile, **unchanged).fingerprint
     for change in (
         {"dims": 3},
         {"model": "other"},
-        {"query_prompt": "query: "},
         {"max_input_tokens": 1024},
+        {"bytes_per_token": 2},
         {"base_url": "https://other.example/v1"},
     ):
         assert profile.fingerprint != replace(profile, **change).fingerprint
     assert "test-key" not in repr(profile)
     assert "test-key" not in repr(config)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "model", "prompted"),
+    [
+        ("local", "Qwen/Qwen3-Embedding-0.6B", True),
+        ("local", "Qwen/Qwen3-Embedding-8B", True),
+        ("local", "BAAI/bge-m3", False),
+        ("openai-compatible", "qwen/qwen3-embedding-8b", True),
+        ("openai-compatible", "openai/text-embedding-3-small", False),
+        ("voyage", "voyage-3-large", False),
+    ],
+)
+def test_instruction_prompt_follows_the_model_not_the_adapter(tmp_path, adapter, model, prompted):
+    settings = {"ADAPTER": adapter, "MODEL": model}
+    if adapter != "openai-compatible":
+        settings["BASE_URL"] = ""
+    if adapter == "voyage":
+        settings["DIMS"] = "1024"
+    profile = configuration(tmp_path, **settings).history_embedding_profile
+    assert bool(profile.query_prompt) is prompted
+    assert profile.query_prompt.startswith("Instruct:") is prompted
+
+
+def test_byte_ratio_widens_the_budget_without_changing_the_token_limit(tmp_path):
+    narrow = configuration(tmp_path).history_embedding_profile
+    wide = configuration(tmp_path, BYTES_PER_TOKEN="3").history_embedding_profile  # noqa: S106
+    assert narrow.input_budget == 384
+    assert wide.input_budget == 384 * 3
+    assert wide.max_input_tokens == narrow.max_input_tokens
+
+
+async def test_pooling_is_reported_once_with_actionable_settings(tmp_path, caplog):
+    profile = configuration(tmp_path).history_embedding_profile
+    bounded = BoundedEmbeddings(RecordingEmbeddings(), profile)
+    with caplog.at_level("WARNING"):
+        await bounded.aembed_documents(["a" * 4000])
+        await bounded.aembed_documents(["b" * 4000])
+    warnings = [record for record in caplog.records if "averaged" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "BYTES_PER_TOKEN" in warnings[0].getMessage()
+
+
+async def test_short_documents_are_embedded_whole_without_warning(tmp_path, caplog):
+    profile = configuration(tmp_path, BYTES_PER_TOKEN="4").history_embedding_profile  # noqa: S106
+    raw = RecordingEmbeddings()
+    bounded = BoundedEmbeddings(raw, profile)
+    with caplog.at_level("WARNING"):
+        await bounded.aembed_documents(["\u65e5\u672c\u8a9e" * 100])
+    assert len(raw.documents) == 1
+    assert caplog.records == []
 
 
 async def test_openrouter_sends_text_and_dimensions_without_loading_local_models(
@@ -213,6 +269,11 @@ async def test_model_change_requires_explicit_rebuild_and_preserves_transcripts(
         await archive.append(SCOPE, "session", "time", [HumanMessage("retained")])
         await settled(archive)
         namespace = archive.vectors.namespace("whatsapp", "one")
+    tuned = configuration(tmp_path, QUERY_PROMPT="Represent this query: ")
+    async with open_history(tuned) as archive:
+        await settled(archive)
+        assert [entry["text"] for entry in await archive.entries(SCOPE)] == ["retained"]
+    assert raw.documents == ["retained"]
     changed = configuration(tmp_path, MODEL="other", DIMS="3")
     with pytest.raises(TalonConfigError, match="HISTORY_REINDEX"):
         async with open_history(changed):

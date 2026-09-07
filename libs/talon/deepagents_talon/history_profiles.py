@@ -23,6 +23,8 @@ _PREFIX = "DEEPAGENTS_TALON_HISTORY_EMBED_"
 _MAX_MODEL_LENGTH = 256
 _SERVER_INPUT_BOUND = CHUNK_SIZE * 4 + 128
 _ADAPTERS = {"local", "voyage", "openai-compatible", "atlas"}
+_INSTRUCTION_FAMILY = "qwen3-embedding"
+_RESERVED_TOKENS = 128
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class EmbeddingProfile:
     max_input_tokens: int = 8192
     batch_size: int = 4
     concurrency: int = 1
+    bytes_per_token: int = 1
     query_prompt: str = LOCAL_PROMPT
     base_url: str = ""
     query_model: str = ""
@@ -50,16 +53,30 @@ class EmbeddingProfile:
         return self.adapter != "atlas"
 
     @property
+    def input_budget(self) -> int:
+        """Bound one provider request in UTF-8 bytes, reserving room for instructions.
+
+        `bytes_per_token` converts the provider's token limit into the byte measure
+        used for splitting. It defaults to the worst case of one token per byte, so
+        raising it trades a safety margin for fewer splits on non-ASCII transcripts.
+        """
+        return (self.max_input_tokens - _RESERVED_TOKENS) * self.bytes_per_token
+
+    @property
     def fingerprint(self) -> str:
-        """Identify the vector space and preprocessing without including credentials."""
+        """Identify stored document vectors, excluding credentials and query-time settings.
+
+        `query_prompt` and `query_model` are deliberately absent: both apply only when
+        embedding a query, so changing either cannot invalidate a stored vector and must
+        not force callers to rebuild the index.
+        """
         identity = (
             self.adapter,
             self.model,
             self.dims,
             self.max_input_tokens,
-            self.query_prompt,
+            self.bytes_per_token,
             self.base_url,
-            self.query_model,
             "utf8-weighted-mean-v1",
         )
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
@@ -91,14 +108,26 @@ def parse_profile(env: Mapping[str, str]) -> EmbeddingProfile:
         max_input_tokens=_number(env, "MAX_INPUT_TOKENS", 8192 if local else None, 131072),
         batch_size=_number(env, "BATCH_SIZE", 4 if local else 32, 4 if local else 96),
         concurrency=_number(env, "CONCURRENCY", 1 if local else 4, 1 if local else 16),
-        query_prompt=env.get(
-            _PREFIX + "QUERY_PROMPT", LOCAL_PROMPT if local and model == LOCAL_MODEL else ""
-        ),
+        bytes_per_token=_number(env, "BYTES_PER_TOKEN", 1, 4),
+        query_prompt=env.get(_PREFIX + "QUERY_PROMPT", _default_prompt(adapter, model)),
         base_url=_endpoint(env, adapter),
         query_model=env.get(_PREFIX + "QUERY_MODEL", ""),
     )
     _validate_profile(profile)
     return profile
+
+
+def _default_prompt(adapter: str, model: str) -> str:
+    """Apply the instruction format a model was trained with, however it is reached.
+
+    Qwen3-Embedding expects an instruction prefix on queries and none on documents, and
+    that convention belongs to the model rather than to the adapter serving it, so the
+    same model reached through a hosted OpenAI-compatible endpoint needs it too. Atlas
+    embeds server-side and never sees a client prompt.
+    """
+    if adapter == "atlas":
+        return ""
+    return LOCAL_PROMPT if _INSTRUCTION_FAMILY in model.lower() else ""
 
 
 def _number(env: Mapping[str, str], name: str, default: int | None, maximum: int) -> int:
@@ -136,7 +165,7 @@ def _endpoint(env: Mapping[str, str], adapter: str) -> str:
 
 
 def _validate_profile(profile: EmbeddingProfile) -> None:
-    if len(profile.query_prompt.encode()) + 132 >= profile.max_input_tokens:
+    if len(profile.query_prompt.encode()) + 4 >= profile.input_budget:
         msg = "History embedding token budget must leave room for query text"
         raise TalonConfigError(msg)
     if profile.adapter in {"voyage", "atlas"} and profile.dims not in {256, 512, 1024, 2048}:

@@ -252,7 +252,7 @@ class HistoryVectorIndex:
             if (
                 self.profile
                 and not self.profile.client_side
-                and len(query.encode()) > self.profile.max_input_tokens - 128
+                and len(query.encode()) > self.profile.input_budget
             ):
                 return [], "error"
             # asyncio.Lock is fair: a waiting query runs before the next indexing

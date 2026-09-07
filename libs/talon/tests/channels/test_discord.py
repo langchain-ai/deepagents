@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,11 @@ from deepagents_talon.channels.base import ChannelExposure, ExposureMode
 from deepagents_talon.channels.discord import (
     DiscordChannel,
     DiscordChannelConfig,
+    InboundConnectionCallback,
     InboundMessageCallback,
     InboundReactionCallback,
     _DiscordAttachment,
+    _DiscordConnectionState,
     _DiscordInboundMessage,
     _DiscordInboundReaction,
     _DiscordPyGateway,
@@ -35,11 +38,13 @@ class RecordingGateway:
         self.bot_id = "bot-1"
         self._handle_message: InboundMessageCallback | None = None
         self._handle_reaction: InboundReactionCallback | None = None
+        self._handle_connection: InboundConnectionCallback | None = None
 
-    async def start(self, *, handle_message, handle_reaction):
+    async def start(self, *, handle_message, handle_reaction, handle_connection):
         self.started = True
         self._handle_message = handle_message
         self._handle_reaction = handle_reaction
+        self._handle_connection = handle_connection
 
     async def stop(self):
         self.stopped = True
@@ -65,6 +70,10 @@ class RecordingGateway:
     async def deliver_reaction(self, inbound):
         assert self._handle_reaction is not None
         await self._handle_reaction(inbound)
+
+    async def deliver_connection(self, state):
+        assert self._handle_connection is not None
+        await self._handle_connection(state)
 
 
 class FailingTypingGateway(RecordingGateway):
@@ -111,43 +120,141 @@ def _stub_failing_download(monkeypatch):
     monkeypatch.setattr(discord_module, "_download_attachment_file", fake_download)
 
 
-async def test_gateway_enables_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
-    reconnect_values: list[bool] = []
+class _GatewayFailureError(Exception):
+    """Stand-in for an unrecoverable `discord.py` Gateway error such as a 4004 close."""
 
-    class FakeClient:
-        user = None
 
-        def __init__(self, *, intents: object) -> None:
-            del intents
-            self.closed = asyncio.Event()
+class FakeClient:
+    """Stand-in for `discord.Client` that records handlers and never opens a socket."""
 
-        def event(self, callback):
-            return callback
+    def __init__(self, *, intents: object) -> None:
+        del intents
+        self.user = None
+        self.closed = asyncio.Event()
+        self.handlers = {}
+        self.reconnect_values = []
+        self.start_error: BaseException | None = None
 
-        async def start(self, token: str, *, reconnect: bool) -> None:
-            del token
-            reconnect_values.append(reconnect)
-            await self.closed.wait()
+    def event(self, callback):
+        self.handlers[callback.__name__] = callback
+        return callback
 
-        async def wait_until_ready(self) -> None:
-            return None
+    async def start(self, token: str, *, reconnect: bool) -> None:
+        del token
+        self.reconnect_values.append(reconnect)
+        await self.closed.wait()
+        if self.start_error is not None:
+            raise self.start_error
 
-        async def close(self) -> None:
-            self.closed.set()
+    async def wait_until_ready(self) -> None:
+        return None
 
-    monkeypatch.setattr(discord_module.discord, "Client", FakeClient)
+    async def close(self) -> None:
+        self.closed.set()
+
+    async def fire(self, event: str, *args: object) -> None:
+        await self.handlers[event](*args)
+
+    def fail(self, error: BaseException) -> None:
+        """End the gateway task with `error`, as an unrecoverable close would."""
+        self.start_error = error
+        self.closed.set()
+
+
+def _install_fake_client(monkeypatch: pytest.MonkeyPatch) -> list[FakeClient]:
+    created: list[FakeClient] = []
+
+    def factory(*, intents: object) -> FakeClient:
+        client = FakeClient(intents=intents)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(discord_module.discord, "Client", factory)
+    return created
+
+
+def _connection_recorder():
+    """Record connection states, signalling an event as each one arrives."""
+    states = []
+    arrived = asyncio.Event()
+
+    async def record(state):
+        states.append(state)
+        arrived.set()
+
+    return states, arrived, record
+
+
+async def _start_fake_gateway(handle_connection) -> _DiscordPyGateway:
     gateway = _DiscordPyGateway(
         token="test-token",  # noqa: S106  # inert test token
         connect_timeout_seconds=1,
     )
-
     await gateway.start(
         handle_message=lambda _: asyncio.sleep(0),
         handle_reaction=lambda _: asyncio.sleep(0),
+        handle_connection=handle_connection,
     )
+    return gateway
+
+
+async def test_gateway_enables_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _install_fake_client(monkeypatch)
+
+    gateway = await _start_fake_gateway(lambda _: asyncio.sleep(0))
     await gateway.stop()
 
-    assert reconnect_values == [True]
+    assert created[0].reconnect_values == [True]
+
+
+async def test_gateway_reports_connection_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _install_fake_client(monkeypatch)
+    states, _arrived, record_state = _connection_recorder()
+
+    gateway = await _start_fake_gateway(record_state)
+    client = created[0]
+    await client.fire("on_ready")
+    await client.fire("on_disconnect")
+    await client.fire("on_resumed")
+    await gateway.stop()
+
+    assert states == [
+        _DiscordConnectionState(connected=True, detail="connected"),
+        _DiscordConnectionState(connected=True, detail="reconnecting"),
+        _DiscordConnectionState(connected=True, detail="connected"),
+    ]
+
+
+async def test_gateway_reports_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    created = _install_fake_client(monkeypatch)
+    states, arrived, record_state = _connection_recorder()
+
+    gateway = await _start_fake_gateway(record_state)
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.channels.discord"):
+        created[0].fail(_GatewayFailureError("gateway closed with 4004"))
+        await asyncio.wait_for(arrived.wait(), timeout=1)
+    await gateway.stop()
+
+    assert states == [
+        _DiscordConnectionState(connected=False, detail="gateway stopped: _GatewayFailureError"),
+    ]
+    assert "Discord Gateway connection ended unexpectedly" in caplog.text
+
+
+async def test_gateway_watcher_is_quiet_on_a_clean_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _install_fake_client(monkeypatch)
+    states, _arrived, record_state = _connection_recorder()
+
+    gateway = await _start_fake_gateway(record_state)
+    assert created[0].reconnect_values == [True]
+    await gateway.stop()
+
+    assert states == []
 
 
 def _collector():
@@ -226,6 +333,51 @@ async def test_start_and_stop_toggle_status(tmp_path):
 
     assert gateway.stopped
     assert (await channel.status()).connected is False
+
+
+async def test_terminal_gateway_failure_marks_the_channel_disconnected(tmp_path):
+    gateway = RecordingGateway()
+    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
+    await channel.start()
+
+    await gateway.deliver_connection(
+        _DiscordConnectionState(connected=False, detail="gateway stopped: ConnectionClosed"),
+    )
+
+    status = await channel.status()
+    assert status.connected is False
+    assert status.detail == "gateway stopped: ConnectionClosed"
+
+
+async def test_transient_disconnect_keeps_the_channel_connected(tmp_path):
+    gateway = RecordingGateway()
+    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
+    await channel.start()
+
+    await gateway.deliver_connection(
+        _DiscordConnectionState(connected=True, detail="reconnecting"),
+    )
+
+    status = await channel.status()
+    assert status.connected is True
+    assert status.detail == "reconnecting"
+
+    await gateway.deliver_connection(_DiscordConnectionState(connected=True, detail="connected"))
+
+    assert (await channel.status()).detail == "connected"
+
+
+async def test_connection_events_after_stop_are_ignored(tmp_path):
+    gateway = RecordingGateway()
+    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
+    await channel.start()
+    await channel.stop()
+
+    await gateway.deliver_connection(_DiscordConnectionState(connected=True, detail="connected"))
+
+    status = await channel.status()
+    assert status.connected is False
+    assert status.detail == "disconnected"
 
 
 # --- outbound text/media tests ----------------------------------------------

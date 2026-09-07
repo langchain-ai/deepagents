@@ -48,6 +48,7 @@ from deepagents_talon.authorization import (
     current_authorization_handler,
     current_authorization_invocation,
 )
+from deepagents_talon.mcp_config import warn_agent_workspace_path
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -75,6 +76,7 @@ _MIN_RESPONSE_STATUS = 200
 _REDIRECT_STATUS = 300
 _BAD_REQUEST_STATUS = 400
 _SERVER_ERROR_STATUS = 500
+_UNSAFE_ENDPOINT_MESSAGE = "OAuth endpoint is not a safe public HTTPS URL."
 
 
 class _AuthorizationServerMetadata(BaseModel):
@@ -140,17 +142,33 @@ class FileTokenStorage:
         *,
         server_url: str,
         force_authorization: bool = False,
+        agent_root: Path | None = None,
     ) -> None:
         """Bind storage to a server name and URL.
+
+        These files hold live bearer and refresh tokens in cleartext, so the
+        directory is restricted to the owner and a location inside the agent
+        workspace is warned about. Against Talon's default shell backend that is
+        hardening, not a boundary: the agent can still read any absolute path it
+        is given.
 
         Args:
             server_name: Configured MCP server name.
             server_url: Remote MCP endpoint used to isolate credentials.
             force_authorization: Whether the first token read should require a
                 fresh OAuth flow without deleting the stored credential.
+            agent_root: Agent workspace root. Defaults to the process workspace.
         """
         digest = hashlib.sha256(server_url.encode()).hexdigest()[:12]
-        self.path = Path.home() / _TOKEN_DIR / f"{server_name}-{digest}.json"
+        directories: list[Path] = []
+        current = Path.home()
+        for part in _TOKEN_DIR.parts:
+            current = current / part
+            directories.append(current)
+        self._directories = tuple(directories)
+        path = current / f"{server_name}-{digest}.json"
+        warn_agent_workspace_path(path, agent_root, subject="MCP credential storage")
+        self.path = path
         self._force_authorization = force_authorization
 
     async def get_tokens(self) -> OAuthToken | None:
@@ -223,6 +241,11 @@ class FileTokenStorage:
     def _update_values(self, values: dict[str, object]) -> None:
         directory = self.path.parent
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for parent in self._directories[:-1]:
+            # mkdir(mode=...) applies the mode to the leaf only, so an
+            # intermediate it created keeps the process umask.
+            with contextlib.suppress(OSError):
+                parent.chmod(0o700)
         directory.chmod(0o700)
         data = self._read() or {}
         data.update(values)
@@ -282,8 +305,8 @@ async def _authorize_discovered_device(
     if client_info is None:
         return False
     authorization = _DeviceAuthorization(
-        device_endpoint=_issuer_endpoint(metadata.device_authorization_endpoint, metadata),
-        token_endpoint=_issuer_endpoint(metadata.token_endpoint, metadata),
+        device_endpoint=await _issuer_endpoint(metadata.device_authorization_endpoint, metadata),
+        token_endpoint=await _issuer_endpoint(metadata.token_endpoint, metadata),
         resource=context.get_resource_url(),
         client_info=client_info,
     )
@@ -296,19 +319,25 @@ async def _discover_device_metadata(
     auth_server_url: str,
 ) -> _AuthorizationServerMetadata | None:
     try:
-        issuer = _safe_https_url(auth_server_url)
+        # Every await inside the timeout must yield, so name resolution runs on a
+        # worker thread; a blocking getaddrinfo here cannot be interrupted.
         async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(
-                timeout=_HTTP_TIMEOUT_SECONDS,
-                follow_redirects=False,
-            ) as client:
+            issuer = await asyncio.to_thread(_safe_https_url, auth_server_url)
+            async with _oauth_http_client() as client:
                 for candidate in build_oauth_authorization_server_metadata_discovery_urls(
                     issuer, issuer
                 ):
                     metadata = await _read_device_metadata(client, issuer, candidate)
                     if metadata is not None:
                         return metadata
-    except (httpx.HTTPError, MCPAuthorizationError, OSError, ValidationError, ValueError):
+    except (
+        httpx.HTTPError,
+        MCPAuthorizationError,
+        OSError,
+        SSRFBlockedError,
+        ValidationError,
+        ValueError,
+    ):
         return None
     return None
 
@@ -320,7 +349,7 @@ async def _read_device_metadata(
 ) -> _AuthorizationServerMetadata | None:
     if _origin(candidate) != _origin(issuer):
         return None
-    body = await _get_json(client, _safe_https_url(candidate))
+    body = await _get_json(client, await asyncio.to_thread(_safe_https_url, candidate))
     if body is None:
         return None
     try:
@@ -333,8 +362,8 @@ async def _read_device_metadata(
         metadata.grant_types_supported or ()
     ):
         return None
-    _issuer_endpoint(metadata.device_authorization_endpoint, metadata)
-    _issuer_endpoint(metadata.token_endpoint, metadata)
+    await _issuer_endpoint(metadata.device_authorization_endpoint, metadata)
+    await _issuer_endpoint(metadata.token_endpoint, metadata)
     return metadata
 
 
@@ -344,22 +373,22 @@ async def _register_device_client(
     registration_endpoint = metadata.registration_endpoint or AnyHttpUrl(
         urljoin(str(metadata.issuer), "/register")
     )
-    endpoint = _issuer_endpoint(registration_endpoint, metadata)
-    async with httpx.AsyncClient(
-        timeout=_HTTP_TIMEOUT_SECONDS,
-        follow_redirects=False,
-    ) as client:
-        body = await _post_json(
-            client,
-            endpoint,
-            json_data={
-                "client_name": "Deep Agents Talon",
-                "grant_types": [_DEVICE_GRANT_TYPE],
-                "redirect_uris": [_REDIRECT_URI],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
-            },
-        )
+    endpoint = await _issuer_endpoint(registration_endpoint, metadata)
+    try:
+        async with _oauth_http_client() as client:
+            body = await _post_json(
+                client,
+                endpoint,
+                json_data={
+                    "client_name": "Deep Agents Talon",
+                    "grant_types": [_DEVICE_GRANT_TYPE],
+                    "redirect_uris": [_REDIRECT_URI],
+                    "response_types": ["code"],
+                    "token_endpoint_auth_method": "none",
+                },
+            )
+    except SSRFBlockedError:
+        return None
     if body is None:
         return None
     try:
@@ -395,25 +424,27 @@ async def _run_device_flow(
     *,
     interactive: bool,
 ) -> OAuthToken:
-    async with httpx.AsyncClient(
-        timeout=_HTTP_TIMEOUT_SECONDS,
-        follow_redirects=False,
-    ) as client:
-        device = await _request_device_code(client, authorization)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + device.expires_in
-        await _present_device_code(
-            server_name,
-            device,
-            deadline=deadline,
-            interactive=interactive,
-        )
-        return await _poll_for_device_token(
-            client,
-            authorization,
-            device,
-            deadline=deadline,
-        )
+    # The device code and the issued tokens travel on this client, so it must be
+    # the pinned, proxy-ignoring one rather than an ambient-environment client.
+    try:
+        async with _oauth_http_client() as client:
+            device = await _request_device_code(client, authorization)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + device.expires_in
+            await _present_device_code(
+                server_name,
+                device,
+                deadline=deadline,
+                interactive=interactive,
+            )
+            return await _poll_for_device_token(
+                client,
+                authorization,
+                device,
+                deadline=deadline,
+            )
+    except SSRFBlockedError:
+        raise MCPAuthorizationError(_UNSAFE_ENDPOINT_MESSAGE) from None
 
 
 async def _request_device_code(
@@ -433,7 +464,7 @@ async def _request_device_code(
         raise MCPAuthorizationError(msg)
     try:
         device = _DeviceCodeResponse.model_validate(body)
-        device.verification_uri = _safe_https_url(device.verification_uri)
+        device.verification_uri = await asyncio.to_thread(_safe_https_url, device.verification_uri)
     except (ValidationError, ValueError) as exc:
         msg = "Authorization server returned an invalid device code response."
         raise MCPAuthorizationError(msg) from exc
@@ -591,14 +622,14 @@ def _safe_https_url(url: str) -> str:
     return validate_safe_url(url, allow_http=False)
 
 
-def _issuer_endpoint(
+async def _issuer_endpoint(
     endpoint: AnyHttpUrl | None,
     metadata: _AuthorizationServerMetadata,
 ) -> str:
     if endpoint is None:
         msg = "OAuth endpoint is missing."
         raise MCPAuthorizationError(msg)
-    validated = _safe_https_url(str(endpoint))
+    validated = await asyncio.to_thread(_safe_https_url, str(endpoint))
     if _origin(validated) != _origin(str(metadata.issuer)):
         msg = "OAuth endpoint does not match the authorization server."
         raise MCPAuthorizationError(msg)
@@ -646,7 +677,7 @@ def _reject_oauth_redirect(response: httpx.Response) -> None:
 
 
 async def _validate_oauth_url(url: str) -> None:
-    msg = "OAuth endpoint is not a safe public HTTPS URL."
+    msg = _UNSAFE_ENDPOINT_MESSAGE
     try:
         parsed = urlparse(url)
         await asyncio.to_thread(_safe_https_url, url)
@@ -693,8 +724,7 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
                 _reject_oauth_redirect(response)
                 return response
         except SSRFBlockedError:
-            msg = "OAuth endpoint is not a safe public HTTPS URL."
-            raise MCPAuthorizationError(msg) from None
+            raise MCPAuthorizationError(_UNSAFE_ENDPOINT_MESSAGE) from None
 
     async def _validate_metadata(self) -> None:
         metadata = self.context.oauth_metadata
@@ -747,12 +777,15 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         raise MCPAuthorizationError(msg)
 
     async def _discover_refresh_resource(self) -> None:
-        async with (
-            httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=False) as client,
-            client.stream("GET", self.context.server_url) as response,
-        ):
-            _reject_oauth_redirect(response)
-            challenge = extract_resource_metadata_from_www_auth(response)
+        try:
+            async with (
+                _oauth_http_client() as client,
+                client.stream("GET", self.context.server_url) as response,
+            ):
+                _reject_oauth_redirect(response)
+                challenge = extract_resource_metadata_from_www_auth(response)
+        except SSRFBlockedError:
+            raise MCPAuthorizationError(_UNSAFE_ENDPOINT_MESSAGE) from None
         for url in build_protected_resource_metadata_discovery_urls(
             challenge, self.context.server_url
         ):

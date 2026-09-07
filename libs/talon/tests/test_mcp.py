@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar, Self
 
+import anyio
 import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
@@ -41,6 +42,7 @@ from deepagents_talon.mcp import (
     mcp_config_path,
 )
 from deepagents_talon.mcp_auth import (
+    DeviceAuthorizationCompletedError,
     FileTokenStorage,
     MCPAuthorizationError,
     _DeviceCodeResponse,
@@ -1222,3 +1224,87 @@ async def test_invalid_server_does_not_block_valid_server(
     assert [tool.name for tool in result.tools] == ["valid_read"]
     assert result.servers[0].status == "error"
     assert result.servers[1].status == "ok"
+
+
+async def _raise_device_completion() -> None:
+    raise DeviceAuthorizationCompletedError
+
+
+async def _raise_oauth_failure() -> None:
+    msg = "secret token exchange response"
+    raise OAuthFlowError(msg)
+
+
+async def _raise_connection_failure() -> None:
+    msg = "connection reset"
+    raise ConnectionError(msg)
+
+
+async def test_login_succeeds_when_the_device_flow_completes_inside_a_task_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A completed device login exits 0: the session task group wraps the marker."""
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}})
+
+    async def complete_device_login(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_device_completion)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_device_login)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    assert captured.out == "Logged in to MCP server 'remote'.\n"
+
+
+async def test_login_reports_a_grouped_failure_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    async def fail_inside_task_group(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_oauth_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_inside_task_group)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    error = capsys.readouterr().err
+    assert result == 1
+    assert error.startswith("MCP login failed: ")
+    assert "secret token exchange response" not in error
+
+
+async def test_authenticate_reports_failure_for_a_grouped_session_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A network failure with no binding must not raise the group into the agent."""
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(config_path, {"notion": {"url": "https://mcp.example", "auth": "oauth"}})
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _stored_tokens(),
+    )
+
+    async def fail_inside_task_group(_client: object, _server_name: str) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_connection_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_inside_task_group)
+
+    result = await provider._authenticate("notion", "tool-call")
+
+    assert result == {"status": "failed", "server_name": "notion"}
+    assert await provider.refresh_if_needed() is None

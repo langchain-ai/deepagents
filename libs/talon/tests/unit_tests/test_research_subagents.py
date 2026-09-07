@@ -14,6 +14,7 @@ from pydantic import PrivateAttr
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.subagents import prepare_subagents
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -159,6 +160,15 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
 
 def _inventory(runtime):
     return runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
+
+
+@pytest.mark.parametrize(
+    "definition", [{"runnable": RunnableLambda(lambda state: state)}, {"graph_id": "remote"}]
+)
+def test_opaque_general_purpose_is_rejected(definition):
+    spec = {"name": "general-purpose", "description": "Custom agent", **definition}
+    with pytest.raises(ValueError, match="must use a name other than 'general-purpose'"):
+        prepare_subagents([spec], [], "test:model", None)
 
 
 @pytest.mark.parametrize("source", ["local", "supplied", "compiled"])

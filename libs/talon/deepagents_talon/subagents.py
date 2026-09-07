@@ -205,7 +205,7 @@ def prepare_subagents(
         SDK definitions and a safe inventory; opaque agents have unknown tools.
 
     Raises:
-        ValueError: An attachment is unavailable or fork mode is requested.
+        ValueError: An attachment is unavailable or a configuration is unsupported.
     """
     available = _tool_map(tools)
     candidates = list(specs)
@@ -213,6 +213,11 @@ def prepare_subagents(
     prepared: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
     inventory: list[Attachment] = []
     for original in candidates:
+        if original["name"] == "general-purpose" and (
+            "runnable" in original or "graph_id" in original
+        ):
+            msg = "Compiled and remote subagents must use a name other than 'general-purpose'"
+            raise ValueError(msg)
         if original.get("mode") == "fork":
             msg = "Talon subagents use fresh context; fork mode is unsupported"
             raise ValueError(msg)

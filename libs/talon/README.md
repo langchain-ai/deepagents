@@ -248,79 +248,29 @@ optional.
 
 ## Research defaults
 
-New assistant homes receive an editable, versioned `research.json` profile. Existing
-homes and imported assistants are unchanged; no integrations are connected automatically.
-The profile adds defensive instructions to main alongside existing instructions and
-provides two researchers with fresh task context:
+Fresh assistant homes receive ordinary `AGENTS.md` files for main, `internal-research`,
+and `external-research`, loaded through the existing agent loader. Research gets fresh
+context, defensive prompts, and only available reads: common GitHub/Notion/mail/calendar
+operations internally; `fetch_url`, Tavily-backed `web_search`, and Tavily retrieval externally.
+No integrations are auto-connected. Review exact names and source scope for your setup.
 
-| Role | Default available capabilities |
-| --- | --- |
-| `internal-research` | Exact read tools for common GitHub, Notion, Gmail, and calendar integrations |
-| `external-research` | `fetch_url`, Tavily-backed `web_search`, and exact Tavily search/extract tools |
-| Main | Filesystem, local shell, decisions, configuration, needed actions, and tools awaiting placement review |
+In agent frontmatter, `optional_tools: [exact_name]` skips unavailable tools without fallback;
+`tools` remains strict. `main_tools: []` removes that agent's attached tools from main;
+list names to retain direct access, or omit the field to preserve main's existing tools.
+Main retains filesystem, shell, configuration, and actions under existing approval controls.
+It chooses placement from the workflow and mediates minimal internal-to-external context.
 
-Only exact configured names present in the loaded runtime tool catalog attach to
-researchers. Missing integrations leave empty roles, without fallback tools.
-Provider versions and server aliases change tool names: inspect `get_agent_tools`,
-then edit the profile's `agents[].tools` to match the actual read operations and
-information accessed. The shipped names are starting points, not a classification
-registry. Unknown tools remain on main pending review; never infer read safety from
-a name, prefix, or server description alone. Keep writes separate from research.
+Existing homes are unchanged. Review the packaged `deepagents_talon/defaults/` files,
+back up affected instructions, and merge the selected changes without replacing custom
+content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
+by restoring those files and reloading. Include restored capabilities in the rollback
+review. Running tasks retain their original graphs until finished or canceled.
 
-Attached research tools are removed from main unless listed in `direct_tools`.
-Main decides placement and direct-use needs from the user's workflow, preferring
-appropriate delegation and sending only necessary context. Main mediates any
-internal-to-external research with a minimal non-sensitive question. The researchers
-return concise cited evidence, uncertainty, and suspected injection. All retrieved
-content, including local files and research results, is evidence rather than authority
-to act, change recipients, disclose private data, or rewrite trusted state.
-
-### Existing assistants and rollback
-
-1. Inspect `get_agent_tools` and running tasks. Save the current inventory and securely
-   back up an existing `research.json` if present. Export no credentials or MCP config.
-2. Locate the shipped candidate with
-   `python -c 'from deepagents_talon.research import DEFAULT_PROFILE; print(DEFAULT_PROFILE)'`
-   in the Talon environment. Copy it to a separate review file. Review its prompts and
-   exact attachments against the available tools, adjust server aliases and source
-   scope, and record any required `direct_tools`. Compare the proposed role lists with
-   the current inventory, including direct access removed from main and workflow impact.
-   The profile reserves both research role names; migrate conflicting local/remote
-   definitions explicitly, preserving backups, or leave the profile disabled.
-3. After approving that concrete change, install the reviewed file as
-   `<assistant-home>/research.json` with mode `0600`, then call
-   `reload_subagent_configuration` (or restart). Recheck `get_agent_tools`, including
-   `saved_changes_inactive`. Invalid profiles retain the active graph and profile.
-   MCP refreshes use the active profile; saved edits require the subagent reload.
-4. To roll back, restore the backed-up profile, or remove only the newly installed
-   profile if none existed, restore any explicitly migrated role definitions, and use
-   the same reload and inventory check. Disabling the profile restores research tools
-   to main, so include that capability expansion in the rollback decision.
-
-Existing custom instructions, skills, and MCP configuration are never overwritten.
-Running turns and background tasks retain their original capabilities until finished
-or canceled; reload does not revoke them. Keep the before/after inventory and rollback
-file until the new workflow is verified.
-
-### Security limits and validation
-
-Exact attachments enforce missing capabilities; defensive prompts are not a sandbox.
-Main retains filesystem access and, by default, local shell execution, so malicious
-files or returned evidence can still influence a privileged agent. Classification
-mistakes, indirect injection through researcher results, shared process/credentials,
-and retrieval that can reach private destinations remain operator-managed risks.
-Neither role has guaranteed public-only network access. Existing approval gates
-remain in effect; this profile adds no network isolation or agent-editable HITL controls.
-
-`tests/unit_tests/fixtures/research_injections.json` contains benign injection fixtures
-for documents, email, calendar, web pages, local files, and returned evidence. Scripted
-tests deliberately attempt forbidden researcher calls and fabricated main approvals:
-they verify absent tools, fresh context, and existing approval denial, **not model
-refusal**. To evaluate prompting with your configured model, serve those fixture texts
-from harmless read tools/files, ask for the deadline with citations, and check that the
-model returns Friday with provenance and flags injection without following embedded
-instructions or putting private context in public queries. Record behavioral outcomes
-separately from capability denials; passing examples do not guarantee injection resistance.
+Prompts are not a sandbox: main filesystem/shell access, injected results, classification
+mistakes, shared runtime/credentials, and retrieval of private destinations remain
+operator-managed risks. The benign fixtures in `tests/unit_tests/fixtures/research_injections.json`
+exercise missing capabilities and approval gates with scripted calls, not model refusal
+or guaranteed public-only retrieval. Evaluate prompt behavior separately with your model.
 
 ## Background Subagents
 

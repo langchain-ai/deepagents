@@ -30,6 +30,8 @@ class LocalSubAgent(SubAgent):
     """Local frontmatter additions resolved before SDK graph construction."""
 
     tool_names: NotRequired[list[str]]
+    optional_tool_names: NotRequired[list[str]]
+    main_tools: NotRequired[list[str]]
 
 
 class Attachment(TypedDict):
@@ -225,6 +227,12 @@ def prepare_subagents(
                 msg = "Subagent attachment is unavailable; previous configuration retained"
                 raise ValueError(msg)
             spec["tools"] = [available[name] for name in names]
+        if "optional_tool_names" in spec:
+            optional = spec.pop("optional_tool_names")
+            spec["tools"] = [
+                *spec.get("tools", []),
+                *(available[name] for name in optional if name in available),
+            ]
         opaque = "graph_id" in spec or "runnable" in spec
         inventory.append(
             {

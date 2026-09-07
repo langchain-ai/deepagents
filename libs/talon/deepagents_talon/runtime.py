@@ -57,7 +57,6 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
-from deepagents_talon.research import ResearchProfile, load_research_profile
 from deepagents_talon.subagents import Attachment, LocalSubAgent, TaskTools, prepare_subagents
 
 if TYPE_CHECKING:
@@ -313,7 +312,6 @@ class DeepAgentRuntime:
         self.subagents = tuple(subagents) if subagents is not None else None
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
-        self._research_profile: ResearchProfile | None = None
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -343,15 +341,12 @@ class DeepAgentRuntime:
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
         self._resolved_subagents = self._resolve_subagents(strict=True)
-        profile = load_research_profile(self.assistant_dir)
-        self._graph = self._create_graph(profile=profile)
-        self._research_profile = profile
+        self._graph = self._create_graph()
 
     def _create_graph(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
         *,
-        profile: ResearchProfile | None,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     ) -> object:
         resolved = [
@@ -373,25 +368,24 @@ class DeepAgentRuntime:
                 )
         general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
-        if profile is not None:
-            available = {getattr(item, "name", getattr(item, "__name__", "")) for item in tools}
-            if any(
-                spec["name"] in {agent["name"] for agent in profile.agents} for spec in resolved
-            ):
-                msg = "Research profile roles conflict with configured subagents"
-                raise ValueError(msg)
-            for agent in profile.agents:
-                spec = agent.copy()
-                spec["tool_names"] = [name for name in agent["tool_names"] if name in available]
-                resolved.append(spec)
-            delegated = {name for agent in profile.agents for name in agent["tool_names"]}
-            tools = [
-                item
-                for item in tools
-                if getattr(item, "name", getattr(item, "__name__", ""))
-                not in delegated - set(profile.direct_tools)
-            ]
+        main_tools = {
+            spec["name"]: cast("LocalSubAgent", spec)["main_tools"]
+            for spec in resolved
+            if "main_tools" in spec
+        }
         resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
+        delegated = {
+            name
+            for attachment in attachments
+            if attachment["name"] in main_tools
+            for name in attachment["tools"] or []
+            if name not in main_tools[attachment["name"]]
+        }
+        tools = [
+            item
+            for item in tools
+            if getattr(item, "name", getattr(item, "__name__", "")) not in delegated
+        ]
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(model, interrupt_on, cast("SubAgent | None", general))
@@ -405,11 +399,7 @@ class DeepAgentRuntime:
         graph = create_deep_agent(
             model=model,
             tools=tools,
-            system_prompt=(
-                "\n\n".join(filter(None, [self._resolve_system_prompt(), profile.main_prompt]))
-                if profile is not None
-                else self._resolve_system_prompt()
-            ),
+            system_prompt=self._resolve_system_prompt(),
             subagents=resolved or None,
             backend=self.backend,
             skills=self._resolve_skills(),
@@ -563,7 +553,7 @@ class DeepAgentRuntime:
         tools: Sequence[BaseTool | Callable[..., object]],
     ) -> None:
         replacement = tuple(tools)
-        graph = self._create_graph(replacement, profile=self._research_profile)
+        graph = self._create_graph(replacement)
         self.tools = replacement
         self._graph = graph
         self._mcp_reload_failed = False
@@ -572,10 +562,8 @@ class DeepAgentRuntime:
         """Activate validated definitions for subsequent turns, preserving active graphs."""
         async with self._tools_lock:
             replacement = self._resolve_subagents(strict=True)
-            profile = load_research_profile(self.assistant_dir)
-            graph = self._create_graph(subagents=replacement, profile=profile)
+            graph = self._create_graph(subagents=replacement)
             self._resolved_subagents = replacement
-            self._research_profile = profile
             self._graph = graph
 
     def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
@@ -588,10 +576,7 @@ class DeepAgentRuntime:
             use list_subagents and cancel_subagent before claiming revocation is complete.
             """
             try:
-                changed = (
-                    self._resolve_subagents(strict=True) != self._resolved_subagents
-                    or load_research_profile(self.assistant_dir) != self._research_profile
-                )
+                changed = self._resolve_subagents(strict=True) != self._resolved_subagents
             except Exception:  # noqa: BLE001  # never return configuration contents
                 changed = True
             return {
@@ -1330,7 +1315,17 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
     if frontmatter.get("mode", "fresh") != "fresh":
         msg = "Talon subagents use fresh context; remove the mode setting"
         raise ValueError(msg)
-    names = frontmatter.get("tools", [])
+    spec["tool_names"] = _local_tool_names(frontmatter.get("tools", []))
+    if "optional_tools" in frontmatter:
+        spec["optional_tool_names"] = _local_tool_names(frontmatter["optional_tools"])
+    if set(spec["tool_names"]) & set(spec.get("optional_tool_names", [])):
+        msg = "Required and optional subagent tools must not overlap"
+        raise ValueError(msg)
+    if "main_tools" in frontmatter:
+        spec["main_tools"] = _local_tool_names(frontmatter["main_tools"])
+
+
+def _local_tool_names(names: object) -> list[str]:
     if (
         not isinstance(names, list)
         or any(not isinstance(name, str) or not name.strip() for name in names)
@@ -1338,7 +1333,7 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
     ):
         msg = "Local subagent tools must be unique, nonempty exact names"
         raise ValueError(msg)
-    spec["tool_names"] = cast("list[str]", names)
+    return cast("list[str]", names)
 
 
 def _normalize_subagent_metadata(

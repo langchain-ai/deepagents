@@ -10,9 +10,8 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from deepagents_talon.config import TalonConfig
+from deepagents_talon.config import TalonConfig, _install_defaults
 from deepagents_talon.interfaces import AgentRequest
-from deepagents_talon.research import DEFAULT_PROFILE, install_research_defaults
 from tests.unit_tests.test_research_subagents import ToolModel, _call, _inventory, _runtime
 
 _FIXTURES = json.loads(
@@ -23,24 +22,24 @@ _FIXTURES = json.loads(
 def test_install_only_on_fresh_setup(tmp_path):
     fresh = TalonConfig("fresh", tmp_path / "fresh")
     fresh.ensure_home()
-    profile = fresh.home / "research.json"
-    assert profile.read_bytes() == DEFAULT_PROFILE.read_bytes()
-    assert profile.stat().st_mode & 0o777 == 0o600
-    profile.write_text("custom settings")
+    instructions = fresh.home / "AGENTS.md"
+    assert instructions.is_file()
+    assert instructions.stat().st_mode & 0o777 == 0o600
+    assert (fresh.agents_dir / "internal-research" / "AGENTS.md").is_file()
+    assert (fresh.agents_dir / "external-research" / "AGENTS.md").is_file()
+    instructions.write_text("User instructions")
     fresh.ensure_home()
-    install_research_defaults(fresh.home)
-    assert profile.read_text() == "custom settings"
+    _install_defaults(fresh.home)
+    assert instructions.read_text() == "User instructions"
     existing = TalonConfig("existing", tmp_path / "existing")
     existing.home.mkdir()
-    instructions = existing.home / "AGENTS.md"
-    instructions.write_text("User instructions")
     existing.ensure_home()
-    assert not (existing.home / "research.json").exists()
-    assert instructions.read_text() == "User instructions"
+    assert not (existing.home / "AGENTS.md").exists()
+    assert not list(existing.agents_dir.iterdir())
 
 
 async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
-    install_research_defaults(tmp_path)
+    _install_defaults(tmp_path)
     model = ToolModel(responses=[AIMessage(content="Done")])
     runtime = _runtime(tmp_path, monkeypatch, model, model)
     await runtime.start()
@@ -48,10 +47,9 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
         assert agents["internal-research"] == agents["external-research"] == []
         assert {"read_file", "write_file", "execute"} <= set(agents["main"])
-        path = tmp_path / "research.json"
-        profile = json.loads(path.read_text())
-        profile["direct_tools"] = ["fetch_url"]
-        path.write_text(json.dumps(profile))
+        path = tmp_path / "agents" / "external-research" / "AGENTS.md"
+        original = path.read_text()
+        path.write_text(original.replace("main_tools: []", "main_tools: [fetch_url]"))
         assert _inventory(runtime)["saved_changes_inactive"]
         runtime.include_web_tools = True
         await runtime.reload_subagent_configuration()
@@ -60,24 +58,23 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
         assert "fetch_url" in agents["main"]
         assert "web_search" not in agents["main"]
         active = runtime._graph
-        path.write_text('{"version": 999}')
+        path.write_text(original.replace("main_tools: []", "main_tools: null"))
         assert (await runtime._subagent_reload_tool().ainvoke({}))["status"] == "failed"
         assert runtime._graph is active
         assert _inventory(runtime)["saved_changes_inactive"]
         runtime._replace_runtime_tools([])
         assert "web_search" not in _inventory(runtime)["agents"][0]["tools"]
-        path.unlink()
+        path.write_text(original.replace("main_tools: []", ""))
         await runtime.reload_subagent_configuration()
         assert not _inventory(runtime)["saved_changes_inactive"]
         assert {"fetch_url", "web_search"} <= set(_inventory(runtime)["agents"][0]["tools"])
-        assert "internal-research" not in {item["name"] for item in _inventory(runtime)["agents"]}
     finally:
         await runtime.stop()
 
 
 @pytest.mark.parametrize("fixture", _FIXTURES[:4], ids=lambda item: item["surface"])
 async def test_research_injection_cannot_gain_tools(tmp_path, monkeypatch, fixture):
-    install_research_defaults(tmp_path)
+    _install_defaults(tmp_path)
 
     @tool(fixture["tool"])
     def source() -> str:
@@ -140,7 +137,7 @@ async def test_research_injection_cannot_gain_tools(tmp_path, monkeypatch, fixtu
 
 @pytest.mark.parametrize("fixture", _FIXTURES[4:], ids=lambda item: item["surface"])
 async def test_main_injection_cannot_fabricate_approval(tmp_path, monkeypatch, fixture):
-    install_research_defaults(tmp_path)
+    _install_defaults(tmp_path)
     path = tmp_path / "fixture.txt"
     path.write_text(fixture["text"])
     sent = []

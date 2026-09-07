@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_talon.research import install_research_defaults
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -107,7 +105,7 @@ class TalonConfig:
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         if fresh:
-            install_research_defaults(self.home)
+            _install_defaults(self.home)
         return self.home
 
     @property
@@ -153,6 +151,19 @@ class TalonConfig:
     def inbound_media_dir(self) -> Path:
         """Directory reserved for downloaded inbound channel media."""
         return self.home / "media" / "inbound"
+
+
+def _install_defaults(home: Path) -> None:
+    defaults = Path(__file__).with_name("defaults")
+    for source in defaults.rglob("AGENTS.md"):
+        target = home / source.relative_to(defaults)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(source.read_text(encoding="utf-8"))
 
 
 def _first_present(

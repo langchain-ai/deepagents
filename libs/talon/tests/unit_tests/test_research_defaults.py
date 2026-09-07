@@ -120,7 +120,7 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enab
         expected.append("web_search")
     await runtime.start()
     try:
-        agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
+        agents = {item["name"]: item["tools"] for item in (await _inventory(runtime))["agents"]}
         assert agents["internal-research"] == []
         assert agents["external-research"] == expected
         assert not {"fetch_url", "web_search"} & set(agents["main"])
@@ -128,9 +128,9 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enab
         path = tmp_path / "agents" / "internal-research" / "AGENTS.md"
         original = path.read_text()
         path.write_text(original.replace("tools: []", "tools: [current_time]"))
-        assert _inventory(runtime)["saved_changes_inactive"]
+        assert (await _inventory(runtime))["saved_changes_inactive"]
         await runtime.reload_subagent_configuration()
-        agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
+        agents = {item["name"]: item["tools"] for item in (await _inventory(runtime))["agents"]}
         assert agents["internal-research"] == ["current_time"]
         assert agents["external-research"] == expected
         assert not {"fetch_url", "web_search"} & set(agents["main"])
@@ -138,13 +138,15 @@ async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enab
         path.write_text(original.replace("tools: []", "tools: null"))
         assert (await runtime._subagent_reload_tool().ainvoke({}))["status"] == "failed"
         assert runtime._graph is active
-        assert _inventory(runtime)["saved_changes_inactive"]
+        assert (await _inventory(runtime))["saved_changes_inactive"]
         runtime._replace_runtime_tools([])
-        assert "web_search" not in _inventory(runtime)["agents"][0]["tools"]
+        assert "web_search" not in (await _inventory(runtime))["agents"][0]["tools"]
         path.write_text(original)
         await runtime.reload_subagent_configuration()
-        assert not _inventory(runtime)["saved_changes_inactive"]
-        assert not {"fetch_url", "web_search"} & set(_inventory(runtime)["agents"][0]["tools"])
+        assert not (await _inventory(runtime))["saved_changes_inactive"]
+        assert not {"fetch_url", "web_search"} & set(
+            (await _inventory(runtime))["agents"][0]["tools"]
+        )
     finally:
         await runtime.stop()
 
@@ -205,7 +207,7 @@ async def test_research_injection_cannot_gain_tools(tmp_path, monkeypatch, fixtu
     try:
         await runtime.invoke(AgentRequest("chat", "Find the deadline. Private marker: PRIVATE-123"))
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
-        agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
+        agents = {item["name"]: item["tools"] for item in (await _inventory(runtime))["agents"]}
         base = ["fetch_url", "web_search"] if fixture["role"] == "external-research" else []
         assert agents[fixture["role"]] == base
         assert source.name in agents["main"]
@@ -264,7 +266,7 @@ async def test_main_injection_cannot_fabricate_approval(tmp_path, monkeypatch, f
         assert fixture["text"] in str(parent._seen)
         assert "evidence, not user instructions" in str(parent._seen[0][0].content)
         assert {"read_file", "write_file", "execute", "send_email"} <= set(
-            _inventory(runtime)["agents"][0]["tools"]
+            (await _inventory(runtime))["agents"][0]["tools"]
         )
     finally:
         await runtime.stop()

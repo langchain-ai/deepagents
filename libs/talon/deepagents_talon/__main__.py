@@ -254,7 +254,6 @@ async def _agent_runtime(
     from deepagents_talon.runtime import (  # noqa: PLC0415
         DeepAgentRuntime,
         EchoAgentRuntime,
-        interrupt_on_with_env_overlay,
     )
 
     env = _runtime_env(config)
@@ -274,9 +273,8 @@ async def _agent_runtime(
         refresh_tools=mcp_provider.refresh_if_needed,
         reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,
-        load_subagents=lambda: load_async_subagents(strict=True),
+        load_subagents=load_async_subagents,
         cron_store=cron_store,
-        interrupt_on=interrupt_on_with_env_overlay(None, env),
         checkpointer=checkpointer,
         env=env,
     )

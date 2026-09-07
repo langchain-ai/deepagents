@@ -1,8 +1,11 @@
 ---
 type: context-management concept
-title: Context Management
+title: Context Management & Offload
 description: How deepagents and dcode reduce model-visible context through large-result eviction, summarization, overflow recovery, and recoverable conversation archives. It distinguishes those controls from checkpoint persistence and documents dcode's hook-aware, server-owned offload protocol.
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-07T08:06:36.835Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -18,9 +21,6 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
 generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
 ---
 

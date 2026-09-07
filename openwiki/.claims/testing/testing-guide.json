@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ff4d6e543f58b2741598602ca3c6ef6d3ed0f4984e86a1b42a5938ca757f47e6",
+  "pageVersion": "sha256:21e45f16a20f38583e09e425ff992d4885b76ca5d721a26c3c674d843d23aff3",
   "claims": [
     {
       "id": "claim_ba483a6bfba643e7bb12e38c42644451",
@@ -191,10 +191,38 @@
           "version": "repo-lines-v1:sha256:775e0582976b68c7622143680c3e7bb3dac1919502db0b81bfe122c3f4728188:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ZDk5NWQxY2E5Njg5MzhmYzY4OWU2ZDA3NjdkYTY1ZmQzMjZiMzA1ZmFkY2IyZjgyODc3YjVhODIwYWUxN2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2NTY5MDBmMTk1ZDRmOWI1YjJjYzBkNzJlYzgxNjY2ZDI4Y2I0MjcyZjE2MDgxNDRkOTc3OGNmMDRlMzBmZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwYjVhMDMxYzJiNjYyNWQwMzhiZGQyZDIwZWE4YzdmNTZkMGUyZDE4NGU4NWE2M2Q5ODI1YWMwMGQwYjE3MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_5daa2d0ea9a84e10952ea75aa098cabf",
+      "statement": "Talon's `tests/integration_tests` are still covered by the normal socket-blocked test target and use in-memory channel and scripted-agent doubles to exercise host orchestration without live channel services.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/Makefile#L8-L18",
+          "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/integration_tests/test_core_flows.py#L23-L75",
+          "version": "repo-lines-v1:sha256:b223890a1c2d10eac4842b1b0def5120778685f842098eb5b6a8c40f075ded84:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxNTBhN2Y4MzdiYWUwZWFhYWFiZmI5NjU5MDcxMmQ0Yjg4OTIyMjg2ZmQyYTk4OGZlYjk0NzU4YWFmODE1ZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzNGY5ZGQ2YWZjZDU3NTFhMmE1NzhkZmQ2MDQzZTQwODRjYWZiMTI0M2MzOTdmYWQwZmQzMWU1M2M0NDJhYWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkYjM2NTMzMjU1ODlhYjIyZDNhYmFiNTVjYmEwY2QxY2ZjYWE1NjFmNDg5ODQxZDk3NDMwYWY2Zjg5ODAwYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxYTVjMTkxMGRmYjNjNWUyYzU2MzU1NDEwZDdiOTZhZGIwNjIwOTE3ODcyMDUyNGMzNDljMDVmYWM0NDAxMWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e147e61456b4487bbdd565e554b5ebd8",
+      "statement": "Harbor evaluation targets stage checked-out Deep Agents, dcode, ACP, and QuickJS sources into local dependencies before launching selected external sandbox runtimes, and the Harbor LangGraph agent removes provider and LangSmith credentials from its environment during shell operations.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/Makefile#L44-L84",
+          "version": "repo-lines-v1:sha256:80594cdf77dd9c1758c80fe9ed97c725be20e49f899155929699c49abc74a110:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyMGQyN2ZkMWI0ZDJlMTRmYTE4ODNjOTQ0ZTJkZWFjNTkxNmQ3YWIxMjk1NWJhMWVhZGU0YTE3NjQzZjM5Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlNDM0NmM2OWZmNmM0MWQ0MDdiN2QzOThlMzZjYzc3OGIwN2UwNjczZmUyYWI4YjEwMjFhNDdmYWMzMjgxOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlODMyMmNmYTA5OWNiN2FkNjVmOGY1ZDhjMjM5YWQwNWRmNzRkZDRjNzQ5ZWVkZWI1ZjkxZjUwODE2MGNhZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiOWMxZjE2ZGI1NTdhODhkMDg2ZmRjY2JkZTdhN2ZkMDhjODVmYzFlNDYxNzc4MTQ1YTdmNGY5MjY0ZGE5NDUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L45-L93",
+          "version": "repo-lines-v1:sha256:cd11f3cd1da009cddb53fb4d2f4c030b45b56ea9e16c7f931f5b03a5a8a06f1b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzMGQ3ZmY0NzQ5Nzc2OTZkM2UyYzAzZDk0Njg5ODAwNGE0OTVlMTc4MzYzNDEzOTVkZjdjMWY2NGMwNGNhNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTFhNTM5NTJiYmYxMzJmYjlkMjJkNGU5MDllOWUwYThlMTdjMzMwYmFhNGIwYWY5Mjc5ODFkM2FiMDc0ZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzNTJkMTYyNTE0MTMxYjkwZDE0OWI2YjNmMTRiNWQ0NmVkNDk0OGI2ZmE2ZTI0OTg2MDg4YWJiNjcwNGU5YjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyN2JhNGQwNDU2ZGU0OWYxM2I5NGRjZWM1ZDEwM2RmZjM2YWE3NDZkMzU1MjllOTgyZWRmNTRmMzdmNTU5ZDQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

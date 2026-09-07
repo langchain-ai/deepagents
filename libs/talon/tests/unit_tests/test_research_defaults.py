@@ -56,6 +56,37 @@ def test_existing_home_backfills_missing_research_defaults(tmp_path: Path) -> No
         assert external.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("name", ["internal-research", "external-research"])
+def test_interrupted_backfill_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    config = TalonConfig("existing", tmp_path / "existing")
+    config.home.mkdir()
+    instructions = config.home / "AGENTS.md"
+    instructions.write_text("Custom instructions")
+    target = config.agents_dir / name / "AGENTS.md"
+    write_text = Path.write_text
+
+    def interrupted(path: Path, contents: str, encoding: str | None = None) -> int:
+        if path.parent.parent == target.parent:
+            write_text(path, contents[:10], encoding=encoding)
+            msg = "disk full"
+            raise OSError(msg)
+        return write_text(path, contents, encoding=encoding)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "write_text", interrupted)
+        with pytest.raises(OSError, match="disk full"):
+            config.ensure_home()
+    assert not target.exists()
+    assert not list(target.parent.iterdir())
+    config.ensure_home()
+    defaults = Path(__file__).parents[2] / "deepagents_talon" / "defaults"
+    assert target.read_text() == (defaults / "agents" / name / "AGENTS.md").read_text()
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert instructions.read_text() == "Custom instructions"
+
+
 def test_interrupted_install_does_not_publish_partial_home(tmp_path, monkeypatch):
     config = TalonConfig("fresh", tmp_path / "fresh")
 

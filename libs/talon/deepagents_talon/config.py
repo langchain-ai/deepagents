@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -239,12 +240,16 @@ def _install_defaults(home: Path) -> None:
         contents = source.read_text(encoding="utf-8")
         target = home / source.relative_to(defaults)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            continue
-        with os.fdopen(fd, "w", encoding="utf-8") as output:
-            output.write(contents)
+        _publish_default(target, contents)
+
+
+def _publish_default(target: Path, contents: str) -> None:
+    with tempfile.TemporaryDirectory(prefix=".talon-", dir=target.parent) as directory:
+        staged = Path(directory) / "AGENTS.md"
+        staged.write_text(contents, encoding="utf-8")
+        staged.chmod(0o600)
+        with suppress(FileExistsError):
+            os.link(staged, target)
 
 
 def _first_present(

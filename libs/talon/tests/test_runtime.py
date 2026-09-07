@@ -272,10 +272,9 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     assert captured["backend"].cwd == tmp_path.resolve()
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
+    assert not {"fetch_url", "web_search"} & tool_names
     assert {
         "current_time",
-        "fetch_url",
-        "web_search",
         "create_job",
         "list_jobs",
         "edit_job",

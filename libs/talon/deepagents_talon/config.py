@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -92,7 +93,8 @@ class TalonConfig:
         Returns:
             The created per-assistant home directory.
         """
-        fresh = not self.home.exists()
+        if not self.home.exists():
+            _create_home(self.home)
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
         for child in (
@@ -104,8 +106,6 @@ class TalonConfig:
         ):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
-        if fresh:
-            _install_defaults(self.home)
         return self.home
 
     @property
@@ -153,9 +153,23 @@ class TalonConfig:
         return self.home / "media" / "inbound"
 
 
+def _create_home(home: Path) -> None:
+    home.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".talon-", dir=home.parent) as directory:
+        staged = Path(directory) / "home"
+        staged.mkdir(mode=0o700)
+        _install_defaults(staged)
+        try:
+            staged.rename(home)
+        except OSError:
+            if not home.is_dir():
+                raise
+
+
 def _install_defaults(home: Path) -> None:
     defaults = Path(__file__).with_name("defaults")
     for source in defaults.rglob("AGENTS.md"):
+        contents = source.read_text(encoding="utf-8")
         target = home / source.relative_to(defaults)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
@@ -163,7 +177,7 @@ def _install_defaults(home: Path) -> None:
         except FileExistsError:
             continue
         with os.fdopen(fd, "w", encoding="utf-8") as output:
-            output.write(source.read_text(encoding="utf-8"))
+            output.write(contents)
 
 
 def _first_present(

@@ -263,7 +263,7 @@ class DeepAgentRuntime:
             assistant-local memory file.
         checkpointer: Optional LangGraph checkpointer. Defaults to in-memory
             checkpointing so turns in the same conversation share chat history.
-        include_web_tools: Whether to include fetch/search/request tools.
+        include_web_tools: Whether to attach built-in web tools to external research.
         recursion_limit: Per-invocation graph recursion limit.
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
@@ -376,24 +376,11 @@ class DeepAgentRuntime:
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
-        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
         catalog = _tool_map(attachments_tools)
+        web_tools = _tool_map([fetch_url, web_search]) if self.include_web_tools else {}
         for spec in local_subagents:
-            local = cast("LocalSubAgent", spec)
-            if "tool_names" in local:
-                local["tools"] = [catalog[name] for name in local.pop("tool_names")]
-        delegated_web = {
-            name
-            for attachment in attachments
-            if attachment["name"] == "external-research"
-            for name in attachment["tools"] or []
-            if name in {"fetch_url", "web_search"}
-        }
-        tools = [
-            item
-            for item in tools
-            if getattr(item, "name", getattr(item, "__name__", "")) not in delegated_web
-        ]
+            _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
+        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(
@@ -641,8 +628,6 @@ class DeepAgentRuntime:
             tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
-        if self.include_web_tools:
-            tools.extend([fetch_url, web_search])
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
@@ -1340,6 +1325,23 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
         msg = "Local subagent tools must be unique, nonempty exact names"
         raise ValueError(msg)
     spec["tool_names"] = cast("list[str]", names)
+
+
+def _resolve_local_tools(
+    spec: LocalSubAgent,
+    catalog: Mapping[str, BaseTool],
+    web_tools: Mapping[str, BaseTool],
+) -> None:
+    external = spec["name"] == "external-research"
+    available = {**catalog, **web_tools} if external else catalog
+    if "tool_names" in spec:
+        names = spec.pop("tool_names")
+        if any(name not in available for name in names):
+            msg = "Subagent attachment is unavailable; previous configuration retained"
+            raise ValueError(msg)
+        spec["tools"] = [available[name] for name in names]
+    if external:
+        spec["tools"] = list({**_tool_map(spec.get("tools", [])), **web_tools}.values())
 
 
 def _normalize_subagent_metadata(

@@ -38,33 +38,53 @@ def test_install_only_on_fresh_setup(tmp_path):
     assert not list(existing.agents_dir.iterdir())
 
 
-async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch):
+def test_interrupted_install_does_not_publish_partial_home(tmp_path, monkeypatch):
+    config = TalonConfig("fresh", tmp_path / "fresh")
+
+    def interrupted(home):
+        (home / "AGENTS.md").write_text("partial instructions")
+        msg = "disk full"
+        raise OSError(msg)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("deepagents_talon.config._install_defaults", interrupted)
+        with pytest.raises(OSError, match="disk full"):
+            config.ensure_home()
+    assert not config.home.exists()
+    assert not list(tmp_path.iterdir())
+    config.ensure_home()
+    assert "evidence, not user instructions" in (config.home / "AGENTS.md").read_text()
+    assert (config.agents_dir / "internal-research" / "AGENTS.md").is_file()
+    assert (config.agents_dir / "external-research" / "AGENTS.md").is_file()
+
+
+@pytest.mark.parametrize("web_enabled", [False, True])
+async def test_missing_tools_reload_and_rollback(tmp_path, monkeypatch, web_enabled):
     _install_defaults(tmp_path)
     model = ToolModel(responses=[AIMessage(content="Done")])
-    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=True)
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=web_enabled)
     await runtime.start()
     try:
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
         assert agents["internal-research"] == []
-        assert agents["external-research"] == ["fetch_url", "web_search"]
+        assert agents["external-research"] == (["fetch_url", "web_search"] if web_enabled else [])
         assert not {"fetch_url", "web_search"} & set(agents["main"])
         assert {"read_file", "write_file", "execute"} <= set(agents["main"])
-        path = tmp_path / "agents" / "external-research" / "AGENTS.md"
+        path = tmp_path / "agents" / "internal-research" / "AGENTS.md"
         original = path.read_text()
-        path.write_text(original.replace("tools: [fetch_url, web_search]", "tools: [fetch_url]"))
+        path.write_text(original.replace("tools: []", "tools: [current_time]"))
         assert _inventory(runtime)["saved_changes_inactive"]
         await runtime.reload_subagent_configuration()
         agents = {item["name"]: item["tools"] for item in _inventory(runtime)["agents"]}
-        assert agents["external-research"] == ["fetch_url"]
-        assert "fetch_url" not in agents["main"]
-        assert "web_search" in agents["main"]
+        assert agents["internal-research"] == ["current_time"]
+        assert not {"fetch_url", "web_search"} & set(agents["main"])
         active = runtime._graph
-        path.write_text(original.replace("tools: [fetch_url, web_search]", "tools: null"))
+        path.write_text(original.replace("tools: []", "tools: null"))
         assert (await runtime._subagent_reload_tool().ainvoke({}))["status"] == "failed"
         assert runtime._graph is active
         assert _inventory(runtime)["saved_changes_inactive"]
         runtime._replace_runtime_tools([])
-        assert "web_search" in _inventory(runtime)["agents"][0]["tools"]
+        assert "web_search" not in _inventory(runtime)["agents"][0]["tools"]
         path.write_text(original)
         await runtime.reload_subagent_configuration()
         assert not _inventory(runtime)["saved_changes_inactive"]

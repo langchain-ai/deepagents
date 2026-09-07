@@ -250,7 +250,9 @@ optional.
 
 Fresh homes receive ordinary `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research owns `fetch_url` and
-Tavily-backed `web_search`; those tools are removed from main. Internal research starts
+Tavily-backed `web_search`, attached at construction when web tools are enabled.
+Main and internal research are constructed without them; disabling web tools leaves
+external research usable without built-in web access. Internal research starts
 with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as
 applicable GitHub, Notion, email, and calendar reads internally. No integrations are
 connected automatically. Set persistent tools with standard `tools` frontmatter;
@@ -258,7 +260,8 @@ launch-time additions apply only to that task. Main retains filesystem, action t
 approval controls, chooses placement from the workflow, and mediates minimal
 internal-to-external context.
 
-Existing homes are unchanged. Review the packaged `deepagents_talon/defaults/` files,
+Existing files are unchanged; built-in web access now needs an `external-research` definition.
+Review the packaged `deepagents_talon/defaults/` files,
 back up affected instructions, and merge the selected changes without replacing custom
 content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
 by restoring those files and reloading. Include restored capabilities in the rollback

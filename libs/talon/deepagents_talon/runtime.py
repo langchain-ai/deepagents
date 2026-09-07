@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
@@ -366,7 +367,8 @@ class DeepAgentRuntime:
                     cast("str", local["model"]), self.env, context_size=context_size
                 )
         general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
-        resolved, attachments = prepare_subagents(resolved, tools, model, interrupt_on)
+        attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(model, interrupt_on, cast("SubAgent | None", general))

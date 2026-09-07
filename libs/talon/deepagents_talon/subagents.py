@@ -86,10 +86,10 @@ class TaskTools(AgentMiddleware):
             "task",
             description=original.description
             + (
-                " For general-purpose, tools is required: choose only the exact tool names needed "
-                "from get_agent_tools (empty list means none). Supply the task and relevant skill "
-                "instructions in description, or select read_file to read the skill. No parent "
-                "history or skills are inherited. Named agents use their configured tools."
+                " For general-purpose, tools defaults to none: choose exact tool names "
+                "from get_agent_tools, including execute for shell access. Supply task context "
+                "and skill instructions in description, or select read_file to read the skill. "
+                "No parent history or skills are inherited. Named agents use configured tools."
             ),
         )
         async def task(
@@ -108,11 +108,8 @@ class TaskTools(AgentMiddleware):
                         "runtime": runtime,
                     }
                 )
-            if (
-                tools is None
-                or len(tools) != len(set(tools))
-                or any(name not in available for name in tools)
-            ):
+            tools = tools or []
+            if len(tools) != len(set(tools)) or any(name not in available for name in tools):
                 return "Specify tools as a list of unique names from get_agent_tools."
             spec: LocalSubAgent = {
                 "name": "general-purpose",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 
 import pytest
 from langchain.agents import create_agent
@@ -82,7 +83,7 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
     skill = tmp_path / "skill.md"
     skill.write_text("Use lookup for research.")
     selected = ["lookup", "read_file"] if name == "general-purpose" and attached else ["lookup"]
-    launch = {"tools": selected if attached else []} if name == "general-purpose" else {}
+    launch = {"tools": selected} if name == "general-purpose" and attached else {}
     effects = []
 
     @tool
@@ -158,6 +159,41 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
         await runtime.stop()
 
 
+@pytest.mark.parametrize("name", ["researcher", "general-purpose"])
+async def test_explicit_shell_access(tmp_path, monkeypatch, name):
+    _write_agent(tmp_path, "[execute]")
+    output = tmp_path / "child-output"
+    launch = {"tools": ["execute"]} if name == "general-purpose" else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type=name, description="Create the file", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    child = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[_call("execute", command=f"printf done > {shlex.quote(str(output))}")],
+            ),
+            AIMessage(content="Created"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Create the file"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert output.read_text() == "done"
+    finally:
+        await runtime.stop()
+
+
 def _inventory(runtime):
     return runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
 
@@ -188,7 +224,10 @@ async def test_fork_is_rejected(tmp_path, source):
         await runtime.start()
 
 
-@pytest.mark.parametrize("selection", [{}, {"tools": ["missing"]}, {"tools": ["task"]}])
+@pytest.mark.parametrize(
+    "selection",
+    [{"tools": ["missing"]}, {"tools": ["task"]}, {"tools": ["read_file", "read_file"]}],
+)
 async def test_general_requires_valid_selection(tmp_path, monkeypatch, selection):
     parent = ToolModel(
         responses=[

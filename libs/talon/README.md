@@ -256,8 +256,10 @@ edits retain the last valid configuration; running subagents keep their original
 configuration.
 
 Subagents use fresh task context; fork is unsupported. Attach local tools with
-`tools: [exact_tool_name]` (omitted means none). For `general-purpose`, pass a `tools`
-list to `task` on each launch. Supply skill instructions in `description` or select
+`tools: [exact_tool_name]` (omitted means none); named agents use those configured tools.
+`general-purpose` defaults to no tools. Pass a `tools` list to `task` on each launch
+to grant capabilities, including `execute` for shell access. Supply context and skill
+instructions in `description` or select
 `read_file` to load them. `get_agent_tools` shows available attachments and inactive
 edits; `list_subagents` shows per-task selections.
 

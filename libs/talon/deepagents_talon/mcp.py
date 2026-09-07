@@ -43,7 +43,11 @@ from deepagents_talon.mcp_auth import (
     format_login_error,
     prepare_oauth_login,
 )
-from deepagents_talon.mcp_config import MCPConfigStore, agent_workspace_root
+from deepagents_talon.mcp_config import (
+    MCPConfigStore,
+    agent_workspace_root,
+    auto_approve_enabled,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
@@ -193,6 +197,7 @@ class MCPToolProvider:
             mcp_config_path(config),
             self.request_refresh,
             agent_root=agent_workspace_root(config.env),
+            auto_approve=auto_approve_enabled(config.env),
         )
 
     async def load(self) -> MCPTools:

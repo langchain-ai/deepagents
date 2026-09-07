@@ -17,7 +17,7 @@ class ToolModel(FakeMessagesListChatModel):
         return self
 
 
-@pytest.mark.parametrize("name", ["researcher", "general-purpose"])
+@pytest.mark.parametrize("name", ["researcher", "prepared"])
 async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name):
     path = tmp_path / "agents" / "researcher" / "AGENTS.md"
     path.parent.mkdir(parents=True)
@@ -25,6 +25,9 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name)
         "---\ndescription: Research\nmodel: test:child\n"
         "tools: [sensitive_effect]\n---\nResearch carefully."
     )
+    prepared = tmp_path / "agents" / "prepared" / "AGENTS.md"
+    prepared.parent.mkdir(parents=True)
+    prepared.write_text("---\ndescription: Prepared task\n---\nComplete the task.")
     effects = []
 
     @tool
@@ -44,9 +47,7 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name)
                         "args": {
                             "subagent_type": name,
                             "description": "work",
-                            **(
-                                {"tools": ["sensitive_effect"]} if name == "general-purpose" else {}
-                            ),
+                            **({"tools": ["sensitive_effect"]} if name == "prepared" else {}),
                         },
                     }
                 ],

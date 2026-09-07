@@ -281,7 +281,8 @@ configuration.
 
 Subagents use fresh task context; fork is unsupported. Attach local tools with
 `tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
-`general-purpose` defaults to no tools. Pass a `tools` list to `task` on each launch
+There is no automatic general-purpose agent; delegate to a research role or another
+configured agent. Pass a `tools` list to `task` on each launch
 to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill
 instructions in `description` or select
 `read_file` to load them. `get_agent_tools` shows available attachments and inactive

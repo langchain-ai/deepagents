@@ -372,7 +372,6 @@ class DeepAgentRuntime:
                 local["model"] = _resolve_model_from_env(
                     cast("str", local["model"]), self.env, context_size=context_size
                 )
-        general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
         local_subagents = [
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
@@ -398,7 +397,13 @@ class DeepAgentRuntime:
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(
-            model, interrupt_on, cast("SubAgent | None", general), subagents=local_subagents
+            model,
+            interrupt_on,
+            subagents=local_subagents,
+            prepared=[
+                cast("CompiledSubAgent", spec) for spec in resolved if "graph_id" not in spec
+            ],
+            backend=self.backend,
         )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
@@ -423,8 +428,8 @@ class DeepAgentRuntime:
         if isinstance(node, ToolNode) and "task" in node.tools_by_name:
             selectable = task_tools.bind(node.tools_by_name)
             for attachment in attachments:
-                if attachment["name"] == "general-purpose":
-                    attachment.update(mode="per_task", tools=None, selectable_tools=selectable)
+                if attachment["name"] in {spec["name"] for spec in local_subagents}:
+                    attachment["selectable_tools"] = selectable
         attachments.insert(
             0,
             {

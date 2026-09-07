@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 import pytest
@@ -10,12 +12,15 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 
 from deepagents_talon.interfaces import AgentRequest
-from deepagents_talon.mcp_config import MCP_CONFIG_AUTO_APPROVE_ENV, MCPConfigStore
+from deepagents_talon.mcp_config import (
+    MCP_CONFIG_AUTO_APPROVE_ENV,
+    WORKSPACE_ENV,
+    MCPConfigStore,
+    agent_workspace_root,
+)
 from deepagents_talon.runtime import DeepAgentRuntime
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents_talon.interfaces import ToolApprovalDecision, ToolApprovalRequest
 
 
@@ -258,3 +263,40 @@ async def test_runtime_gates_real_config_writes(
         await runtime.stop()
     assert path.exists() is writes
     assert bool(approvals) is (decision is not None and trigger != "cron")
+
+
+def test_config_store_warns_about_a_path_inside_the_agent_workspace(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The docstring invariant is reported; Round 2 turns it into an error."""
+    workspace = tmp_path / "workspace"
+    path = workspace / "nested" / ".mcp.json"
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp_config"):
+        store = MCPConfigStore(path, lambda: None, agent_root=workspace)
+
+    assert store._path == path
+    assert "MCP configuration" in caplog.text
+    assert str(workspace) in caplog.text
+    assert WORKSPACE_ENV in caplog.text
+
+
+def test_config_store_works_when_talon_runs_from_the_home_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: the default config path sits under CWD when launched from $HOME."""
+    monkeypatch.delenv(WORKSPACE_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    view, _update = MCPConfigStore(tmp_path / ".deepagents" / ".mcp.json", lambda: None).tools()
+
+    assert view.invoke({})["mcpServers"] == {}
+
+
+def test_agent_workspace_root_prefers_the_configured_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(WORKSPACE_ENV, raising=False)
+
+    assert agent_workspace_root({WORKSPACE_ENV: str(tmp_path)}) == tmp_path.resolve()
+    assert agent_workspace_root({}) == Path.cwd().resolve()

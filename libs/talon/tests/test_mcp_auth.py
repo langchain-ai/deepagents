@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
+import logging
 import socket
 import stat
+import threading
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
@@ -17,13 +21,17 @@ from deepagents_talon.mcp_auth import (
     FileTokenStorage,
     MCPAuthorizationError,
     _AuthorizationServerMetadata,
+    _authorize_discovered_device,
     _DeviceCodeResponse,
+    _discover_device_metadata,
     _issuer_endpoint,
+    _OAuthSafeTransport,
     build_oauth_provider,
     extract_oauth_callback_url,
     prepare_device_client,
     prepare_oauth_login,
 )
+from deepagents_talon.mcp_config import WORKSPACE_ENV
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -411,6 +419,7 @@ async def test_provider_switches_to_discovered_device_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    oauth_network: Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport],
 ) -> None:
     monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
     grant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -462,16 +471,7 @@ async def test_provider_switches_to_discovered_device_flow(
             400 if body.get("error") == "authorization_pending" else 200, json=body
         )
 
-    transport = httpx.MockTransport(handle)
-    async_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        "deepagents_talon.mcp_auth.httpx.AsyncClient",
-        lambda **kwargs: async_client(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr(
-        "deepagents_talon.mcp_auth.validate_safe_url",
-        lambda url, **_kwargs: url,
-    )
+    oauth_network(handle)
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
@@ -559,12 +559,9 @@ async def test_provider_keeps_authorization_code_when_device_grant_is_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    oauth_network: Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport],
 ) -> None:
     monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "deepagents_talon.mcp_auth.validate_safe_url",
-        lambda url, **_kwargs: url,
-    )
 
     def handle(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -576,12 +573,7 @@ async def test_provider_keeps_authorization_code_when_device_grant_is_absent(
             },
         )
 
-    transport = httpx.MockTransport(handle)
-    async_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        "deepagents_talon.mcp_auth.httpx.AsyncClient",
-        lambda **kwargs: async_client(transport=transport, **kwargs),
-    )
+    oauth_network(handle)
     storage = FileTokenStorage("remote", server_url="https://mcp.example/mcp")
     provider = build_oauth_provider(
         server_name="remote",
@@ -614,7 +606,7 @@ def test_device_response_credentials_are_redacted() -> None:
     assert "user-secret" not in repr(response)
 
 
-def test_device_endpoint_must_match_authorization_server(
+async def test_device_endpoint_must_match_authorization_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -629,7 +621,7 @@ def test_device_endpoint_must_match_authorization_server(
     )
 
     with pytest.raises(MCPAuthorizationError, match="does not match"):
-        _issuer_endpoint(metadata.token_endpoint, metadata)
+        await _issuer_endpoint(metadata.token_endpoint, metadata)
 
 
 def _oauth_metadata(**overrides: object) -> dict[str, object]:
@@ -815,3 +807,177 @@ async def test_oauth_blocks_private_dns_before_connecting(
     with pytest.raises(MCPAuthorizationError, match="safe public HTTPS"):
         await client.get("https://example.com/mcp")
     assert [request.url.path for request in requests] == ["/mcp"]
+
+
+async def test_device_flow_uses_only_pinned_clients_that_ignore_ambient_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    oauth_network: Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport],
+) -> None:
+    """Discovery, registration, the device code and polling all carry credentials."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "attacker-ca.pem"))
+    grant = "urn:ietf:params:oauth:grant-type:device_code"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": "https://auth.example",
+                    "token_endpoint": "https://auth.example/token",
+                    "registration_endpoint": "https://auth.example/register",
+                    "grant_types_supported": [grant],
+                    "device_authorization_endpoint": "https://auth.example/device",
+                },
+            )
+        if request.url.path == "/register":
+            return httpx.Response(
+                201,
+                json={
+                    "client_id": "dynamic-client",
+                    "redirect_uris": ["http://localhost:3000/callback"],
+                    "grant_types": [grant],
+                    "token_endpoint_auth_method": "none",
+                },
+            )
+        if request.url.path == "/device":
+            return httpx.Response(
+                200,
+                json={
+                    "device_code": "device-secret",
+                    "user_code": "ABCD-1234",
+                    "verification_uri": "https://auth.example/activate",
+                    "expires_in": 120,
+                    "interval": 1,
+                },
+            )
+        return httpx.Response(200, json={"access_token": "access-secret", "token_type": "bearer"})
+
+    oauth_network(handle)
+    clients: list[dict[str, object]] = []
+    async_client = httpx.AsyncClient
+
+    def record(**kwargs: object) -> httpx.AsyncClient:
+        clients.append(kwargs)
+        return async_client(**kwargs)
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.httpx.AsyncClient", record)
+
+    async def sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.asyncio.sleep", sleep)
+    storage = FileTokenStorage("remote", server_url="https://mcp.example/mcp")
+    provider = build_oauth_provider(
+        server_name="remote",
+        server_url="https://mcp.example/mcp",
+        storage=storage,
+        interactive=True,
+    )
+    provider.context.auth_server_url = "https://auth.example"
+    provider.context.client_info = OAuthClientInformationFull(
+        client_id="authorization-code-client",
+        redirect_uris=["http://localhost:3000/callback"],
+        grant_types=["authorization_code"],
+        token_endpoint_auth_method="none",  # noqa: S106
+    )
+
+    authorized = await _authorize_discovered_device(
+        "remote", storage, provider.context, interactive=True
+    )
+
+    assert authorized is True
+    tokens = await storage.get_tokens()
+    assert tokens is not None
+    assert tokens.access_token == "access-secret"  # noqa: S105
+    assert len(clients) == 3
+    assert all(isinstance(kwargs["transport"], _OAuthSafeTransport) for kwargs in clients)
+    assert all(kwargs["trust_env"] is False for kwargs in clients)
+    assert "device-secret" not in capsys.readouterr().out
+
+
+async def test_device_metadata_discovery_bounds_slow_name_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 10s discovery bound is unenforceable while getaddrinfo blocks the loop."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth._DISCOVERY_TIMEOUT_SECONDS", 0.05)
+    released = threading.Event()
+
+    def slow_resolve(url: str, **_kwargs: object) -> str:
+        released.wait(5.0)
+        return url
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.validate_safe_url", slow_resolve)
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    started = time.monotonic()
+    try:
+        assert await _discover_device_metadata("https://auth.example") is None
+    finally:
+        released.set()
+        ticker.cancel()
+    assert time.monotonic() - started < 1.0
+    assert ticks > 0
+
+
+def test_token_storage_warns_about_the_agent_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Placement is reported, not enforced, until the deny rules make it real."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path / "home")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp_config"):
+        storage = FileTokenStorage(
+            "remote",
+            server_url="https://example.com/mcp",
+            agent_root=tmp_path,
+        )
+
+    assert storage.path.parent == tmp_path / "home" / ".deepagents" / "mcp-tokens"
+    assert "MCP credential storage" in caplog.text
+    assert str(tmp_path) in caplog.text
+    assert WORKSPACE_ENV in caplog.text
+
+
+async def test_token_storage_works_when_talon_runs_from_the_home_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: the default paths sit under CWD when launched from $HOME."""
+    monkeypatch.delenv(WORKSPACE_ENV, raising=False)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+
+    await storage.set_tokens(OAuthToken(access_token="secret"))  # noqa: S106
+
+    stored = await storage.get_tokens()
+    assert stored is not None
+    assert stored.access_token == "secret"  # noqa: S105
+
+
+async def test_token_storage_tightens_intermediate_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mkdir(mode=...) sets the mode on the leaf only, leaving ~/.deepagents open."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    state = tmp_path / ".deepagents"
+    state.mkdir()
+    state.chmod(0o755)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+
+    await storage.set_tokens(OAuthToken(access_token="secret"))  # noqa: S106
+
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert stat.S_IMODE(storage.path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(storage.path.stat().st_mode) == 0o600

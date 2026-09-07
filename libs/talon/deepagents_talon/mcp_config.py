@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,12 +18,17 @@ from typing import TYPE_CHECKING, cast
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from langchain_core.tools import BaseTool
 
+logger = logging.getLogger(__name__)
+
 MCP_CONFIG_AUTO_APPROVE_ENV = "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE"
 MCP_CONFIG_UPDATE_TOOL = "update_mcp_server"
+# Duplicated from runtime._WORKSPACE_ENV: importing it would pull the runtime, and the
+# public alias lives in channels, whose package imports every channel driver eagerly.
+WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _REDACTED = "<redacted>"
 _REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -47,17 +53,84 @@ _ENUMS = {
 }
 
 
+def agent_workspace_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the directory the agent's shell backend reaches with relative paths.
+
+    Args:
+        env: Runtime environment to read. Falls back to the process environment,
+            which is what the default backend itself reads.
+
+    Returns:
+        The configured workspace root, or the current working directory, where
+        `LocalShellBackend(root_dir=None)` runs agent commands.
+    """
+    configured = (env or {}).get(WORKSPACE_ENV) or os.environ.get(WORKSPACE_ENV)
+    return Path(configured).expanduser().resolve() if configured else Path.cwd().resolve()
+
+
+def warn_agent_workspace_path(path: Path, agent_root: Path | None, *, subject: str) -> Path:
+    """Return `path` resolved, warning when it sits inside the agent workspace.
+
+    This reports placement, not secrecy. Talon's default backend runs real shell
+    commands with `virtual_mode=False`, so a path outside the workspace is still
+    readable by absolute path; keeping it out of the workspace only removes the
+    relative-path route and keeps it out of the model's working tree. Because it
+    buys no present protection, a bad placement is not worth failing a start over
+    -- with no workspace configured the root is the working directory, so Talon
+    launched from `$HOME` puts both default paths inside it.
+
+    Args:
+        path: Operator-selected path to check.
+        agent_root: Workspace root. Falls back to `agent_workspace_root()`.
+        subject: Name of the file, used in the warning.
+
+    Returns:
+        The resolved path, with the final component left unresolved.
+    """
+    resolved = path.parent.resolve() / path.name
+    root = agent_workspace_root() if agent_root is None else agent_root
+    # Round 2: raise here instead, once the runtime deny rules for the token
+    # directory and the configuration path make the placement worth enforcing.
+    if resolved.is_relative_to(root):
+        logger.warning(
+            "%s %s is inside the agent workspace %s; move it elsewhere, or point %s "
+            "at a directory that does not contain it",
+            subject,
+            resolved,
+            root,
+            WORKSPACE_ENV,
+        )
+    return resolved
+
+
 class MCPConfigStore:
     """Manage one fixed file without exposing stored credentials to tools.
 
+    Nothing here is a confidentiality boundary. Placement is checked and warned
+    about, not enforced, and against Talon's default shell backend `cat` and
+    `echo >` on the absolute path bypass redaction, the revision CAS, the
+    `O_NOFOLLOW` open, and the `update_mcp_server` approval interrupt alike. So
+    `update_mcp_server` mediates change; it cannot keep a configured secret from
+    the model. Only `${ENV_VAR}` references, which are never expanded here, do
+    that. Enforcing placement, denying the path to the agent's filesystem tools,
+    and moving credentials out of a readable file are tracked separately.
+
     Args:
-        path: Operator-selected configuration path, outside the agent workspace.
+        path: Operator-selected configuration path, ideally outside the agent
+            workspace; a path inside it is warned about, not rejected.
         on_update: Schedule a reload after a successful write.
+        agent_root: Agent workspace root. Defaults to the process workspace.
     """
 
-    def __init__(self, path: Path, on_update: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        on_update: Callable[[], None],
+        *,
+        agent_root: Path | None = None,
+    ) -> None:
         """Capture the operator path and a process-local revision key."""
-        self._path = path.parent.resolve() / path.name
+        self._path = warn_agent_workspace_path(path, agent_root, subject="MCP configuration")
         self._on_update = on_update
         self._revision_key = secrets.token_bytes(32)
 
@@ -70,7 +143,9 @@ class MCPConfigStore:
 
             Stored strings are <redacted>, except transport/auth enums and exact
             ${ENV_VAR} references. Values are never expanded. Use this revision
-            with update_mcp_server; do not use filesystem tools for MCP settings.
+            with update_mcp_server. This tool and update_mcp_server are the
+            supported way to read and change MCP settings; do not read or edit
+            the configuration file with filesystem or shell tools.
             """
             return self._view()
 

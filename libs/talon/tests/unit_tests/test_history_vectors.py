@@ -228,6 +228,29 @@ async def test_indexing_batches_never_overlap_so_they_need_no_permit():
     assert peak == 1
 
 
+async def test_vector_erase_recovers_an_interrupted_journal_before_reading():
+    from deepagents_talon.history_vector_backends import _erase_vectors  # noqa: PLC0415
+
+    metadata = InMemoryStore()
+    vectors = InMemoryStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
+    async with StoreConversationArchive(
+        metadata, namespace=("erase",), vector_store=vectors
+    ).open() as archive:
+        for index in range(3):
+            await append(archive, f"car {index}", session=f"session-{index}")
+        await settled(archive)
+        namespace = archive.vectors.namespace("whatsapp", "one")
+        assert len(await vectors.asearch(namespace)) == 3
+        records = archive.records
+        root = await records.get("root")
+    # An interrupted commit leaves its writes in the journal and the live root behind.
+    await metadata.aput(records.namespace, "root", {**root, "last": 1}, index=False)
+    await metadata.aput(records.namespace, "journal", {"writes": [["root", root]]}, index=False)
+    # Reading the stale root would leave the newest vectors behind after a rebuild.
+    await _erase_vectors(archive, vectors)
+    assert await vectors.asearch(namespace) == []
+
+
 async def test_existing_vectors_survive_restart_and_do_not_reembed(tmp_path):
     path = str(tmp_path / "archive.sqlite")
     async with (

@@ -95,6 +95,15 @@ deepagents-code = { path = "../code", editable = true }
 python-version = "3.12"
 extra-paths = ["../deepagents", "../code"]
 
+[tool.ty.analysis]
+# Lazy-loaded postgres/history-voyage extras are absent from minimal CI installs.
+allowed-unresolved-imports = [
+    "psycopg",
+    "langgraph.store.postgres.aio",
+    "voyageai",
+    "langchain_voyageai",
+]
+
 [tool.ty.rules]
 division-by-zero = "error"
 

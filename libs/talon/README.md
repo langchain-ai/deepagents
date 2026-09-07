@@ -264,13 +264,14 @@ configuration.
 Set `mode: fresh` and `tools: [exact_tool_name]` in local frontmatter for task-only
 context without inherited tools or middleware. Omitted tools mean no tools;
 unknown names reject activation. Existing approval gates and main-agent filesystem
-access remain intact. With fresh roles, `general-purpose` must also be fresh;
-the automatic fallback has no tools. Fork remains the default. Invalid definitions
-reject startup.
+access remain intact. Fork remains the default for named agents. Invalid definitions
+reject startup. For `general-purpose`, `task` requires a `tools` list on each launch
+(`[]` means none). Select only what the task needs; supply skill instructions in
+`description` or select `read_file` to load them. General tasks always use fresh context.
 
-`get_agent_tools` shows main/fresh attachments and inactive edits; other inventories
-are unknown. MCP edits require successful reload. Cancel running tasks to revoke
-their old capabilities.
+`get_agent_tools` shows attachments, selectable general-purpose tools, and inactive
+edits; opaque inventories are unknown. `list_subagents` shows per-task selections.
+MCP edits require successful reload. Cancel running tasks to revoke old capabilities.
 
 `task` launches local subagents and `start_async_task` launches remote subagents.
 Both return immediately. The user can continue chatting while the main agent uses

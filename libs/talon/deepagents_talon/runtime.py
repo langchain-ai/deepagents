@@ -56,7 +56,7 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
-from deepagents_talon.subagents import Attachment, LocalSubAgent, prepare_subagents
+from deepagents_talon.subagents import Attachment, LocalSubAgent, TaskTools, prepare_subagents
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -361,9 +361,12 @@ class DeepAgentRuntime:
                 local["model"] = _resolve_model_from_env(
                     cast("str", local["model"]), self.env, context_size=context_size
                 )
+        general = next((spec for spec in resolved if spec["name"] == "general-purpose"), None)
         resolved, attachments = prepare_subagents(resolved, tools, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
+        task_tools = TaskTools(model, interrupt_on, cast("SubAgent | None", general))
+        middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
         interrupt_on = _interrupt_on_with_async_subagents(
             interrupt_on, has_async_subagents=_has_async_subagents(resolved)
@@ -383,6 +386,11 @@ class DeepAgentRuntime:
             checkpointer=self.checkpointer,
         )
         node = getattr(getattr(graph, "nodes", {}).get("tools"), "bound", None)
+        if isinstance(node, ToolNode) and "task" in node.tools_by_name:
+            selectable = task_tools.bind(node.tools_by_name)
+            for attachment in attachments:
+                if attachment["name"] == "general-purpose":
+                    attachment.update(mode="per_task", tools=None, selectable_tools=selectable)
         attachments.insert(
             0,
             {

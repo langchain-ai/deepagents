@@ -63,7 +63,13 @@ def _runtime(root, monkeypatch, parent, child, **kwargs: object):
 
 @pytest.mark.parametrize("background", [False, True])
 @pytest.mark.parametrize(
-    ("name", "attached"), [("researcher", True), ("researcher", False), ("general-purpose", False)]
+    ("name", "attached"),
+    [
+        ("researcher", True),
+        ("researcher", False),
+        ("general-purpose", False),
+        ("general-purpose", True),
+    ],
 )
 async def test_research_boundaries(tmp_path, monkeypatch, background, name, attached):
     _write_agent(tmp_path, "[lookup]" if attached else "[]")
@@ -71,6 +77,10 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
     memory = tmp_path / "memory.md"
     memory.write_text(private)
     output = tmp_path / "output.txt"
+    skill = tmp_path / "skill.md"
+    skill.write_text("Use lookup for research.")
+    selected = ["lookup", "read_file"] if name == "general-purpose" and attached else ["lookup"]
+    launch = {"tools": selected if attached else []} if name == "general-purpose" else {}
     effects = []
 
     @tool
@@ -83,16 +93,16 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
         _call(name)
         for name in (
             "execute",
-            "read_file",
             "search_conversations",
             "reload_subagent_configuration",
             "task",
             "start_async_task",
         )
     ]
+    skill_calls = [_call("read_file", file_path=str(skill))] if "read_file" in selected else []
     child = ToolModel(
         responses=[
-            AIMessage(content="", tool_calls=[_call("lookup"), *forbidden]),
+            AIMessage(content="", tool_calls=[_call("lookup"), *skill_calls, *forbidden]),
             AIMessage(content="Research complete"),
         ]
         if attached
@@ -102,7 +112,9 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
         responses=[
             AIMessage(
                 content="",
-                tool_calls=[_call("task", subagent_type=name, description="Find evidence")],
+                tool_calls=[
+                    _call("task", subagent_type=name, description="Find evidence", **launch)
+                ],
             ),
             AIMessage(
                 content="",
@@ -121,19 +133,24 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
         assert output.read_text() == "main works"
         assert memory.read_text() == private
         assert effects == (["lookup"] if attached else [])
-        assert child._tools == ([["lookup"], ["lookup"]] if attached else [])
+        assert child._tools == ([selected, selected] if attached else [])
         assert child._seen[0][-1].content == "Find evidence"
         assert private not in str(child._seen)
         assert "Parent history" not in str(child._seen[0])
+        if name == "general-purpose" and attached:
+            assert "Use lookup for research." in str(child._seen)
         messages = child._seen[-1]
         denied = [message for message in messages if getattr(message, "status", None) == "error"]
         assert {message.name for message in denied} == (
             {call["name"] for call in forbidden} if attached else set()
         )
         inventory = runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
-        assert next(item for item in inventory["agents"] if item["name"] == name)["tools"] == (
-            ["lookup"] if attached else []
-        )
+        agent = next(item for item in inventory["agents"] if item["name"] == name)
+        if name == "general-purpose":
+            assert "read_file" in agent["selectable_tools"]
+            assert "task" not in agent["selectable_tools"]
+        else:
+            assert agent["tools"] == (["lookup"] if attached else [])
         assert private not in json.dumps(inventory)
     finally:
         await runtime.stop()
@@ -141,6 +158,31 @@ async def test_research_boundaries(tmp_path, monkeypatch, background, name, atta
 
 def _inventory(runtime):
     return runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].invoke({})
+
+
+@pytest.mark.parametrize("selection", [{}, {"tools": ["missing"]}, {"tools": ["task"]}])
+async def test_general_requires_valid_selection(tmp_path, monkeypatch, selection):
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="general-purpose", description="Work", **selection)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    child = ToolModel(responses=[AIMessage(content="Must not run")])
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Work"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert not child._seen
+        assert "Specify tools" in next(iter(runtime.background.results("chat").values()))
+    finally:
+        await runtime.stop()
 
 
 async def test_attachment_reload_and_invalid_edits_retain_effective_graph(tmp_path, monkeypatch):

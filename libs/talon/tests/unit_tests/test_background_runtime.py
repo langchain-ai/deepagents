@@ -4,6 +4,7 @@ import asyncio
 from contextlib import nullcontext
 
 import pytest
+from langchain.agents import create_agent
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
@@ -18,8 +19,11 @@ class ToolModel(FakeMessagesListChatModel):
         return self
 
 
-@pytest.mark.parametrize("mode", ["fork", "fresh"])
-async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize(
+    ("mode", "name"),
+    [("fork", "researcher"), ("fresh", "researcher"), ("fresh", "general-purpose")],
+)
+async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode, name):
     path = tmp_path / "agents" / "researcher" / "AGENTS.md"
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -43,8 +47,11 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode)
                         "name": "task",
                         "id": "launch",
                         "args": {
-                            "subagent_type": "researcher",
+                            "subagent_type": name,
                             "description": "work",
+                            **(
+                                {"tools": ["sensitive_effect"]} if name == "general-purpose" else {}
+                            ),
                         },
                     }
                 ],
@@ -66,6 +73,10 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, mode)
     )
     monkeypatch.setattr(
         "deepagents.graph.resolve_model", lambda model: child if model == "test:child" else model
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.subagents.create_agent",
+        lambda **kwargs: create_agent(**{**kwargs, "model": child}),
     )
     runtime = DeepAgentRuntime(
         model="test:parent",

@@ -46,6 +46,7 @@ class _Job:
     result: str | None = None
     cancelled: bool = False
     notified: bool = False
+    tools: list[str] | None = None
 
     @property
     def status(self) -> str:
@@ -64,11 +65,17 @@ class BackgroundSubagents(AgentMiddleware):
         self._remote: dict[str, AsyncSubAgent] = {}
 
         @tool
-        async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | None]]:
+        async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | list[str] | None]]:
             """Inspect this thread's subagents, including their status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
             return [
-                {"task_id": key, "name": job.name, "status": job.status, "result": job.result}
+                {
+                    "task_id": key,
+                    "name": job.name,
+                    "status": job.status,
+                    "result": job.result,
+                    "tools": job.tools,
+                }
                 for key, job in self._jobs.items()
                 if job.owner == owner
             ]
@@ -160,6 +167,7 @@ class BackgroundSubagents(AgentMiddleware):
                 )
             task_id = f"subagent-{uuid4().hex}"
             job = _Job(owner, str(request.tool_call["args"].get("subagent_type", "")))
+            job.tools = request.tool_call["args"].get("tools")
             self._jobs[task_id] = job
             job.worker = asyncio.create_task(
                 self._run(job, request, task_id), name=task_id, context=contextvars.Context()

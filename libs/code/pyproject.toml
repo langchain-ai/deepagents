@@ -58,7 +58,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.12.1",
+    "langsmith[sandbox]>=0.12.2",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",

@@ -256,6 +256,17 @@ def _validate_profile(profile: EmbeddingProfile) -> None:
     if profile.adapter == "atlas" and (profile.query_prompt or profile.base_url):
         msg = "Atlas manages embedding prompts and endpoints server-side"
         raise TalonConfigError(msg)
+    if profile.adapter == "local" and profile.base_url:
+        # `base_url` enters the fingerprint, so accepting one the adapter never reads
+        # would demand a full reindex for a setting that changes nothing.
+        msg = f"{_PREFIX}BASE_URL does not apply to the local adapter, which loads its own model"
+        raise TalonConfigError(msg)
+    if not profile.send_dimensions and profile.adapter in {"local", "atlas"}:
+        msg = (
+            f"{_PREFIX}SEND_DIMENSIONS applies only to the voyage and openai-compatible "
+            "adapters; this one cannot request an output width"
+        )
+        raise TalonConfigError(msg)
     if profile.query_model and profile.adapter != "atlas":
         msg = "A separate history query model is supported only by Atlas"
         raise TalonConfigError(msg)

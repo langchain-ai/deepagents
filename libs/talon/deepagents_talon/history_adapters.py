@@ -107,7 +107,11 @@ async def _adapter(
         return HistoryVoyageEmbeddings(
             model=profile.model,
             api_key=_key(config, "VOYAGE_API_KEY"),
-            output_dimension=cast("Literal[256, 512, 1024, 2048]", profile.dims),
+            # Omitting the width leaves the model's native output, which is what
+            # SEND_DIMENSIONS=0 asks for when a model cannot resize.
+            output_dimension=cast("Literal[256, 512, 1024, 2048] | None", profile.dims)
+            if profile.send_dimensions
+            else None,
             batch_size=profile.batch_size,
             truncation=False,
             base_url=profile.base_url or "https://api.voyageai.com/v1",

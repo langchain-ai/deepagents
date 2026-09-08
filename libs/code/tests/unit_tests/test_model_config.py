@@ -922,6 +922,40 @@ class TestServiceCredentials:
         assert status.source is ProviderAuthSource.ENV
         assert status.env_var == "LANGSMITH_API_KEY"
 
+    def test_prefixed_override_outranks_stored_service_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefixed override reports ENV, because the store never applies."""
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("langsmith", "from-store")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "from-prefix")
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_API_KEY"
+
+    def test_empty_prefixed_override_hides_stored_service_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override suppresses the store, matching the runtime.
+
+        `apply_stored_service_credentials` skips the copy whenever the prefixed
+        name is present, so the stored key never reaches the SDK. Reporting it
+        as configured would be a promise the app cannot keep.
+        """
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("langsmith", "from-store")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        assert get_service_auth_status("langsmith").state is ProviderAuthState.MISSING
+
     def test_missing_langsmith_detail_names_the_fallback(
         self,
         fake_state_dir: Path,  # noqa: ARG002

@@ -2471,7 +2471,17 @@ def _resolve_configured(
     Returns:
         A `CONFIGURED` status, or `None` when no source is set.
     """
-    if _has_stored_credential(provider):
+    # A present `DEEPAGENTS_CODE_` override outranks the store at runtime:
+    # `apply_stored_service_credentials` skips the copy outright, and
+    # `apply_stored_credentials` writes only the canonical name, which
+    # `resolve_env_var` then ignores. Reporting STORED here would promise a
+    # credential the app never reads -- including when the override is empty,
+    # which suppresses the canonical name entirely.
+    prefixed = f"{_ENV_PREFIX}{env_var}"
+    stored_is_authoritative = env_var.startswith(_ENV_PREFIX) or (
+        prefixed not in os.environ
+    )
+    if stored_is_authoritative and _has_stored_credential(provider):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=provider,

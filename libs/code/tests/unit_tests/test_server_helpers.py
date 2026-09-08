@@ -199,6 +199,42 @@ class TestPythonpathRelayRoundTrip:
         assert _INHERITED_PYTHONPATH_ENV not in shell_env
 
 
+class TestLangSmithCarrierRoundTrip:
+    def test_launch_langsmith_env_round_trips_to_execute_env(self) -> None:
+        """Launch LangSmith settings survive the relay into `execute`.
+
+        Composes the two real halves -- `_build_server_env` encodes, and
+        `restore_user_langsmith_env` decodes -- rather than hand-writing the
+        JSON on either side. A rename or reshape of the envelope would
+        otherwise degrade every user command to the fail-closed "no LangSmith
+        credentials" path, and ship green.
+        """
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import restore_user_langsmith_env
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "user-launch-key"
+        launch["LANGSMITH_PROJECT"] = "user-launch-project"
+        config_mod._bootstrap_state.launch_langsmith_env = dict(launch)
+        config_mod._bootstrap_state.user_langsmith_env = dict(launch)
+        try:
+            server_env = _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        # The server hands the agent an environment holding its own key.
+        shell_env = dict(server_env)
+        shell_env["LANGSMITH_API_KEY"] = "agent-session-key"
+        restore_user_langsmith_env(shell_env)
+
+        assert shell_env["LANGSMITH_API_KEY"] == "user-launch-key"
+        assert shell_env["LANGSMITH_PROJECT"] == "user-launch-project"
+        assert _USER_LANGSMITH_ENV_CARRIER not in shell_env
+
+
 class TestServerEnvProfilePinning:
     """The server must always inherit the client's profile selection.
 

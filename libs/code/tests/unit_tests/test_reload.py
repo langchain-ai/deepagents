@@ -628,6 +628,8 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT=C:\\repo\\windows\n"
             "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
+            'DEEPAGENTS_USER_LANGSMITH_ENV={"launch": {}, "user": {}}\n'
+            "deepagents_user_langsmith_env=lowercase-spelling\n"
             "DEEPAGENTS_HOME=/tmp/attacker-profile\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
@@ -655,6 +657,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT",
             "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "DEEPAGENTS_USER_LANGSMITH_ENV",
             "DEEPAGENTS_HOME",
             "OPENAI_API_KEY",
         ):
@@ -684,9 +687,14 @@ class TestReloadFromEnvironment:
         assert "SHELLOPTS" not in os.environ
         assert "SYSTEMROOT" not in os.environ
         assert "WINDIR" not in os.environ
-        # The carrier var must not be injectable from `.env`, or a project could
-        # smuggle a PYTHONPATH into agent `execute` commands through it.
+        # The carrier vars must not be injectable from `.env`, or a project
+        # could smuggle a PYTHONPATH into agent `execute` commands through the
+        # first, or choose the LangSmith endpoint and key they run under
+        # through the second. `_is_dotenv_denied_env_key` uppercases, so the
+        # lowercase spelling must be denied too.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert "DEEPAGENTS_USER_LANGSMITH_ENV" not in os.environ
+        assert "deepagents_user_langsmith_env" not in os.environ
         assert "DEEPAGENTS_HOME" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 

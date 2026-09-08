@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import (
+    Callable,  # noqa: TC003 — pydantic resolves field annotations at runtime
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
+    Sequence,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -28,8 +30,13 @@ from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
+from langchain_core.callbacks import CallbackManagerForLLMRun  # noqa: TC002
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import InjectedToolCallId, tool
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import Runnable  # noqa: TC002
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
@@ -71,6 +78,13 @@ async def always_fails(value: str) -> str:
     raise RuntimeError(msg)
 
 
+@tool("stream_progress")
+async def stream_progress(value: str, runtime: ToolRuntime) -> str:
+    """Emit one output delta before returning."""
+    runtime.emit_output_delta({"progress": value})
+    return f"done:{value}|{runtime.tool_call_id}"
+
+
 @tool
 def echo_foo(foo: str) -> str:
     """Echo the value of `foo`."""
@@ -110,10 +124,43 @@ def get_user_email_or_none(user_id: int) -> str | None:
 @tool
 def echo_call_id(
     value: str,
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    correlation: Annotated[str, InjectedToolCallId],
 ) -> str:
     """Return the synthetic tool_call_id back to the caller."""
-    return f"{value}|{tool_call_id}"
+    return f"{value}|{correlation}"
+
+
+class _StreamingFakeChatModel(BaseChatModel):
+    responses: list[AIMessage] = Field(default_factory=list)
+    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = ()
+    _idx: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "streaming-fake"
+
+    def _generate(
+        self,
+        messages: Sequence[Any],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        del messages, stop, run_manager, kwargs
+        index = min(self._idx, len(self.responses) - 1)
+        self._idx += 1
+        return ChatResult(generations=[ChatGeneration(message=self.responses[index])])
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        del tool_choice, kwargs
+        self.tools = tools
+        return self
 
 
 def _script(code: str, *, final_message: str = "Done.") -> Iterator[AIMessage]:
@@ -140,9 +187,23 @@ def _make_agent(
     middleware: CodeInterpreterMiddleware,
     *,
     final_message: str = "Done.",
+    streaming: bool = False,
+) -> Any:
+    responses = list(_script(code, final_message=final_message))
+    model: BaseChatModel = (
+        _StreamingFakeChatModel(responses=responses)
+        if streaming
+        else FakeChatModel(messages=iter(responses))
+    )
+    return create_deep_agent(model=model, middleware=[middleware])
+
+
+def _make_agent_with_messages(
+    messages: Iterator[AIMessage],
+    middleware: CodeInterpreterMiddleware,
 ) -> Any:
     return create_deep_agent(
-        model=FakeChatModel(messages=_script(code, final_message=final_message)),
+        model=FakeChatModel(messages=messages),
         middleware=[middleware],
     )
 
@@ -258,6 +319,159 @@ def test_ptc_injects_tool_call_id_per_call() -> None:
     _assert_result_contains(_eval_tool_message(result).content, "true:true:true")
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The v3 streaming protocol on Pregel is experimental"
+)
+def test_ptc_calls_surface_in_native_tool_stream() -> None:
+    """PTC calls use the standard tool-call stream with correlated IDs."""
+    code = "await tools.streamProgress({value: 'working'})"
+    agent = _make_agent(
+        code,
+        CodeInterpreterMiddleware(ptc=[stream_progress]),
+        streaming=True,
+    )
+    run = agent.stream_events(
+        {"messages": [HumanMessage(content="go")]},
+        version="v3",
+    )
+
+    calls = []
+    deltas: list[Any] = []
+    for call in run.tool_calls:
+        calls.append(call)
+        if call.tool_name == "stream_progress":
+            deltas.extend(call.output_deltas)
+
+    assert [call.tool_name for call in calls] == ["eval", "stream_progress"]
+    outer_call, ptc_call = calls
+    assert outer_call.completed
+    assert ptc_call.completed
+    assert ptc_call.error is None
+    assert deltas == [{"progress": "working"}]
+    assert ptc_call.output.startswith("done:working|ptc_stream_progress_")
+
+
+def test_ptc_calls_do_not_add_child_graph_messages() -> None:
+    """Streaming visibility does not add the inner call to graph state."""
+    code = "await tools.syncLabel({value: 'inner'})"
+    result = _make_agent(
+        code,
+        CodeInterpreterMiddleware(ptc=[sync_label_tool]),
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    assert [message.type for message in result["messages"]] == [
+        "human",
+        "ai",
+        "tool",
+        "ai",
+    ]
+    assert result["messages"][-2].name == "eval"
+
+
+def test_shared_middleware_instance_still_isolates_repl_state_across_agents() -> None:
+    """Separate agent instances do not reuse interpreter globals."""
+    middleware = CodeInterpreterMiddleware()
+    config = {"configurable": {"thread_id": "shared-thread"}}
+
+    first = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "globalThis.shared = 123; 'ok';"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        middleware,
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
+    _assert_result_contains(_eval_tool_message(first).content, "ok")
+
+    second = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "typeof shared;"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        middleware,
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
+    _assert_result_contains(_eval_tool_message(second).content, "undefined")
+
+
+def test_fresh_middleware_instance_gets_fresh_repl_state() -> None:
+    """A new middleware object starts with an empty interpreter slot."""
+    config = {"configurable": {"thread_id": "shared-thread"}}
+    first = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "globalThis.shared = 123; 'ok';"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        CodeInterpreterMiddleware(),
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
+    _assert_result_contains(_eval_tool_message(first).content, "ok")
+
+    second = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "typeof shared;"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        CodeInterpreterMiddleware(),
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
+    _assert_result_contains(_eval_tool_message(second).content, "undefined")
+
+
 def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:
     """Verify sync eval can call sync and async LangChain tools in one run."""
     code = (
@@ -299,6 +513,38 @@ def test_quickjs_sync_timeout_error() -> None:
     tool_message = _eval_tool_message(result)
     assert '<error type="Timeout">' in tool_message.content
     assert result["messages"][-1].content == "timeout hit"
+
+
+@pytest.mark.filterwarnings(
+    "ignore:The v3 streaming protocol on Pregel is experimental"
+)
+def test_ptc_errors_surface_in_native_tool_stream() -> None:
+    """PTC failures close the standard tool stream with the original error."""
+    agent = _make_agent(
+        "await tools.alwaysFails({value: 'stream'})",
+        CodeInterpreterMiddleware(ptc=[always_fails]),
+        streaming=True,
+    )
+    run = agent.stream_events(
+        {"messages": [HumanMessage(content="go")]},
+        version="v3",
+    )
+
+    calls = []
+
+    def _collect_calls() -> None:
+        for call in run.tool_calls:
+            calls.append(call)  # noqa: PERF402
+
+    with pytest.raises(RuntimeError, match="boom:stream"):
+        _collect_calls()
+
+    assert [call.tool_name for call in calls] == ["eval", "always_fails"]
+    outer_call, ptc_call = calls
+    assert outer_call.completed
+    assert outer_call.error == "boom:stream"
+    assert ptc_call.completed
+    assert ptc_call.error == "boom:stream"
 
 
 def test_quickjs_sync_tool_exception_propagates() -> None:

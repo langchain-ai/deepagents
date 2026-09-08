@@ -8,16 +8,19 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
+from blockbuster import blockbuster_ctx
 
 from deepagents_code.offload_middleware import OffloadExecution, OffloadResult
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
+    from pathlib import Path
 
     from deepagents_code.offload_middleware import _PendingArchive
 
@@ -43,7 +46,175 @@ def _reset_offload_globals() -> Iterator[None]:
         offload_api._operation_outcomes.clear()
 
 
+@contextlib.asynccontextmanager
+async def _workspace_route_client(
+    runtime_error: BaseException,
+) -> AsyncIterator[tuple[Any, MagicMock]]:
+    """Serve the workspace route with a runtime build that fails.
+
+    Binding succeeds, so every failure the caller asserts on comes from the
+    runtime preflight rather than from request validation.
+
+    Yields:
+        The ASGI client and the patched thread-client factory, which must stay
+        uncalled whenever the preflight refuses.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from deepagents_code import offload_api
+    from deepagents_code._server_config import ServerConfig
+
+    with (
+        patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
+        patch.object(
+            offload_api,
+            "bind_thread_workspace",
+            new=AsyncMock(return_value=object()),
+        ),
+        patch.object(
+            offload_api,
+            "get_server_runtime",
+            new=AsyncMock(side_effect=runtime_error),
+        ),
+        patch.object(offload_api, "_thread_client") as thread_client,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app),
+            base_url="http://test",
+        ) as client:
+            yield client, thread_client
+
+
 class TestWorkspaceRoute:
+    @pytest.fixture(autouse=True)
+    def workspace_database(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_SERVER_DB_PATH", str(tmp_path / "sessions.db")
+        )
+
+    @pytest.mark.parametrize("cached", [False, True])
+    @pytest.mark.parametrize("git_workspace", [False, True])
+    async def test_explicit_launch_root_preserves_policy_and_runtime(
+        self, tmp_path: Path, cached: bool, git_workspace: bool
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api, server_graph
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.workspace import require_thread_workspace
+
+        root = tmp_path / "project"
+        workdir = root / "workdir"
+        workdir.mkdir(parents=True)
+        if git_workspace:
+            (workdir / ".git").mkdir()
+        config = ServerConfig(
+            cwd=str(workdir),
+            project_root=str(root),
+            mcp_config_path=str(root / ".mcp.json"),
+            sandbox_setup=str(root / "setup.sh"),
+            trust_project_mcp=True,
+            trust_project_extensions=True,
+            extension_paths=(str(root / "ext.py"),),
+        )
+        runtime = create_autospec(server_graph.ServerRuntime, instance=True)
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(server_graph, "_workspace_runtimes", OrderedDict()),
+            patch.object(
+                server_graph, "_get_runtime", new=AsyncMock(return_value=runtime)
+            ),
+            patch.object(
+                server_graph, "_make_graphs", new=AsyncMock(return_value=runtime)
+            ) as make,
+            patch.object(
+                offload_api, "get_server_runtime", server_graph._workspace_runtime
+            ),
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+        ):
+            if cached:
+                assert await server_graph.get_server_runtime() is runtime
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/dcode/threads/thread-1/workspace", json={"cwd": str(workdir)}
+                )
+            assert response.status_code == 200, response.text
+            binding = await require_thread_workspace(
+                "thread-1", response.json()["workspace"]
+            )
+            assert binding.workspace_config() == config.to_workspace_payload()
+            assert await server_graph._workspace_runtime(binding) is runtime
+            if cached:
+                make.assert_not_awaited()
+            else:
+                make.assert_awaited_once()
+                assert make.await_args is not None
+                built = make.await_args.kwargs["config_override"]
+                context = make.await_args.kwargs["project_context_override"]
+                assert built.project_root == str(root)
+                assert context.project_root == root
+
+    @pytest.mark.parametrize("initial_trust", [False, True])
+    async def test_reconnect_after_extension_trust_changes(
+        self, tmp_path, initial_trust: bool
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.workspace import get_thread_workspace
+
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(offload_api, "get_server_runtime", new=AsyncMock()),
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch(
+                "deepagents_code.extensions.trust.is_project_extensions_trusted",
+                return_value=initial_trust,
+            ) as trust,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app), base_url="http://test"
+            ) as client:
+                url = "/dcode/threads/thread-1/workspace"
+                first = await client.post(url, json={"cwd": str(other)})
+                assert first.status_code == 200
+                original = await get_thread_workspace("thread-1")
+
+                trust.return_value = not initial_trust
+                resumed = await client.post(url, json={"cwd": str(other)})
+                assert resumed.status_code == (409 if initial_trust else 200)
+                if not initial_trust:
+                    assert resumed.json() == first.json()
+                assert await get_thread_workspace("thread-1") == original
+
+                fresh = await client.post(
+                    "/dcode/threads/thread-2/workspace", json={"cwd": str(other)}
+                )
+                assert fresh.status_code == 200
+                binding = await get_thread_workspace("thread-2")
+                assert binding is not None
+                assert binding.workspace_config()["trust_project_extensions"] is (
+                    not initial_trust
+                )
+
     async def test_server_supplies_policy_when_client_omits_claim(
         self, tmp_path
     ) -> None:
@@ -54,7 +225,17 @@ class TestWorkspaceRoute:
             path_params={"thread_id": "thread-1"},
             json=AsyncMock(return_value={"cwd": str(tmp_path)}),
         )
-        server_config = ServerConfig(auto_approve=True)
+        launch = tmp_path / "launch"
+        launch.mkdir()
+        server_config = ServerConfig(
+            auto_approve=True,
+            cwd=str(launch),
+            project_root=str(launch),
+            mcp_config_path="/launch/.mcp.json",
+            sandbox_setup="/launch/setup.sh",
+            trust_project_mcp=True,
+            extension_paths=("/launch/ext.py",),
+        )
         binding = SimpleNamespace(
             cwd=str(tmp_path),
             workspace_id="workspace-1",
@@ -62,6 +243,7 @@ class TestWorkspaceRoute:
             to_payload=lambda: {"workspace_id": "workspace-1"},
         )
         threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        runtime = AsyncMock()
         with (
             patch.object(ServerConfig, "from_env", return_value=server_config),
             patch.object(
@@ -69,21 +251,84 @@ class TestWorkspaceRoute:
                 "bind_thread_workspace",
                 new=AsyncMock(return_value=binding),
             ) as bind,
+            patch.object(offload_api, "get_server_runtime", new=runtime),
             patch.object(
                 offload_api,
                 "_thread_client",
                 return_value=SimpleNamespace(threads=threads),
             ),
+            blockbuster_ctx(scanned_modules=offload_api),
         ):
             response = await offload_api.workspace(cast("Any", request))
 
         assert response.status_code == 200
-        bind.assert_awaited_once_with(
-            "thread-1",
-            str(tmp_path),
-            server_config.to_workspace_payload(),
-            config_fingerprint=server_config.workspace_fingerprint(),
-        )
+        # Assert the literal policy, not `resolve_workspace(...)` re-run here:
+        # comparing against the method under test passes even if it stops
+        # stripping anything.
+        bind.assert_awaited_once()
+        bind_call = bind.await_args
+        assert bind_call is not None
+        bound_policy = bind_call.args[2]
+        assert bound_policy["mcp_config_path"] is None
+        assert bound_policy["sandbox_setup"] is None
+        assert bound_policy["trust_project_mcp"] is None
+        assert bound_policy["extension_paths"] == []
+        # Session policy is the client's own and survives.
+        assert bound_policy["auto_approve"] is True
+        runtime.assert_awaited_once_with(binding)
+
+    async def test_runtime_conflict_returns_409_before_thread_creation(
+        self, tmp_path
+    ) -> None:
+        """Workspace preflight reports a conflict before a streamed run starts."""
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        detail = "Cannot host this workspace because the sandbox is already owned."
+        async with _workspace_route_client(WorkspaceConflictError(detail)) as (
+            client,
+            thread_client,
+        ):
+            response = await client.post(
+                "/dcode/threads/thread-1/workspace",
+                json={"cwd": str(tmp_path)},
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": detail}
+        thread_client.assert_not_called()
+
+    async def test_runtime_build_exit_is_contained_as_503(self, tmp_path) -> None:
+        """`_make_graphs` exits on sandbox failure; the route must contain it.
+
+        Without containment the `SystemExit` escapes the handler and takes the
+        server down mid-request, since it is a `BaseException`.
+        """
+        async with _workspace_route_client(SystemExit(1)) as (client, thread_client):
+            response = await client.post(
+                "/dcode/threads/thread-1/workspace",
+                json={"cwd": str(tmp_path)},
+            )
+
+        assert response.status_code == 503
+        assert "could not build its agent runtime" in response.json()["detail"]
+        thread_client.assert_not_called()
+
+    async def test_runtime_build_error_is_not_reported_as_client_error(
+        self, tmp_path
+    ) -> None:
+        """A build `ValueError` is server misconfiguration, never a 422."""
+        error = ValueError("unknown model provider")
+        async with _workspace_route_client(error) as (client, thread_client):
+            # `ASGITransport` re-raises app exceptions, so the build failure
+            # surfaces here rather than as the 422 the validation arm above
+            # would have produced when it shared this `try`.
+            with pytest.raises(ValueError, match="unknown model provider"):
+                await client.post(
+                    "/dcode/threads/thread-1/workspace",
+                    json={"cwd": str(tmp_path)},
+                )
+
+        thread_client.assert_not_called()
 
     async def test_rejects_client_policy_mismatch(self, tmp_path) -> None:
         """A caller cannot choose privileged runtime configuration."""
@@ -108,6 +353,47 @@ class TestWorkspaceRoute:
 
         assert response.status_code == 409
         from_env.assert_called_once_with()
+
+    async def test_rejects_client_project_policy_claim(self, tmp_path) -> None:
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        config = ServerConfig()
+        claim = config.to_session_workspace_claim()
+        claim["trust_project_mcp"] = True
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={
+                    "cwd": str(tmp_path),
+                    "workspace_config": claim,
+                    "config_fingerprint": config.session_workspace_fingerprint(),
+                }
+            ),
+        )
+
+        with patch.object(ServerConfig, "from_env", return_value=config):
+            response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 409
+        assert response.body == (
+            b'{"detail":"clients cannot claim project workspace policy"}'
+        )
+
+    async def test_rejects_unknown_workspace_request_field(self, tmp_path) -> None:
+        from deepagents_code import offload_api
+
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={"cwd": str(tmp_path), "trust_project_mcp": True}
+            ),
+        )
+
+        response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 422
+        assert b"trust_project_mcp" in response.body
 
     async def test_malformed_policy_is_a_client_error(self, tmp_path) -> None:
         """A non-object policy returns 422 instead of escaping as a 500."""
@@ -287,6 +573,55 @@ class TestExecuteOffload:
             )
 
         runtime.assert_not_awaited()
+        threads.update_state.assert_not_awaited()
+
+    async def test_runtime_workspace_conflict_is_rejected(self) -> None:
+        """Runtime conflicts use the same offload 409 path as binding conflicts."""
+        from deepagents_code import offload_api
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        detail = (
+            "Cannot host this workspace because a runtime for another workspace "
+            "already exists and the configured sandbox is process-wide."
+        )
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=WorkspaceConflictError(detail)),
+            ),
+        ):
+            response = await offload_api.offload(
+                SimpleNamespace(  # ty: ignore[invalid-argument-type]
+                    path_params={"thread_id": "thread-1"},
+                    json=AsyncMock(
+                        return_value={
+                            "operation_id": "operation-1",
+                            "context": {"workspace": {}},
+                        }
+                    ),
+                )
+            )
+
+        assert response.status_code == 409
+        import json
+
+        assert json.loads(bytes(response.body)) == {"detail": detail}
         threads.update_state.assert_not_awaited()
 
     async def test_missing_workspace_context_is_rejected(self) -> None:

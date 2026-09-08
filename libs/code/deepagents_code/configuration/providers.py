@@ -523,8 +523,6 @@ def ranked_theme_toml_value(
 
     resolved = resolve_terminal_mapping(ui)
     if resolved is not None:
-        import os
-
         term_program = os.environ.get("TERM_PROGRAM", "").strip()
         selected = replace(
             status,
@@ -1581,8 +1579,8 @@ class EnvProvider:
 
     name: str = "environment"
     rank: int = ENVIRONMENT_RANK
-    environ: Mapping[str, str] = field(
-        default_factory=lambda: os.environ,
+    environ: Mapping[str, str] | None = field(
+        default=None,
         repr=False,
         compare=False,
     )
@@ -1607,14 +1605,16 @@ class EnvProvider:
         Returns:
             Ranked and coerced provider result.
         """
+        from deepagents_code.config import active_environment
         from deepagents_code.config_manifest import OptionKind
 
+        environ = active_environment() if self.environ is None else self.environ
         if option.kind is OptionKind.THEME_DELEGATE:
             return _ranked_for(
                 option,
-                ranked_theme_environment_value(self.environ, rank=self.rank),
+                ranked_theme_environment_value(environ, rank=self.rank),
             )
-        return ranked_environment_value(option, self.environ, rank=self.rank)
+        return ranked_environment_value(option, environ, rank=self.rank)
 
     def status(self) -> ProviderStatus:
         """Return the always-healthy environment provider status."""

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4be21f7fdf0b600e6a7371eee96ba62e07bf49d2d82982a991327f09973c9f16",
+  "pageVersion": "sha256:aff8550334f002165b97f342b31f6d6673c5a677bb288485501dc49684369af3",
   "claims": [
     {
       "id": "claim_8766e596f8da45d8b87d026c97243b7e",
@@ -257,10 +257,120 @@
           "version": "repo-lines-v1:sha256:ab6882fb1a0ba697d6bc314465bed7a57a21cda5e5846dbb8c85cb9883e1a143:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ZjA4YWI0Mjc4YmIxMDA0NjBlZDIyZGFjMWE2ZmE5YzY1YmI5OGMyYTk2Zjc2ZjUyZDgyMjZkNDk3NDk2MjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5NGE2MGI5OTg4ODkzZTk0MTZkMWY4ODZmZjA4ZDUwMzU1NjEyODgzMzA5ZjNhODlkNTc2ODQyNTliNDc3YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMTMwNDlhNTIwZGVjYzdiMWVkMGMwOTI4YzgzYWNjYzBmMzhkM2FkNzUxNTFiNjY0ZTAzZmJiMDI1NTFmZjEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bf9f3483213d4dc2ab5add983becd31c",
+      "statement": "Local pricing overrides depend on the private upstream APIs `genai_prices.types._providers_from_raw` and `genai_prices.data_snapshot.find_provider_by_id`; because the genai-prices range spans 0.1.x patches and those names have no compatibility promise, both integration paths must be re-verified when the dependency range changes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L1041-L1088",
+          "version": "repo-lines-v1:sha256:7ff368a3ffbfb82932f3e52ae2e6e2b68e8b415de1d8b672ae7fc7107f9e9790:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMjdkY2MzZTUxMTI4ZTQ5MTMzZjUyNDczYWI0OGJkMGE5ZjM4ZWI4M2YxYTVkNGEyNzJmNTRkNzliMzIwMjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhMmI2ZDZkZDBmYjQ5ODQ4MjkwYmJmYzNkZmQ1YjViODNiYjMyNTM4NWZiYjYwNWI5ODk2MWNhYjdiOGFjM2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyZWZhOWM2ODVjNTg0NzhiODRkMjZkMGFkOGM1OWU1MjZkOGE5N2I2NDg0YjdkMDMzOTJjMjJkZjNhNDVlNjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L924-L950",
+          "version": "repo-lines-v1:sha256:94bb49a9ad4a815a94307bb1e3f923466a8b9ebf4d8ea0534f20326ee95ddfd8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5MTYxODU2NzQwYzJkZmE1Y2YyMDBhMzAxMzQ4MjhiOTBmOGYzMWFhMTI0ZDRiNTYwNjJkODliZTM0MjVlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjZjIyMWU1ODExMzczMjAwMDZjODNlOGFhZjhmNTJmMzFlZGQwYmVkMTE1MWJlNjBlMmJlYmIwZjYzZjA5MGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlMzEwODEwNjY4OWUyYTIwNjEzYTUzMzg4N2RlNjM5NWExODU1ODY1ODI2MWZiYjhkNjMxYTBkYzMzZjViYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkN2Y3MDU0MTFkZTdlN2Y1ZDQ5YWRmZDk5OGUzN2E3ZjdjZGM0MTk5NGFjMjAwZTdiMWZlOTc5NjE3Y2RmZDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L67-L74",
+          "version": "repo-lines-v1:sha256:b9cc3ee7a66360095eefdc1990f709e6243a3fdc725d11b4307a81391133410f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTA5NjNmMTdmNmJhNGQ1MDBlNmJjYTgzMmNkYjQzNjg3YzMyOGE2MjA1MGJiZjY5ODA3N2Y4YzZiOWY0MWU0MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTg0NjVjYzIwOTcxNzY1MWJiYTIxNjcwNmE4ZmZjMjliZTIzZThhZGNlZTM1YmU3NmJhMjUyOWM4YzRhMWM1OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTQ1OTkyYjQzODg5OWFjMGExZTUyZjEwN2NmMGIzNDM5MDhhYzY2ODE1MmY1OWVkNGNiMWFiZjE4MDQ1MTAwNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzNjNDk1NWQ2N2E4MTE5YzBkZTU2ZWU3ZmI0ZGIwMDU5YThjYjJkNjNjZjk5MmNmZDc1NDg3MGVjNTMzMGVlYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a5d6f25e149f41c1b0aa47e4d4222653",
+      "statement": "The hourly pricing updater refuses an upstream snapshot with fewer providers than the bundled catalog; it raises so genai-prices retains the prior healthy snapshot rather than installing a truncated catalog.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L411-L475",
+          "version": "repo-lines-v1:sha256:9f89d973562648764e8d378932050c00152acee85870f1c08476df6c13d74d6c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViMGJlNWJhZTkzYjI1YWIzNmRjNjBkYjUxZDc4ZmMzMWM0Zjg1YTk2YTVmNzRiODZhYmQ5ZmI4MzQ0OTk3N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYzMwYjdiMmNjNTdkYTdhMTk5NjZjYjVhNWYzZDA1YWEyMDk2ZDQzMjhiY2JjYzZhMzBiODgwMjcwZTE3NmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5YmRhMDhhYTZmM2FjMTA3OTg5OTgwYTU3MTUxNGQxZjc0NTM5MWI4ZGZhNDAwNGVmNTJjZTY0MTc2OTlmZDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L501-L515",
+          "version": "repo-lines-v1:sha256:59e36342e354c472a357dbc1399fb390aafda4e2a3c770f7220bd590f99ceadb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0ZmY2NTMxZDliMjg3NTk3NmU2YzcyMWU4NTg5MTQ1MzUwZjFlYjU5YzJlYzFlMDZmNGFkMTAyYjMwMzhkYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlNTQxNThlMWFiYmNjODg0YzUwNWEzMTE2OWI5MTZlZThmN2RkNDQ3ZTQ3Njc3MGNhYjBmODk4ZGY0MTI4NDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2Yzk0NzgzN2Q4NWM5NjBhNjAxNGM0MTViNWExNmMxOWYzNDA3ZWFjNGFjMTlkODFlZTg5ZGQ2ZWFlMzRiMzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2MDNjNWYyNDg2MTJkMmU4NWQwMDlmNjc1ZTA5Y2JlOTAwNDFmOGIyYWUyYjc3MzU2ZDBmMzY4OTFjNGEwM2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_884044485bc3413f80387c5338d5d702",
+      "statement": "`stream_trace_config` marks only LangGraph `Command` resume rounds with the inheritable `dcode:resume` tag; initial rounds remain untagged, and the tag reaches model, tool, and subagent child runs for LangSmith filtering.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_tracing.py#L16-L58",
+          "version": "repo-lines-v1:sha256:48113c1caff0f2eb4eda6f0fb828f2d971460aa06c7eb5cb37607ac3c1a74552:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmZmU1NzBjMjhkNzEyNzRmYzI0NGVhNjM3MzdiYmNlMDczOGJhOTNmYjJiNDllOWZiZDMwMWU2NWJmYzViOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMWUyZGIyNmQwMGIzM2RhMDkxN2EzZTYyYTJjMzA0MTY4MzFkNzNmMzA0NGQxYWI0NDI0ZmNiNGI1MDMwZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjZGQ4M2U1NDY3NjYyYjdiMjAzNzEyYjU0NWE4YmZmZjZhYzRjMmI4NzczZmI4NTMwMzkzMDRiNzE0M2E4NTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L1904-L1910",
+          "version": "repo-lines-v1:sha256:23df479231729d1af4c3f9c44aacb797bb93211707f715878b61eb57a5e673c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmIyYjMxZTY1ODg1ZWQ2MTk3ODYyYzBmOWUyMzVlZjNkM2ZlMGRkYmY0ZGIwMDMxMTQ4YjAyNjVjNTc4ZTFlYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTJiZWEzNjI1MTExYWJkMzhlZjhmMDQxMGI2YTI0YmMwNGFhMzEyN2YyMzNiY2FmMjQ1MDIxYWE0NzUxNjBlYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjE3OTFlMDMyZjU2ZWM0Y2Y1NDM1NWE3NzY3M2EzMWE0YWZhNTE2MTNlMTk3ZWE1YmFjODg4OWJiYzdmYjExNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDc5YzZkZmFlYjhjN2YxODYzMGVhZmNhOWIzNTM0MzIxODUyMTE2ZGY4ZGI1MjQwOGFlMDU3YzFjMmI1ZTIwOCJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py#L1960-L1969",
+          "version": "repo-lines-v1:sha256:c84fae88017eac3dba22246b3755bdde0ed475a36d55b7314e259ad2db0ba1f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3YjAxMzRkODgyMTQ3OGE1NjI1MWVjYjFmMjkwMjM5MDU3MTM1ODEyY2VhY2Y3Mjk4ZTgxYWM4Yjk3NmVhNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0ZjhmODc0MzRjNzMwYWNhODVkZTcyOTJkZTgxZmNiNjNhNmViNWMwMmI4ZGU0YzYyMDdmYWMxYmVhOTdlNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2NmI1YzM4Njg3NjZhNzYyMDYwMjczMzc1YzE4M2Q4NDA5MDQ5Mzc1NTgzNzAyZDNiOWQ1MzA4YzQ4Yjg2MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxM2FmZGM3MDkxMTlmYjlhMGQ3YTM3ZjFkY2IzN2VhNDE2MjY3MDg4YzNmODhkY2YyNTdkODhlMDhkZTNkZGIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_84ba277f47b5486bb19218a901375e29",
+      "statement": "With `DEEPAGENTS_CODE_DEBUG` enabled before logger configuration, dcode binds configured loggers to a per-thread file in a precedence-resolved debug directory, hardens the directory and file to owner-only access, and refuses symlinked files; security/setup failures disable file handlers and warn instead of writing insecure logs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_debug.py#L290-L314",
+          "version": "repo-lines-v1:sha256:967f1ef760e9c042cc160a3a2a53e39cfe1699b5f1b326e1698da99b0a2f950e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0MDU3ZmNhMzZjMjA4MzY5MjliYzhhM2Q3Yjg4NmU1MjIyZDcxMmRiNmE5YjI5MGM2ZTI1NzUzNDYyNjM5ZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4ODI4ZjVlNDNkY2MyNDQ2NWQ3YmI0MzYzNDExZTE2MzA2OTc2Y2ExOWE0YzA1YmEwNDk1MjMwNDQ2MjZiN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4ZDc0NDI3YzdlOWU3ZjkyMDFmZGM5NWRhNGM0NzAxZDFlNzE4NmI0NzlkZTY1ZDc3NTEwNWMwMWVmZjZkOTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRjYzA3NjllYTMyNWEyMGJiZGQ4NTZhNTU3ZDU1ODFmNjQ3ZjA3MjA0NjA0Y2NiOTU4MGI4NmJmY2Q4YmZhMzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_debug.py#L369-L416",
+          "version": "repo-lines-v1:sha256:ed692ce0c18e2aa106675b691a59f6d29e3daae02e7a101414da76e961e635a4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmZThiOWE1NmU3ODdhODhhYjQxZDllYjgxMjZhY2Y1MDA3YzQ5M2IyMTA4NGFmN2RlMjQ4MzIwZDAzNDQ3YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4ZjRiMDY1YTU4N2I1YjVjMDkzMDhlZDljZGQ4YzFmNTFmOTI0NGMxMDgyN2ZlM2EzODE0ZjQ1Nzc1NTlhMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlNTQzYzljNDc3M2ViMGMxYWU2ZDE3ZGRmNzAxNzc1ZDFmNjM1MzYxOTU5NzM3ZWI0YjJkMTY4NDRmOGFjNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiMWQ3YjU2NjJlYzUyY2MzOWI1ZjIwZmJkMGMwZTJmNjliNTM5NDQ4ODM2NGJiMmE1ZTYzMTI3ZDcwY2U4YzYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_debug.py#L70-L97",
+          "version": "repo-lines-v1:sha256:9d6f1b798b246748eb6ac8c80232a1bad840a1ed7a1b4c160a2c6e8df9fe1973:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ODFlYWZjMGM3ZjQzYWI1Y2ZkNmRlNWY0ZmQ2NzdkNTUyOTNmNzFiMTdhYjFlMzRmZWI5OTNjODgwNzY4ZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4ODI4ZjVlNDNkY2MyNDQ2NWQ3YmI0MzYzNDExZTE2MzA2OTc2Y2ExOWE0YzA1YmEwNDk1MjMwNDQ2MjZiN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4MGIzYjVlOTEzNWMxNzc2NjkzYTE0ZGVlYjM3YzNjOGU5NjdmMGQ1ZmMzYmU3MjFjYzQwN2RhMmI5ZGY1OWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4MmZlMGU4MDQ0ODczZWE2OTM0MGJkZGE4OGM2MzdjMGYxODJkMzJhYTQ3MDM5MzQ4ZDI4OGNiYjMxNzY4YTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3408ed27d244439482d1349d0a18f094",
+      "statement": "Update checks use a 24-hour local cache as a no-network startup fast path; a normal check fetches PyPI with a three-second timeout and failures return no update answer rather than blocking launch.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L405-L446",
+          "version": "repo-lines-v1:sha256:2deb1762e87a0cdd09e3cce5cf1a4c0ef67fbf473f5f916691e22dbeca3e893e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MTA4NjgxMzEyYzg4MTdhMmQzY2IxYmExM2YyYzUxNGY5YjNmZjU0NDZkYmYxYTUwOGUwZTJiYmJhZmE2NTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYzUwMmVkMjE3OGRjZmM1NGE4NzNmNDE1ZDBmNWRhZGU5MjFmNDk5MjIxODljZDE2OWZjMDBjM2YxMTk3NGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczM2U4NDg3Yzg1ZGZkY2Y5ZmE3YjkzYzc0NmM5NDYyNWFlNDdlMTIwYzc5N2U3OTFlNzM3ZjllZDdmZmM3M2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiZGUwMTE0ZTg5YzJhOWIxNjU3YTRlYTdhZDExZmZiYmMwMGU5NWFkMTA1MGE2OTI5NzYwYzA3OWExODNlYTIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L682-L792",
+          "version": "repo-lines-v1:sha256:b5ceefc42adab65ca218b7b259df23d75229183c3c2d9947eb5f065b8ad8ae15:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZTIzN2VmYmJkZWYyZmFkMjExNjE0OTY2YmRlODhmZTM1MjdiOTNmNDRmOTk0YWJjMDJhYzA4YTUwNjA4M2U1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5ZjhkNGRlNmI2ZmEzMjJkZDJiNWFkZDdjMWFkNzdmMzEyOTFlNDRhOTY0NWZmYjQ4N2ZjODMzNGM5OTM0NTQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNWY1ZDk1NTU0NDU2YzQ3YWQzYzNlYTg2ZThhMDA3N2JiMTM5ZjhlYjg3Nzg2YTBiY2E0NzA5ZjliMWIyMGIyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YzAyMTQ0ZTdhMmFmN2EzMjk1ZDI5ZDg2YjQ4ZjVhOTRhMjI5ZWVjOWI4ZjIzZDdmMTg5NGFiNjQzZWRlNGY2In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L69-L114",
+          "version": "repo-lines-v1:sha256:ab1e8f4abfd416e25b9167a424614a0ccec861b2c81f9ff71628de23ed68938f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkMmJmNzYxMGQ4NmMzYzkyM2IyZjZjZTYxMWUyYjdlZWVmOTViMmE0ODI3YWY1ODhiYjgzYjExNWY2ZjA3NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjNThkNDgyNDE1MGMzYmNiNzk0MzUwMWQzNjc1Njc5Mjk4NDBiYzVmMmY0MzNmNjM0MjJkNGVmMTU0MGU5ZjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_36febfbfab8a4562862e9e2afba02846",
+      "statement": "Update installation is serialized by a non-blocking process-local and file lock, but deliberately fails open with warnings when lock infrastructure is unavailable; contenders skip the install rather than wait during startup.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L2279-L2453",
+          "version": "repo-lines-v1:sha256:0737e47098b08977bb1186454499dd3a925e8c18adfbee4e6b091890519ccece:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3NDNlODZkZWRmOWMyYzg1ZGI0YWEwZWUwZGZiN2NjMmZjYjI1NjUzYTJhMmZmMTg2YjJmZmNhYWEwNzY0MTI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzNjYxNWEzNDJkNmEzY2RkMDMwMDFmZjZkZWY1YTc0ZDFlNGEzMDk3OWY0NWY4OTRlYzc1MGVmNTBmZjRmNzFmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzOGRlMDY2ZjM1ZGIyYTZjZmNmOTJhZjk4Y2M0NmMyNjg2YmMxNzQ2ZmRkZjRlY2JmMmE4NmZmN2NmZWI4ZjY0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMjgwOTVkZDc3NGFiZWU3N2UyOTRhOTQzNjQ2NzRlZWU2YWZkOThjNTI3NDQ1ZmE5OTQ3MzlmODM2N2JmMTg4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_2eaa62704ba94a25859e1faa53aecddb",
+      "statement": "Update subprocess output is streamed to progress and a retained cache-directory log, is limited to 120 seconds, and is terminated on timeout or cancellation; an advertised follow command should use a created log file rather than a merely computed path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L2026-L2080",
+          "version": "repo-lines-v1:sha256:ba433e5e8680233f73261888697fbceff89df7c983a31e1f391058304a5cf02d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmN2ExYzA0NjkyOTBjMjIwODRlYzBiNDUxZjExNDlmOTAzYmIxMDY2MWM1MjdlYmQzNzFlNjBmNzcwM2VkNGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmN2JmOTQ4NjRlY2M0ZThmMzlkNzQ3YTZmZGRlOGFhYjI5MzQwMjZkYzAyODgwMTRlNGExNDc0OGY5YmZhYjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkMjhjYmQ1N2Y0MWQ3NDZkMjRkZTBmNGU3NzYwZjBmMmFiODIyNDFmNWRjY2U2OTA2NWY1NDUzNmNjMTk3NmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1ZjMxZjhjZjhjNDU3NmNhODRhNzI5NjY3MGQ5ZWQyMWYzMmYxN2M5ZDdkYmU4ZTA2ZGYxNDllY2I4NjVhOGQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/update_check.py#L2156-L2276",
+          "version": "repo-lines-v1:sha256:1061ad0ee25e2cb8a7b26471aec0ae5250cda57cff5dc066823db67fcd5cc6c9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2MzY2ZjVjMDBjOTVlZWE1M2NiYjA4OGFlZTI5ZGY5YjFlMWE0ZWU0YzRhMDZiYTJiNzMzMDNhNGI4YTA2NTRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjM2RhZjQwODlkYzY4OTE3NDU4Mjk2YWM0ZjEyY2MxYjJkYjFhNTFkZDBjOGVjZTI3NjBjMWUxNDI0NWVhYjBiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzFhNDFhOWY4YzkyNDZmYmRkY2IyM2ExMzRhOTYyNzUzZDRiYjBhMjY5ZTIwOGMwYWI2M2IyMDQ0Yjg2YTJmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMWExNTMyZjBjN2JjZGY3MzNmNjY5NzZiZjZkY2RhNGYzNTBmMGI0MGI4ZmVkY2FlODY1YzE5YWU2OTdjYjc3In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

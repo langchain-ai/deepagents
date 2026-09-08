@@ -239,43 +239,6 @@ class TestServerConfigEdgeCases:
             ).session_workspace_fingerprint()
         )
 
-    def test_second_project_drops_launch_project_grants(self, tmp_path: Path) -> None:
-        launch = tmp_path / "launch"
-        other = tmp_path / "other"
-        launch.mkdir()
-        other.mkdir()
-        config = ServerConfig(
-            cwd=str(launch),
-            project_root=str(launch),
-            trust_project_mcp=True,
-            trust_project_extensions=True,
-            mcp_config_path=str(launch / "mcp.json"),
-            sandbox_setup=str(launch / "setup.sh"),
-            extension_paths=(str(launch / "extension.py"),),
-            no_mcp=True,
-            allow_fs_tools=["read_file"],
-        )
-
-        launch_config = config.resolve_workspace(str(launch), str(launch))
-        with patch(
-            "deepagents_code.extensions.trust.is_project_extensions_trusted",
-            return_value=False,
-        ):
-            other_config = config.resolve_workspace(str(other), str(other))
-
-        assert launch_config.to_project_workspace_policy() == (
-            config.to_project_workspace_policy()
-        )
-        assert other_config.to_project_workspace_policy() == {
-            "extension_paths": [],
-            "mcp_config_path": None,
-            "sandbox_setup": None,
-            "trust_project_extensions": False,
-            "trust_project_mcp": None,
-        }
-        assert other_config.no_mcp is True
-        assert other_config.allow_fs_tools == ["read_file"]
-
     def test_second_project_resolves_its_persisted_extension_trust(
         self, tmp_path: Path
     ) -> None:

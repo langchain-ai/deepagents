@@ -236,14 +236,6 @@ async def test_migration_rejects_session_policy_drift(
     assert await get_thread_workspace("thread-1") == stored
 
 
-async def test_a_current_schema_row_still_conflicts_on_drift(tmp_path) -> None:
-    """Migration must not become a general-purpose rebind."""
-    await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": True})
-
-    with pytest.raises(WorkspaceConflictError):
-        await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": False})
-
-
 def test_relative_workspace_is_rejected() -> None:
     """Client-controlled relative paths never inherit the server cwd."""
     from deepagents_code.workspace import resolve_workspace

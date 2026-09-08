@@ -539,29 +539,6 @@ def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
 
-    async def test_default_binding_preserves_launch_project_policy(
-        self, tmp_path
-    ) -> None:
-        module = _import_fresh_server_graph()
-        project = tmp_path / "project"
-        project.mkdir()
-        config = ServerConfig(
-            cwd=str(project),
-            project_root=str(project),
-            trust_project_mcp=True,
-            mcp_config_path=str(project / "mcp.json"),
-        )
-
-        with blockbuster_ctx(scanned_modules=module):
-            binding = await module._default_workspace_binding(config)
-
-        assert binding is not None
-        assert binding.workspace_config()["trust_project_mcp"] is True
-        assert binding.workspace_config()["mcp_config_path"] == str(
-            project / "mcp.json"
-        )
-        assert binding.config_fingerprint == config.workspace_fingerprint()
-
     async def test_cached_runtime_resolves_policy_off_event_loop(
         self, tmp_path
     ) -> None:
@@ -810,14 +787,7 @@ class TestWorkspaceRuntime:
     async def test_second_project_runtime_is_built_without_launch_grants(
         self, tmp_path
     ) -> None:
-        """The strip has to reach the config the runtime is built from.
-
-        `resolve_workspace` is tested in isolation and the drift check is
-        tested, but nothing asserted that `_make_graphs` receives the scrubbed
-        policy -- so returning the unresolved config here, or losing one of the
-        five strips, would leave every test green while the second workspace
-        executed the launch project's trusted extensions and MCP servers.
-        """
+        """Second-project runtimes drop launch grants and retain session policy."""
         module = _import_fresh_server_graph()
         launch = tmp_path / "launch"
         other = tmp_path / "other"
@@ -829,9 +799,11 @@ class TestWorkspaceRuntime:
             mcp_config_path="/launch/.mcp.json",
             sandbox_setup="/launch/setup.sh",
             trust_project_mcp=True,
+            trust_project_extensions=True,
             extension_paths=("/launch/ext.py",),
             no_mcp=True,
             auto_approve=True,
+            allow_fs_tools=["read_file"],
         )
         runtime = module.ServerRuntime(object(), object(), object())
         make = AsyncMock(return_value=runtime)
@@ -858,6 +830,7 @@ class TestWorkspaceRuntime:
         # Session policy belongs to the command, not the project, and survives.
         assert built.no_mcp is True
         assert built.auto_approve is True
+        assert built.allow_fs_tools == ["read_file"]
         assert built.cwd == binding.cwd
 
     async def test_launch_binding_uses_the_explicit_server_project_root(
@@ -885,12 +858,14 @@ class TestWorkspaceRuntime:
             sandbox_setup="/launch/setup.sh",
         )
 
-        binding = await module._default_workspace_binding(config)
+        with blockbuster_ctx(scanned_modules=module):
+            binding = await module._default_workspace_binding(config)
 
         assert binding is not None
         policy = binding.workspace_config()
         assert policy["mcp_config_path"] == "/launch/.mcp.json"
         assert policy["sandbox_setup"] == "/launch/setup.sh"
+        assert binding.config_fingerprint == config.workspace_fingerprint()
 
     async def test_cached_runtime_survives_a_granted_extension_trust(
         self, tmp_path

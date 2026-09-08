@@ -12,6 +12,7 @@ import pytest
 from deepagents.backends.utils import (
     MAX_LINE_LENGTH,
     format_content_with_line_numbers,
+    format_content_with_line_range,
 )
 from rich.style import Style
 from textual.app import App, ComposeResult
@@ -2259,7 +2260,7 @@ class TestToolCallMessageFileOutput:
 
         # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
         # indentation (the 4 spaces on line 3) preserved verbatim.
-        assert result.content.plain == '1|"""doc"""\n2|\n3|    indented'
+        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
 
     def test_format_output_leaves_current_two_space_gutter_intact(self) -> None:
         r"""The current SDK gutter is already compact, so compaction is a no-op.
@@ -2276,7 +2277,7 @@ class TestToolCallMessageFileOutput:
         output = " 9  def build_config():\n10  \treturn {}"
         result = msg._format_output(output, is_preview=False)
 
-        assert result.content.plain == "9|def build_config():\n10|\treturn {}"
+        assert result.content.plain == " 9  def build_config():\n10  \treturn {}"
 
     def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
         r"""Multi-digit line numbers set a uniform, right-justified gutter."""
@@ -2284,7 +2285,7 @@ class TestToolCallMessageFileOutput:
         output = "     9\tnine\n    10\tten"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "9|nine\n10|ten"
+        assert compacted == " 9  nine\n10  ten"
 
     def test_compact_line_gutter_handles_continuation_markers(self) -> None:
         r"""`N.M` wrapped-line markers are gutters and drive the column width.
@@ -2296,7 +2297,7 @@ class TestToolCallMessageFileOutput:
         output = "     1\tfirst\n   1.1\twrapped"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1|first\n1.1|wrapped"
+        assert compacted == "  1  first\n1.1  wrapped"
 
     def test_compact_line_gutter_preserves_source_tabs_legacy(self) -> None:
         r"""Only the gutter tab is consumed; a legacy row's source tab stays put.
@@ -2307,7 +2308,7 @@ class TestToolCallMessageFileOutput:
         output = "     1\t\tdef foo():"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1|\tdef foo():"
+        assert compacted == "1  \tdef foo():"
 
     def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
         r"""A current-format row's leading source tab (and a blank row) survive.
@@ -2323,7 +2324,7 @@ class TestToolCallMessageFileOutput:
         output = "1  def foo():\n2  \treturn 1\n3  "
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1|def foo():\n2|\treturn 1\n3|"
+        assert compacted == "1  def foo():\n2  \treturn 1\n3  "
 
     def test_compact_line_gutter_parses_real_producer_output(self) -> None:
         r"""Round-trip guard against producer/consumer separator drift.
@@ -2340,7 +2341,7 @@ class TestToolCallMessageFileOutput:
         )
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1|def f():\n2|\treturn 1"
+        assert compacted == "1  def f():\n2  \treturn 1"
 
     def test_compact_line_gutter_round_trips_continuation_and_padding(self) -> None:
         r"""Real-producer round-trip exercising continuation + multi-digit padding.
@@ -2360,9 +2361,9 @@ class TestToolCallMessageFileOutput:
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         lines = compacted.split("\n")
-        assert lines[0] == "9|short"
-        assert lines[2].startswith("10.1|")
-        assert lines[-1] == "11|\treturn 1"
+        assert lines[0] == "   9  short"  # width 4, driven by the "10.1" marker
+        assert lines[2].startswith("10.1  ")
+        assert lines[-1] == "  11  \treturn 1"  # tab-indented source survives
 
     def test_compact_line_gutter_preserves_double_spaced_source(self) -> None:
         r"""Only the first separator is consumed; the rest of the source is verbatim.
@@ -2378,15 +2379,75 @@ class TestToolCallMessageFileOutput:
         output = "5  42  meaning\n10  ok"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "5|42  meaning\n10|ok"
+        assert compacted == " 5  42  meaning\n10  ok"
 
-    def test_compact_line_gutter_preserves_range_enclosed_source(self) -> None:
+    def test_range_envelope_renders_as_gutter(self) -> None:
+        r"""Envelope markers are dropped and the gutter is re-derived from them.
+
+        The markers carry the line numbers once, so the display gutter has to
+        count from the header's start line rather than from 1.
+        """
         output = (
-            "@@ lines 100-101 @@\n1  source text\n2  more source\n"
-            "@@ end lines 100-101 @@"
+            "@@ lines 100-101 @@\n    def foo():\n\treturn 1\n@@ end lines 100-101 @@"
         )
 
-        assert ToolCallMessage._compact_line_gutter(output) == output
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        # Width 3 from "101"; source indentation (spaces and tab) untouched.
+        assert compacted == "100      def foo():\n101  \treturn 1"
+
+    def test_range_envelope_passes_notices_through_unnumbered(self) -> None:
+        """Pagination notices sit outside the envelope and get no gutter."""
+        notice = (
+            "[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]"
+        )
+        output = f"@@ lines 1-2 @@\none\ntwo\n@@ end lines 1-2 @@\n\n{notice}"
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == f"1  one\n2  two\n\n{notice}"
+
+    def test_range_envelope_without_closing_marker_still_numbers_source(self) -> None:
+        """A read truncated mid-line omits the footer; the notice delimits source."""
+        output = "@@ lines 1-1 @@\nxxxx\n\n[Output was truncated due to size limits.]"
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  xxxx\n\n[Output was truncated due to size limits.]"
+
+    def test_range_envelope_single_line_window(self) -> None:
+        """A one-line window needs no padding and drops both markers."""
+        output = "@@ lines 7-7 @@\nonly\n@@ end lines 7-7 @@"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "7  only"
+
+    def test_range_envelope_blank_rows_keep_their_gutter(self) -> None:
+        """Blank source rows inside the envelope still get a numbered row."""
+        output = "@@ lines 1-4 @@\na\nb\n\n\n@@ end lines 1-4 @@"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "1  a\n2  b\n3  \n4  "
+
+    def test_range_envelope_parses_real_producer_output(self) -> None:
+        r"""Round-trip guard against producer/consumer envelope drift.
+
+        Feeds real `format_content_with_line_range` output (the authoritative
+        producer, in the deepagents package) through the TUI renderer. If the
+        marker shape changes without this renderer following, the exact
+        assertion fails in CI instead of the markers silently leaking into the
+        displayed source. Line 2 is tab-indented source.
+        """
+        output = format_content_with_line_range(
+            ["def f():", "\treturn 1"], start_line=9
+        )
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  def f():\n10  \treturn 1"
+
+    def test_range_envelope_malformed_header_falls_back(self) -> None:
+        """A near-miss header is not an envelope and takes the gutter path."""
+        output = "@@ lines abc @@\n1  one"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "@@ lines abc @@\n1  one"
 
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
@@ -2424,7 +2485,7 @@ class TestToolCallMessageFileOutput:
         result = msg._format_file_output(output, is_preview=True)
 
         rendered = result.content.plain.split("\n")
-        assert rendered[0] == "1|line 1"
+        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
         assert result.truncation == "16 more lines"
 
     def test_compact_line_gutter_empty_output(self) -> None:

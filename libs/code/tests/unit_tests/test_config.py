@@ -4710,10 +4710,20 @@ class TestTracingEnvironmentReconcile:
         monkeypatch.setenv("LANGSMITH_TRACING", "true")
         monkeypatch.setenv("LANGSMITH_API_KEY", "workspace-a-key")
         monkeypatch.setenv("LANGSMITH_PROJECT", "workspace-a")
+        # The profile pair decides the key and endpoint when no canonical var
+        # does, so it lingers just as consequentially as the rest.
+        monkeypatch.setenv("LANGSMITH_PROFILE", "workspace-a-profile")
+        monkeypatch.setenv("LANGSMITH_CONFIG_FILE", "/tmp/workspace-a.json")
 
         config_mod.reconcile_tracing_environment({})
 
-        for var in ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT"):
+        for var in (
+            "LANGSMITH_TRACING",
+            "LANGSMITH_API_KEY",
+            "LANGSMITH_PROJECT",
+            "LANGSMITH_PROFILE",
+            "LANGSMITH_CONFIG_FILE",
+        ):
             assert var not in os.environ
 
     def test_sdk_env_caches_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:

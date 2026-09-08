@@ -969,8 +969,17 @@ _TRACING_RECONCILED_ENV_VARS = (
     "LANGSMITH_SESSION",
     "LANGCHAIN_SESSION",
     "LANGSMITH_WORKSPACE_ID",
+    "LANGSMITH_PROFILE",
+    "LANGSMITH_CONFIG_FILE",
 )
-"""Vars the LangSmith SDK reads from `os.environ` to trace, and where."""
+"""Vars the LangSmith SDK reads from `os.environ` to pick a trace destination.
+
+The profile pair belongs here because `langsmith.client._profiles` reads both
+straight off `os.environ`: `LANGSMITH_PROFILE` selects the profile and
+`LANGSMITH_CONFIG_FILE` the file holding it. That profile supplies the API key
+and endpoint when no canonical var does, so leaving the pair out let one
+workspace's profile choose where the next workspace's traces went.
+"""
 
 
 def _environment_before_tracing_reconcile() -> dict[str, str]:

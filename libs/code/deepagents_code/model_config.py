@@ -2446,7 +2446,11 @@ def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
     )
 
 
-def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
+def _resolve_configured(
+    provider: str,
+    env_var: str,
+    fallback_env_vars: tuple[str, ...] = (),
+) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
     Stored credentials beat env vars (matches `resolve_provider_credential`).
@@ -2455,9 +2459,11 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
         provider: Provider name (e.g., `"anthropic"`).
         env_var: Canonical env var name to check when no stored credential
             exists. Recorded on the returned status either way.
+        fallback_env_vars: Canonical env vars read, in order, when `env_var`
+            is unset. The one that resolves is recorded on the status.
 
     Returns:
-        A `CONFIGURED` status, or `None` when neither source is set.
+        A `CONFIGURED` status, or `None` when no source is set.
     """
     if _has_stored_credential(provider):
         return ProviderAuthStatus(
@@ -2467,14 +2473,15 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
             source=ProviderAuthSource.STORED,
             detail="stored credential",
         )
-    if resolve_env_var(env_var):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=provider,
-            env_var=env_var,
-            source=ProviderAuthSource.ENV,
-            detail="credentials set",
-        )
+    for candidate in (env_var, *fallback_env_vars):
+        if resolve_env_var(candidate):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                env_var=candidate,
+                source=ProviderAuthSource.ENV,
+                detail="credentials set",
+            )
     return None
 
 
@@ -2811,31 +2818,11 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
         `CONFIGURED` when a stored or env credential is set, else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
-    if _has_stored_credential(service):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=service,
-            env_var=env_var,
-            source=ProviderAuthSource.STORED,
-            detail="stored credential",
-        )
-    if resolve_env_var(env_var):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=service,
-            env_var=env_var,
-            source=ProviderAuthSource.ENV,
-            detail="credentials set",
-        )
-    for fallback_env_var in SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ()):
-        if resolve_env_var(fallback_env_var):
-            return ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider=service,
-                env_var=fallback_env_var,
-                source=ProviderAuthSource.ENV,
-                detail="credentials set",
-            )
+    configured = _resolve_configured(
+        service, env_var, SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
+    )
+    if configured:
+        return configured
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,

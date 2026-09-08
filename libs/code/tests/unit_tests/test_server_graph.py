@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import importlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -562,6 +564,32 @@ asyncio.run(main())
                 bb.deactivate()
 
         assert result is graph_obj
+
+    async def test_cancelled_sandbox_creation_cleans_up_after_entry(self) -> None:
+        module = _import_fresh_server_graph()
+        entered = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        backend = object()
+
+        class Context:
+            def __enter__(self) -> object:
+                entered.set()
+                release.wait()
+                return backend
+
+            def __exit__(self, *_args: object) -> None:
+                closed.set()
+
+        task = asyncio.create_task(module._open_sandbox(Context))
+        await asyncio.to_thread(entered.wait)
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert closed.is_set()
 
 
 class TestWorkspaceEnvironmentBinding:

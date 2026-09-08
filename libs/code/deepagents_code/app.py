@@ -5778,14 +5778,20 @@ class DeepAgentsApp(App):
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
-        from deepagents_code.config_manifest import get_option, normalize_iso_datetime
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+            normalize_iso_datetime,
+        )
         from deepagents_code.configuration.resolver import get_config_resolver
         from deepagents_code.sessions import get_thread_updated_at
 
         option = get_option("threads.resume_after")
         if option is None:
             return None
-        cutoff_value = get_config_resolver().get(option).value
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        cutoff_value = resolved.value
         if not isinstance(cutoff_value, str):
             return None
 

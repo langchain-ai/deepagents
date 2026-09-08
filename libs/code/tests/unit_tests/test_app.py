@@ -17883,6 +17883,36 @@ class TestResolveResumeThread:
                 await app._thread_resume_block("unknown") or ""
             )
 
+    async def test_invalid_user_resume_cutoff_logs_rejection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An ignored user cutoff must explain why the restriction is inactive."""
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.declaring_nothing("managed config"),
+            user=TomlSnapshot.from_table(
+                "config.toml",
+                {"threads": {"resume_after": "2026-06-01T12:00:00"}},
+            ),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.configuration.resolver.get_config_resolver",
+            lambda: resolver,
+        )
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            assert await DeepAgentsApp._thread_resume_block("thread") is None
+
+        assert any(
+            "[threads].resume_after" in record.message
+            and "timezone-aware" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
     async def test_specific_thread_resume_leaves_default_alone(self) -> None:
         """`-r <thread>` from a different agent updates session id only."""
         app = self._make_app("agent")

@@ -17918,10 +17918,41 @@ class TestResolveResumeThread:
             ),
         ):
             assert await app._thread_resume_block("boundary") is None
-            assert "before" in (await app._thread_resume_block("older") or "")
-            assert "could not be verified" in (
-                await app._thread_resume_block("unknown") or ""
-            )
+            older = await app._thread_resume_block("older") or ""
+            assert "before" in older
+            assert "administrator" in older
+            assert "managed config" in older
+            unknown = await app._thread_resume_block("unknown") or ""
+            assert "could not be verified" in unknown
+            assert "stale context" in unknown
+
+    async def test_user_resume_cutoff_names_config_source(self) -> None:
+        """A user cutoff explains its origin and rationale."""
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.declaring_nothing("managed config"),
+            user=TomlSnapshot.from_table(
+                "config.toml",
+                {"threads": {"resume_after": "2026-06-01T12:00:00+00:00"}},
+            ),
+        )
+        with (
+            patch(
+                "deepagents_code.configuration.resolver.get_config_resolver",
+                return_value=resolver,
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_updated_at",
+                AsyncMock(return_value="2026-05-01T12:00:00+00:00"),
+            ),
+        ):
+            blocked = await DeepAgentsApp._thread_resume_block("old-thread") or ""
+
+        assert "your config.toml" in blocked
+        assert "stale context" in blocked
+        assert "administrator" not in blocked
 
     async def test_invalid_user_resume_cutoff_logs_rejection(
         self,

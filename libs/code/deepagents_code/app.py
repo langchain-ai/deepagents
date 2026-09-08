@@ -5776,10 +5776,29 @@ class DeepAgentsApp(App):
             return self._discover_skills_and_roots()
 
     @staticmethod
+    def _resume_cutoff_explanation(source: str) -> str:
+        """Explain why the active resume cutoff exists and who set it.
+
+        Returns:
+            A short user-facing provenance and rationale sentence.
+        """
+        if source == "managed config":
+            owner = "Your administrator set this cutoff through managed config"
+        elif source == "config.toml":
+            owner = "This cutoff was set in your config.toml"
+        else:
+            owner = "This cutoff was set by active configuration"
+        return (
+            f"{owner} to keep older threads from restoring stale context after "
+            "model or policy changes."
+        )
+
+    @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
         from deepagents_code.config_manifest import (
             _emit_ranked_diagnostics,
+            _ranked_source,
             get_option,
             normalize_iso_datetime,
         )
@@ -5794,6 +5813,8 @@ class DeepAgentsApp(App):
         cutoff_value = resolved.value
         if not isinstance(cutoff_value, str):
             return None
+        source = _ranked_source(resolved)
+        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
 
         updated_value = await get_thread_updated_at(thread_id)
         normalized = normalize_iso_datetime(updated_value)
@@ -5805,12 +5826,12 @@ class DeepAgentsApp(App):
             )
             return (
                 f"Thread {thread_id} cannot be resumed because its last-updated "
-                "time could not be verified."
+                f"time could not be verified.\n\n{explanation}"
             )
         if datetime.fromisoformat(normalized) < datetime.fromisoformat(cutoff_value):
             return (
                 f"Thread {thread_id} cannot be resumed because it was last updated "
-                f"before {cutoff_value}."
+                f"before {cutoff_value}.\n\n{explanation}"
             )
         return None
 

@@ -185,7 +185,7 @@ calls, not tracing, and nothing here overwrites it.
 """
 
 
-def _langsmith_selectors_from(env: Mapping[str, str]) -> dict[str, str | None]:
+def _langsmith_selectors_from(env: Mapping[str, str | None]) -> dict[str, str | None]:
     """Snapshot every supported LangSmith selector from `env`.
 
     Returns:
@@ -623,6 +623,7 @@ def _dotenv_environment(
     environ: Mapping[str, str],
     include_global: bool = True,
     unreadable: list[Path] | None = None,
+    project_layer: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Apply the project/global dotenv stack to an explicit environment mapping.
 
@@ -635,6 +636,10 @@ def _dotenv_environment(
         unreadable: Collects the path of each file that could not be read, for
             a caller that must tell "the file sets nothing" apart from "the file
             could not be read". A read failure is otherwise only logged.
+        project_layer: Filled with the result as it stands before the global
+            `.env` contributes, i.e. what `include_global=False` would return.
+            Lets a caller that needs both layers get them from one pass instead
+            of re-walking and re-parsing the whole stack.
 
     Returns:
         A new effective environment mapping.
@@ -728,6 +733,8 @@ def _dotenv_environment(
             "Skipping project dotenv at %s: startup.read_project_dotenv is false",
             start_path or "cwd",
         )
+    if project_layer is not None:
+        project_layer.update(env)
     if include_global and not global_is_project:
         try:
             global_dotenv = (
@@ -838,22 +845,22 @@ def _load_dotenv(
         _dotenv_loaded_values.clear()
 
     baseline = dict(os.environ)
+    # The project layer alone, because the global profile `.env` configures the
+    # agent rather than the user's own commands. Collected from the same pass:
+    # a second `include_global=False` call would re-walk the tree and re-parse
+    # every file, and the two passes would then have to stay identical for the
+    # capture to keep meaning what it says.
+    project: dict[str, str] | None = {} if capture_user_langsmith else None
     if capture_user_langsmith:
         _initialize_launch_langsmith_env(baseline)
-    effective = _dotenv_environment(start_path=start_path, environ=baseline)
+    effective = _dotenv_environment(
+        start_path=start_path, environ=baseline, project_layer=project
+    )
     for key, value in effective.items():
         if key not in baseline:
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
-    if capture_user_langsmith:
-        # The project layer alone, because the global profile `.env` configures
-        # the agent rather than the user's own commands. Reads `baseline`, a
-        # copy, so the `os.environ` writes above do not change the result.
-        project = _dotenv_environment(
-            start_path=start_path,
-            environ=baseline,
-            include_global=False,
-        )
+    if project is not None:
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
@@ -880,6 +887,17 @@ _PREFIXED_LANGSMITH_ENV_VARS = (
 
 Derived from `_TRACING_BRIDGED_ENABLE_ENV_VARS` so `dcode doctor`, which reads
 that tuple to predict the bridging, cannot disagree with the runtime.
+"""
+
+_PREFIX_RESOLVED_TRACING_ENV_VARS = (
+    *_PREFIXED_LANGSMITH_ENV_VARS,
+    "LANGSMITH_PROJECT",
+)
+"""Tracing selectors whose `DEEPAGENTS_CODE_` override wins when publishing.
+
+`LANGSMITH_PROJECT` is here but not in `_PREFIXED_LANGSMITH_ENV_VARS` because
+its prefixed form is bridged by `_apply_default_langsmith_project` rather than
+by `_apply_prefixed_langsmith_env`.
 """
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
@@ -959,23 +977,18 @@ def is_http_url(value: str) -> bool:
     return not any(char.isspace() for char in parsed.netloc)
 
 
-_TRACING_RECONCILED_ENV_VARS = (
-    *_TRACING_ENABLE_ENV_VARS,
-    *_TRACING_API_KEY_ENV_VARS,
-    *_TRACING_ENDPOINT_ENV_VARS,
-    *_TRACING_RUNS_ENDPOINTS_ENV_VARS,
-    "LANGSMITH_PROJECT",
-    "LANGCHAIN_PROJECT",
-    "LANGSMITH_SESSION",
-    "LANGCHAIN_SESSION",
-    "LANGSMITH_WORKSPACE_ID",
-    "LANGSMITH_PROFILE",
-    "LANGSMITH_CONFIG_FILE",
-)
+_TRACING_RECONCILED_ENV_VARS = _USER_LANGSMITH_ENV_VARS
 """Vars the LangSmith SDK reads from `os.environ` to pick a trace destination.
 
-The profile pair belongs here because `langsmith.client._profiles` reads both
-straight off `os.environ`: `LANGSMITH_PROFILE` selects the profile and
+Deliberately the same tuple as `_USER_LANGSMITH_ENV_VARS` rather than a second
+list of the same names: the set the agent publishes and the set restored for
+the user's own commands have to move together. Listed twice, a new selector
+added to only one side fails silently and asymmetrically -- missing here, the
+previous workspace's value stays in `os.environ`; missing there, the agent's
+value leaks into `execute`.
+
+The profile pair belongs in that set because `langsmith.client._profiles` reads
+both straight off `os.environ`: `LANGSMITH_PROFILE` selects the profile and
 `LANGSMITH_CONFIG_FILE` the file holding it. That profile supplies the API key
 and endpoint when no canonical var does, so leaving the pair out let one
 workspace's profile choose where the next workspace's traces went.
@@ -1009,7 +1022,7 @@ def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | N
     return {
         var: (
             _resolve_env_var_from(environ, var)
-            if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
+            if var in _PREFIX_RESOLVED_TRACING_ENV_VARS
             else environ.get(var) or None
         )
         for var in _TRACING_RECONCILED_ENV_VARS
@@ -1427,12 +1440,21 @@ def _encode_user_langsmith_env() -> str:
     )
 
 
-def _strip_user_langsmith_env(env: dict[str, str]) -> None:
-    """Remove every LangSmith selector, prefixed or not, from `env`."""
+def _strip_user_langsmith_env(
+    env: dict[str, str], *, prefixed_only: bool = False
+) -> None:
+    """Remove LangSmith selectors from `env`.
+
+    Args:
+        env: Environment for user commands, modified in place.
+        prefixed_only: Drop only the `DEEPAGENTS_CODE_`-prefixed names, for
+            callers that go on to write the canonical names themselves.
+    """
     from deepagents_code.model_config import _ENV_PREFIX
 
     for var in _USER_LANGSMITH_ENV_VARS:
-        env.pop(var, None)
+        if not prefixed_only:
+            env.pop(var, None)
         env.pop(f"{_ENV_PREFIX}{var}", None)
 
 
@@ -1495,10 +1517,7 @@ def restore_user_langsmith_env(
             return
         launch, values = decoded
 
-    from deepagents_code.model_config import _ENV_PREFIX
-
-    for var in _USER_LANGSMITH_ENV_VARS:
-        env.pop(f"{_ENV_PREFIX}{var}", None)
+    _strip_user_langsmith_env(env, prefixed_only=True)
     _apply_env_values(env, launch)
     if start_path is not None:
         unreadable: list[Path] = []
@@ -1521,7 +1540,7 @@ def restore_user_langsmith_env(
             )
         else:
             values = recomputed
-    _apply_env_values(env, {var: values.get(var) for var in _USER_LANGSMITH_ENV_VARS})
+    _apply_env_values(env, _langsmith_selectors_from(values))
 
 
 def _disable_orphaned_tracing() -> None:
@@ -4021,7 +4040,6 @@ class Credentials:
         _resolver_with_reload_overrides()
         encoded = os.environ.get(_USER_LANGSMITH_ENV_CARRIER)
         carrier_notice: str | None = None
-        restore_launch = True
         if encoded is not None:
             carried = _decode_user_langsmith_env(encoded)
             if carried is None:
@@ -4029,7 +4047,6 @@ class Credentials:
                 # LangSmith identity from data already known to be unusable.
                 # Leave the environment alone and say so: a reload that
                 # silently changes credentials is the hard kind to debug.
-                restore_launch = False
                 carrier_notice = (
                     "Kept the current LangSmith settings: your launch settings "
                     "could not be read (restart dcode if this persists)"
@@ -4038,7 +4055,7 @@ class Credentials:
             else:
                 launch, _ = carried
                 _bootstrap_state.launch_langsmith_env = launch
-        if restore_launch:
+        if carrier_notice is None:
             _apply_env_values(os.environ, _bootstrap_state.launch_langsmith_env)
         _load_dotenv(
             start_path=start_path,
@@ -4700,14 +4717,13 @@ def configure_langsmith_secret_redaction() -> bool:
     # asking it twice, or asking it at all with the flag off, is startup I/O for
     # an answer that changes nothing.
     tracing_enabled = _tracing_enabled_from(env)
-    can_upload = tracing_enabled and _tracing_can_upload_from(env)
-    if not can_upload:
+    if not (tracing_enabled and _tracing_can_upload_from(env)):
         # Distinguish "nothing to protect" from "declined": without this, a
         # missing redacting client looks the same either way after the fact.
         logger.debug(
-            "Skipping secret redaction: tracing enabled=%s, upload target=%s",
+            "Skipping secret redaction: tracing enabled=%s, upload target checked=%s",
             tracing_enabled,
-            False if tracing_enabled else "not checked",
+            tracing_enabled,
         )
         return False
 

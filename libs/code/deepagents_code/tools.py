@@ -34,6 +34,14 @@ Read by `is_web_search_tool`, the same way MCP read-only hints are read off
 tool metadata, so a variant does not have to be registered anywhere.
 """
 
+_WEB_SEARCH_TOKEN = object()
+"""Value `is_web_search_tool` requires under `_WEB_SEARCH_MARKER`.
+
+A module-private object rather than `True` so the marker cannot be forged: MCP
+tool metadata is deserialized JSON, which can carry the key but never this
+identity. Callers therefore need no separate "is this tool remote?" guard.
+"""
+
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
 
@@ -370,7 +378,7 @@ def create_web_search_tool(api_key: str) -> BaseTool:
 
     workspace_web_search.metadata = {
         **(workspace_web_search.metadata or {}),
-        _WEB_SEARCH_MARKER: True,
+        _WEB_SEARCH_MARKER: _WEB_SEARCH_TOKEN,
     }
     return workspace_web_search
 
@@ -384,7 +392,7 @@ def is_web_search_tool(candidate: object) -> bool:
     if candidate is web_search:
         return True
     metadata = getattr(candidate, "metadata", None) or {}
-    return metadata.get(_WEB_SEARCH_MARKER) is True
+    return metadata.get(_WEB_SEARCH_MARKER) is _WEB_SEARCH_TOKEN
 
 
 @tool
@@ -511,7 +519,7 @@ def fetch_url(
         import requests
         from markdownify import markdownify
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
+        return _missing_package_error(exc)
 
     try:
         response = _fetch_with_redirects(url, timeout=timeout)

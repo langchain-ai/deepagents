@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -24,8 +25,8 @@ Bumped to 3 when project-scoped policy became per-workspace. Before that,
 version-2 row for a directory outside the launch project holds a fingerprint
 over a different field set. Comparing it against a resolved fingerprint is
 meaningless, and treating the mismatch as drift left those threads refusing
-every request with no way to re-bind. `_binding_differs` therefore skips the
-fingerprint check for a stale row and `_bind` migrates it in place.
+every request with no way to re-bind. `_binding_differs` therefore compares
+the stored session policy for stale rows and `_bind` migrates them in place.
 """
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
@@ -266,9 +267,20 @@ def _is_migratable(existing: WorkspaceBinding) -> bool:
 
 
 def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> bool:
-    return existing.workspace_id != proposed.workspace_id or (
-        not _is_migratable(existing)
-        and existing.config_fingerprint != proposed.config_fingerprint
+    if existing.workspace_id != proposed.workspace_id:
+        return True
+    if not _is_migratable(existing):
+        return existing.config_fingerprint != proposed.config_fingerprint
+    if not existing.config_fingerprint:
+        # Pre-fingerprint rows have no recorded policy to preserve.
+        return False
+    from deepagents_code._server_config import SESSION_WORKSPACE_FIELDS
+
+    bound_policy = existing.workspace_config()
+    proposed_policy = proposed.workspace_config()
+    return any(
+        bound_policy.get(key) != proposed_policy.get(key)
+        for key in SESSION_WORKSPACE_FIELDS
     )
 
 
@@ -313,6 +325,8 @@ def _binding_conflict(
         return WorkspaceConflictError(
             f"thread {thread_id} is already bound to a different workspace"
         )
+    if _is_migratable(existing):
+        return WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
     drifted = drifted_project_fields(
         existing.workspace_config(),
         proposed.workspace_config(),
@@ -322,7 +336,7 @@ def _binding_conflict(
 
 
 def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
-    with sqlite3.connect(_database_path(), timeout=5) as conn:
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         _initialize(conn)
@@ -379,7 +393,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
 
 
 def _read(thread_id: str) -> WorkspaceBinding | None:
-    with sqlite3.connect(_database_path(), timeout=5) as conn:
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         _initialize(conn)
@@ -453,7 +467,7 @@ async def require_thread_workspace(
         _, claimed_fingerprint = canonical_workspace_config(workspace_config)
 
     def _require() -> WorkspaceBinding:
-        with sqlite3.connect(_database_path(), timeout=5) as conn:
+        with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
             _initialize(conn)

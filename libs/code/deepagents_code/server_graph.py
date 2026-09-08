@@ -790,13 +790,14 @@ def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
         bound_policy, current_config.to_project_workspace_policy()
     )
     if drifted:
+        fields = ", ".join(drifted)
         logger.warning(
             "Workspace %s project policy drifted since binding: %s",
             binding.cwd,
-            ", ".join(drifted),
+            fields,
         )
         conflict = WorkspaceConflictError.from_reason(
-            f"{PROJECT_POLICY_DRIFT_REASON} ({', '.join(drifted)})"
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})"
         )
         raise conflict
     if current_config.workspace_fingerprint() != binding.config_fingerprint:

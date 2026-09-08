@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
@@ -33,7 +33,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -735,23 +735,26 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
-def _server_aws_session_kwargs() -> dict[str, str]:
-    """Resolve boto3 session arguments from the server's own environment.
+def _server_env_kwargs(table: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
+    """Resolve a credential table against the server's own environment.
 
-    The workspace resolution reads `active_environment()`, which falls back to
-    `os.environ`, so a plain `AWS_PROFILE` exported in the server's shell is
-    indistinguishable from one a workspace pinned. Resolving the same table
-    against `os.environ` explicitly gives the caller a baseline to compare
-    against.
+    Workspace resolution reads `active_environment()`, which falls back to
+    `os.environ`, so a plain `AWS_PROFILE` or `VERCEL_TOKEN` exported in the
+    server's shell is indistinguishable from one a workspace pinned. Resolving
+    the same table against `os.environ` explicitly gives the caller a baseline
+    to compare against: an equal result means the workspace pinned nothing of
+    its own, so there is no workspace identity to protect.
+
+    Args:
+        table: Constructor argument name mapped to candidate env var names.
 
     Returns:
-        The boto3 session arguments the server would resolve on its own.
+        The arguments the server would resolve on its own.
     """
     from deepagents_code.config import _resolve_env_var_from
 
     return resolve_env_kwargs(
-        AWS_CREDENTIAL_ENV_SOURCES,
-        lambda name: _resolve_env_var_from(os.environ, name),
+        table, lambda name: _resolve_env_var_from(os.environ, name)
     )
 
 
@@ -870,7 +873,8 @@ class _AgentCoreProvider(SandboxProvider):
             # `active_environment()` too, and treating that as workspace-pinned
             # turned a stale server-level profile into a startup failure whose
             # message blamed a workspace `.env` that never set it.
-            if credential_kwargs and credential_kwargs != _server_aws_session_kwargs():
+            server_kwargs = _server_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES)
+            if credential_kwargs and credential_kwargs != server_kwargs:
                 msg = (
                     f"The workspace AWS configuration is invalid: {exc}. This "
                     f"workspace scoped its sandbox to specific AWS credentials "
@@ -1020,6 +1024,18 @@ class _VercelSandboxHandle(Protocol):
 class _VercelProvider(SandboxProvider):
     """Vercel Sandbox provider implementation."""
 
+    _CREDENTIAL_ENV_NAMES: ClassVar[dict[str, str]] = {
+        "token": "VERCEL_TOKEN",
+        "project_id": "VERCEL_PROJECT_ID",
+        "team_id": "VERCEL_TEAM_ID",
+    }
+    """SDK credential argument mapped to the env var that supplies it.
+
+    One table drives the lookup, the server-environment baseline, and the
+    incomplete-set error, so a renamed argument cannot desynchronize the error
+    message from what was actually read.
+    """
+
     def __init__(self) -> None:
         """Initialize the provider, resolving workspace Vercel credentials."""
         self._sdk_kwargs = self._resolve_sdk_kwargs()
@@ -1047,9 +1063,8 @@ class _VercelProvider(SandboxProvider):
         from deepagents_code.model_config import resolve_env_var
 
         values = {
-            "token": resolve_env_var("VERCEL_TOKEN"),
-            "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
-            "team_id": resolve_env_var("VERCEL_TEAM_ID"),
+            key: resolve_env_var(name)
+            for key, name in cls._CREDENTIAL_ENV_NAMES.items()
         }
         # Gate on the resolved values, not on the presence of a prefixed name.
         # `_build_server_env` strips the client's project `.env` from the server
@@ -1068,12 +1083,12 @@ class _VercelProvider(SandboxProvider):
         # failure. A workspace override differs from the server, so it still
         # takes the fail-closed path below.
         if all(
-            value == (os.environ.get(f"VERCEL_{key.upper()}") or None)
+            value == (os.environ.get(cls._CREDENTIAL_ENV_NAMES[key]) or None)
             for key, value in values.items()
         ):
             return {}
         missing = sorted(
-            f"VERCEL_{key.upper()}" for key, value in values.items() if not value
+            name for key, name in cls._CREDENTIAL_ENV_NAMES.items() if not values[key]
         )
         if missing:
             # Fail closed rather than warn and delegate: an empty mapping hands
@@ -1081,11 +1096,12 @@ class _VercelProvider(SandboxProvider):
             # server process (`VERCEL_*` in its own environment, or its OIDC
             # identity). A workspace that pinned a restricted token would then
             # silently run its sandbox under the server's broader identity.
+            names = list(cls._CREDENTIAL_ENV_NAMES.values())
+            required = f"{', '.join(names[:-1])}, and {names[-1]}"
             msg = (
                 "The workspace Vercel configuration is incomplete: "
-                f"{', '.join(missing)} not set. Set VERCEL_TOKEN, "
-                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together, or unset all "
-                "three to fall back to default Vercel authentication."
+                f"{', '.join(missing)} not set. Set {required} together, or "
+                "unset all three to fall back to default Vercel authentication."
             )
             raise ValueError(msg)
         # `missing` is empty, so every value is a non-empty string here; the

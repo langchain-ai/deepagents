@@ -1436,6 +1436,29 @@ def _decode_user_langsmith_env(
     return (launch, user) if launch is not None and user is not None else None
 
 
+def _decode_relayed_tracing(raw: str | None) -> dict[str, Any] | None:
+    """Decode the relayed caller tracing carrier into its original values.
+
+    The carrier is the one serialized blob that becomes shell environment, so
+    its parse and shape contract has a single definition: both the redaction
+    set and the shell environment restore read it through here.
+
+    Args:
+        raw: Serialized carrier value, or `None` when absent.
+
+    Returns:
+        The decoded mapping, or `None` when the carrier is absent, unparsable,
+        or not an object.
+    """
+    if not raw:
+        return None
+    try:
+        originals = json.loads(raw)
+    except ValueError:
+        return None
+    return originals if isinstance(originals, dict) else None
+
+
 def relayed_user_tracing_secrets(environ: Mapping[str, str]) -> tuple[str, ...]:
     """Extract caller API keys from the validated LangSmith settings carrier.
 

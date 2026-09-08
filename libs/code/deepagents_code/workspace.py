@@ -130,7 +130,7 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
         msg = "workspace_config must be an object"
         raise TypeError(msg)
     try:
-        serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        serialized = _canonical_json(value)
     except (TypeError, ValueError) as exc:
         msg = "workspace configuration must be JSON serializable"
         raise ValueError(msg) from exc
@@ -140,18 +140,25 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
     return serialized, hashlib.sha256(serialized.encode()).hexdigest()
 
 
+def _canonical_json(value: object) -> str:
+    """Serialize *value* in the one wire format this module fingerprints.
+
+    Client claims and server verification must agree on this encoding, so it
+    has a single definition rather than a copy per caller.
+
+    Returns:
+        Canonical JSON with sorted keys and no insignificant whitespace.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def canonical_fingerprint(value: object) -> str:
     """Fingerprint `value` with the canonical workspace serialization.
-
-    Client claims and server verification must agree on this wire format.
-    `canonical_workspace_config` applies the same encoding to a bounded policy
-    object and returns its digest alongside the serialized form.
 
     Returns:
         The SHA-256 hex digest of the canonical JSON encoding.
     """
-    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
 def resolve_workspace(
@@ -297,18 +304,6 @@ def drifted_project_fields(
     )
 
 
-def project_policy_differs(
-    bound_config: Mapping[str, Any],
-    current_config: Mapping[str, Any],
-) -> bool:
-    """Report whether the project-scoped policy drifted from its binding.
-
-    Returns:
-        `True` when any project-scoped field differs between the two policies.
-    """
-    return bool(drifted_project_fields(bound_config, current_config))
-
-
 def _binding_conflict(
     thread_id: str,
     existing: WorkspaceBinding,
@@ -318,7 +313,7 @@ def _binding_conflict(
         return WorkspaceConflictError(
             f"thread {thread_id} is already bound to a different workspace"
         )
-    drifted = project_policy_differs(
+    drifted = drifted_project_fields(
         existing.workspace_config(),
         proposed.workspace_config(),
     )

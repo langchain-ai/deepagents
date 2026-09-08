@@ -79,20 +79,24 @@ decision.
 
 
 def _same_workspace_project(first: str | None, second: str) -> bool:
-    """Whether two paths name the same existing project directory.
+    """Whether two paths name the same project directory.
 
-    Fails closed: an unset launch root, or a path that no longer resolves,
-    counts as *different*, so the caller drops project policy rather than
-    carrying it across an unverified boundary.
+    Fails closed: an unset launch root, a missing path, or an undecidable
+    comparison counts as *different*, so the caller drops project policy rather
+    than carrying it across an unverified boundary. `_same_directory` compares
+    by device and inode, so a symlinked or differently cased spelling of one
+    directory still compares equal.
 
     Returns:
-        `True` only when both paths resolve to the same real directory.
+        `True` only when both paths name the same directory.
     """
     if first is None:
         return False
+    from deepagents_code._paths import DeepAgentsHomeError, _same_directory
+
     try:
-        return Path(first).resolve(strict=True) == Path(second).resolve(strict=True)
-    except (OSError, RuntimeError):
+        return _same_directory(Path(first), Path(second))
+    except DeepAgentsHomeError:
         logger.warning(
             "Could not compare project directories %s and %s; treating as "
             "separate projects, so project-scoped policy will not apply",
@@ -529,25 +533,17 @@ class ServerConfig:
             "extension_paths": list(self.extension_paths),
         }
 
-    def _workspace_subset(self, fields: frozenset[str]) -> dict[str, Any]:
-        """Return the *fields* subset of the full workspace policy.
-
-        Returns:
-            The requested subset of `to_workspace_payload()`.
-        """
-        return {
-            key: value
-            for key, value in self.to_workspace_payload().items()
-            if key in fields
-        }
-
     def to_session_workspace_claim(self) -> dict[str, Any]:
         """Return the command-scoped policy a managed client may claim.
 
         Returns:
             The session-scoped subset of the workspace policy.
         """
-        return self._workspace_subset(SESSION_WORKSPACE_FIELDS)
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in SESSION_WORKSPACE_FIELDS
+        }
 
     def to_project_workspace_policy(self) -> dict[str, Any]:
         """Return policy that must be resolved for each project directory.
@@ -555,7 +551,11 @@ class ServerConfig:
         Returns:
             The project-scoped subset of the workspace policy.
         """
-        return self._workspace_subset(PROJECT_WORKSPACE_FIELDS)
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in PROJECT_WORKSPACE_FIELDS
+        }
 
     def session_workspace_fingerprint(self) -> str:
         """Fingerprint the exact client-claimable session policy.

@@ -83,6 +83,14 @@ _TRACE_FLUSH_TIMEOUT = 2.0
 """Seconds allowed for the shutdown trace flush."""
 _TRACE_FLUSH_POLL_INTERVAL = 0.05
 """Seconds between completion checks while the daemon flush thread runs."""
+_WORKSPACE_REQUEST_FIELDS = frozenset({"config_fingerprint", "cwd", "workspace_config"})
+"""Every field a workspace bind request may carry.
+
+One of the allowlists that gate this trust boundary; an unknown key is rejected
+rather than ignored, so a client cannot smuggle policy past the claim check.
+Declared here, beside the other request-shape constants, so the set of gates is
+visible in one place.
+"""
 
 
 def _run_trace_flush(done: threading.Event, failures: list[BaseException]) -> None:
@@ -209,8 +217,7 @@ async def workspace(request: Request) -> JSONResponse:
         )
         from deepagents_code.workspace import resolve_workspace
 
-        allowed_request_keys = {"config_fingerprint", "cwd", "workspace_config"}
-        if unknown := body.keys() - allowed_request_keys:
+        if unknown := body.keys() - _WORKSPACE_REQUEST_FIELDS:
             names = ", ".join(sorted(unknown))
             return JSONResponse(
                 {"detail": f"unknown workspace request field(s): {names}"},

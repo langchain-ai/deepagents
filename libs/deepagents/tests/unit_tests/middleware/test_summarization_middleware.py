@@ -361,6 +361,80 @@ class TestSummarizationMiddlewareInit:
                 history_path_prefix="/history",
             )
 
+    def test_invalid_method_is_rejected(self) -> None:
+        """Unknown compaction methods fail during construction."""
+        with pytest.raises(ValueError, match="Unsupported summarization method"):
+            SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=MockBackend(),
+                method="invalid",  # type: ignore[arg-type]
+            )
+
+
+class TestOffloadMethod:
+    """Tests for no-summary context compaction."""
+
+    def test_offload_method_skips_summary_model(self) -> None:
+        """Sync compaction archives old messages without invoking the summary model."""
+        backend = MockBackend()
+        model = make_mock_model()
+        middleware = SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            method="offload",
+        )
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages(num_old=6, num_recent=2)})
+
+        result, modified_request = call_wrap_model_call(middleware, state, make_mock_runtime())
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert modified_request is not None
+        model.invoke.assert_not_called()
+        recovery = modified_request.messages[0]
+        assert recovery.additional_kwargs["lc_source"] == "offload"
+        assert "archived at /conversation_history/" in recovery.content
+        assert "untrusted conversation data" in recovery.content
+        assert [message.content for message in modified_request.messages[1:]] == ["Recent message 6", "Recent message 7"]
+
+    async def test_offload_method_skips_async_summary_model(self) -> None:
+        """Async compaction archives old messages without invoking the summary model."""
+        backend = MockBackend()
+        model = make_mock_model()
+        middleware = SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            method="offload",
+        )
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages(num_old=6, num_recent=2)})
+
+        result, modified_request = await call_awrap_model_call(middleware, state, make_mock_runtime())
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert modified_request is not None
+        model.ainvoke.assert_not_awaited()
+        assert modified_request.messages[0].additional_kwargs["lc_source"] == "offload"
+
+    def test_offload_method_requires_recoverable_archive(self) -> None:
+        """No-summary compaction does not discard history when archival fails."""
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(should_fail=True),
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            method="offload",
+        )
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages(num_old=6, num_recent=2)})
+
+        with (
+            pytest.warns(UserWarning, match="Offloading conversation history"),
+            pytest.raises(RuntimeError, match="requires recoverable conversation history"),
+        ):
+            call_wrap_model_call(middleware, state, make_mock_runtime())
+
 
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""

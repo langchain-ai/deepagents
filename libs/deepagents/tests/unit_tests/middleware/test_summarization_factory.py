@@ -72,11 +72,13 @@ def test_factory_surfaces_summarization_knobs() -> None:
         summary_prompt="custom summary prompt: {messages}",
         trim_tokens_to_summarize=123,
         token_counter=token_counter,
+        method="offload",
     )
 
     assert middleware._lc_helper.summary_prompt == "custom summary prompt: {messages}"
     assert middleware._lc_helper.trim_tokens_to_summarize == 123
     assert middleware._lc_helper.token_counter is token_counter
+    assert middleware.method == "offload"
 
 
 def test_factory_summarization_knobs_are_keyword_only() -> None:
@@ -86,6 +88,7 @@ def test_factory_summarization_knobs_are_keyword_only() -> None:
     assert params["summary_prompt"].kind is Parameter.KEYWORD_ONLY
     assert params["trim_tokens_to_summarize"].kind is Parameter.KEYWORD_ONLY
     assert params["token_counter"].kind is Parameter.KEYWORD_ONLY
+    assert params["method"].kind is Parameter.KEYWORD_ONLY
 
 
 def test_factory_rejects_string_model() -> None:

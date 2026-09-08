@@ -236,7 +236,7 @@ def _create_home(home: Path) -> None:
 
 def _install_defaults(home: Path) -> None:
     defaults = Path(__file__).with_name("defaults")
-    for source in defaults.rglob("AGENTS.md"):
+    for source in defaults.rglob("*.md"):
         contents = source.read_text(encoding="utf-8")
         target = home / source.relative_to(defaults)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -245,7 +245,7 @@ def _install_defaults(home: Path) -> None:
 
 def _publish_default(target: Path, contents: str) -> None:
     with tempfile.TemporaryDirectory(prefix=".talon-", dir=target.parent) as directory:
-        staged = Path(directory) / "AGENTS.md"
+        staged = Path(directory) / target.name
         staged.write_text(contents, encoding="utf-8")
         staged.chmod(0o600)
         with suppress(FileExistsError):

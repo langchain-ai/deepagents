@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -16,6 +17,10 @@ from deepagents_talon.history_adapters import BoundedEmbeddings, open_profile
 from deepagents_talon.history_backends import open_history
 from deepagents_talon.history_vector_backends import vector_backend
 from tests.unit_tests.test_history_vectors import SCOPE, settled
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+    from pathlib import Path
 
 PREFIX = "DEEPAGENTS_TALON_HISTORY_EMBED_"
 
@@ -519,43 +524,57 @@ async def test_atlas_backend_stores_text_without_calling_embeddings(tmp_path, mo
     assert type(index["embed"]).__name__ == "AutoEmbeddings"
 
 
-async def test_rate_limit_backoff_survives_new_appends(tmp_path, monkeypatch):
-    from deepagents_talon import history_vectors  # noqa: PLC0415
+async def test_rate_limit_backoff_survives_new_appends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 0.0
+    waits: asyncio.Queue[float] = asyncio.Queue()
+
+    async def wait_for(wake: Awaitable[object], timeout: float) -> None:  # noqa: ASYNC109  # Match asyncio.wait_for's interface.
+        waits.put_nowait(timeout)
+        await asyncio.wait_for(wake, 5)
+
+    # Control only the worker's clock; real asyncio deadlines still bound the test.
+    worker_asyncio = SimpleNamespace(**vars(asyncio))
+    worker_asyncio.get_running_loop = lambda: SimpleNamespace(time=lambda: now)
+    worker_asyncio.wait_for = wait_for
+    monkeypatch.setattr(history_vectors, "asyncio", worker_asyncio)
 
     class RateLimited(RecordingEmbeddings):
         attempts = 0
-        failed = asyncio.Event()
-        succeeded = asyncio.Event()
 
-        async def aembed_documents(self, texts):
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
             self.attempts += 1
             if self.attempts == 1:
-                self.failed.set()
-                response = httpx.Response(429, headers={"retry-after": "0.1"})
+                response = httpx.Response(429, headers={"retry-after": "120"})
                 msg = "rate limited"
                 raise httpx.HTTPStatusError(
                     msg,
                     request=httpx.Request("POST", "https://test.invalid"),
                     response=response,
                 )
-            self.succeeded.set()
             return await super().aembed_documents(texts)
 
     raw = RateLimited()
     fake_adapter(monkeypatch, raw)
-    monkeypatch.setattr(history_vectors, "_RETRY_SECONDS", 0.001)
     monkeypatch.setattr(history_vectors.secrets, "randbelow", lambda _bound: 0)
     config = configuration(tmp_path)
     async with open_history(config) as archive:
+        assert await asyncio.wait_for(waits.get(), 5) == history_vectors._RETRY_SECONDS
         await archive.append(SCOPE, "first", "time", [HumanMessage("first")])
-        await asyncio.wait_for(raw.failed.wait(), 1)
+        assert await asyncio.wait_for(waits.get(), 5) == 120
         for i in range(3):
-            await archive.append(SCOPE, f"later-{i}", "time", [HumanMessage("later")])
-        assert not raw.succeeded.is_set()
-        assert await archive.vectors.archive.pending(SCOPE)
-        await asyncio.wait_for(raw.succeeded.wait(), 1)
+            now += 20
+            await archive.append(SCOPE, f"later-{i}", "time", [HumanMessage(f"later-{i}")])
+            assert await asyncio.wait_for(waits.get(), 5) == 120 - now
+            assert raw.attempts == 1
+            assert await archive.vectors.archive.pending(SCOPE)
+        now = 120
+        archive.vectors.wake.set()
         await settled(archive)
         assert not await archive.vectors.archive.pending(SCOPE)
+        stored = await archive.vectors.store.asearch(archive.vectors.namespace("whatsapp", "one"))
+        assert {item.value["text"] for item in stored} == {"first", "later-0", "later-1", "later-2"}
 
 
 async def test_threaded_store_uses_native_async_embeddings(tmp_path):

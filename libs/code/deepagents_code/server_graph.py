@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import dataclasses
 import logging
 import sys
 from collections import OrderedDict
@@ -36,12 +35,23 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+from deepagents_code.workspace import (
+    PROJECT_POLICY_DRIFT_REASON,
+    SERVER_CONFIG_DRIFT_REASON,
+    WorkspaceConflictError,
+    drifted_project_fields,
+    resolve_workspace,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+    from contextlib import AbstractContextManager
 
     from deepagents.backends.composite import CompositeBackend
+
+    EnvironmentContext = Callable[
+        [Mapping[str, str] | None], AbstractContextManager[None]
+    ]
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
@@ -53,6 +63,42 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
+_server_tracing_settings: tuple[dict[str, str | None], bool] | None = None
+_server_tracing_initialized = False
+
+
+def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
+    """Pin tracing for the server lifetime before any runtime can execute.
+
+    LangSmith uses process-wide env caches and a default client. Replacing
+    them, even under a build lock, reroutes cached and concurrently executing
+    runtimes. Only workspaces with matching tracing settings can share this
+    process. Keep the reservation across failed builds and cache eviction.
+
+    Called on the server loop with no suspension between claim and setup.
+    """
+    from deepagents_code.config import (
+        _tracing_environment_values,
+        configure_langsmith_secret_redaction,
+        reconcile_tracing_environment,
+    )
+
+    global _server_tracing_settings, _server_tracing_initialized  # noqa: PLW0603  # process-lifetime policy
+    settings = (_tracing_environment_values(environ), redact)
+    if _server_tracing_settings is not None and settings != _server_tracing_settings:
+        reason = (
+            "its LangSmith tracing settings differ from this server's; "
+            "start a separate server for this workspace"
+        )
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    _server_tracing_settings = settings
+    if not _server_tracing_initialized:
+        reconcile_tracing_environment(environ)
+        # Keep redaction on the server task: its fail-closed disable must
+        # reach this task's LangSmith ContextVar, not a worker's copied context.
+        configure_langsmith_secret_redaction()
+        _server_tracing_initialized = True
 
 
 def _print_startup_error(message: str) -> None:
@@ -91,9 +137,8 @@ async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
     *,
-    has_tavily: bool | None = None,
-    tavily_api_key: str | None = None,
-) -> tuple[list[Any], list[Any] | None, list[Any]]:
+    tavily_api_key: str | None,
+) -> tuple[list[Any], list[Any] | None, list[Any], list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -111,32 +156,32 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
-        has_tavily: Workspace credential availability override.
-        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
+        tavily_api_key: Workspace Tavily key, or `None` when the workspace
+            configures none. An empty string still binds the tool, which then
+            reports the key as unconfigured.
 
     Returns:
-        Tuple of `(tools, mcp_server_info, mcp_tools)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools, read_only_builtins)`. The
+        last element is the exact built-in tool objects that are safe to expose
+        to criteria drafting and rubric grading; read-only-ness is known here,
+        at construction, so no consumer has to re-derive it.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import credentials
     from deepagents_code.tools import (
         create_web_search_tool,
         fetch_url,
         get_current_thread_id,
-        web_search,
     )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    if tavily_available:
-        tools.append(
-            web_search
-            if has_tavily is None
-            else create_web_search_tool(tavily_api_key or "")
-        )
+    read_only_builtins: list[Any] = [fetch_url]
+    if tavily_api_key is not None:
+        search_tool = create_web_search_tool(tavily_api_key)
+        tools.append(search_tool)
+        read_only_builtins.append(search_tool)
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -178,28 +223,28 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info, mcp_tools
+    return tools, mcp_server_info, mcp_tools, read_only_builtins
 
 
 def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
+    read_only_builtins: list[Any],
 ) -> list[Any]:
     """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
+        read_only_builtins: Built-in tool objects `_build_tools` created and
+            marked read-only.
 
     Returns:
         External context tools available to criteria generation and grading.
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, is_web_search_tool
-
-    allowed_ids = {id(fetch_url)}
-    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
+    allowed_ids = {id(tool) for tool in read_only_builtins}
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -257,12 +302,6 @@ async def _make_graphs(
             offload operation bound to that backend.
     """
     config = config_override or ServerConfig.from_env()
-    from deepagents_code.config import (
-        Credentials,
-        _preview_dotenv_environ,
-        use_environment,
-    )
-
     workspace_path = (
         project_context_override.user_cwd
         if project_context_override is not None
@@ -278,19 +317,41 @@ async def _make_graphs(
     # rejects when invoked directly from the server loop (see issue #5043),
     # for the same reason as the offload in `_make_graphs_in_environment`.
     def _resolve_workspace_environment() -> tuple[
-        Mapping[str, str], CredentialsSnapshot
+        Mapping[str, str], CredentialsSnapshot, EnvironmentContext, bool
     ]:
-        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
-        return environ, Credentials.snapshot_from_environment(
-            start_path=workspace_path,
-            environ=environ,
+        from deepagents_code.config import (
+            Credentials,
+            _ensure_bootstrap,
+            _preview_dotenv_environ,
+            is_langsmith_redaction_enabled,
+            use_environment,
         )
 
-    workspace_env, workspace_credentials = await asyncio.to_thread(
-        _resolve_workspace_environment
-    )
+        # Finish the one-time global credential publication before pinning
+        # tracing. A later lazy import of `agent` must not overwrite the pin.
+        _ensure_bootstrap()
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        with use_environment(environ):
+            redact = is_langsmith_redaction_enabled()
+        return (
+            environ,
+            Credentials.snapshot_from_environment(
+                start_path=workspace_path,
+                environ=environ,
+            ),
+            use_environment,
+            redact,
+        )
+
+    (
+        workspace_env,
+        workspace_credentials,
+        use_environment,
+        redact,
+    ) = await asyncio.to_thread(_resolve_workspace_environment)
 
     with use_environment(workspace_env):
+        _configure_server_tracing(workspace_env, redact=redact)
         return await _make_graphs_in_environment(
             config=config,
             project_context_override=project_context_override,
@@ -317,16 +378,8 @@ async def _make_graphs_in_environment(
     # `blockbuster` rejects when invoked directly from the server loop (see
     # issue #5043). Importing `deepagents_code.agent` / first `settings` access
     # can also trigger `find_project_root()` -> `Path.cwd()`.
-    #
-    # Keep LangSmith redaction configuration on the server task: its fail-closed
-    # path calls `langsmith.configure(enabled=False)`, which sets both a global
-    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
-    # only updates a copied worker context, so a ContextVar disable there would
-    # not reach a parent tracing context that already has `enabled=True` (ContextVar
-    # wins over the global flag).
     def _resolve_project_context_and_settings() -> tuple[
         ProjectContext | None,
-        Any,
         Any,
         Any,
         Any,
@@ -337,7 +390,6 @@ async def _make_graphs_in_environment(
 
         from deepagents_code.agent import create_cli_agent, load_async_subagents
         from deepagents_code.config import (
-            configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
             resolve_auto_classifier_model_for_provider,
@@ -349,7 +401,6 @@ async def _make_graphs_in_environment(
             load_async_subagents,
             create_model,
             is_memory_auto_save_enabled,
-            configure_langsmith_secret_redaction,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -359,11 +410,8 @@ async def _make_graphs_in_environment(
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        configure_langsmith_secret_redaction,
         resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
-    configure_langsmith_secret_redaction()
-
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file
     # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`
@@ -377,13 +425,14 @@ async def _make_graphs_in_environment(
     )
     result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(
+    tools, mcp_server_info, mcp_tools, read_only_builtins = await _build_tools(
         config,
         project_context,
-        has_tavily=workspace_credentials.has_tavily,
         tavily_api_key=workspace_credentials.tavily_api_key,
     )
-    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
+    read_only_context_tools = _criteria_context_tools(
+        tools, mcp_tools, read_only_builtins
+    )
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -689,12 +738,60 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
-    return await asyncio.to_thread(
-        resolve_workspace,
-        config.cwd,
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+
+    def _bind() -> WorkspaceBinding:
+        # First pass resolves identity only (cwd plus project root); its
+        # fingerprints are digests of an empty policy and are discarded.
+        identity = resolve_workspace(config.cwd)
+        # The shared policy resolver honors the explicit launch root while
+        # keeping the durable identity consistent with workspace validation.
+        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+        return resolve_workspace(
+            identity.cwd,
+            resolved.to_workspace_payload(),
+            config_fingerprint=resolved.workspace_fingerprint(),
+        )
+
+    return await asyncio.to_thread(_bind)
+
+
+def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
+    """Resolve current workspace policy and reject drift from its binding.
+
+    Refusals name the fields that drifted. This runs on every request, and it
+    reads the extension trust store each time, so a transient read failure
+    reports as a policy change; without the field names that refusal is not
+    diagnosable. The values are paths and booleans, never secrets.
+
+    Returns:
+        The current server configuration resolved for the workspace.
+    """
+    config = ServerConfig.from_env()
+    current_config = config.resolve_workspace(binding.cwd, binding.project_root)
+    bound_policy = binding.workspace_config()
+    current_config = current_config.preserve_bound_extension_trust(bound_policy)
+    drifted = drifted_project_fields(
+        bound_policy, current_config.to_project_workspace_policy()
     )
+    if drifted:
+        fields = ", ".join(drifted)
+        logger.warning(
+            "Workspace %s project policy drifted since binding: %s",
+            binding.cwd,
+            fields,
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})"
+        )
+        raise conflict
+    if current_config.workspace_fingerprint() != binding.config_fingerprint:
+        logger.warning(
+            "Workspace %s server config fingerprint changed since binding",
+            binding.cwd,
+        )
+        conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
+        raise conflict
+    return current_config
 
 
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
@@ -703,6 +800,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
+    current_config = await asyncio.to_thread(_resolve_bound_workspace_config, binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached
@@ -710,25 +808,14 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         cached = _cached_workspace_runtime(binding)
         if cached is not None:
             return cached
-        config = ServerConfig.from_env()
-        current_config = dataclasses.replace(
-            config,
-            cwd=binding.cwd,
-            project_root=binding.project_root,
-        )
-        if (
-            current_config.workspace_fingerprint() != binding.config_fingerprint
-            or current_config.to_workspace_payload() != binding.workspace_config()
-        ):
-            reason = "the server configuration changed after this workspace was bound"
-            # Built into a local first: `raise X.from_reason(...)` reads as a
-            # `from_reason` raise to ruff's DOC501.
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
-            project_root=Path(binding.project_root) if binding.project_root else None,
+            project_root=(
+                Path(current_config.project_root)
+                if current_config.project_root
+                else None
+            ),
         )
         runtime = await _make_graphs(
             config_override=current_config,

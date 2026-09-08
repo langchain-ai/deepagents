@@ -17310,6 +17310,9 @@ class TestRestartServerForAgentSwap:
             ),
             patch.object(app, "_mount_message", side_effect=mounted.append),
             patch.object(app, "push_screen_wait", new_callable=AsyncMock) as confirm,
+            patch(
+                "deepagents_code.app.asyncio.to_thread", AsyncMock(return_value=True)
+            ),
         ):
             await app._confirm_then_resume_cross_agent_thread(
                 _ThreadsResumeTarget("stale-thread", "researcher")
@@ -17319,6 +17322,33 @@ class TestRestartServerForAgentSwap:
         server_proc.restart.assert_not_awaited()
         assert any(
             "cannot be resumed" in str(getattr(message, "_content", message))
+            for message in mounted
+        )
+
+    async def test_cross_agent_resume_policy_lookup_failure_is_reported(self) -> None:
+        """Policy lookup failures produce a visible error."""
+        app, server_proc = self._make_app()
+        mounted: list[object] = []
+
+        with (
+            patch.object(
+                app,
+                "_thread_resume_block",
+                AsyncMock(side_effect=OSError("sessions unavailable")),
+            ),
+            patch.object(app, "_mount_message", side_effect=mounted.append),
+            patch(
+                "deepagents_code.app.asyncio.to_thread", AsyncMock(return_value=True)
+            ),
+        ):
+            await app._confirm_then_resume_cross_agent_thread(
+                _ThreadsResumeTarget("stale-thread", "researcher")
+            )
+
+        server_proc.restart.assert_not_awaited()
+        assert any(
+            "Could not switch to agent 'researcher' and resume thread stale-thread"
+            in str(getattr(message, "_content", message))
             for message in mounted
         )
 

@@ -28345,9 +28345,6 @@ class DeepAgentsApp(App):
             asyncio.CancelledError: If app shutdown cancels the detached flow.
         """
         active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
-        if blocked := await self._thread_resume_block(target.thread_id):
-            await self._mount_message(AppMessage(blocked))
-            return
         if self._server_kwargs is None:
             command = f"{invoked_name()} -r {target.thread_id}"
             await self._mount_message(
@@ -28406,6 +28403,9 @@ class DeepAgentsApp(App):
         )
 
         try:
+            if blocked := await self._thread_resume_block(target.thread_id):
+                await self._mount_message(AppMessage(blocked))
+                return
             choice = await self._push_screen_wait(
                 ThreadAgentSwitchPromptScreen(
                     thread_id=target.thread_id,

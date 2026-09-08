@@ -198,14 +198,14 @@ asyncio.run(main())
         assert result == [fetch_url, readonly, web_search]
 
     @pytest.mark.parametrize("read_only", [False, None, True])
-    def test_mcp_search_marker_cannot_bypass_read_only_gate(
+    async def test_mcp_search_marker_cannot_bypass_read_only_gate(
         self, read_only: bool | None
     ) -> None:
         """Server-controlled annotation extras cannot grant criteria access."""
         from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
         from mcp.types import Tool, ToolAnnotations
 
-        from deepagents_code.tools import create_web_search_tool
+        from deepagents_code.tools import fetch_url
 
         module = _import_fresh_server_graph()
         remote = convert_mcp_tool_to_langchain_tool(
@@ -223,9 +223,15 @@ asyncio.run(main())
             ),
             connection={"transport": "stdio", "command": "unused", "args": []},
         )
-        search = create_web_search_tool("")
+        tools, _, _, read_only_builtins = await module._build_tools(
+            ServerConfig(no_mcp=True), None, tavily_api_key=""
+        )
+        tools.append(remote)
+        selected = module._criteria_context_tools(tools, [remote], read_only_builtins)
 
-        assert module._criteria_context_tools([remote, search], [remote]) == [search]
+        assert remote not in selected
+        assert fetch_url in selected
+        assert any(getattr(tool, "name", None) == "web_search" for tool in selected)
 
     async def test_make_graph_emits_marker_and_exits_on_failure(
         self, capsys: pytest.CaptureFixture[str]
@@ -279,17 +285,14 @@ asyncio.run(main())
         module = _import_fresh_server_graph()
         from deepagents_code.tools import fetch_url, get_current_thread_id
 
-        _, _, _, read_only_builtins = await module._build_tools(
-            ServerConfig(no_mcp=True),
-            None,
-            workspace_credentials=SimpleNamespace(
-                has_tavily=False,
-                tavily_api_key=None,
-            ),
+        tools, _, mcp_tools, read_only_builtins = await module._build_tools(
+            ServerConfig(no_mcp=True), None, tavily_api_key=None
         )
+        selected = module._criteria_context_tools(tools, mcp_tools, read_only_builtins)
 
-        assert read_only_builtins == [fetch_url]
-        assert get_current_thread_id not in read_only_builtins
+        assert selected == [fetch_url]
+        assert get_current_thread_id in tools
+        assert get_current_thread_id not in selected
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
         """`no_mcp=True` should not call the MCP resolver at all."""

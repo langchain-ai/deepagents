@@ -770,19 +770,6 @@ def _dotenv_environment(
     return env
 
 
-def strip_loaded_dotenv_values(env: MutableMapping[str, str]) -> None:
-    """Remove values this process's dotenv loader injected into *env*.
-
-    A value is loader-owned only while it still matches what was injected, so a
-    later override by the shell or by managed policy survives the strip. This is
-    the single definition of that rule; both the dotenv preview and the server
-    subprocess environment depend on it.
-    """
-    for key, value in _dotenv_loaded_values.items():
-        if env.get(key) == value:
-            env.pop(key)
-
-
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
     """Return the effective dotenv environment without mutating `os.environ`.
 
@@ -1434,29 +1421,6 @@ def _decode_user_langsmith_env(
     launch = _validate_user_langsmith_env(decoded["launch"])
     user = _validate_user_langsmith_env(decoded["user"])
     return (launch, user) if launch is not None and user is not None else None
-
-
-def _decode_relayed_tracing(raw: str | None) -> dict[str, Any] | None:
-    """Decode the relayed caller tracing carrier into its original values.
-
-    The carrier is the one serialized blob that becomes shell environment, so
-    its parse and shape contract has a single definition: both the redaction
-    set and the shell environment restore read it through here.
-
-    Args:
-        raw: Serialized carrier value, or `None` when absent.
-
-    Returns:
-        The decoded mapping, or `None` when the carrier is absent, unparsable,
-        or not an object.
-    """
-    if not raw:
-        return None
-    try:
-        originals = json.loads(raw)
-    except ValueError:
-        return None
-    return originals if isinstance(originals, dict) else None
 
 
 def relayed_user_tracing_secrets(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -4391,7 +4355,6 @@ def get_langsmith_project_name() -> str | None:
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
-    from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 

@@ -735,6 +735,26 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
+def _server_aws_session_kwargs() -> dict[str, str]:
+    """Resolve boto3 session arguments from the server's own environment.
+
+    The workspace resolution reads `active_environment()`, which falls back to
+    `os.environ`, so a plain `AWS_PROFILE` exported in the server's shell is
+    indistinguishable from one a workspace pinned. Resolving the same table
+    against `os.environ` explicitly gives the caller a baseline to compare
+    against.
+
+    Returns:
+        The boto3 session arguments the server would resolve on its own.
+    """
+    from deepagents_code.config import _resolve_env_var_from
+
+    return resolve_env_kwargs(
+        AWS_CREDENTIAL_ENV_SOURCES,
+        lambda name: _resolve_env_var_from(os.environ, name),
+    )
+
+
 def _aws_session_kwargs() -> dict[str, str]:
     """Translate the bound workspace environment into boto3 session arguments.
 
@@ -744,13 +764,19 @@ def _aws_session_kwargs() -> dict[str, str]:
     *lookup* free to drift, so a prefixed value applied to the model and was
     dropped for the sandbox.
 
+    Validates the resolved set as a whole. A pair check alone let a session
+    token with neither key half through, and botocore then declines the
+    explicit credential provider and falls through to the server's own
+    credentials -- so the workspace's token is silently ignored.
+
     Returns:
         Populated boto3 session keyword arguments.
 
     Raises:
-        ValueError: If exactly one half of the access-key pair resolves.
-            boto3 would raise `PartialCredentialsError`, which the caller
-            turns into a silent fallback to the server's own credentials.
+        ValueError: If the resolved credentials are incomplete or express two
+            mutually exclusive intents. Checked before boto3 is touched so the
+            error names the variable at fault; boto3's own
+            `PartialCredentialsError` names neither.
     """
     from deepagents_code.model_config import resolve_env_var
 
@@ -766,6 +792,20 @@ def _aws_session_kwargs() -> dict[str, str]:
             f"server's default credentials."
         )
         raise ValueError(msg)
+    if resolved.get("aws_session_token") and not key_id:
+        msg = (
+            "The workspace AWS configuration is incomplete: AWS_SESSION_TOKEN "
+            "is set without AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Set "
+            "all three together, or unset AWS_SESSION_TOKEN to use AWS_PROFILE "
+            "or the server's default credentials."
+        )
+        raise ValueError(msg)
+    # `AWS_PROFILE` alongside explicit keys is left alone deliberately. boto3's
+    # precedence is documented and deterministic, and because
+    # `active_environment()` layers the workspace over the server's own
+    # environment, an exported profile plus workspace keys is an ordinary
+    # combination rather than a mistake. Rejecting it would turn a working
+    # setup into a startup failure.
     return resolved
 
 
@@ -825,7 +865,13 @@ class _AgentCoreProvider(SandboxProvider):
             # right default when the workspace scoped nothing, and a privilege
             # substitution when it did -- a workspace pinned to a restricted
             # profile would silently run under the server's broader identity.
-            if credential_kwargs:
+            #
+            # Compare against what the server resolves on its own: a plain
+            # `AWS_PROFILE` exported in the server's shell reaches
+            # `active_environment()` too, and treating that as workspace-pinned
+            # turned a stale server-level profile into a startup failure whose
+            # message blamed a workspace `.env` that never set it.
+            if credential_kwargs and credential_kwargs != _server_aws_session_kwargs():
                 msg = (
                     f"The workspace AWS configuration is invalid: {exc}. This "
                     f"workspace scoped its sandbox to specific AWS credentials "

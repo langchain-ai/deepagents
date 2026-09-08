@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -856,6 +857,70 @@ def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
         _AgentCoreProvider()
 
     mock_boto3.Session.assert_not_called()
+
+
+def test_agentcore_rejects_a_half_set_access_key_pair_missing_the_id() -> None:
+    """The mirrored arm must name the other variable."""
+    mock_boto3 = MagicMock()
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_SECRET_ACCESS_KEY": "only-the-secret"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="AWS_ACCESS_KEY_ID is not set"),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_not_called()
+
+
+def test_agentcore_rejects_a_session_token_without_the_key_pair() -> None:
+    """Botocore declines the explicit provider and falls through to the server."""
+    mock_boto3 = MagicMock()
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_SESSION_TOKEN": "only-the-token"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="AWS_SESSION_TOKEN is set without"),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_not_called()
+
+
+def test_agentcore_does_not_blame_the_workspace_for_a_server_level_profile() -> None:
+    """A stale profile from the server's own shell must not be a startup failure."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: stale")
+    environment = {"AWS_REGION": "us-test-1", "AWS_PROFILE": "stale-server-profile"}
+
+    with (
+        _bind_environment(environment),
+        patch.dict(os.environ, environment, clear=True),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        provider = _AgentCoreProvider()
+
+    assert provider._session is None
+
+
+def test_agentcore_blames_the_workspace_for_a_workspace_only_profile() -> None:
+    """A profile the workspace pinned, and the server did not, still fails closed."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: pinned")
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_PROFILE": "workspace-pinned"}
+        ),
+        patch.dict(os.environ, {"AWS_REGION": "us-test-1"}, clear=True),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="workspace scoped its sandbox"),
+    ):
+        _AgentCoreProvider()
 
 
 def test_modal_rejects_a_half_set_token_pair() -> None:

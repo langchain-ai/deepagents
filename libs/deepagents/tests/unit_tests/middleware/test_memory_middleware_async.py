@@ -122,8 +122,8 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     assert user_path in result["memory_contents"]
 
 
-async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> None:
-    """Test that abefore_agent doesn't reload if already in state."""
+async def test_before_agent_reloads_existing_state_async(tmp_path: Path) -> None:
+    """Memory sources replace stale state on async invocations."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     user_path = str(tmp_path / "user" / "AGENTS.md")
@@ -133,12 +133,10 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
     sources: list[str] = [user_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
-    # Pre-populate state
     state = {"memory_contents": {user_path: "Already loaded content"}}
     result = await middleware.abefore_agent(state, None, {})  # type: ignore[arg-type]
 
-    # Should return None (no update needed)
-    assert result is None
+    assert result == {"memory_contents": {user_path: user_content}}
 
 
 async def test_load_memory_with_empty_sources_async(tmp_path: Path) -> None:

@@ -56,9 +56,7 @@ LANGSMITH_API_KEY_ENV_VARS: Final[tuple[str, ...]] = (
 )
 """Env vars LangSmith reads for its API key, in precedence order.
 
-Mirrors the SDK's own `LANGSMITH_`-then-`LANGCHAIN_` lookup. Drives both the
-tracing bootstrap in `config.py` and the `/auth` credential surface, so it is
-no longer tracing-specific.
+Mirrors the SDK's own `LANGSMITH_`-then-`LANGCHAIN_` lookup.
 """
 
 FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (

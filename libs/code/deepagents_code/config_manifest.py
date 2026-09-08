@@ -357,6 +357,7 @@ class _CommonFields(TypedDict):
     summary: str
     env_var: NotRequired[str | None]
     fallback_env_vars: NotRequired[tuple[str, ...]]
+    prefix_aware_fallbacks: NotRequired[bool]
     toml_keys: NotRequired[tuple[str, ...] | None]
     invert_toml_bool: NotRequired[bool]
     cli_flag: NotRequired[str | None]
@@ -433,10 +434,18 @@ class ConfigOption[T]:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Credential fallbacks apply `DEEPAGENTS_CODE_` prefix overrides dynamically,
-    including empty-prefix shadowing. Other fallbacks are read literally so
-    `config`/`config get` mirror runtime fallbacks such as
-    `get_langsmith_project_name` reading bare `LANGSMITH_PROJECT`.
+    Read literally unless `prefix_aware_fallbacks` is set, so `config`/`config
+    get` mirror runtime fallbacks such as `get_langsmith_project_name` reading
+    bare `LANGSMITH_PROJECT`.
+    """
+
+    prefix_aware_fallbacks: bool = False
+    """Whether `fallback_env_vars` honor `DEEPAGENTS_CODE_` prefix overrides.
+
+    Set for credentials, whose runtime lookup routes every accepted name
+    through `resolve_env_var` -- including empty-prefix shadowing. Left off for
+    fallbacks the runtime reads literally, where applying the override would
+    let an empty prefixed variable shadow a set canonical one.
     """
 
     toml_keys: tuple[str, ...] | None = None
@@ -2011,6 +2020,7 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 kind=OptionKind.STR,
                 env_var=env_var,
                 fallback_env_vars=SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ()),
+                prefix_aware_fallbacks=True,
                 redacted=redacted,
                 provider=name,
                 dependency_module=dependency[0] if dependency else None,

@@ -448,12 +448,16 @@ def ranked_environment_value[T](
     names: list[str] = []
     if option.env_var:
         names.append(_prefix_aware_env_name(option.env_var, environ))
-    if option.group == "Credentials":
-        names.extend(
-            _prefix_aware_env_name(name, environ) for name in option.fallback_env_vars
+    for fallback in option.fallback_env_vars:
+        name = (
+            _prefix_aware_env_name(fallback, environ)
+            if option.prefix_aware_fallbacks
+            else fallback
         )
-    else:
-        names.extend(option.fallback_env_vars)
+        # A prefix-aware fallback can resolve to a name the primary already
+        # selected; reading it twice would emit a duplicate diagnostic.
+        if name not in names:
+            names.append(name)
 
     status = ProviderStatus("environment", None, ProviderHealth.OK)
     last_invalid: Invalid | None = None

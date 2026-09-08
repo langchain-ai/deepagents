@@ -31,7 +31,7 @@ from urllib.request import url2pathname
 
 from deepagents_code._constants import (
     FIREWORKS_PROVIDER_ID_PREFIX,
-    LANGSMITH_API_KEY_ENV_VARS,
+    LANGSMITH_API_KEY_ENV_VARS as _TRACING_API_KEY_ENV_VARS,
 )
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
@@ -885,15 +885,6 @@ def _load_dotenv(
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
-
-_TRACING_API_KEY_ENV_VARS = LANGSMITH_API_KEY_ENV_VARS
-"""Env vars that hold the LangSmith API key used for trace ingestion.
-
-Alias of `LANGSMITH_API_KEY_ENV_VARS`, kept as a local name so the tracing
-bootstrap reads it alongside `_TRACING_ENABLE_ENV_VARS` and
-`_TRACING_ENDPOINT_ENV_VARS`. The shared constant also drives the `/auth`
-credential surface, so edit it there rather than here.
-"""
 
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.

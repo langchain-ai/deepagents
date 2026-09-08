@@ -56,6 +56,25 @@ def reset_env_resolution_log() -> None:
         _resolved_env_var_log_names.clear()
 
 
+def stored_key_reaches_runtime(env_var: str) -> bool:
+    """Whether a stored credential copied onto `env_var` would be read.
+
+    A present `DEEPAGENTS_CODE_` override outranks the store: the apply pass
+    skips the copy outright, and the canonical name it would have written is
+    then ignored by `resolve_env_var`. That holds even when the override is
+    empty, which suppresses the canonical name entirely.
+
+    Args:
+        env_var: Canonical env var name the store would be copied onto.
+
+    Returns:
+        `True` when no prefixed override stands in the way.
+    """
+    if env_var.startswith(_ENV_PREFIX):
+        return True
+    return f"{_ENV_PREFIX}{env_var}" not in os.environ
+
+
 def resolved_env_var_name(canonical: str) -> str:
     """Return whichever env var name actually carries the resolved value.
 
@@ -417,11 +436,16 @@ class ProviderAuthStatus:
         return True
 
     def missing_detail(self) -> str:
-        """Return a user-facing reason for a missing-credential status."""
-        if self.env_var:
-            return f"{self.env_var} is not set or is empty"
+        """Return a user-facing reason for a missing-credential status.
+
+        `detail` wins over the `env_var` template because a status that names
+        several accepted variables (a service with fallbacks) has already
+        spelled the fuller sentence there.
+        """
         if self.detail:
             return self.detail
+        if self.env_var:
+            return f"{self.env_var} is not set or is empty"
         return (
             f"provider '{self.provider}' is not recognized. "
             f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
@@ -2459,7 +2483,9 @@ def _resolve_configured(
 ) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
-    Stored credentials beat env vars (matches `resolve_provider_credential`).
+    Stored credentials beat env vars (matches `resolve_provider_credential`),
+    except where `stored_key_reaches_runtime` says a prefixed override has
+    already displaced the store.
 
     Args:
         provider: Provider name (e.g., `"anthropic"`).
@@ -2471,17 +2497,9 @@ def _resolve_configured(
     Returns:
         A `CONFIGURED` status, or `None` when no source is set.
     """
-    # A present `DEEPAGENTS_CODE_` override outranks the store at runtime:
-    # `apply_stored_service_credentials` skips the copy outright, and
-    # `apply_stored_credentials` writes only the canonical name, which
-    # `resolve_env_var` then ignores. Reporting STORED here would promise a
-    # credential the app never reads -- including when the override is empty,
-    # which suppresses the canonical name entirely.
-    prefixed = f"{_ENV_PREFIX}{env_var}"
-    stored_is_authoritative = env_var.startswith(_ENV_PREFIX) or (
-        prefixed not in os.environ
-    )
-    if stored_is_authoritative and _has_stored_credential(provider):
+    # Reporting STORED when a prefixed override stands in the way would promise
+    # a credential the app never reads.
+    if stored_key_reaches_runtime(env_var) and _has_stored_credential(provider):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=provider,
@@ -2838,14 +2856,11 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
             else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
-    configured = _resolve_configured(
-        service, env_var, SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
-    )
+    fallbacks = SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
+    configured = _resolve_configured(service, env_var, fallbacks)
     if configured:
         return configured
-    accepted = " or ".join(
-        (env_var, *SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ()))
-    )
+    accepted = " or ".join((env_var, *fallbacks))
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,
@@ -2876,8 +2891,7 @@ def apply_stored_service_credentials() -> None:
             continue
         if not stored:
             continue
-        prefixed = f"{_ENV_PREFIX}{env_var}"
-        if prefixed in os.environ:
+        if not stored_key_reaches_runtime(env_var):
             continue
         if os.environ.get(env_var) != stored:
             os.environ[env_var] = stored

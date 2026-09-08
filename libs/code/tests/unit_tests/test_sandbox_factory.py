@@ -885,7 +885,7 @@ def test_agentcore_refuses_to_substitute_server_aws_credentials() -> None:
 
 
 def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
-    """boto3 would raise `PartialCredentialsError` into the silent fallback."""
+    """A half pair is rejected before any boto3 session is built."""
     mock_boto3 = MagicMock()
 
     with (

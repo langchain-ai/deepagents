@@ -773,10 +773,9 @@ def _aws_session_kwargs() -> dict[str, str]:
         Populated boto3 session keyword arguments.
 
     Raises:
-        ValueError: If the resolved credentials are incomplete or express two
-            mutually exclusive intents. Checked before boto3 is touched so the
-            error names the variable at fault; boto3's own
-            `PartialCredentialsError` names neither.
+        ValueError: If the resolved credentials are incomplete. Checked before
+            boto3 is touched so the error names the variable at fault; boto3's
+            own `PartialCredentialsError` names neither.
     """
     from deepagents_code.model_config import resolve_env_var
 

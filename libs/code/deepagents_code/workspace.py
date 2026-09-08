@@ -141,10 +141,11 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
 
 
 def canonical_fingerprint(value: object) -> str:
-    """Fingerprint *value* with the canonical workspace serialization.
+    """Fingerprint `value` with the canonical workspace serialization.
 
-    This is the single definition of the fingerprint wire format that client
-    claims and server verification must agree on.
+    Client claims and server verification must agree on this wire format.
+    `canonical_workspace_config` applies the same encoding to a bounded policy
+    object and returns its digest alongside the serialized form.
 
     Returns:
         The SHA-256 hex digest of the canonical JSON encoding.
@@ -159,7 +160,11 @@ def resolve_workspace(
     *,
     config_fingerprint: str | None = None,
 ) -> WorkspaceBinding:
-    """Resolve and validate a client workspace claim.
+    """Resolve a client-supplied cwd into a canonical workspace binding.
+
+    `cwd` is untrusted and is validated here. `workspace_config` is not: every
+    caller passes server-resolved policy. A client claim is verified against
+    server policy in `offload_api.workspace` and never reaches this function.
 
     Returns:
         A canonical, fingerprinted binding including the resource policy.

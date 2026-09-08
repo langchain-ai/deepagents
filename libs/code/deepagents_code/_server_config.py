@@ -12,6 +12,7 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
 
     from deepagents_code.project_utils import ProjectContext
+
+logger = logging.getLogger(__name__)
 
 
 SESSION_WORKSPACE_FIELDS = frozenset(
@@ -48,6 +51,15 @@ SESSION_WORKSPACE_FIELDS = frozenset(
         "shell_allow_list",
     }
 )
+"""Policy a managed client may claim for its own command invocation.
+
+These come from the client's own CLI flags, so the client already knows them
+and claiming them proves only that both sides agree. Together with
+`PROJECT_WORKSPACE_FIELDS` this must partition `to_workspace_payload()`
+exactly: a payload field in neither set is never verified against a client
+claim and never checked for project drift.
+`test_workspace_claim_partitions_every_policy_field` pins that.
+"""
 PROJECT_WORKSPACE_FIELDS = frozenset(
     {
         "extension_paths",
@@ -57,14 +69,37 @@ PROJECT_WORKSPACE_FIELDS = frozenset(
         "trust_project_mcp",
     }
 )
+"""Policy the server must resolve per project directory, never accept.
+
+Each of these grants code execution scoped to a checkout -- MCP servers,
+sandbox setup commands, Python extensions. A client that could claim them could
+execute one directory's configuration against another directory's trust
+decision.
+"""
 
 
 def _same_workspace_project(first: str | None, second: str) -> bool:
+    """Whether two paths name the same existing project directory.
+
+    Fails closed: an unset launch root, or a path that no longer resolves,
+    counts as *different*, so the caller drops project policy rather than
+    carrying it across an unverified boundary.
+
+    Returns:
+        `True` only when both paths resolve to the same real directory.
+    """
     if first is None:
         return False
     try:
         return Path(first).resolve(strict=True) == Path(second).resolve(strict=True)
     except (OSError, RuntimeError):
+        logger.warning(
+            "Could not compare project directories %s and %s; treating as "
+            "separate projects, so project-scoped policy will not apply",
+            first,
+            second,
+            exc_info=True,
+        )
         return False
 
 
@@ -539,8 +574,26 @@ class ServerConfig:
     ) -> ServerConfig:
         """Resolve directory-bound policy for one server workspace.
 
+        Project-scoped policy (`PROJECT_WORKSPACE_FIELDS`) is valid only for
+        the directory it was resolved against: it came from the launch-time CLI
+        and that project's trust decisions. Reusing it for another directory
+        would apply one project's MCP servers, sandbox setup, and extensions to
+        a different, possibly untrusted, checkout.
+
+        So the launch project keeps its policy verbatim, and any other project
+        starts from nothing: MCP and sandbox setup are *dropped* rather than
+        rediscovered, and extension trust is re-read from the trust store for
+        that project. `_same_workspace_project` fails closed, so an
+        unresolvable path also takes the drop branch.
+
+        Args:
+            cwd: Absolute, canonical working directory for the workspace.
+            project_root: Canonical project root, or `None` when the workspace
+                has none. Extension trust is then keyed on `cwd`.
+
         Returns:
-            A config bound to the target workspace's project policy.
+            A config whose session policy is unchanged and whose project policy
+            is either the launch project's or empty.
         """
         launch_root = self.project_root or self.cwd
         target_root = project_root or cwd

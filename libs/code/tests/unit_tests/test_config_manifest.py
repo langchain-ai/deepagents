@@ -709,6 +709,7 @@ def test_resolve_langsmith_prefixed_env_overrides_stored(monkeypatch):
     assert value == "from-prefix"
 
 
+@pytest.mark.usefixtures("stored_auth_dir")
 def test_resolve_langsmith_falls_back_to_langchain_api_key(monkeypatch):
     """LangSmith credential display reports the runtime fallback source."""
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
@@ -723,6 +724,7 @@ def test_resolve_langsmith_falls_back_to_langchain_api_key(monkeypatch):
     assert value == "from-fallback"
 
 
+@pytest.mark.usefixtures("stored_auth_dir")
 def test_resolve_langsmith_falls_back_to_prefixed_langchain_api_key(monkeypatch):
     """LangSmith credential display honors the prefixed runtime fallback."""
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
@@ -770,6 +772,7 @@ def test_resolve_langsmith_empty_prefixed_fallback_shadows_canonical(
     )
 
 
+@pytest.mark.usefixtures("stored_auth_dir")
 def test_resolve_langsmith_primary_env_wins_over_fallback(monkeypatch):
     """The primary LangSmith env var retains precedence over its fallback."""
     monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")

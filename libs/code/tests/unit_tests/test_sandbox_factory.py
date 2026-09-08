@@ -835,6 +835,65 @@ def test_vercel_get_provider_fails_closed_on_a_partial_set() -> None:
         _get_provider("vercel")
 
 
+@pytest.mark.parametrize("prefix", ["", "DEEPAGENTS_CODE_"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ("TOKEN",),
+        ("PROJECT_ID",),
+        ("TEAM_ID",),
+        ("TOKEN", "PROJECT_ID"),
+        ("TOKEN", "TEAM_ID"),
+        ("PROJECT_ID", "TEAM_ID"),
+    ],
+)
+def test_vercel_rejects_mixed_workspace_and_server_credentials(
+    prefix: str, overrides: tuple[str, ...]
+) -> None:
+    """A complete merged mapping can still contain two credential identities."""
+    server = {
+        f"VERCEL_{key}": f"server-{key}" for key in ("TOKEN", "PROJECT_ID", "TEAM_ID")
+    }
+    environment = {
+        **server,
+        **{f"{prefix}VERCEL_{key}": f"workspace-{key}" for key in overrides},
+    }
+    with (
+        _bind_environment(environment),
+        patch.dict("os.environ", server, clear=True),
+        pytest.raises(ValueError, match="mixes workspace and server"),
+    ):
+        _get_provider("vercel")
+
+
+def test_vercel_empty_workspace_overrides_cannot_restore_server_auth() -> None:
+    """Explicitly clearing every credential must not reactivate ambient auth."""
+    server = {"VERCEL_TOKEN": "server-token"}
+    with (
+        _bind_environment({**server, "DEEPAGENTS_CODE_VERCEL_TOKEN": ""}),
+        patch.dict("os.environ", server, clear=True),
+        pytest.raises(ValueError, match="workspace Vercel configuration is incomplete"),
+    ):
+        _get_provider("vercel")
+
+
+def test_vercel_complete_prefixed_set_can_share_server_identifiers() -> None:
+    """Explicit workspace IDs remain scoped even when their values match."""
+    server = {"VERCEL_PROJECT_ID": "shared-project", "VERCEL_TEAM_ID": "shared-team"}
+    environment = {
+        **server,
+        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+        "DEEPAGENTS_CODE_VERCEL_PROJECT_ID": "shared-project",
+        "DEEPAGENTS_CODE_VERCEL_TEAM_ID": "shared-team",
+    }
+    with _bind_environment(environment), patch.dict("os.environ", server, clear=True):
+        assert _VercelProvider._resolve_sdk_kwargs() == {
+            "token": "workspace-token",
+            "project_id": "shared-project",
+            "team_id": "shared-team",
+        }
+
+
 def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     """A failed session must not masquerade as an applied workspace session."""
     mock_boto3 = MagicMock()

@@ -1046,9 +1046,9 @@ class _VercelProvider(SandboxProvider):
 
         Each value resolves prefixed-first then canonical via `resolve_env_var`,
         against the bound workspace environment. Credentials stay SDK-managed
-        when none of the three variables resolves, and when every resolved
-        value matches the server environment the SDK reads for itself -- there
-        is no workspace identity to protect in either case.
+        when every resolved value matches the server environment the SDK reads
+        for itself. Explicit credentials must come entirely from the workspace
+        or entirely from the server, never a mixture of the two.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
@@ -1066,13 +1066,6 @@ class _VercelProvider(SandboxProvider):
             key: resolve_env_var(name)
             for key, name in cls._CREDENTIAL_ENV_NAMES.items()
         }
-        # Gate on the resolved values, not on the presence of a prefixed name.
-        # `_build_server_env` strips the client's project `.env` from the server
-        # process, so an unprefixed `VERCEL_TOKEN` in a workspace `.env` reaches
-        # `resolve_env_var` but no longer reaches the SDK's own `os.environ`
-        # read -- gating on the prefix alone silently discarded it.
-        if not any(values.values()):
-            return {}
         # Nothing here came from the workspace: `resolve_env_var` reads
         # `active_environment()`, which falls back to `os.environ`, so the
         # server's own `VERCEL_*` resolve identically. There is no workspace
@@ -1104,9 +1097,37 @@ class _VercelProvider(SandboxProvider):
                 "unset all three to fall back to default Vercel authentication."
             )
             raise ValueError(msg)
+        cls._validate_credential_sources(values)
         # `missing` is empty, so every value is a non-empty string here; the
         # comprehension re-states that for the type checker.
         return {key: value for key, value in values.items() if value}
+
+    @classmethod
+    def _validate_credential_sources(cls, values: Mapping[str, str | None]) -> None:
+        """Reject a workspace credential set completed by inherited fields.
+
+        Compare the selected variable names as well as their values: an
+        explicit prefixed workspace ID may equal the server's canonical ID.
+
+        Raises:
+            ValueError: If only part of the credential set is inherited.
+        """
+        from deepagents_code.model_config import resolved_env_var_name
+
+        inherited = [
+            name
+            for key, name in cls._CREDENTIAL_ENV_NAMES.items()
+            if values[key] == os.environ.get(resolved_env_var_name(name))
+        ]
+        if inherited and len(inherited) != len(values):
+            msg = (
+                "The Vercel configuration mixes workspace and server credentials: "
+                f"{', '.join(inherited)} inherited from the server. "
+                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together "
+                "using workspace overrides, or remove the workspace overrides "
+                "to use default Vercel authentication."
+            )
+            raise ValueError(msg)
 
     def get_or_create(
         self,

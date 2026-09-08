@@ -4583,6 +4583,74 @@ class TestPrefixedLangsmithBridge:
 class TestTracingEnvironmentReconcile:
     """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
 
+    @pytest.mark.parametrize("prefixed", [False, True])
+    @pytest.mark.parametrize("load_first", [False, True])
+    def test_publishing_does_not_contaminate_later_workspaces(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        prefixed: bool,
+        load_first: bool,
+    ) -> None:
+        """Repeated publication preserves each workspace's identity and opt-out."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_dotenv_loaded_values", {})
+        for var in config_mod._TRACING_RECONCILED_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        empty = tmp_path / "empty"
+        for workspace in (first, second, empty):
+            workspace.mkdir()
+        prefix = "DEEPAGENTS_CODE_" if prefixed else ""
+        (first / ".env").write_text(
+            f"{prefix}LANGSMITH_TRACING=true\n"
+            f"{prefix}LANGSMITH_API_KEY=first-key\n"
+            f"{prefix}LANGSMITH_PROJECT=first-project\n"
+            "LANGSMITH_ENDPOINT=https://first.example.com\n"
+        )
+        (second / ".env").write_text(
+            "LANGSMITH_TRACING=false\n"
+            "LANGSMITH_API_KEY=second-key\n"
+            "LANGSMITH_PROJECT=second-project\n"
+        )
+        if load_first:
+            config_mod._load_dotenv(start_path=first)
+        for workspace in (first, second, empty, first, second):
+            snapshot = config_mod._preview_dotenv_environ(start_path=workspace)
+            config_mod.reconcile_tracing_environment(snapshot)
+            if workspace == second:
+                assert snapshot["LANGSMITH_TRACING"] == "false"
+                assert snapshot["LANGSMITH_API_KEY"] == "second-key"
+                assert snapshot["LANGSMITH_PROJECT"] == "second-project"
+                assert "LANGSMITH_ENDPOINT" not in snapshot
+                with config_mod.use_environment(snapshot):
+                    assert config_mod.get_langsmith_project_name() is None
+            elif workspace == empty:
+                assert not snapshot.keys() & set(
+                    config_mod._TRACING_RECONCILED_ENV_VARS
+                )
+
+    @pytest.mark.parametrize("published", ["workspace-value", None])
+    def test_preview_preserves_overwritten_shell_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, published: str | None
+    ) -> None:
+        """Publishing or removing a selector does not erase its shell baseline."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "shell-project")
+        (tmp_path / ".env").write_text("LANGSMITH_PROJECT=dotenv-project\n")
+        snapshot = {"LANGSMITH_PROJECT": published} if published is not None else {}
+        for _ in range(2):
+            config_mod.reconcile_tracing_environment(snapshot)
+            preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+            assert preview["LANGSMITH_PROJECT"] == "shell-project"
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "updated-shell-project")
+        preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+        assert preview["LANGSMITH_PROJECT"] == "updated-shell-project"
+
     def test_workspace_settings_reach_the_process_environment(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -119,6 +119,9 @@ _singleton_lock = threading.Lock()
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
 
+_reconciled_tracing_values: dict[str, tuple[str | None, str | None]] = {}
+"""Original and published tracing values, kept out of later workspace baselines."""
+
 _orphaned_tracing_disabled_notice: str | None = None
 """One-shot TUI notice populated when bootstrap disables orphaned tracing."""
 
@@ -748,7 +751,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     Returns:
         Effective environment for the requested project path.
     """
-    env = dict(os.environ)
+    env = _environment_before_tracing_reconcile()
     _strip_dotenv_loaded_values(env)
     return _dotenv_environment(start_path=start_path, environ=env)
 
@@ -970,6 +973,24 @@ _TRACING_RECONCILED_ENV_VARS = (
 """Vars the LangSmith SDK reads from `os.environ` to trace, and where."""
 
 
+def _environment_before_tracing_reconcile() -> dict[str, str]:
+    """Undo our tracing publication in a copy, preserving unrelated env edits.
+
+    Returns:
+        Environment with unchanged published selectors restored to their inputs.
+    """
+    env = dict(os.environ)
+    _apply_env_values(
+        env,
+        {
+            var: original
+            for var, (original, published) in _reconciled_tracing_values.items()
+            if env.get(var) == published
+        },
+    )
+    return env
+
+
 def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
     """Publish a workspace's tracing settings to the process environment.
 
@@ -982,22 +1003,27 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
     first, because the SDK only reads canonical names. A var the workspace does
     not set is removed, so the previous workspace's `.env` cannot linger.
 
+    Remember the environment before publication so later workspace previews
+    can recover shell values and remove earlier dotenv contributions.
+
     The SDK caches env reads, so its caches are dropped afterwards.
 
     Args:
         environ: The active workspace environment snapshot.
     """
-    _apply_env_values(
-        os.environ,
-        {
-            var: (
-                _resolve_env_var_from(environ, var)
-                if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
-                else environ.get(var) or None
-            )
-            for var in _TRACING_RECONCILED_ENV_VARS
-        },
+    baseline = _environment_before_tracing_reconcile()
+    values = {
+        var: (
+            _resolve_env_var_from(environ, var)
+            if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
+            else environ.get(var) or None
+        )
+        for var in _TRACING_RECONCILED_ENV_VARS
+    }
+    _reconciled_tracing_values.update(
+        {var: (baseline.get(var), value) for var, value in values.items()}
     )
+    _apply_env_values(os.environ, values)
     _clear_langsmith_env_caches()
 
 

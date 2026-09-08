@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import aiosqlite
 import pytest
@@ -235,6 +235,51 @@ async def test_close_waits_for_a_batch_registered_after_it_started(monkeypatch):
     assert state["started"]
     # close() must not return while a shielded write is still touching the Store.
     assert state["cancelled"]
+
+
+async def test_close_returns_when_the_store_ignores_cancellation(monkeypatch, caplog):
+    monkeypatch.setattr("deepagents_talon.history_vectors._CLOSE_TIMEOUT_SECONDS", 0.1)
+    # raising=False so an unbounded post-cancel wait fails on the hang, not the constant.
+    monkeypatch.setattr(
+        "deepagents_talon.history_vectors._CANCEL_GRACE_SECONDS", 0.1, raising=False
+    )
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.history_vectors")
+    started, finished = asyncio.Event(), asyncio.Event()
+
+    class UncancellableStore(InMemoryStore):
+        async def abatch(self, ops):
+            operations = list(ops)
+            if not any(isinstance(op, PutOp) and op.value is not None for op in operations):
+                return await super().abatch(operations)
+            started.set()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 2
+            while loop.time() < deadline:
+                # Stands in for a Store whose blocking work runs in a thread, which
+                # cannot be interrupted from the event loop at all.
+                with suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.02)
+            finished.set()
+            return []
+
+    store = UncancellableStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
+    archive = StoreConversationArchive(
+        InMemoryStore(), namespace=("uncancellable",), vector_store=store
+    )
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(8):
+        await archive.setup()
+        await append(archive, "car")
+        await asyncio.wait_for(started.wait(), 2)
+        elapsed = loop.time()
+        await archive.aclose()
+        elapsed = loop.time() - elapsed
+        # Bounded well inside the store's own 2s, so shutdown did not wait on it.
+        assert elapsed < 1
+        assert not finished.is_set()
+        assert any("ignored cancellation" in item.message for item in caplog.records)
+        # Let the abandoned batch drain so it is not still pending at teardown.
+        await asyncio.wait_for(finished.wait(), 5)
 
 
 async def test_indexing_batches_never_overlap_so_they_need_no_permit():

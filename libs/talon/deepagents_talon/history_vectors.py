@@ -45,6 +45,10 @@ _BATCH_TIMEOUT_SECONDS = 300
 # Unacknowledged work is retried from durable state on the next start, so abandoning
 # a wedged batch at shutdown costs a repeat, never data.
 _CLOSE_TIMEOUT_SECONDS = 10
+# Cancellation normally lands on the next loop iteration; this only has to outlast
+# that, and bounds a Store that never honours it. Together these are the whole of
+# `close()`'s wait: no await in it is unbounded.
+_CANCEL_GRACE_SECONDS = 1
 
 
 @dataclass
@@ -101,8 +105,15 @@ class HistoryVectorIndex:
     async def close(self) -> None:
         """Finish the active batch before the caller closes database connections.
 
-        A Store write that never returns must not hold host shutdown open forever, so
-        the batch is abandoned once the deadline passes and retried on the next start.
+        Returns within `_CLOSE_TIMEOUT_SECONDS + _CANCEL_GRACE_SECONDS`, having asked
+        every in-flight operation to stop. It cannot promise they have: `_batch` shields
+        the Store task so a cancelled caller cannot leave a partial batch, and a Store
+        that runs blocking work in a thread cannot be interrupted from this loop at all.
+        A batch still running when this returns is abandoned, not awaited - the caller
+        may then close connections underneath it, and the Store may log errors as that
+        happens. That is the deliberate trade: unacknowledged work is retried on the
+        next start, so an abandoned batch costs a repeat, while a wedged `close()`
+        costs the host its shutdown.
         """
         self.stopping = True
         self.wake.set()
@@ -132,7 +143,21 @@ class HistoryVectorIndex:
             )
             for task in unfinished:
                 task.cancel()
-            await asyncio.gather(*unfinished, return_exceptions=True)
+            # Cancellation needs its own grace rather than the remainder of the
+            # deadline above, which the drain loop has usually just exhausted: it
+            # normally lands on the next loop iteration, and waiting ~0s for it would
+            # abandon batches that were about to stop. Bounded, because a Store that
+            # ignores or defers cancellation would otherwise block here forever -
+            # the same wedged shutdown this deadline exists to prevent.
+            _, running = await asyncio.wait(unfinished, timeout=_CANCEL_GRACE_SECONDS)
+            if running:
+                logger.error(
+                    "History vector indexing ignored cancellation; abandoning %d in-flight "
+                    "Store operation(s) and continuing shutdown. Unacknowledged work is "
+                    "retried on the next start, and the Store may report errors as its "
+                    "connection closes underneath them.",
+                    len(running),
+                )
         if self.task is not None and not self.task.cancelled() and (error := self.task.exception()):
             raise error
 

@@ -20,7 +20,6 @@ from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from itertools import groupby
-from operator import itemgetter
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -5827,7 +5826,7 @@ class DeepAgentsApp(App):
                 if seconds is not None:
                     cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
                     cutoffs.append((cutoff, _ranked_source(resolved), True))
-        return max(cutoffs, default=None, key=itemgetter(0))
+        return max(cutoffs, default=None)
 
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:

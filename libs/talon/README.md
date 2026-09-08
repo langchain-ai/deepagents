@@ -27,7 +27,160 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+
+## Conversation history
+
+Talon archives channel conversations in `checkpoints.sqlite` without automatic
+expiry. The agent can list, search, and read past sessions in bounded pages,
+restricted to the current channel and chat. History survives context compaction;
+text, tool-call arguments, and distinct message revisions are retained.
+
+- `/new` starts a fresh context while keeping earlier sessions searchable.
+- `/reset-all-history` stops active work, deletes this chat's archived sessions and
+  checkpoints, and starts a fresh context. Other chats are unaffected. Cancellation
+  timeouts leave history intact; deletion failures may leave a partial reset that
+  you can retry.
+
+Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
+Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
+add conversation history, and existing checkpoints are not backfilled.
+
+The echo runtime and unwrapped custom checkpointers do not support history tools or
+reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
+
+Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
+`postgresql://user:password@host/database` and install the `mongodb` or `postgres`
+extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
+is the default. This alpha requires fresh history storage. Checkpoints stay local.
+Default SQLite uses the same store factory and assistant namespace as configured
+backends, with its own connection to the checkpoint database.
+
+For a separate SQLite database, set the URI to `sqlite:///absolute/path/history.sqlite`
+or a SQLite `file:` URI, including connection options such as `?mode=rwc`.
+Paths containing spaces must be percent-encoded. All archives are
+namespaced by assistant ID, so assistants can share a database.
+
+Additional backends can be installed as Python packages without changing Talon.
+Register the URI scheme in the package's `pyproject.toml`:
+
+```toml
+[project.entry-points."deepagents_talon.history_backends"]
+mysql = "my_history_backend:open_store"
+```
+
+The entry point is a trusted operator-installed callable that accepts the unchanged
+URI and returns an async context manager yielding an initialized LangGraph
+`BaseStore`. It owns connection setup and cleanup, including cancellation, and
+validates its backend-specific URI requirements. Talon wraps the store in its shared
+archive and verifies write access before startup completes. Built-in schemes take
+precedence; unknown or duplicate plugin schemes fail startup. The plugin API is
+experimental and may change with Talon.
+
+Archives require one writer per assistant. Retrieval scans at most 500
+records and raises an error if it cannot complete the page within that budget.
+
+Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` to add semantic matches to keyword
+search. Select an embedding adapter independently of the history database:
+
+| Adapter | Install extra | Credentials | Inference |
+| --- | --- | --- | --- |
+| `local` (default) | `history-local` | None | Local CPU, lazy Qwen loading |
+| `voyage` | `history-voyage` | `VOYAGE_API_KEY` | Voyage API |
+| `openai-compatible` | `history-openai` | `OPENAI_API_KEY` or `OPENROUTER_API_KEY` | HTTPS embedding API |
+| `atlas` | `mongodb` | Configure the model in Atlas | Atlas Automated Embedding |
+
+Remote adapters do not require torch or sentence-transformers. The former `history`
+extra is now `history-local`. Provider packages supply the maintained API integrations;
+`langchain-voyageai` and `langchain-openai` are MIT-licensed LangChain packages.
+
+For Voyage, install `uv sync --extra history-voyage` and configure:
+
+```sh
+DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1
+DEEPAGENTS_TALON_HISTORY_EMBED_ADAPTER=voyage
+DEEPAGENTS_TALON_HISTORY_EMBED_MODEL=voyage-4-large
+DEEPAGENTS_TALON_HISTORY_EMBED_DIMS=1024
+DEEPAGENTS_TALON_HISTORY_EMBED_MAX_INPUT_TOKENS=32000
+```
+
+Supply `VOYAGE_API_KEY` through the environment. For OpenRouter, install
+`history-openai`, select `openai-compatible`, set `BASE_URL` below to
+`https://openrouter.ai/api/v1`, and supply `OPENROUTER_API_KEY`. For example,
+`qwen/qwen3-embedding-8b` supports 4096 dimensions and a 32768-token context.
+Verify the selected model's limits in the [Voyage documentation](https://docs.voyageai.com/docs/embeddings)
+or [OpenRouter catalog](https://openrouter.ai/models?output_modalities=embeddings).
+
+Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
+
+| Suffix | Meaning |
+| --- | --- |
+| `ADAPTER` | `local`, `voyage`, `openai-compatible`, or `atlas` |
+| `MODEL` | Required for remote adapters; local defaults to `Qwen/Qwen3-Embedding-0.6B` |
+| `DIMS` | Output width; required for remote client adapters |
+| `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
+| `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
+| `CONCURRENCY` | Indexing requests in flight; local uses 1, remote defaults to 4 (maximum 16) |
+| `BYTES_PER_TOKEN` | UTF-8 bytes budgeted per token, 1-4; defaults to the worst case of 1 |
+| `QUERY_PROMPT` | Optional query instruction; Qwen3-Embedding models default to Qwen's prefix |
+| `SEND_DIMENSIONS` | Send the OpenAI `dimensions` parameter; set `0` for models that reject it |
+| `BASE_URL` | Optional HTTPS endpoint, routable host, without credentials, query, or fragments |
+| `API_KEY` | Optional environment override for the adapter's standard API key |
+| `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
+
+Queries retain each provider's query/document semantics on all three databases,
+and the instruction prefix follows the model rather than the adapter, so a
+Qwen3-Embedding model reached through OpenRouter is prompted like a local one.
+
+Inputs use UTF-8 byte counts as a conservative token bound, reserving 128 tokens
+for provider instructions. `BYTES_PER_TOKEN` converts the token limit into that
+byte measure and defaults to 1, which assumes every byte can become its own token.
+Natural non-ASCII text is far cheaper than that -- a CJK character is roughly three
+bytes but about one token -- so the default splits transcripts a model could embed
+whole. Raising it trades safety margin for fewer splits; the value is part of the
+embedding fingerprint, so a change rebuilds the index.
+
+Oversized documents are split without losing text and their vectors are combined
+with a length-weighted mean, which is logged once per run because pooled documents
+are compared against unpooled queries. Transcript pagination stays unchanged.
+Oversized queries fall back to keyword search. Atlas requires a budget
+large enough for a complete archive chunk because embedding happens server-side.
+A search holds a slot of its own at both the store and the provider, so it never
+queues behind indexing and may add one request above `CONCURRENCY`.
+
+`BASE_URL` must name a routable host: address literals in loopback, private,
+link-local, or reserved ranges are refused, as is `localhost`, because the
+configured endpoint receives the provider API key. Abbreviated IPv4 spellings
+that the C resolver still accepts, such as `127.1` and `2130706433`, are
+refused as the addresses they reach. A public name that resolves
+to a private address still connects, which needs resolution-time control the
+embedding clients do not expose.
+
+Remote indexing uses bounded batches and concurrency; errors retain pending work
+for retry. Selecting a remote adapter sends archived text and queries to that
+provider and may incur charges.
+
+Vector data uses fingerprint-specific SQLite files, PostgreSQL schemas, or MongoDB
+collections, keeping incompatible dimensions separate. PostgreSQL uses exact vector
+search above 2000 dimensions. Metadata and vectors always use separate Store instances.
+Changing a model, endpoint, dimensions, prompt, or input budget fails startup when
+an existing index is incompatible. Set `DEEPAGENTS_TALON_HISTORY_REINDEX=1` explicitly
+to remove the old vectors and rebuild from retained transcripts; this can incur
+embedding charges. Deletion progress survives interruption. Remove the flag afterward;
+it does not rebuild an already matching index. Empty old vector files/schemas/collections
+remain for operator cleanup. Missing fingerprints on older indexes also require reindexing.
+Reset deletes vectors even after semantic search has been disabled.
+
+Backend plugins can optionally register `deepagents_talon.history_vector_backends`
+under the same URI scheme. The vector factory receives `(uri, *, index, generation)`
+and yields a separate initialized `BaseStore`; `index=None` means deletion-only mode.
+It must isolate generations, own cleanup, and apply backend-specific index options.
+The existing metadata factory remains unchanged. Atlas mode requires MongoDB.
+
+`search_conversations` returns results, indexing coverage, and an opaque
+`next_after` token. Continue with the same query and chat; expired tokens require
+a new search. Semantic errors and timeouts fall back to keyword matches. Unknown
+or pending indexing coverage means an empty page does not prove history is absent.
 
 ## Interrupt and Continue
 
@@ -152,9 +305,15 @@ LANGSMITH_PROJECT=deepagents-talon
 
 When enabled, Talon wraps each agent run in a LangSmith tracing context with assistant id, conversation id, trigger metadata, and source message metadata.
 
+## Chat commands
+
+Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
+and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
+not interrupt current work or consume a pending approval or sign-in response.
+
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/.mcp.json`. For user-level MCP servers, edit `~/.deepagents/.mcp.json`:
+Talon loads MCP servers from `~/.deepagents/.mcp.json`. Set `DEEPAGENTS_TALON_MCP_CONFIG` to use a different path. For user-level MCP servers, edit the standard file:
 
 ```json
 {
@@ -167,7 +326,31 @@ Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CO
 }
 ```
 
-Run `deepagents-talon mcp config` to print the resolved config paths, and `deepagents-talon mcp login <server>` for OAuth-backed servers.
+Set `"auth": "oauth"` on a remote server to enable OAuth. From WhatsApp,
+Telegram, or another interactive channel, ask Talon to authenticate that configured
+server. Talon calls the narrow `authenticate_mcp_server` capability, sends the
+authorization link directly to the originating conversation, and waits for the same
+operator to paste the full callback URL. The authorization link and callback bypass
+the model context and traces. Newly discovered tools are available on the next channel
+turn after login completes.
+
+Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
+`deepagents-talon mcp login <server>` flow remains available as an alternative.
+
+On Linux/macOS, Talon can manage its MCP configuration through chat using
+`get_mcp_configuration` (redacted view) and `update_mcp_server` (add, replace, or
+remove one server). Updates require human approval by default and reload before
+the next turn. Set `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` in the host
+environment to opt out; explicit tool approval policies still apply.
+
+Use `${ENV_VAR}` references for credentials. Set `DEEPAGENTS_TALON_MCP_CONFIG`
+to keep the file outside the workspace. These tools do not sandbox Talon's local
+shell backend; deployments must enforce filesystem isolation separately.
+
+After editing the configuration manually, send `/mcp-reload` through an authorized channel to
+reload it without restarting Talon. The agent can also call
+`reload_mcp_configuration` autonomously; that schedules the same reload before the
+next agent turn.
 
 Fleet zip exports can be materialized into a Talon-local agent directory before
 starting the host:
@@ -192,54 +375,120 @@ imports into `~/.deepagents/crowbar/`. Pass `--assistant-id <id>` to select a
 different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
-The importer writes Fleet prompts, skills, and subagent prompts. Fleet
-`tools.json` is read only as import input and is not copied into the Talon agent
-directory. Fleet `config.json` is ignored. Talon does not support the old Fleet
-direct-run startup path or its environment variables; import the zip first, then
-run Talon against the materialized local assistant.
+Talon loads local subagents from `agents/<name>/AGENTS.md` using YAML frontmatter:
+`description` is required, `name` defaults to the directory name, and `model` is
+optional.
 
-When Fleet MCP tools are present, the importer writes `.mcp.json` in the target
-agent directory. This is the runtime MCP config loaded by Talon and contains the
-sanitized OAuth server entries from the Fleet export. The importer also writes
-`.mcp.json.setup` as a human-readable setup handoff for the operator:
+## Research defaults
 
-```json
-{
-  "mcpServers": {
-    "fleet-tools": {
-      "type": "http",
-      "url": "https://tools.example.com/mcp",
-      "auth": "oauth",
-      "allowedTools": ["github_get_file", "github_create_pull_request"]
-    }
-  }
-}
-```
+Talon also installs the `configuration-hardening` skill and its reference under the
+assistant home's `skills/` directory, preserving existing files. Ask it to review
+tool separation or minimize tools; the default main instructions also trigger a
+placement review when tools or subagents change. The skill proposes scoped changes,
+uses existing confirmation controls, and verifies active attachments after reload.
+Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
+Existing customized main instructions need a reviewed update to add this trigger.
 
-For non-OAuth servers or local edits, keep credentials in environment variables
-or another local secret source rather than in committed files:
+On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
+`external-research`, with defensive prompts. External research owns `fetch_url` and
+Tavily-backed `web_search`, attached at construction by default. Search is added
+only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
+startup and reload still work and `fetch_url` remains available.
+Main and internal research are constructed without them; disabling web tools leaves
+external research usable without built-in web access. Internal research starts
+with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as
+applicable GitHub, Notion, email, and calendar reads internally. No integrations are
+connected automatically. Set persistent tools with standard `tools` frontmatter;
+launch-time additions apply only to that task. Main retains filesystem, action tools, and existing
+approval controls, chooses placement from the workflow, and mediates minimal
+internal-to-external context.
 
-```json
-{
-  "mcpServers": {
-    "internal-tools": {
-      "command": "internal-mcp-server",
-      "args": ["--token-env", "INTERNAL_MCP_TOKEN"]
-    }
-  }
-}
-```
+Existing files are unchanged; missing research definitions are installed automatically.
+Review the packaged `deepagents_talon/defaults/` files,
+back up affected instructions, and merge the selected changes without replacing custom
+content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
+by restoring those files and reloading. Include restored capabilities in the rollback
+review. Running tasks retain their original graphs until finished or canceled.
 
-If the Fleet export contains interrupt-enabled tools, the import summary prints
-the recommended `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` value. Set that value when
-starting Talon so those tools continue to require channel approval:
+Prompts are not a sandbox: main filesystem/shell access, injected results, classification
+mistakes, shared runtime/credentials, and retrieval of private destinations remain
+operator-managed risks. The benign fixtures in `tests/unit_tests/fixtures/research_injections.json`
+exercise missing capabilities and approval gates with scripted calls, not model refusal
+or guaranteed public-only retrieval. Evaluate prompt behavior separately with your model.
 
-```bash
-DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=github_create_pull_request,github_update_file \
-AGENT_ASSISTANT_ID=local \
-AGENT_MODEL=<provider>:<model-id> \
-deepagents-talon --telegram
-```
+## Background Subagents
+
+Talon loads local `agents/<name>/AGENTS.md` definitions and remote
+`[async_subagents]` configuration at startup. After adding, editing, or deleting
+definitions, the main agent can call `reload_subagent_configuration` to apply the
+changes on subsequent turns. Ordinary turns reuse the loaded definitions. Invalid
+edits retain the last valid configuration; running subagents keep their original
+configuration.
+
+Subagents use fresh task context; fork is unsupported. Attach local tools with
+`tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
+There is no automatic general-purpose agent; delegate to a research role or another
+configured agent. Pass a `tools` list to `task` on each launch
+to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill
+instructions in `description` or select
+`read_file` to load them. `get_agent_tools` shows available attachments and inactive
+edits; `list_subagents` shows launch-time additions.
+
+`task` launches local subagents and `start_async_task` launches remote subagents.
+Both return immediately. The user can continue chatting while the main agent uses
+`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
+finishes, its result is passed to the main agent for processing on the next idle
+turn, then the main agent replies to the channel.
+
+Workers and pending results live only in memory and are discarded on restart.
+`/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
+messages interrupt only the main turn. Shutdown cancels all workers. Local tool
+approval policy still applies; a child needing approval reports that it could not
+complete the action. Remote runs cancel when their stream disconnects.
+
+Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
+and limits each run to one hour. Completed results are capped at 64,000 characters.
+
+## Cron Schedules
+
+`create_job` and `edit_job` accept four schedule forms:
+
+| Form | Kind | Example |
+| --- | --- | --- |
+| `in <N>{m,h}` | one-shot | `in 30m` |
+| `every <N>{m,h}` | recurring | `every 6h` |
+| `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
+| `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
+
+The wall-clock forms require an explicit IANA timezone name; there is no default
+zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
+rejected because they cannot express a region's future daylight-saving rules.
+
+The agent gets that zone name from the `current_time` tool, which is always
+available and reports the current date, time, and IANA timezone. Called with no
+argument it uses the host's local zone; pass a zone name to read the clock
+elsewhere. Its `timezone` value goes straight into a schedule string. When the
+host zone name cannot be determined the tool still reports the correct local
+time and UTC offset, but returns `timezone: null` and a note to ask the user
+rather than guessing.
+
+The timezone is stored on the job and pinned. `daily at 08:00 America/New_York`
+fires at 08:00 New York wall-clock time no matter where the host is or which
+side of a daylight-saving transition the run falls on — the next run is rebuilt
+from the local date each time rather than advanced by 24 hours. Two edge cases
+resolve deterministically:
+
+- A local time skipped by a spring-forward transition snaps forward to the first
+  minute that exists, so `daily at 02:30` fires at 03:00 local on that day
+  rather than being skipped.
+- An ambiguous local time repeated by a fall-back transition resolves to its
+  earlier occurrence, so the job fires once.
+
+Interval schedules stay phase-locked to their previous run, so a late scheduler
+tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
+that has already passed is rejected at create and edit time with the resolved
+instant in the error message. Because the scheduler ticks every 60 seconds, a
+run lands within the minute it is due, not on the exact second.
 
 ## Cron Observability
 

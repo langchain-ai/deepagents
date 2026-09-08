@@ -239,6 +239,40 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             for step in privileged_steps
         )
 
+        acknowledge = next(
+            step for step in job["steps"] if step.get("id") == "acknowledge"
+        )
+        assert acknowledge["if"] == "github.event_name == 'issue_comment'"
+        assert acknowledge["continue-on-error"] is True
+        assert acknowledge["with"]["retries"] == 3
+        assert "acknowledgeCommand" in acknowledge["with"]["script"]
+        assert "core.setOutput('reaction-id', reactionId)" in acknowledge["with"][
+            "script"
+        ]
+
+        complete = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Mark manual command complete"
+        )
+        terminal_step = "post" if job_name == "draft" else "publish"
+        assert "github.event_name == 'issue_comment'" in complete["if"]
+        assert "steps.acknowledge.outcome == 'success'" in complete["if"]
+        assert f"steps.{terminal_step}.outcome == 'success'" in complete["if"]
+        assert complete["continue-on-error"] is True
+        assert complete["with"]["retries"] == 3
+        assert complete["env"]["REACTION_ID"] == (
+            "${{ steps.acknowledge.outputs.reaction-id }}"
+        )
+        assert "completeCommand" in complete["with"]["script"]
+
+        step_names = [step.get("name") for step in job["steps"]]
+        assert step_names.index("Acknowledge manual command") < step_names.index(
+            "Prepare isolated drafting input"
+            if job_name == "draft"
+            else "Validate override and prepare changelog/body edits"
+        )
+
     # No long-lived bot PAT: repository mutations go through short-lived App tokens.
     # This also covers the old DCODE_RELEASE_BOT_TOKEN name as a substring.
     assert "RELEASE_BOT_TOKEN" not in automation

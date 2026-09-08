@@ -881,6 +881,26 @@ async def test_transport_rejects_bot_api_error_envelopes(
         await transport.call("sendMessage", chat_id="123", text="hello")
 
 
+async def test_transport_wraps_connection_interruptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        msg = "connection lost during sleep"
+        raise ConnectionResetError(msg)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _TelegramTransport(
+        api_base="https://api.telegram.org",
+        token="test-token",  # noqa: S106  # inert test token
+        timeout=1,
+    )
+
+    with pytest.raises(_TelegramError, match="request failed") as exc_info:
+        await transport.call("getUpdates", offset=0)
+
+    assert isinstance(exc_info.value.__cause__, ConnectionResetError)
+
+
 async def test_transport_rejects_upload_error_envelopes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

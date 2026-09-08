@@ -11,7 +11,10 @@ const {
   contactIdentityIds,
   createCompatibleClientClass,
   isSelfChat,
+  messageSenderId,
   normalizeMessage,
+  quotedMessageContext,
+  reactionEntry,
   serializedId,
   widString,
 } = require("./id_compat");
@@ -123,6 +126,20 @@ client.on("message", (message) => {
   void enqueueMessage(message, false);
 });
 
+client.on("message_reaction", (reaction) => {
+  console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.received"}');
+  try {
+    const entry = reactionEntry(reaction, botId, botIds);
+    if (entry) {
+      queue.push(entry);
+      console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.queued"}');
+    }
+  } catch (error) {
+    console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.parse_failed"}');
+    throw error;
+  }
+});
+
 client.on("media_uploaded", (message) => {
   if (bridgeMediaSends === 0) {
     void enqueueMessage(message, true);
@@ -199,7 +216,7 @@ async function enqueueMessage(message, fromSelf) {
       `[bridge] Message media unavailable; type=${message.type || "unknown"} mediaType=${mediaType}`,
     );
   }
-  const senderId = widString(message.author) || (fromSelf && botId ? botId : messageFrom);
+  const senderId = messageSenderId(message, fromSelf, botId, messageFrom);
   const senderName =
     (contact && (contact.pushname || contact.name || contact.shortName)) ||
     data.notifyName ||
@@ -209,6 +226,7 @@ async function enqueueMessage(message, fromSelf) {
   const chatName = (chat && chat.name) || data.chatName || chatId;
   const isGroup =
     chat && typeof chat.isGroup === "boolean" ? chat.isGroup : chatId.endsWith("@g.us");
+  const quote = await quotedMessageContext(message);
 
   const entry = {
     text: message.body || "",
@@ -249,7 +267,12 @@ async function enqueueMessage(message, fromSelf) {
     selfChat,
     mentionedIds: normalizeIds(message.mentionedIds || []),
     botIds,
-    quotedParticipant: await quotedParticipant(message),
+    quoted_participant: quote.participant,
+    quotedParticipant: quote.participant,
+    quoted_message_id: quote.messageId,
+    quotedMessageId: quote.messageId,
+    reply_context_status: quote.status,
+    replyContextStatus: quote.status,
     raw_message: {
       from: messageFrom,
       to: messageTo,
@@ -342,18 +365,6 @@ async function safeGetContact(message) {
     return await message.getContact();
   } catch (_error) {
     console.log("[bridge] getContact failed (non-fatal)");
-    return null;
-  }
-}
-
-async function quotedParticipant(message) {
-  if (!message.hasQuotedMsg) {
-    return null;
-  }
-  try {
-    const quoted = await message.getQuotedMessage();
-    return quoted.author || quoted.from || null;
-  } catch (_error) {
     return null;
   }
 }

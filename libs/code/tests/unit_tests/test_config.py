@@ -1,10 +1,11 @@
 """Tests for config module including project discovery utilities."""
 
+import json
 import logging
 import subprocess
 import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -63,6 +64,130 @@ from deepagents_code.project_utils import (
 
 class TestRuntimeDotenvReload:
     """Tests for project-scoped dotenv refresh behavior."""
+
+    def test_direct_reload_preserves_user_settings_for_server_commands(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Direct reload preserves user settings through the server handoff."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.client.launch.server import _build_server_env
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setattr(config_mod._bootstrap_state, "launch_langsmith_env", {})
+        monkeypatch.setattr(config_mod._bootstrap_state, "user_langsmith_env", {})
+        monkeypatch.setattr(config_mod, "_dotenv_loaded_values", {})
+        monkeypatch.delenv(config_mod._USER_LANGSMITH_ENV_CARRIER, raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "user-launch-key")
+        (tmp_path / ".env").write_text("LANGSMITH_PROJECT=user-project\n")
+        runtime = Credentials.from_environment(start_path=tmp_path)
+
+        runtime.reload_from_environment(start_path=tmp_path)
+        shell_env = _build_server_env()
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in os.environ
+        shell_env.update(
+            LANGSMITH_API_KEY="agent-key", LANGSMITH_PROJECT="agent-project"
+        )
+        config_mod.restore_user_langsmith_env(shell_env)
+
+        assert shell_env["LANGSMITH_API_KEY"] == "user-launch-key"
+        assert shell_env["LANGSMITH_PROJECT"] == "user-project"
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in shell_env
+
+    def test_reload_restores_the_launch_value_over_an_agent_override(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reload un-does the agent's in-process override from the carrier."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+        # What the agent put on the canonical var in this process.
+        monkeypatch.setenv("LANGSMITH_API_KEY", "agent-override")
+        monkeypatch.setenv("LANGSMITH_PROFILE", "agent-profile")
+
+        # The user's launch environment: a different key, and no profile at all.
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "user-key"
+        monkeypatch.setenv(
+            config_mod._USER_LANGSMITH_ENV_CARRIER,
+            json.dumps({"launch": launch, "user": dict(launch)}),
+        )
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "user-key"
+            # `None` in the carrier means the user had none: remove it.
+            assert "LANGSMITH_PROFILE" not in os.environ
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_reload_keeps_settings_when_the_carrier_is_unusable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An undecodable carrier leaves LangSmith settings alone, and reports."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setenv(config_mod._USER_LANGSMITH_ENV_CARRIER, "{not json")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "in-process-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        # A stale mapping that would otherwise be written over `os.environ`.
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            changes = runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "in-process-key"
+            assert any("could not be read" in change for change in changes)
+            # The refusal must not be laundered: republishing here would encode
+            # the in-process agent key into a well-formed carrier that every
+            # later restore accepts without warning.
+            assert os.environ[config_mod._USER_LANGSMITH_ENV_CARRIER] == "{not json"
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
 
     def test_reload_from_environment_refreshes_loaded_project_dotenv_values(
         self,
@@ -145,6 +270,47 @@ class TestRuntimeDotenvReload:
         finally:
             reset_env_resolution_log()
 
+    def test_reload_reapplies_prefixed_langsmith_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reload keeps the session key on the canonical SDK variable."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "prefixed-key")
+        auth_store.set_stored_key("langsmith", "stored-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict(
+            config_mod._bootstrap_state.launch_langsmith_env
+        )
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
     def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
         self,
         tmp_path: Path,
@@ -174,10 +340,20 @@ class TestRuntimeDotenvReload:
         )
         config_mod._dotenv_loaded_values.clear()
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
 
         try:
             # User never set LANGSMITH_PROJECT; tracing is active with a key.
             config_mod._bootstrap_state.original_langsmith_project = None
+            config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+                config_mod._USER_LANGSMITH_ENV_VARS
+            )
+            config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_API_KEY"] = (
+                "lsv2_test"
+            )
+            config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_TRACING"] = (
+                "true"
+            )
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
@@ -193,11 +369,384 @@ class TestRuntimeDotenvReload:
             assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
         finally:
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
             config_mod._dotenv_loaded_values.clear()
+
+
+class TestWorkspaceDotenvEnvironment:
+    """Workspace previews stay isolated without replacing the process environment."""
+
+    def test_conflicting_workspaces_resolve_independently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Construction-time consumers read each workspace's immutable snapshot."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.providers import EnvProvider
+        from deepagents_code.configuration.types import Found
+        from deepagents_code.mcp_config import resolve_mcp_server_env
+        from deepagents_code.model_config import resolve_env_var
+
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / ".env").write_text(
+            "OPENAI_API_KEY=first-key\nDEEPAGENTS_CODE_TEST_VALUE=first\nGOOGLE_CLOUD_LOCATION=first-region\n",
+            encoding="utf-8",
+        )
+        (second / ".env").write_text(
+            "OPENAI_API_KEY=second-key\nDEEPAGENTS_CODE_TEST_VALUE=second\nGOOGLE_CLOUD_LOCATION=second-region\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        option = get_option("credentials.google_cloud_location")
+        assert option is not None
+
+        for workspace, expected in ((first, "first"), (second, "second")):
+            env = config_mod._preview_dotenv_environ(start_path=workspace)
+            with config_mod.use_environment(env):
+                assert resolve_env_var("TEST_VALUE") == expected
+                assert (
+                    resolve_mcp_server_env(
+                        "srv", {"command": "${DEEPAGENTS_CODE_TEST_VALUE}"}
+                    )["command"]
+                    == expected
+                )
+                snapshot = config_mod.Credentials.snapshot_from_environment(
+                    start_path=workspace
+                )
+                assert snapshot.openai_api_key == f"{expected}-key"
+                assert EnvProvider().get(option).result == Found(f"{expected}-region")
+
+        assert "OPENAI_API_KEY" not in os.environ
+        assert "DEEPAGENTS_CODE_TEST_VALUE" not in os.environ
+
+    def test_workspace_only_tracing_is_active(self) -> None:
+        """Tracing flags and project resolve from the workspace snapshot."""
+        import deepagents_code.config as config_mod
+
+        with config_mod.use_environment(
+            {
+                "LANGSMITH_API_KEY": "lsv2-workspace",
+                "LANGSMITH_TRACING": "true",
+                "LANGSMITH_PROJECT": "workspace-traces",
+            }
+        ):
+            assert config_mod.get_langsmith_project_name() == "workspace-traces"
+
+    def test_snapshot_preserves_project_replaced_during_bootstrap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shells retain the caller's project after the agent override is applied."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod._bootstrap_state, "done", True)
+        monkeypatch.setattr(
+            config_mod._bootstrap_state,
+            "original_langsmith_project",
+            "caller-traces",
+        )
+        snapshot = config_mod.Credentials.snapshot_from_environment(
+            environ={
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "agent-traces",
+                "LANGSMITH_PROJECT": "agent-traces",
+            }
+        )
+
+        assert snapshot.deepagents_langchain_project == "agent-traces"
+        assert snapshot.user_langchain_project == "caller-traces"
+
+    def test_environment_binding_is_immutable_and_restored(self) -> None:
+        """Bindings copy inputs and reset after exceptions."""
+        import os
+
+        from deepagents_code.config import active_environment, use_environment
+
+        source = {"VALUE": "workspace"}
+        error = RuntimeError("boom")
+
+        def fail() -> None:
+            with use_environment(source):
+                source["VALUE"] = "changed"
+                assert active_environment()["VALUE"] == "workspace"
+                with pytest.raises(TypeError):
+                    active_environment()["VALUE"] = "forbidden"  # ty: ignore[invalid-assignment]
+                raise error
+
+        with pytest.raises(RuntimeError):
+            fail()
+        assert active_environment() is os.environ
+
+    def test_windows_dotenv_keys_follow_case_insensitive_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lowercase dotenv names normalize and cannot replace shell values."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        (tmp_path / ".env").write_text("openai_api_key=dotenv-key\n")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        from_dotenv = config_mod._dotenv_environment(
+            start_path=tmp_path,
+            environ={},
+        )
+        from_shell = config_mod._dotenv_environment(
+            start_path=tmp_path,
+            environ={"OPENAI_API_KEY": "shell-key"},
+        )
+
+        assert from_dotenv["OPENAI_API_KEY"] == "dotenv-key"
+        assert "openai_api_key" not in from_dotenv
+        assert from_shell["OPENAI_API_KEY"] == "shell-key"
+
+    def test_windows_interpolation_resolves_normalized_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lowercase `${...}` reference finds the normalized key."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        (tmp_path / ".env").write_text(
+            "proxy_url=http://proxy:8080\nHTTPS_PROXY=${proxy_url}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        env = config_mod._dotenv_environment(start_path=tmp_path, environ={})
+
+        assert env["HTTPS_PROXY"] == "http://proxy:8080"
+
+    def test_preview_interpolates_prior_dotenv_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Later values interpolate earlier values from the same file."""
+        import deepagents_code.config as config_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "BASE=project\nCOMPOSED=${BASE}-value\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("BASE", raising=False)
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        env = config_mod._preview_dotenv_environ(start_path=workspace)
+
+        assert env["BASE"] == "project"
+        assert env["COMPOSED"] == "project-value"
+
+    def test_preview_interpolates_the_value_that_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reference resolves to the effective value, not the shadowed one."""
+        import deepagents_code.config as config_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "BASE=project\nCOMPOSED=${BASE}-value\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("BASE", "shell")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        env = config_mod._preview_dotenv_environ(start_path=workspace)
+
+        # The shell value outranks the file, so `${BASE}` must not expand to the
+        # file's losing value: the environment stays self-consistent.
+        assert env["BASE"] == "shell"
+        assert env["COMPOSED"] == "shell-value"
+
+    def test_preview_preserves_shell_project_global_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Immutable snapshots retain existing first-write-wins behavior."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "SHELL_VALUE=project\nPROJECT_VALUE=project\n",
+            encoding="utf-8",
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "SHELL_VALUE=global\nPROJECT_VALUE=global\nGLOBAL_VALUE=global\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SHELL_VALUE", "shell")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.delenv("GLOBAL_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["SHELL_VALUE"] == "shell"
+        assert env["PROJECT_VALUE"] == "project"
+        assert env["GLOBAL_VALUE"] == "global"
+
+    def test_dotenv_is_read_as_utf8_regardless_of_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.env` holding non-ASCII bytes decodes on any platform locale.
+
+        The value round-trips on a UTF-8 host either way, so this asserts the
+        explicit encoding reaches `DotEnv`: its own default is the locale
+        encoding (cp1252 on Windows), which mis-decodes or raises.
+        """
+        import dotenv.main
+
+        import deepagents_code.config as config_mod
+
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text("PROXY_USER=café\n", encoding="utf-8")
+        recorded: dict[str, Any] = {}
+        real_dotenv = dotenv.main.DotEnv
+
+        def _record(**kwargs: Any) -> dotenv.main.DotEnv:
+            recorded.update(kwargs)
+            return real_dotenv(**kwargs)
+
+        monkeypatch.setattr(dotenv.main, "DotEnv", _record)
+
+        values = config_mod._dotenv_values_from(dotenv_path, {})
+
+        assert recorded["encoding"] == "utf-8"
+        assert values["PROXY_USER"] == "café"
+
+    def test_global_dotenv_does_not_interpolate_project_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cloned repo cannot steer the trusted global file's references."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("GATEWAY_HOST=https://evil\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("GATEWAY_HOST", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        # The project value still lands in the environment; it just must not
+        # be visible to the global file's interpolation.
+        assert env["GATEWAY_HOST"] == "https://evil"
+        assert env["ANTHROPIC_BASE_URL"] == "/v1"
+
+    def test_global_dotenv_still_interpolates_shell_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The baseline keeps trusted shell values available to the global file."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("GATEWAY_HOST", "https://trusted")
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["ANTHROPIC_BASE_URL"] == "https://trusted/v1"
+
+    @pytest.mark.parametrize("trusted_opt_in", [False, True])
+    def test_unreadable_global_dotenv_requires_trusted_opt_in(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        trusted_opt_in: bool,
+    ) -> None:
+        """An unreadable global dotenv blocks the project unless the shell opts in."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("GLOBAL_VALUE=global\n", encoding="utf-8")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.delenv("GLOBAL_VALUE", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+        if trusted_opt_in:
+            monkeypatch.setenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", "true")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        real_values_from = config_mod._dotenv_values_from
+
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
+            if dotenv_path == global_dotenv:
+                msg = "permission denied"
+                raise OSError(msg)
+            return real_values_from(dotenv_path, environ)
+
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        if trusted_opt_in:
+            assert env["PROJECT_VALUE"] == "project"
+        else:
+            assert "PROJECT_VALUE" not in env
 
 
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""
+
+    def test_project_values_do_not_interpolate_into_the_global_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project `.env` cannot reach a denied key through the global file."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        denied = "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("MY_SERVERS=evil-server\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{denied}=${{MY_SERVERS}}\n", encoding="utf-8")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        env = config_mod._dotenv_environment(start_path=project, environ={})
+
+        # The project file may set its own name, but the trusted global file
+        # must not expand it into a key the project is denied.
+        assert env["MY_SERVERS"] == "evil-server"
+        assert env[denied] == ""
 
     def test_profile_dotenv_inside_project_keeps_project_provenance(
         self,
@@ -276,6 +825,44 @@ class TestProjectDotenvDeniedKeys:
 
             assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in os.environ
             assert DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_project_dotenv_cannot_configure_forked_subagents(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A repo cannot alter whether the built-in subagent inherits state."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import FORKED_SUBAGENTS
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{FORKED_SUBAGENTS}=false\nDEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(FORKED_SUBAGENTS, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert FORKED_SUBAGENTS not in os.environ
+            assert FORKED_SUBAGENTS not in preview
             assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
             assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
         finally:
@@ -768,6 +1355,366 @@ class TestDefaultModelSpecAllowlist:
             model_config.NoAllowedModelCredentialsError, match="No discoverable"
         ):
             _get_default_model_spec()
+
+
+class TestWorkspaceStoredCredentials:
+    """Stored auth remains workspace-local during server model construction."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_azure_sdk_environment_is_forwarded_explicitly(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Azure SDK-only workspace settings reach the model constructor."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock(profile=None)
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.delenv("OPENAI_API_VERSION", raising=False)
+        monkeypatch.delenv("AZURE_OPENAI_AD_TOKEN", raising=False)
+        monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+
+        with use_environment(
+            {
+                "AZURE_OPENAI_API_KEY": "test-key",
+                "AZURE_OPENAI_ENDPOINT": "https://workspace.openai.azure.com/",
+                "OPENAI_API_VERSION": "2026-01-01",
+                "AZURE_OPENAI_AD_TOKEN": "test-token",
+            }
+        ):
+            create_model("azure_openai:deployment")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["azure_endpoint"] == "https://workspace.openai.azure.com/"
+        assert "base_url" not in kwargs
+        assert kwargs["api_version"] == "2026-01-01"
+        assert kwargs["azure_ad_token"] == "test-token"
+        assert "OPENAI_API_VERSION" not in os.environ
+        assert "AZURE_OPENAI_AD_TOKEN" not in os.environ
+        assert "AZURE_OPENAI_ENDPOINT" not in os.environ
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_bedrock_sdk_environment_is_forwarded_explicitly(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AWS workspace settings reach Bedrock without process mutation."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock(profile=None)
+        mock_init_chat_model.return_value = mock_model
+        aws_environment = {
+            "AWS_DEFAULT_REGION": "us-test-1",
+            "AWS_DEFAULT_PROFILE": "workspace-profile",
+            "AWS_ACCESS_KEY_ID": "test-access-key",
+            "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "AWS_SESSION_TOKEN": "test-session-token",
+        }
+        for name in aws_environment:
+            monkeypatch.delenv(name, raising=False)
+
+        with use_environment(aws_environment):
+            create_model("bedrock:amazon.test-model")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["region_name"] == "us-test-1"
+        assert kwargs["credentials_profile_name"] == "workspace-profile"
+        assert kwargs["aws_access_key_id"] == "test-access-key"
+        assert kwargs["aws_secret_access_key"] == "test-secret-key"
+        assert kwargs["aws_session_token"] == "test-session-token"
+        assert all(name not in os.environ for name in aws_environment)
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_key_and_endpoint_do_not_mutate_process_environment(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Scoped model creation passes stored auth explicitly."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda provider: (
+                "https://stored.example/v1" if provider == "openai" else None
+            ),
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        with use_environment({}):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert kwargs["base_url"] == "https://stored.example/v1"
+        assert "OPENAI_API_KEY" not in os.environ
+        assert "OPENAI_BASE_URL" not in os.environ
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_native_key_clears_workspace_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored native key is not sent to a workspace gateway URL."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: None,
+        )
+
+        with use_environment({"OPENAI_BASE_URL": "https://workspace.example/v1"}):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_key_does_not_use_stored_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A caller-supplied key is not paired with another key's endpoint."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: "https://stored.example/v1",
+        )
+        with use_environment({}):
+            create_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"api_key": "caller-key"},
+            )
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "caller-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_anthropic_key_clears_endpoint_and_headers(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A native Anthropic key gets explicit native transport settings."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "anthropic" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: None,
+        )
+        with use_environment(
+            {
+                "ANTHROPIC_BASE_URL": "https://workspace.example/v1",
+                "ANTHROPIC_CUSTOM_HEADERS": "X-Api-Key: gateway-key",
+            }
+        ):
+            create_model("anthropic:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert kwargs["base_url"] == "https://api.anthropic.com"
+        assert kwargs["default_headers"] == {}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_inherited_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unreadable store must not let a resolved key reach a gateway.
+
+        `_apply_scoped_stored_endpoint` is the only thing enforcing the
+        key/endpoint pairing on the scoped path, and `resolve_provider_credential`
+        still falls back to the environment key. Keeping `base_url` would send
+        that key to a gateway a workspace `.env` chose.
+        """
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs.get("base_url") != "https://attacker.example/v1"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_endpoint_for_an_explicit_key(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without the store, an explicit key's endpoint pairing is unknowable."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5", extra_kwargs={"api_key": "caller-key"})
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "caller-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_falls_back_to_adc_project_inference(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Vertex stores the GCP project in the key slot; a read failure warns.
+
+        The provider uses implicit auth, so the early credential check never
+        fires and a corrupt store would otherwise surface only as an opaque
+        ADC project-inference error.
+        """
+        import logging
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            use_environment({"GOOGLE_CLOUD_LOCATION": "us-east5"}),
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert "project" not in kwargs
+        assert kwargs["location"] == "us-east5"
+        assert any(
+            "Could not read the stored Google Cloud project" in record.message
+            for record in caplog.records
+        )
+
+    def test_bare_claude_provider_uses_workspace_credentials(self) -> None:
+        """Bare model inference reads the active workspace snapshot."""
+        from deepagents_code.config import detect_provider, use_environment
+
+        with use_environment(
+            {
+                "GOOGLE_CLOUD_PROJECT": "workspace-project",
+                "GOOGLE_CLOUD_LOCATION": "us-central1",
+            }
+        ):
+            assert detect_provider("claude-sonnet-4-6") == "google_anthropic_vertex"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_vertex_uses_active_workspace_project_and_not_api_key(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Vertex project settings come from the workspace snapshot."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda _provider: None,
+        )
+
+        with use_environment(
+            {
+                "GOOGLE_CLOUD_PROJECT": "workspace-project",
+                "GOOGLE_CLOUD_LOCATION": "us-central1",
+            }
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["project"] == "workspace-project"
+        assert kwargs["location"] == "us-central1"
+        assert "api_key" not in kwargs
 
 
 class TestCreateModelProfileExtraction:
@@ -1482,6 +2429,27 @@ class TestLangsmithSecretRedaction:
         redacted = str(kwargs["anonymizer"]([{"text": f"key={secret}"}]))
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
+
+    def test_workspace_environment_configures_redaction(self) -> None:
+        """Workspace-only tracing settings configure the SDK client."""
+        from deepagents_code.config import use_environment
+
+        client = object()
+        with (
+            use_environment(
+                {
+                    "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "lsv2_workspace",
+                    "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
+                }
+            ),
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        assert client_cls.call_args.kwargs["api_key"] == "lsv2_workspace"
 
     def test_skips_client_configuration_when_redaction_disabled(
         self,
@@ -3130,6 +4098,36 @@ class TestGetProviderKwargsConfigFallback:
             kwargs = _get_provider_kwargs("google_genai")
             assert kwargs == {}
 
+    def test_azure_env_endpoint_does_not_replace_configured_azure_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """`AZURE_OPENAI_ENDPOINT` fills in but never replaces `azure_endpoint`.
+
+        A `config.toml` `[models.providers.azure_openai.params]` literal reaches
+        `_apply_azure_sdk_endpoint` before the environment default is applied,
+        so an explicit endpoint must win over the env var just as the other
+        SDK environment defaults in `_apply_provider_sdk_environment` use
+        `setdefault`. The `base_url` -> `azure_endpoint` translation still runs
+        when the env var matches a configured `base_url`.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.azure_openai.params]
+azure_endpoint = "https://configured.openai.azure.com/"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"AZURE_OPENAI_ENDPOINT": "https://env.openai.azure.com/"},
+                clear=True,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("azure_openai")
+
+        assert kwargs["azure_endpoint"] == "https://configured.openai.azure.com/"
+        assert "base_url" not in kwargs
+
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""
         config_path = tmp_path / "config.toml"
@@ -3781,6 +4779,377 @@ class TestDetectProvider:
             credentials.anthropic_api_key = None
 
 
+class TestPrefixedLangsmithBridge:
+    """Bridging a prefixed override onto the canonical SDK name."""
+
+    def test_an_empty_prefixed_value_still_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`FOO=""` is an explicit disable, not an absent override."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "")
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+        config_mod._apply_prefixed_langsmith_env()
+
+        assert os.environ["LANGSMITH_TRACING"] == ""
+
+
+class TestTracingEnvironmentReconcile:
+    """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
+
+    @pytest.mark.parametrize("prefixed", [False, True])
+    @pytest.mark.parametrize("load_first", [False, True])
+    def test_publishing_does_not_contaminate_later_workspaces(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        prefixed: bool,
+        load_first: bool,
+    ) -> None:
+        """Repeated publication preserves each workspace's identity and opt-out."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_dotenv_loaded_values", {})
+        for var in config_mod._TRACING_RECONCILED_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        empty = tmp_path / "empty"
+        for workspace in (first, second, empty):
+            workspace.mkdir()
+        prefix = "DEEPAGENTS_CODE_" if prefixed else ""
+        (first / ".env").write_text(
+            f"{prefix}LANGSMITH_TRACING=true\n"
+            f"{prefix}LANGSMITH_API_KEY=first-key\n"
+            f"{prefix}LANGSMITH_PROJECT=first-project\n"
+            "LANGSMITH_ENDPOINT=https://first.example.com\n"
+        )
+        (second / ".env").write_text(
+            "LANGSMITH_TRACING=false\n"
+            "LANGSMITH_API_KEY=second-key\n"
+            "LANGSMITH_PROJECT=second-project\n"
+        )
+        if load_first:
+            config_mod._load_dotenv(start_path=first)
+        for workspace in (first, second, empty, first, second):
+            snapshot = config_mod._preview_dotenv_environ(start_path=workspace)
+            config_mod.reconcile_tracing_environment(snapshot)
+            if workspace == second:
+                assert snapshot["LANGSMITH_TRACING"] == "false"
+                assert snapshot["LANGSMITH_API_KEY"] == "second-key"
+                assert snapshot["LANGSMITH_PROJECT"] == "second-project"
+                assert "LANGSMITH_ENDPOINT" not in snapshot
+                with config_mod.use_environment(snapshot):
+                    assert config_mod.get_langsmith_project_name() is None
+            elif workspace == empty:
+                assert not snapshot.keys() & set(
+                    config_mod._TRACING_RECONCILED_ENV_VARS
+                )
+
+    @pytest.mark.parametrize("published", ["workspace-value", None])
+    def test_preview_preserves_overwritten_shell_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, published: str | None
+    ) -> None:
+        """Publishing or removing a selector does not erase its shell baseline."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "shell-project")
+        (tmp_path / ".env").write_text("LANGSMITH_PROJECT=dotenv-project\n")
+        snapshot = {"LANGSMITH_PROJECT": published} if published is not None else {}
+        for _ in range(2):
+            config_mod.reconcile_tracing_environment(snapshot)
+            preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+            assert preview["LANGSMITH_PROJECT"] == "shell-project"
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "updated-shell-project")
+        preview = config_mod._preview_dotenv_environ(start_path=tmp_path)
+        assert preview["LANGSMITH_PROJECT"] == "updated-shell-project"
+
+    def test_workspace_settings_reach_the_process_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshot values are written under their canonical SDK names."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "stale-key")
+
+        config_mod.reconcile_tracing_environment(
+            {
+                "LANGSMITH_TRACING": "true",
+                "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "workspace-key",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "agent-project",
+            }
+        )
+
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        # A prefixed override resolves onto the canonical name the SDK reads.
+        assert os.environ["LANGSMITH_API_KEY"] == "workspace-key"
+        assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
+
+    def test_unsupported_prefixed_endpoint_does_not_reach_sdk_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefixed endpoint ignored by redaction must also be ignored here."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://stale.example.com")
+
+        config_mod.reconcile_tracing_environment(
+            {
+                "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
+                "DEEPAGENTS_CODE_LANGSMITH_ENDPOINT": "https://upload.example.com",
+            }
+        )
+
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+
+    def test_previous_workspace_values_do_not_linger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A var the workspace does not set is removed, not left behind."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "workspace-a-key")
+        monkeypatch.setenv("LANGSMITH_PROJECT", "workspace-a")
+        # The profile pair decides the key and endpoint when no canonical var
+        # does, so it lingers just as consequentially as the rest.
+        monkeypatch.setenv("LANGSMITH_PROFILE", "workspace-a-profile")
+        monkeypatch.setenv("LANGSMITH_CONFIG_FILE", "/tmp/workspace-a.json")
+
+        config_mod.reconcile_tracing_environment({})
+
+        for var in (
+            "LANGSMITH_TRACING",
+            "LANGSMITH_API_KEY",
+            "LANGSMITH_PROJECT",
+            "LANGSMITH_PROFILE",
+            "LANGSMITH_CONFIG_FILE",
+        ):
+            assert var not in os.environ
+
+    def test_sdk_env_caches_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reconcile must not leave the SDK answering from a stale cache."""
+        from langsmith import utils as ls_utils
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "workspace-a")
+        assert ls_utils.get_env_var("PROJECT") == "workspace-a"
+
+        config_mod.reconcile_tracing_environment({"LANGSMITH_PROJECT": "workspace-b"})
+
+        assert ls_utils.get_env_var("PROJECT") == "workspace-b"
+
+
+class TestUserLangsmithEnvironment:
+    """LangSmith credentials for the agent stay out of user commands."""
+
+    def test_dotenv_snapshot_excludes_global_and_preserves_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "LANGSMITH_PROJECT=project-value\n"
+            "LANGCHAIN_PROJECT=legacy-project-value\n"
+            "LANGSMITH_SESSION=legacy-smith-session\n"
+            "LANGCHAIN_SESSION=legacy-chain-session\n"
+            "LANGSMITH_WORKSPACE_ID=project-workspace\n"
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "LANGSMITH_API_KEY=global-key\n"
+            "LANGSMITH_PROJECT=global-value\n"
+            "LANGSMITH_PROFILE=global-profile\n"
+        )
+        for var in config_mod._USER_LANGSMITH_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://launch.example.com")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = {
+            var: os.environ.get(var) for var in config_mod._USER_LANGSMITH_ENV_VARS
+        }
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            with patch.dict(os.environ, os.environ.copy(), clear=True):
+                config_mod._load_dotenv(
+                    start_path=project,
+                    capture_user_langsmith=True,
+                )
+
+                assert os.environ["LANGSMITH_API_KEY"] == "global-key"
+            assert config_mod._bootstrap_state.user_langsmith_env == {
+                "LANGSMITH_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "LANGSMITH_PROJECT": "project-value",
+                "LANGCHAIN_PROJECT": "legacy-project-value",
+                "LANGSMITH_SESSION": "legacy-smith-session",
+                "LANGCHAIN_SESSION": "legacy-chain-session",
+                "LANGSMITH_ENDPOINT": "https://launch.example.com",
+                "LANGCHAIN_ENDPOINT": None,
+                "LANGSMITH_WORKSPACE_ID": "project-workspace",
+                "LANGSMITH_PROFILE": None,
+                "LANGSMITH_CONFIG_FILE": None,
+                "LANGSMITH_TRACING_V2": None,
+                "LANGCHAIN_TRACING_V2": None,
+                "LANGSMITH_TRACING": None,
+                "LANGCHAIN_TRACING": None,
+                "LANGSMITH_RUNS_ENDPOINTS": None,
+                "LANGCHAIN_RUNS_ENDPOINTS": None,
+            }
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "not json at all",
+            '{"launch": {}}',
+            '{"launch": {}, "user": {}}',
+            '{"launch": {"LANGSMITH_API_KEY": "k"}, "user": {}}',
+            '{"launch": {"LANGSMITH_API_KEY": 1}, "user": {}}',
+        ],
+        ids=["malformed", "missing-half", "empty", "partial-keys", "wrong-type"],
+    )
+    def test_unusable_carrier_strips_rather_than_using_agent_credentials(
+        self, encoded: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An undecodable carrier must not fall back to the agent's own key."""
+        import deepagents_code.config as config_mod
+
+        agent_state = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS, "agent-value")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict(agent_state)
+        config_mod._bootstrap_state.user_langsmith_env = dict(agent_state)
+        env = {
+            config_mod._USER_LANGSMITH_ENV_CARRIER: encoded,
+            "LANGSMITH_API_KEY": "agent-session-key",
+            "LANGSMITH_PROJECT": "deepagents-code",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "prefixed-agent-key",
+            "PATH": "/usr/bin",
+        }
+
+        try:
+            config_mod.restore_user_langsmith_env(env)
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        for var in config_mod._USER_LANGSMITH_ENV_VARS:
+            assert var not in env
+            assert f"DEEPAGENTS_CODE_{var}" not in env
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
+        # Unrelated variables survive.
+        assert env["PATH"] == "/usr/bin"
+        # The user is told, on stderr, not only in the buffered debug log.
+        assert "without LangSmith credentials" in capsys.readouterr().err
+
+    def test_launch_shell_outranks_the_project_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Launch beats project `.env`, and the global `.env` is excluded."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "LANGSMITH_API_KEY=project-key\nLANGSMITH_PROJECT=project-only\n"
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("LANGSMITH_TRACING=true\n")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "launch-key"
+        carrier = json.dumps({"launch": launch, "user": dict(launch)})
+
+        env = {config_mod._USER_LANGSMITH_ENV_CARRIER: carrier}
+        config_mod.restore_user_langsmith_env(env, start_path=project)
+
+        # Both sources set the key; the launch shell wins.
+        assert env["LANGSMITH_API_KEY"] == "launch-key"
+        # Only the project file sets this one, so it fills in.
+        assert env["LANGSMITH_PROJECT"] == "project-only"
+        # The global profile `.env` configures the agent, not user commands.
+        assert "LANGSMITH_TRACING" not in env
+
+    def test_unreadable_project_dotenv_keeps_the_carried_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.env` that cannot be read must not read as an empty one."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("LANGSMITH_PROJECT=from-dotenv\n")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        # The realistic shape: the launch shell did not set the project, the
+        # project `.env` did. So only the carried `user` half can supply it.
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        user = dict(launch, LANGSMITH_PROJECT="carried-project")
+        carrier = json.dumps({"launch": launch, "user": user})
+
+        def _unreadable(*_args: object, **_kwargs: object) -> dict[str, str | None]:
+            raise OSError(5, "Input/output error")
+
+        env = {config_mod._USER_LANGSMITH_ENV_CARRIER: carrier}
+        with patch.object(config_mod, "_dotenv_values_from", _unreadable):
+            config_mod.restore_user_langsmith_env(env, start_path=project)
+
+        assert env["LANGSMITH_PROJECT"] == "carried-project"
+
+    def test_restore_drops_agent_values_and_prefixed_settings(self) -> None:
+        import deepagents_code.config as config_mod
+
+        original = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        env = {
+            "LANGSMITH_API_KEY": "stored-key",
+            "LANGSMITH_ENDPOINT": "https://stored.example.com",
+            "LANGSMITH_PROJECT": "stored-project",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "prefixed-key",
+            "DEEPAGENTS_CODE_LANGSMITH_PROFILE": "prefixed-profile",
+        }
+
+        try:
+            config_mod.restore_user_langsmith_env(env)
+        finally:
+            config_mod._bootstrap_state.user_langsmith_env = original
+
+        assert not any(
+            var in env or f"DEEPAGENTS_CODE_{var}" in env
+            for var in config_mod._USER_LANGSMITH_ENV_VARS
+        )
+
+
 class TestLazySingletons:
     """Tests for lazy process-wide state and console resolution."""
 
@@ -3804,188 +5173,45 @@ class TestLazySingletons:
 
         assert isinstance(_get_credentials(), Credentials)
 
-    @pytest.mark.parametrize("canonical", ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"])
-    def test_restore_user_tracing_api_keys_recovers_original_value(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: str
+    def test_bootstrap_captures_langsmith_before_project_context(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Shell subprocess env gets the caller's original API key, not the override.
-
-        Parametrized over both members of `_TRACING_API_KEY_ENV_VARS` so the
-        `LANGCHAIN_API_KEY` alias is covered, not just the primary var.
-        """
-        import os
-
+        """A failing project lookup still leaves an encodable launch snapshot."""
         import deepagents_code.config as config_mod
-        from deepagents_code.config import (
-            _ensure_bootstrap,
-            restore_user_tracing_api_keys,
-        )
+        from deepagents_code import project_utils
 
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
-        )
+        def _boom() -> None:
+            msg = "project context unavailable"
+            raise RuntimeError(msg)
 
+        monkeypatch.setattr(project_utils, "get_server_project_context", _boom)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "launch-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
         original_done = config_mod._bootstrap_state.done
-        original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        original_error = config_mod._bootstrap_state.error
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
         config_mod._bootstrap_state.done = False
+        config_mod._bootstrap_state.error = None
 
         try:
-            # Isolate the key var under test so its sibling alias cannot mask it.
-            for var in config_mod._TRACING_API_KEY_ENV_VARS:
-                monkeypatch.delenv(var, raising=False)
-                monkeypatch.delenv(f"DEEPAGENTS_CODE_{var}", raising=False)
-            monkeypatch.setenv(canonical, "lsv2_original")
-            monkeypatch.setenv(f"DEEPAGENTS_CODE_{canonical}", "lsv2_override")
-            monkeypatch.setenv("LANGSMITH_TRACING", "true")
-            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            config_mod._ensure_bootstrap()
 
-            with (
-                patch("deepagents_code.config._load_dotenv"),
-                patch(
-                    "deepagents_code.project_utils.get_server_project_context",
-                    return_value=None,
-                ),
-            ):
-                _ensure_bootstrap()
-
-            # Bootstrap overwrote the canonical key with the prefixed value.
-            assert os.environ[canonical] == "lsv2_override"
-
-            shell_env = os.environ.copy()
-            restore_user_tracing_api_keys(shell_env)
-
-            # Shell subprocesses get the caller's original key back.
-            assert shell_env[canonical] == "lsv2_original"
-        finally:
-            config_mod._bootstrap_state.done = original_done
-            config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
-
-    def test_restore_user_tracing_api_keys_drops_unset_key(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When the caller had no canonical key, restore removes it from shell env."""
-        import os
-
-        import deepagents_code.config as config_mod
-        from deepagents_code.config import (
-            _ensure_bootstrap,
-            restore_user_tracing_api_keys,
-        )
-
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
-        )
-
-        original_done = config_mod._bootstrap_state.done
-        original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
-        config_mod._bootstrap_state.done = False
-
-        try:
-            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
-            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
-            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
-
-            with (
-                patch("deepagents_code.config._load_dotenv"),
-                patch(
-                    "deepagents_code.project_utils.get_server_project_context",
-                    return_value=None,
-                ),
-            ):
-                _ensure_bootstrap()
-
-            # Bootstrap propagated the prefixed key to canonical.
-            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
-
-            shell_env = os.environ.copy()
-            restore_user_tracing_api_keys(shell_env)
-
-            # Caller had no key — the propagated value is removed from shell env.
-            assert "LANGSMITH_API_KEY" not in shell_env
-        finally:
-            config_mod._bootstrap_state.done = original_done
-            config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
-
-    def test_restore_user_tracing_api_keys_pops_auth_stored_key(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A `/auth`-stored key is bridged onto the env but popped for shells.
-
-        The snapshot is captured *before* `apply_stored_langsmith_auth` bridges
-        the stored key onto `LANGSMITH_API_KEY`, so the caller's original is
-        `None` and restore pops the bridged key instead of leaking the agent's
-        stored credential into `execute` subprocesses. Locks in the
-        capture-before-bridge ordering that a bootstrap refactor could break.
-        """
-        import os
-
-        import deepagents_code.config as config_mod
-        from deepagents_code import auth_store
-        from deepagents_code.config import (
-            _ensure_bootstrap,
-            restore_user_tracing_api_keys,
-        )
-
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
-        )
-
-        original_done = config_mod._bootstrap_state.done
-        original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
-        config_mod._bootstrap_state.done = False
-
-        try:
-            # No env or prefixed key — only a `/auth`-stored credential.
-            for var in (
-                "LANGSMITH_API_KEY",
-                "LANGCHAIN_API_KEY",
-                "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
-                "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
-                "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
-            ):
-                monkeypatch.delenv(var, raising=False)
-            auth_store.set_stored_key("langsmith", "lsv2_stored")
-
-            with (
-                patch("deepagents_code.config._load_dotenv"),
-                patch(
-                    "deepagents_code.project_utils.get_server_project_context",
-                    return_value=None,
-                ),
-            ):
-                _ensure_bootstrap()
-
-            # Bootstrap bridged the stored key onto the canonical env var...
-            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
-            # ...but the caller had none, so the snapshot (taken before the
-            # bridge) records it as absent.
+            # Bootstrap swallows the failure by contract. The snapshot needs
+            # only `os.environ`, so it must survive -- otherwise the server
+            # cannot start at all.
+            assert config_mod._bootstrap_state.error is not None
             assert (
-                config_mod._bootstrap_state.original_tracing_api_keys[
-                    "LANGSMITH_API_KEY"
-                ]
-                is None
+                config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_API_KEY"]
+                == "launch-key"
             )
-
-            shell_env = os.environ.copy()
-            restore_user_tracing_api_keys(shell_env)
-
-            # The agent's stored credential is not leaked into shell subprocesses.
-            assert "LANGSMITH_API_KEY" not in shell_env
+            config_mod._encode_user_langsmith_env()
         finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
             config_mod._bootstrap_state.done = original_done
-            config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+            config_mod._bootstrap_state.error = original_error
 
     def test_bootstrap_warns_on_conflicting_override(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -3998,7 +5224,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4029,7 +5254,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_suppresses_override_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -4043,7 +5267,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4072,7 +5295,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_no_warning_when_values_match(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -4086,7 +5308,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4117,7 +5338,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_defaults_project_when_tracing_and_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4234,8 +5454,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4275,8 +5493,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4294,8 +5510,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4326,8 +5540,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4337,7 +5549,10 @@ class TestLazySingletons:
 
         import deepagents_code.config as config_mod
         from deepagents_code import auth_store
-        from deepagents_code.config import _ensure_bootstrap, restore_user_tracing_env
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_langsmith_env,
+        )
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -4345,8 +5560,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4370,15 +5583,13 @@ class TestLazySingletons:
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
 
             shell_env = os.environ.copy()
-            restore_user_tracing_env(shell_env)
+            restore_user_langsmith_env(shell_env)
 
             assert "LANGSMITH_TRACING" not in shell_env
             assert shell_env["LANGCHAIN_TRACING_V2"] == "true"
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
 
 class TestApplyDefaultLangsmithProject:

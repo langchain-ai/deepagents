@@ -60,7 +60,7 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+Run `@release-bot draft` to regenerate the draft in two cases. The automatic run failed. Or commits added to `main` after drafting touch that release PR's package directory. Each new draft records its `main` baseline, so a release-please refresh caused only by changes outside the package does not invalidate the prose. If that unrelated refresh overwrites notes that were already applied, the check asks you to run `@release-bot apply` again; re-drafting is not required. The bot also asks for a re-draft when it cannot prove what changed: a very large or rewritten `main` history is treated as unknown.
 
 Re-drafting rewrites the original notes comment in place, which GitHub does not surface in the timeline. So that a regenerated draft is not missed, the bot follows an in-place rewrite with a short comment linking back to the refreshed notes — one per re-draft. A first-time draft posts no such pointer, since a brand-new comment is already visible.
 
@@ -73,6 +73,8 @@ The merged changelog is the source for the published GitHub release notes.
 To ship without curated notes, add the `release: dangerously skip curated notes` label. That is the only way to skip the curated-notes merge gate — use it only when you intentionally want the generated changelog as-is, without maintainer polish.
 
 #### Observing a `@release-bot` run
+
+For a valid manual `draft` or `apply` command, the bot reacts to the command comment with 👀 when processing starts, then replaces it with 🚀 after the command succeeds. A retained 👀 means the command was acknowledged but did not finish successfully; check the bot's failure comment or the workflow logs.
 
 A `@release-bot` comment triggers the "📝 Curate release notes" workflow on the `issue_comment` event, not on the PR's head branch, so it does **not** appear as a PR status check. To watch it:
 
@@ -282,7 +284,7 @@ Step 3 can be skipped in the situations below. Skipping it holds up only the ref
 
 ### Lockfile Updates
 
-When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles.
+When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. A lockfile-only commit generated on a release branch after an unrelated `main` change does not invalidate that package's curated-note draft. This carve-out covers the release branch only. On `main`, every path under the package counts, a lockfile included.
 
 ### Release Pipeline
 

@@ -4,6 +4,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from deepagents_talon.__main__ import _channels
+from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.telegram import TelegramChannel
 from deepagents_talon.channels.whatsapp import WhatsAppChannel
 from deepagents_talon.config import TalonConfig
@@ -35,7 +36,7 @@ class EchoAgent:
 
 
 def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
-    cases: tuple[tuple[dict[str, str], bool, bool, tuple[type[object], ...]], ...] = (
+    cases: tuple[tuple[dict[str, str], bool, bool, bool, tuple[type[object], ...]], ...] = (
         (
             {
                 "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
@@ -45,6 +46,7 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             False,
             False,
+            False,
             (WhatsAppChannel, TelegramChannel),
         ),
         (
@@ -55,10 +57,11 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             False,
             False,
+            False,
             (TelegramChannel,),
         ),
-        ({"DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1"}, False, False, (WhatsAppChannel,)),
-        ({}, False, False, ()),
+        ({"DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1"}, False, False, False, (WhatsAppChannel,)),
+        ({}, False, False, False, ()),
         (
             {
                 "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
@@ -66,17 +69,39 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             True,
             True,
+            False,
             (WhatsAppChannel, TelegramChannel),
+        ),
+        (
+            {
+                "DEEPAGENTS_TALON_DISCORD_ENABLED": "1",
+                "DEEPAGENTS_TALON_DISCORD_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_DISCORD_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            False,
+            (DiscordChannel,),
+        ),
+        (
+            {
+                "DEEPAGENTS_TALON_DISCORD_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_DISCORD_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            True,
+            (DiscordChannel,),
         ),
     )
 
-    for env, whatsapp, telegram, expected_types in cases:
+    for env, whatsapp, telegram, discord, expected_types in cases:
         config = TalonConfig.from_env(
             {"AGENT_ASSISTANT_ID": "assistant", **env},
             base_home=tmp_path,
         )
 
-        channels = _channels(config, whatsapp=whatsapp, telegram=telegram)
+        channels = _channels(config, whatsapp=whatsapp, telegram=telegram, discord=discord)
 
         assert tuple(type(channel) for channel in channels) == expected_types
 
@@ -84,6 +109,7 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
 async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path) -> None:
     whatsapp_channel = RecordingChannel("whatsapp")
     telegram_channel = RecordingChannel("telegram")
+    discord_channel = RecordingChannel("discord")
     agent = EchoAgent()
     config = TalonConfig.from_env(
         {"AGENT_ASSISTANT_ID": "assistant"},
@@ -92,12 +118,13 @@ async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path
     host = TalonHost(
         config=config,
         agent=agent,
-        channels=[whatsapp_channel, telegram_channel],
+        channels=[whatsapp_channel, telegram_channel, discord_channel],
     )
 
     await host.start()
     await whatsapp_channel.receive("hello from whatsapp", conversation_id="chat")
     await telegram_channel.receive("hello from telegram", conversation_id="chat")
+    await discord_channel.receive("hello from discord", conversation_id="chat")
     await _drain()
     await host.stop()
 
@@ -105,14 +132,19 @@ async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path
     assert whatsapp_channel.stopped
     assert telegram_channel.started
     assert telegram_channel.stopped
-    assert len(agent.requests) == 2
+    assert discord_channel.started
+    assert discord_channel.stopped
+    assert len(agent.requests) == 3
     assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     assert agent.requests[0].text == "hello from whatsapp"
     assert agent.requests[0].metadata["channel"] == "whatsapp"
     assert agent.requests[1].text == "hello from telegram"
     assert agent.requests[1].metadata["channel"] == "telegram"
+    assert agent.requests[2].text == "hello from discord"
+    assert agent.requests[2].metadata["channel"] == "discord"
     assert whatsapp_channel.sent == [("chat", "seen:0:hello from whatsapp")]
     assert telegram_channel.sent == [("chat", "seen:0:hello from telegram")]
+    assert discord_channel.sent == [("chat", "seen:0:hello from discord")]
 
 
 async def _drain() -> None:

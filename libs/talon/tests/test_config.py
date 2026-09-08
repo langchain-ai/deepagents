@@ -32,7 +32,20 @@ def test_from_env_creates_assistant_home(tmp_path: Path) -> None:
     assert config.agents_dir.stat().st_mode & 0o777 == 0o700
     assert config.cron_dir.stat().st_mode & 0o777 == 0o700
     assert config.channel_dir.stat().st_mode & 0o777 == 0o700
+    assert config.checkpoint_path == config.home / "checkpoints.sqlite"
+    assert config.conversation_state_path == config.home / "conversations.json"
     assert config.inbound_media_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_checkpoint_path_rejects_symlinked_assistant_home(tmp_path: Path) -> None:
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    linked_home = tmp_path / "assistant-1"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    config = TalonConfig(assistant_id="assistant-1", home=linked_home)
+
+    with pytest.raises(TalonConfigError, match="checkpoint database"):
+        _ = config.checkpoint_path
 
 
 def test_from_env_defaults_to_deepagents_home(

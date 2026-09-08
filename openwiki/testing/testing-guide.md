@@ -1,63 +1,99 @@
 ---
-type: developer-guide
-title: Testing Guide
-description: Test topology and execution guidance for the Deep Agents SDK, dcode, ACP, Talon, and evaluation suite. Use the owning package entrypoint and preserve the offline-unit, networked-integration, and warnings-as-errors boundaries.
-tags: [testing, pytest, sdk, dcode, acp, talon, evals, benchmarks]
+type: testing strategy
+title: Testing Strategy and Change Validation
+description: Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.
+tags: [testing, pytest, ci, validation, benchmarks, evaluations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-08-28T11:44:48.051Z
+    at: 2026-09-08T08:05:55.853Z
 sources:
+  - id: openwiki-source-9a1c436646ef8c4f6dde787a
+    resource: repo://.github/RELEASING.md
+  - id: openwiki-source-4d9cccca7700db7220ec055e
+    resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-164e2da859b5277df81c7d94
+    resource: repo://.github/workflows/ci.yml
+  - id: openwiki-source-18f01ea5159b63661c1c8b1c
+    resource: repo://libs/acp/Makefile
+  - id: openwiki-source-bb78950c8b36b7b9f6746e96
+    resource: repo://libs/acp/pyproject.toml
+  - id: openwiki-source-8288b43b279d5cf7aaf1505d
+    resource: repo://libs/acp/tests/test_agent.py
+  - id: openwiki-source-006b62af9993da1b48c11de8
+    resource: repo://libs/code/Makefile
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-5dc287d30945406e0821cb29
+    resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
+  - id: openwiki-source-0f308f1610986e2f3ed6d53c
+    resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
+  - id: openwiki-source-224407caf6cd8bd5d8fe7833
+    resource: repo://libs/deepagents/tests/unit_tests/conftest.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
-generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
+  - id: openwiki-source-b57141bb692e5ccd2249f996
+    resource: repo://libs/evals/deepagents_evals/cli.py
+  - id: openwiki-source-dd120a1be03e34bad3c59b22
+    resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  - id: openwiki-source-be7f6aa28551fac7310db803
+    resource: repo://libs/evals/Makefile
+  - id: openwiki-source-f2bb883b9cbec377de535c00
+    resource: repo://libs/evals/pyproject.toml
+  - id: openwiki-source-444185e93422c817e5e81a83
+    resource: repo://libs/evals/tests/evals/conftest.py
+  - id: openwiki-source-dd030d5b39e772817a7c25f1
+    resource: repo://libs/evals/tests/evals/pytest_reporter.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-7aca178f00238f277438cf18
+    resource: repo://libs/talon/tests/conftest.py
+  - id: openwiki-source-d8eca7d18614ffc90856e204
+    resource: repo://libs/talon/tests/integration_tests/test_core_flows.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
 ---
 
-# Testing Guide
+# Testing Strategy and Change Validation
 
-Tests are the executable specification for this monorepo. Work in the package you are changing: packages have independent environments and Makefiles, and `make help` is the authoritative list of supported targets. Read focused neighboring tests, test observable behavior rather than replicating implementation, keep cases deterministic, and add unit coverage for every feature or bug fix. Do not add `@pytest.mark.asyncio`; package configuration uses `asyncio_mode = "auto"`.
+Work in the package that owns the changed behavior. Packages under `libs/` are independently versioned and have their own environment, `pyproject.toml`, and `Makefile`; run `uv sync --all-groups` when the package needs all groups, then use `make help` and the package Makefile as the command source of truth. Start from the closest existing test and assert user-observable behavior rather than an implementation's incidental calls or ordering. Repository setup is covered in [development operations](../operations/development.md); package ownership and dependencies are in the [source map](../architecture/source-map.md).
 
-This guide complements [development operations](../operations/development.md), [the dcode architecture](../architecture/code-agent.md), [SDK construction and execution](../architecture/sdk-construction-execution.md), [ACP](../integrations/acp.md), [running a dcode session](../workflows/run-dcode-session.md), and [running evals](../workflows/run-evals.md).
+## Select the smallest meaningful boundary
 
-## Choose the test boundary
+| Changed surface | Test location and first command | Escalate when |
+| --- | --- | --- |
+| Deep Agents SDK | `libs/deepagents/tests/unit_tests/`; `make test TEST_FILE=tests/unit_tests/middleware/test_foo.py` | The contract needs an optional dependency, provider, or network behavior: use `tests/integration_tests/`. |
+| dcode CLI | `libs/code/tests/unit_tests/`; `make test TEST_FILE=tests/unit_tests/test_agent.py` | The executable, subprocess, ACP transport, sandbox, or provider is the behavior: use `make integration_test`. |
+| ACP | Flat `libs/acp/tests/`; `make test TEST_FILE=tests/test_agent.py` | Keep protocol behavior deterministic with a client double unless interoperability itself needs an external peer. |
+| Talon host | `libs/talon/tests/`; `make test TEST_FILE=tests/test_data_lifecycle.py` | The suite includes `tests/integration_tests/`, but those tests are still local host-orchestration tests, not automatically live-service tests. |
+| Eval harness | `libs/evals/tests/unit_tests/`; `make test TEST_FILE=tests/unit_tests/` | A real model's behavior or quality is under test: invoke `tests/evals` through the eval CLI or Makefile target. |
 
-The primary distinction is external behavior and cost, not merely package location:
-
-| Area | Test topology | Normal entrypoint | Boundary to preserve |
-| --- | --- | --- | --- |
-| SDK — `libs/deepagents` | `tests/unit_tests/`, `tests/integration_tests/`, `tests/benchmarks/` | `make test`; `make integration_test`; benchmark targets | Unit tests are offline; integration tests may use providers. |
-| dcode — `libs/code` | `tests/unit_tests/`, `tests/integration_tests/` | `make test`; `make integration_test` | Put separately running CLI/server processes and provider or sandbox seams in integration tests. |
-| ACP — `libs/acp` | One `tests/` tree | `make test` | Use in-process fake clients and models to test protocol adaptation without sockets. |
-| Talon — `libs/talon` | Main `tests/` tree plus `tests/integration_tests/` | `make test` | Keep host, channel, scheduling, and data lifecycle deterministic and socket-free in the normal suite. |
-| Evals — `libs/evals` | `tests/unit_tests/` and live `tests/evals/` | `make test`; `deepagents-evals run` / `trials` | Unit-test the harness offline; treat model evaluations as traced, credentialed experiments. |
-
-The SDK convention is source mirroring: a test for `deepagents/middleware/foo.py` belongs at `tests/unit_tests/middleware/test_foo.py`. It is useful for SDK and dcode work, but do not invent a three-directory layout for ACP, Talon, or evals. The SDK architecture guide identifies `../tests/` as a source of coverage and usage examples for construction, middleware, backends, and profiles.
+For SDK source, mirror the source layout: a test for `deepagents/middleware/foo.py` belongs at `tests/unit_tests/middleware/test_foo.py`. ACP and Talon use their own package-local organization; do not impose the SDK layout on them.
 
 ```mermaid
 flowchart TD
-    Change["Change behavior"] --> Classify{"Needs a real provider or network?"}
-    Classify -->|"No"| Offline["Offline focused test"]
-    Classify -->|"Yes"| Live{"Is this an evaluation?"}
-    Offline --> Unit["SDK or dcode unit_tests"]
-    Offline --> Package["ACP or Talon tests"]
-    Unit --> Socket["make test with socket disabled"]
-    Package --> Socket
-    Live -->|"No"| Integration["integration_tests and integration target"]
-    Live -->|"Yes"| Evals["tests/evals through deepagents-evals"]
-    Integration --> Network["Provider and network permitted"]
-    Evals --> Trace["Model plus LangSmith tracing required"]
+    Change["Change behavior"] --> External{"Does the behavior cross an external boundary"}
+    External -->|"No"| Unit["Focused package unit or component test"]
+    Unit --> Normal["Normal target with socket protection"]
+    External -->|"Process or provider"| Integration["SDK or dcode integration test"]
+    External -->|"Model quality"| EvalRun["Traced real-model eval"]
+    External -->|"Sandbox runtime"| Harbor["Harbor runtime-host run"]
+    Integration --> Contract["Process or network contract"]
+    EvalRun --> Report["Experiment and aggregate report"]
+    Harbor --> Sandbox["Selected sandbox environment"]
 ```
 
-Caption: Select a test location from its external boundary; only the integration and eval paths intentionally cross the network boundary.
+This decision path separates deterministic correctness checks from process/provider contracts, stochastic model evaluation, and sandbox-runtime experiments.
 
-## Run the package suite
+## Package commands and suite boundaries
 
-Run commands from the owning package after installing dependencies with `uv sync` (use `--all-groups` when appropriate). `TEST_FILE` scopes package Make targets to a file or directory.
+Deep Agents and dcode default `make test` to their unit-test trees. Both normal targets use xdist, disable benchmarks, and block non-Unix sockets; their `make integration_test` targets select `tests/integration_tests/`, allow network access, and apply a 30-second timeout. ACP's normal target runs its flat `tests/` tree with the socket block and a 10-second timeout. Talon's normal target runs its WhatsApp bridge Node tests first, then its socket-blocked Python tree with the same timeout.
 
 ```bash
 cd libs/deepagents
-make test TEST_FILE=tests/unit_tests/test_middleware.py
+make test TEST_FILE=tests/unit_tests/middleware/test_foo.py
 make integration_test
 
 cd ../code
@@ -66,26 +102,30 @@ make integration_test
 
 cd ../acp && make test TEST_FILE=tests/test_agent.py
 cd ../talon && make test TEST_FILE=tests/test_data_lifecycle.py
-cd ../evals && make test TEST_FILE=tests/unit_tests/test_cli.py
+cd ../evals && make test TEST_FILE=tests/unit_tests/
 ```
 
-For `deepagents` and dcode, `make test` runs pytest in parallel (`-n auto`), disables benchmarks, and passes `--disable-socket --allow-unix-socket`; a real network connection therefore fails from a unit test. The SDK target reports coverage for `deepagents`; dcode reports coverage for `deepagents_code`. ACP and Talon apply the socket block and a ten-second timeout to their normal target. SDK and dcode integration targets switch `TEST_FILE` to `tests/integration_tests/`, drop the socket block, and use a 30-second timeout.
+Pass `TEST_FILE` to make the first run narrow, then run the owning package's normal target before relying on the change. Socket blocking catches accidental service calls, but a controlled fake, temporary filesystem, or fixed time is still required to make the assertion deterministic.
 
-The explicit `coverage` targets in SDK and dcode produce XML and terminal coverage reports. `update-snapshots` is available in both and remains socket-disabled, so snapshot regeneration does not weaken the unit boundary.
+### Async and warning policy
 
-### Warnings are failures
+All five package pytest configurations use `asyncio_mode = "auto"`, so async tests do not need `@pytest.mark.asyncio` just to run. dcode also uses strict markers and configuration, a 30-second default test timeout, and function-scoped async fixture loops. Do not weaken these constraints to accommodate a new test.
 
-Every package puts `"error"` first in its pytest `filterwarnings`. A warning outside the reviewed allowlist is a test failure: inside a test it fails that test, during import it breaks collection, and during pytest configuration it can abort the run with `INTERNALERROR`. Fix the underlying warning first. If an expected warning is genuinely local to a test, scope it with `@pytest.mark.filterwarnings`; package-level entries are for justified categorical or third-party exceptions.
+Every package puts `"error"` first in pytest `filterwarnings`; entries after it are a reviewed allowlist. Thus an unaccepted warning fails a test, can fail collection when import emits it, or can abort pytest configuration. Fix actionable warnings first. If an expected warning is unavoidable, scope it to the test with `@pytest.mark.filterwarnings`; reserve package configuration for a justified categorical or third-party exception.
 
-## SDK and dcode: unit, integration, and benchmark work
+CI has a maintainer escape hatch: a pull request with `bypass-warnings-check` can run pytest with `-W default`. The reusable workflow reads labels live and fails closed if that lookup fails; push and merge-group runs have no pull-request label context and always enforce warnings as errors. Treat the label as temporary triage, not validation that a warning is acceptable.
 
-### Integration prerequisites
+### Test seams that protect behavior
 
-The SDK and dcode test READMEs identify `ANTHROPIC_API_KEY` as required for Anthropic-backed integration tests and `LANGSMITH_API_KEY` as optional tracing support. Deepagents integration cases declare optional packages with `pytest.mark.requires(...)`, allowing pytest to skip a case whose extra is absent rather than fail at import time. Keep provider calls, real sandbox operations, and subprocess or network behavior in this tier.
+Deep Agents' unit fixtures reset deprecation-warning deduplication and the cached video-dependency probe before each test, and bootstrap built-in profiles once per session. Preserve or extend such reset points when adding process-global caches, lazy registries, or tests that monkeypatch dependency probes: parallel execution must not make observations depend on test order.
 
-### Benchmarks are separate measurements
+ACP's `FakeACPClient` records session updates and permission requests, so protocol assertions can cover outputs and permission decisions without a live client. Talon's `RecordingChannel` records output and lifecycle calls, and rejects injected input until a message handler has been registered. Its named integration flows use in-memory channels and scripted agents for the same reason: they exercise host lifecycle and routing without a channel service.
 
-`deepagents` has a dedicated `tests/benchmarks/` directory; dcode selects benchmark markers from `./tests`. Both Makefiles provide:
+Use dcode's integration tree when the separately launched executable is the contract. The ACP smoke test starts `deepagents --acp --no-mcp` over stdin/stdout, initializes the protocol, creates a session, and terminates the subprocess during cleanup. An in-process unit test cannot establish that executable-to-protocol boundary.
+
+## Benchmarks are a separate performance signal
+
+Deep Agents keeps benchmarks in `tests/benchmarks/`; dcode selects benchmark-marked tests from `tests`. Both keep normal test targets benchmark-free and provide dedicated measurement targets:
 
 ```bash
 make benchmark      # pytest benchmark marker
@@ -93,62 +133,51 @@ make bench          # benchmark marker under CodSpeed
 make bench-memory   # memory_benchmark marker under CodSpeed
 ```
 
-Normal SDK and dcode test commands add `--benchmark-disable`, while their pytest configuration excludes `benchmark`-marked cases by default. Do not turn a performance measurement into an ordinary correctness test merely to make it run in `make test`.
+Do not move a performance measurement into ordinary correctness tests merely to make it run by `make test`. At the repository level, `make -C libs bench-all` runs `bench` for Deep Agents and dcode. QuickJS also has package benchmark targets, but it is not in that fan-out target.
 
-### Use fakes that preserve the agent contract
+## Real-model evaluations and Harbor
 
-`libs/deepagents/tests/utils.py` centralizes mock tools, reusable middleware fixtures, and `assert_all_deepagent_qualities`. The helper asserts a construction invariant: a deep agent exposes the `files` stream channel and `ls`, `read_file`, `write_file`, `edit_file`, and `task` tools. `GenericFakeChatModel` supports sync and async invocation, configurable streaming, and call tracking, making it the normal offline substitute for a provider.
-
-The deepagents unit `conftest.py` discovers `@deprecated`-wrapped callables and resets their once-per-process flag before each test, keeping warning-emission assertions reorder-safe under xdist. It also clears the video-dependency cache and bootstraps profile registries, preventing cached or lazily initialized state from leaking between tests.
-
-Dcode uses `_ToolBindingFakeModel` where graph compilation needs tool binding: its no-op `bind_tools` and minimal capability profile satisfy agent capability negotiation without a real model. `DeterministicIntegrationChatModel` is intentionally prompt-driven rather than iterator-driven; equal prompts yield equal output after a CLI integration suite restarts the server process. Use that model for local process integration tests, not as a substitute for provider-backed behavioral coverage.
-
-### Dcode server and agent seams
-
-`libs/code/tests/unit_tests/test_agent.py` drives `create_cli_agent` with fakes and asserts wiring that is observable across graph construction, persistence, and runtime context:
-
-- Missing credentials while eagerly resolving a subagent model produce `None` rather than blocking CLI startup; the credential error is deferred until that subagent runs.
-- The backend exposes server-side offload without adding `dcode_operation` to the graph input schema.
-- In local mode, conversation history under the advertised artifacts path routes to persistent user storage, while large tool results fall through to a real filesystem location the agent can inspect.
-- A stored live approval-mode value overrides an older run-context `auto_approve` snapshot.
-
-`test_server_graph.py` protects server bootstrap boundaries. The graph factory caches one process-lifetime runtime and concurrent callers share that build. Blocking configuration, project-context, model-creation, and plugin discovery work is tested off the server event loop; startup construction failure must emit the startup marker and exit nonzero. It also tests that criteria agents receive only identity-approved built-in tools and unambiguously read-only MCP tools, so ambiguous or mutating MCP annotations fail closed. Keep extension code disabled in these unit tests unless the test specifically owns that extension boundary.
-
-Use the dcode integration suite where the guarantee depends on a separately running process. For example, `test_acp_mode.py` launches `deepagents --acp --no-mcp`, connects an ACP client over its stdin/stdout pipes, initializes the protocol, creates a session, and terminates the subprocess in cleanup. This is the appropriate layer for CLI-to-protocol process behavior.
-
-## ACP and Talon normal suites
-
-ACP's normal `make test` runs its flat `tests/` tree offline with a timeout and coverage. Agent tests construct a `create_deep_agent` graph with `MemorySaver`, attach it to `AgentServerACP`, then drive it through `FakeACPClient`. The fake records session updates and permission requests, allowing tests to assert protocol-visible text and reasoning streaming as well as cancellation without a network connection. Preserve the client-recording seam when changing permission, session, or streaming contracts.
-
-Talon's normal suite is similarly socket-disabled. `RecordingChannel` records messages and media, tracks start and stop, and delivers inbound messages only after the host registers handlers. For lifecycle work, use a clock and filesystem rooted at `tmp_path`: the data-lifecycle test verifies retention cleanup removes expired cron jobs and old inbound media while preserving fresh media. This is the right pattern for deterministic host, channel, and retention changes; reserve `integration_tests/` for external boundaries.
-
-## Evals are experiments, not ordinary integration tests
-
-`libs/evals` has two intentional tiers. `make test` targets only `tests/unit_tests` under the socket block; it covers the harness rather than live model behavior. The live suite is `tests/evals`, run through the `deepagents-evals` console program—the canonical interface—or CI-parity Make targets.
+`libs/evals` keeps its ordinary socket-blocked test command on `tests/unit_tests`. Real-model evals live in `tests/evals`: collection requires tracing to be enabled and an explicit `--model`. The `deepagents-evals` CLI is the discoverable interface for a single run, repeated trials, report aggregation, charts, catalog/model-group maintenance, and discovery; `run` and `trials` can obtain their model from `--model` or `DEEPAGENTS_EVALS_MODEL`.
 
 ```bash
 cd libs/evals
 export LANGSMITH_TRACING=true
 export LANGSMITH_API_KEY=...
-export DEEPAGENTS_EVALS_MODEL=claude-sonnet-4-6
+export DEEPAGENTS_EVALS_MODEL=<model-id>
 
 deepagents-evals list categories
 deepagents-evals run
 deepagents-evals trials --trials 3
 
-# CI-parity alternatives
-make evals MODEL=claude-opus-4-7
-make evals-trials MODEL=openai:gpt-5.5 TRIALS=3
+# Makefile alternatives
+make evals MODEL=<model-id>
+make evals-trials MODEL=<model-id> TRIALS=3
 ```
 
-Use `deepagents-evals list` to discover categories, tiers, models, and evals. The CLI supports single runs, repeated trials, aggregation, radar generation, catalog and model-group maintenance, JSON output, and dry runs. Live collection exits before running tests unless LangSmith tracing is enabled and `--model` is supplied; the selected provider determines its required credential. Category and tier selection use `--eval-category` and `--eval-tier`.
+Category and tier filters reject values not present in the collected tests; category exclusions win over inclusions. The reporter produces totals, per-category outcomes, failures, durations, experiment links, and efficiency data. Since it can rewrite a test session's failure exit status after recording its reports, use the CLI aggregate result for repeated experiments: `trials` and `aggregate` fail when `counts.failed.mean` is nonzero.
 
-The eval reporter records aggregate outcomes, durations, categories, failure details, LangSmith experiment links, and efficiency measures such as step and tool-call ratios. It deliberately changes an individual trial pytest status to zero so reports can be written. Automation must use the CLI's aggregate decision: `trials` and `aggregate` return `1` when `trials_summary.json` has a nonzero `counts.failed.mean`, not the per-trial pytest return code.
+Harbor targets are runtime-host experiments rather than package pytest integration tests. `stage-harbor-local-deps` stages the checked-out SDK, dcode, ACP, and QuickJS sources before a selected Docker, Modal, Daytona, Runloop, or LangSmith sandbox run. The Harbor LangGraph agent removes provider and LangSmith credentials from the environment while executing shell operations; preserve that secret boundary when changing the agent-to-sandbox handoff. For the operational workflow, see [running evals](../workflows/run-evals.md).
 
-## Safe change checklist
+## Cross-package, CI, and release validation
 
-1. Start from the closest existing test and state the observable invariant or failure mode first.
-2. Put network-free coverage in the offline suite; move real provider, sandbox, subprocess, or network requirements to the applicable integration or eval path.
-3. Use fake models, fake protocol clients, temporary directories, injected clocks, and shared helpers to make offline behavior deterministic.
-4. Run the narrow `TEST_FILE` command, then the relevant package target. Run benchmarks only through their dedicated targets.
-5. Treat a new warning as a defect to fix or narrowly justify, never as noise to globally suppress.
+A sibling package may receive SDK changes through editable local dependencies, so validate direct consumers as well as the package changed. CI encodes the minimum fan-out: an SDK change triggers Deep Agents, dcode, ACP, Talon, evals, and partner package filters that editable-install it; a dcode change also triggers Talon. Workflow/action infrastructure changes are included in every package filter. On a pull request only matching package jobs run; pushes to `main` run the full package CI set.
+
+CI's normal unit matrix also defines compatibility expectations: Deep Agents and ACP run on Python 3.11 through 3.14 (with an additional Deep Agents Windows 3.13 leg); dcode and Talon run on 3.12 through 3.14; evals run on 3.12 and 3.13. Run the local owning-package test first, then ensure the affected consumers and supported platform-specific behavior are covered before merging.
+
+For dependency or lockfile changes, run the repository-wide checks from `libs/`:
+
+```bash
+make -C libs lock-check
+make -C libs lint
+```
+
+Before a release-sensitive SDK change, validate the exact `deepagents==` pin in `libs/code/pyproject.toml`: dcode must bump that pin in the same change when it requires new SDK functionality. Release PRs are package-specific, and merging one publishes that package after its required checks; therefore test the release consumer path, not only the producer package. See [development operations](../operations/development.md) and the release process for the full release workflow.
+
+## Change-validation checklist
+
+1. Identify the observable behavior, boundary, and failure mode; inspect the nearest test before writing one.
+2. Run the narrowest neighboring test with `TEST_FILE`, then the owning package's normal target.
+3. Keep normal coverage deterministic: reset global state, use temporary paths and fixed time, and make doubles record observable output and lifecycle events.
+4. Escalate only when needed: use integration tests for process/provider contracts, evals for real-model quality, and Harbor for sandbox host behavior. Do not use benchmarks as correctness tests.
+5. For a shared SDK, dcode, workflow, dependency, or release change, run the affected consumer packages and repository fan-out checks. Verify the dcode SDK pin when relevant.
+6. Resolve warnings rather than broadening filters. Treat `bypass-warnings-check` as temporary triage and retain warnings-as-errors as the final gate.

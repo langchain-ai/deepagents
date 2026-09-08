@@ -15,10 +15,17 @@ on:
   pull_request:
   merge_group:
 
-# Cancel redundant workflow runs
+# Cancel redundant workflow runs, except trusted release-bot PR updates whose
+# new head may need to inspect the prior run before it finishes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: >-
+    ${{
+      github.event_name != 'pull_request' ||
+      github.actor != vars.RELEASE_BOT_LOGIN ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      !startsWith(github.head_ref, 'release-please--branches--main--components--')
+    }}
 
 # `pull-requests: read` lets the called `_test.yml` reusable workflow read live
 # PR labels (re-runs replay the original event payload, so the API is the only
@@ -26,6 +33,7 @@ concurrency:
 # The issues labels endpoint it uses accepts either `issues: read` or
 # `pull-requests: read`, so no `issues` grant is needed here.
 permissions:
+  checks: read
   contents: read
   pull-requests: read
 
@@ -38,26 +46,83 @@ jobs:
     name: "🔍 Detect Changes"
     runs-on: ubuntu-latest
     outputs:
-      deepagents: ${{ steps.filter.outputs.deepagents }}
-      code: ${{ steps.filter.outputs.code }}
-      talon: ${{ steps.filter.outputs.talon }}
+      deepagents: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.deepagents == 'true' }}
+      code: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.code == 'true' }}
+      talon: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon == 'true' }}
       # `talon-src` tracks only libs/talon/** so the `ci_success` waiver and
       # the advisory job can tell "PR touches talon sources" apart from
       # "talon CI runs" (the broad `talon` filter above also matches
       # libs/code and libs/deepagents because talon editable-installs them).
-      talon-src: ${{ steps.filter.outputs.talon-src }}
-      evals: ${{ steps.filter.outputs.evals }}
-      acp: ${{ steps.filter.outputs.acp }}
-      daytona: ${{ steps.filter.outputs.daytona }}
-      modal: ${{ steps.filter.outputs.modal }}
-      runloop: ${{ steps.filter.outputs.runloop }}
-      vercel: ${{ steps.filter.outputs.vercel }}
-      quickjs: ${{ steps.filter.outputs.quickjs }}
+      talon-src: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon-src == 'true' }}
+      evals: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.evals == 'true' }}
+      acp: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.acp == 'true' }}
+      daytona: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.daytona == 'true' }}
+      modal: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.modal == 'true' }}
+      runloop: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.runloop == 'true' }}
+      vercel: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.vercel == 'true' }}
+      quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
+      curated-apply-only: ${{ steps.curated-apply.outputs.only || 'false' }}
+      curated-apply-parent-conclusion: ${{ steps.curated-apply.outputs.prior-conclusion }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: "📋 Checkout detector from trusted base ref"
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.actor == vars.RELEASE_BOT_LOGIN &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'release-please--branches--main--components--')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: .curated-apply-base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/checks/curated_apply_only.py
+            release-please-config.json
+
+      - name: "📝 Detect a changelog-only curated-notes apply"
+        id: curated-apply
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.actor == vars.RELEASE_BOT_LOGIN &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'release-please--branches--main--components--')
+        env:
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          only="$(python3 .curated-apply-base/.github/scripts/checks/curated_apply_only.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --config .curated-apply-base/release-please-config.json \
+            --head "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --bot-login "$BOT_LOGIN" \
+            --bot-id "$BOT_ID")"
+          if [ "$only" = true ]; then
+            parent="$(git rev-parse "$HEAD_SHA^")"
+            conclusion="$(gh api \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "repos/$GITHUB_REPOSITORY/commits/$parent/check-runs?check_name=%E2%9C%85%20CI%20Success&filter=latest&per_page=100" \
+              --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0].conclusion else "" end' \
+              2>/dev/null || true)"
+            case "$conclusion" in
+              success|failure) ;;
+              *)
+                only=false
+                conclusion=''
+                echo "Prior CI is not conclusive; running the normal package jobs."
+                ;;
+            esac
+          fi
+          echo "only=$only" >> "$GITHUB_OUTPUT"
+          echo "prior-conclusion=${conclusion:-}" >> "$GITHUB_OUTPUT"
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
@@ -483,6 +548,8 @@ jobs:
   # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
     name: "Validate Release Options"
+    needs: changes
+    if: needs.changes.outputs.curated-apply-only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -512,7 +579,11 @@ jobs:
   talon-failure-advisory:
     name: "⚠️ talon failure advisory"
     needs: [changes, lint-talon, test-talon]
-    if: always() && github.event_name == 'pull_request' && needs.changes.outputs.talon-src != 'true'
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.curated-apply-only != 'true' &&
+      needs.changes.outputs.talon-src != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
@@ -691,6 +762,8 @@ jobs:
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
+          CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
+          CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           # Full needs context: the wildcard `toJSON(needs.*.result)` form
           # loses job names (it yields a bare array of result strings), so
           # the name -> result map is rebuilt from each entry below. Skipped
@@ -699,6 +772,14 @@ jobs:
           TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
         run: |
           set -euo pipefail
+          if [ "$CURATED_APPLY_ONLY" = true ]; then
+            if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]; then
+              echo "The release-bot commit only updates the managed changelog; prior-head CI passed."
+              exit 0
+            fi
+            echo "Prior-head CI failed; refusing to pass the changelog-only apply commit."
+            exit 1
+          fi
           # Get all job results (excluding 'changes' which always succeeds)
           results="$(printf '%s' "$NEEDS" | python3 -c '
           import json

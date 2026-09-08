@@ -1069,6 +1069,30 @@ class MessageStore:
         """
         self._visible_end = min(len(self._messages), self._visible_end + count)
 
+    def get_tail_window(self, count: int) -> list[MessageData] | None:
+        """Return a bounded tail window when moving there preserves live rows.
+
+        Returns:
+            The tail rows, or None when the move would archive a protected row.
+        """
+        start = max(0, len(self._messages) - max(0, count))
+        if any(self.is_protected(message.id) for message in self._messages[:start]):
+            return None
+        return self._messages[start:]
+
+    def move_visible_window_to_tail(self, count: int) -> list[MessageData] | None:
+        """Move the visible range directly to a bounded protected-safe tail.
+
+        Returns:
+            The new visible tail, or None when a protected row blocks the move.
+        """
+        tail = self.get_tail_window(count)
+        if tail is None:
+            return None
+        self._visible_end = len(self._messages)
+        self._visible_start = self._visible_end - len(tail)
+        return tail
+
     def should_hydrate_above(
         self,
         scroll_position: float,

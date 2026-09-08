@@ -1096,6 +1096,54 @@ def _create_test_temp_artifact(
     return state, artifact
 
 
+def test_workspace_credentials_are_known_secrets(tmp_path: Path) -> None:
+    """Auto redaction includes secrets from the workspace snapshot."""
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"execute": config},
+        worktree_root=tmp_path,
+        environ={"WORKSPACE_API_KEY": "workspace-secret-value"},
+    )
+
+    assert "workspace-secret-value" in middleware._known_secrets
+
+
+def test_relayed_caller_tracing_key_is_a_known_secret(tmp_path: Path) -> None:
+    """The key `execute` actually runs under must be redactable.
+
+    `restore_user_langsmith_env` writes the caller's relayed LangSmith key
+    into the shell environment, but it arrives inside a carrier whose name does
+    not match the secret-name scan, so it would otherwise be the one credential
+    never redacted from command output.
+    """
+    from deepagents_code.config import (
+        _USER_LANGSMITH_ENV_CARRIER,
+        _USER_LANGSMITH_ENV_VARS,
+    )
+
+    selectors = dict.fromkeys(_USER_LANGSMITH_ENV_VARS)
+    selectors["LANGSMITH_API_KEY"] = "lsv2-caller-relayed-key"
+
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"execute": config},
+        worktree_root=tmp_path,
+        environ={
+            _USER_LANGSMITH_ENV_CARRIER: json.dumps(
+                {"launch": selectors, "user": selectors}
+            ),
+            "LANGSMITH_API_KEY": "lsv2-agent-session-key",
+        },
+    )
+
+    assert "lsv2-caller-relayed-key" in middleware._known_secrets
+    # The agent's own key stays covered by the name scan.
+    assert "lsv2-agent-session-key" in middleware._known_secrets
+    # The carrier itself is not a credential; it must not become a redaction
+    # pattern that blanks whole command outputs.
+    assert not any(value.startswith("{") for value in middleware._known_secrets)
+
+
 def test_sanitize_auto_reason_redacts_secrets_urls_and_control_text() -> None:
     reason = (
         "TOKEN=supersecret https://user:pass@example.com/path?q=value\x1b[31m\n"
@@ -4073,10 +4121,17 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
     )
     assert (
         classifier_unavailable_reason(
-            _ClassifierDeadlineExceededError(1.5), timeout_seconds=1.5
+            _ClassifierDeadlineExceededError(1.5),
+            timeout_seconds=1.5,
+            model_name="kimi-k3",
         )
-        == "classifier did not respond within 1.5s"
+        == "classifier model kimi-k3 did not respond within 1.5s"
     )
+    assert classifier_unavailable_reason(
+        _ClassifierDeadlineExceededError(20.0),
+        timeout_seconds=20.0,
+        spec="fireworks:kimi-k3",
+    ) == ("configured classifier model fireworks:kimi-k3 did not respond within 20s")
     # Provider exception type alone must not claim dcode's deadline fired.
     assert (
         classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0)
@@ -4084,9 +4139,11 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
     )
     assert (
         classifier_unavailable_reason(
-            RuntimeError("provider overloaded"), timeout_seconds=20.0
+            RuntimeError("provider overloaded"),
+            timeout_seconds=20.0,
+            model_name="kimi-k3",
         )
-        == "failed (RuntimeError)"
+        == "classifier model kimi-k3 failed (RuntimeError)"
     )
     # A construction deadline must not read as "the model did not respond": the
     # model was never built, so that would point at a nonexistent outage.
@@ -4197,7 +4254,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
             await asyncio.sleep(5)
             return self.result
 
-    model = _SlowModel()
+    model = _SlowModel(model_name="kimi-k3")
     config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
     middleware = AutoModeHITLMiddleware(
         {
@@ -4229,7 +4286,9 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
     )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
+    assert plan["decisions"][0]["reason"] == (
+        "classifier model kimi-k3 did not respond within 0.05s"
+    )
     lifecycle = [event for event in events if event["event"].startswith("review_")]
     assert [event["event"] for event in lifecycle] == [
         "review_started",
@@ -4238,7 +4297,9 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
-    model = _StructuredModel(error=TimeoutError("socket timed out"))
+    model = _StructuredModel(
+        error=TimeoutError("socket timed out"), model_name="kimi-k3"
+    )
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(
         tmp_path,
@@ -4255,14 +4316,18 @@ async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> No
     )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == "failed (TimeoutError)"
+    assert plan["decisions"][0]["reason"] == (
+        "classifier model kimi-k3 failed (TimeoutError)"
+    )
 
 
 async def test_classifier_unavailable_logs_underlying_error(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    model = _StructuredModel(error=RuntimeError("provider overloaded"))
+    model = _StructuredModel(
+        error=RuntimeError("provider overloaded"), model_name="kimi-k3"
+    )
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(
         tmp_path,
@@ -4281,7 +4346,9 @@ async def test_classifier_unavailable_logs_underlying_error(
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     # Provider exception text stays out of agent/UI; logs keep the detail.
-    assert plan["decisions"][0]["reason"] == "failed (RuntimeError)"
+    assert plan["decisions"][0]["reason"] == (
+        "classifier model kimi-k3 failed (RuntimeError)"
+    )
     assert "provider overloaded" not in plan["decisions"][0]["reason"]
     records = [
         record

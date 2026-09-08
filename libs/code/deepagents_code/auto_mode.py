@@ -613,11 +613,27 @@ def _redact_remote(value: str) -> str:
     return _CONTROL_RE.sub("", value)[:2000]
 
 
-def _known_credential_values() -> tuple[str, ...]:
+def _known_credential_values(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    from deepagents_code.config import (
+        active_environment,
+        relayed_user_tracing_secrets,
+    )
+
+    source = active_environment() if environ is None else environ
     values: set[str] = set()
-    for name, value in os.environ.items():
+    for name, value in source.items():
         if _SECRET_KEY_RE.search(name) and len(value) >= _MIN_SECRET_LENGTH:
             values.add(value)
+    # The caller's relayed tracing key is what `execute` commands actually run
+    # under, but it reaches this process inside a carrier whose name does not
+    # match `_SECRET_KEY_RE`, so the name scan above cannot see it.
+    values.update(
+        value
+        for value in relayed_user_tracing_secrets(source)
+        if len(value) >= _MIN_SECRET_LENGTH
+    )
     try:
         from deepagents_code.auth_store import load_credentials
 
@@ -657,7 +673,11 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
 
 
 def classifier_unavailable_reason(
-    exc: BaseException, *, timeout_seconds: float, spec: str | None = None
+    exc: BaseException,
+    *,
+    timeout_seconds: float,
+    model_name: str | None = None,
+    spec: str | None = None,
 ) -> str:
     """Build a safe agent/UI reason for a failed auto classifier call.
 
@@ -672,13 +692,13 @@ def classifier_unavailable_reason(
     Args:
         exc: Failure raised while invoking or validating the classifier.
         timeout_seconds: Configured local wait budget for one batch.
+        model_name: Name of the active model when reviews inherit the main model.
         spec: Label of the distinct classifier model that failed, when one is in
             use — its spec, or its model name when a chat model instance was
             supplied programmatically (in which case there is no setting to
             change). Naming it points the user at the setting to fix; a cached
             model built against a since-rotated credential fails here rather
-            than at construction. `None` when reviews inherit the main agent
-            model and the spec would say nothing.
+            than at construction.
 
     Returns:
         Compact single-line reason for tool messages and TUI events.
@@ -690,14 +710,20 @@ def classifier_unavailable_reason(
             f"configured classifier model {exc.spec} could not be built "
             f"within {exc.timeout_seconds:g}s"
         )
+    if spec is not None:
+        prefix = f"configured classifier model {spec}"
+    elif model_name is not None:
+        prefix = f"classifier model {model_name}"
+    else:
+        prefix = "classifier"
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return f"classifier did not respond within {timeout_seconds:g}s"
+        return f"{prefix} did not respond within {timeout_seconds:g}s"
     if isinstance(exc, _ClassifierModelUnavailableError):
         # The spec is user-supplied config, not provider text, so naming it is
         # safe and is the fastest route to a fix.
         return f"configured classifier model {exc.spec} is unavailable"
-    if spec is not None:
-        return f"configured classifier model {spec} failed ({type(exc).__name__})"
+    if spec is not None or model_name is not None:
+        return f"{prefix} failed ({type(exc).__name__})"
     return f"failed ({type(exc).__name__})"
 
 
@@ -2126,6 +2152,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         ),
         classifier_model: str | BaseChatModel | None = None,
         cli_max_retries: int | None = None,
+        environ: Mapping[str, str] | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -2147,6 +2174,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 `classifier_model` on the runtime context wins over this value.
             cli_max_retries: Explicit `--max-retries` value to retain when a
                 distinct classifier model is constructed.
+            environ: Workspace environment retained for lazy model construction.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -2207,12 +2235,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         self._configured_classifier_model = classifier_model
         self._cli_max_retries = cli_max_retries
+        self._environ = environ
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
         self._classifier_model_constructions: dict[
             str, asyncio.Task[BaseChatModel]
         ] = {}
-        self._known_secrets = _known_credential_values()
+        self._known_secrets = _known_credential_values(environ)
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
         self._emitted_events: OrderedDict[str, set[tuple[str, ...]]] = OrderedDict()
@@ -2583,11 +2612,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     if self._cli_max_retries is not None
                     else {}
                 )
-                result = await asyncio.to_thread(
-                    create_model,
-                    selected,
-                    **retry_kwargs,
-                )
+                from deepagents_code.config import use_environment
+
+                with use_environment(self._environ):
+                    result = await asyncio.to_thread(
+                        create_model,
+                        selected,
+                        **retry_kwargs,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -3083,6 +3115,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     exc if isinstance(exc, _ClassifierModelUnavailableError) else None
                 )
                 classifier_label = self._distinct_classifier_label(request)
+                classifier_model_name = (
+                    None
+                    if classifier_label is not None
+                    else _extract_model_name(request.model)
+                )
                 if config_fault is None and classifier_label is not None:
                     # Invoke-time failure against a distinct classifier: the cached
                     # model may have been built against a since-revoked credential,
@@ -3113,6 +3150,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     classifier_unavailable_reason(
                         exc,
                         timeout_seconds=self._classifier_timeout_seconds,
+                        model_name=classifier_model_name,
                         spec=classifier_label,
                     ),
                     known_secrets=self._known_secrets,

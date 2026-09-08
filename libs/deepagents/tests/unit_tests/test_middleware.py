@@ -2426,6 +2426,122 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == EMPTY_CONTENT_WARNING
 
+    @pytest.mark.parametrize(
+        ("body", "offset", "limit", "expected_rows"),
+        [
+            # Mid-file blank window.
+            ("line1\n\n\n\n\nline6\n", 1, 4, [2, 3, 4, 5]),
+            # Blank window starting at line 1 of a file that continues.
+            ("\n\n\nline4\nline5\n", 0, 3, [1, 2, 3]),
+            # Blank window ending at EOF but not starting at line 1.
+            ("line1\n\n\n", 1, 2, [2, 3]),
+        ],
+    )
+    def test_read_file_blank_window_of_non_empty_file_renders_lines(self, body: str, offset: int, limit: int, expected_rows: list[int]):
+        """A blank window of a file with content renders numbered blank lines."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = _runtime("blank-window-read")
+
+        backend.write("/f.txt", body)
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/f.txt", "offset": offset, "limit": limit, "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content != EMPTY_CONTENT_WARNING
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "\n".join(f"{line_number}  " for line_number in expected_rows)
+
+    @pytest.mark.parametrize(
+        ("content", "serialization"),
+        [
+            # Lines joined with "\n" as a separator: no trailing terminator.
+            ("a\nb\n\n", "separator-joined"),
+            # Terminators kept: the same window splits into a phantom "".
+            ("a\nb\n\n\n", "terminator-kept"),
+        ],
+    )
+    def test_read_file_window_ending_in_blank_row_keeps_that_row(self, content: str, serialization: str):
+        """A window whose last source row is blank renders every row it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=5,
+            start_line=1,
+            end_line=4,
+            next_offset=4,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/f.txt"})
+
+        assert isinstance(result, ToolMessage)
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "1  a\n2  b\n3  \n4  ", serialization
+        assert "Read 4 lines" in result.content
+
+    def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
+        """A window spanning a whole whitespace-only file still describes an empty file."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=" \n\t", encoding="utf-8"),
+            total_lines=2,
+            start_line=1,
+            end_line=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/blank.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(("content", "end_line"), [("", 2), ("\n\n\n", 5)])
+    def test_read_file_blank_window_pads_to_reported_rows(self, content: str, end_line: int):
+        """A separator-joined blank window renders one row per line it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=end_line + 1,
+            start_line=2,
+            end_line=end_line,
+            next_offset=end_line,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt"})
+
+        assert isinstance(result, ToolMessage)
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "\n".join(f"{line_number}  " for line_number in range(2, end_line + 1))
+
+    def test_read_file_keeps_backend_truncation_banner_past_window(self):
+        """Rows a backend appends beyond `end_line` survive padding."""
+        backend, _ = _make_backend()
+        banner = "\n\n[Output was truncated due to size limits.]"
+        read_result = ReadResult(
+            file_data=FileData(content="a\nb" + banner, encoding="utf-8"),
+            total_lines=9,
+            start_line=1,
+            end_line=2,
+            next_offset=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert "[Output was truncated due to size limits.]" in result.content
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         backend, _ = _make_backend()

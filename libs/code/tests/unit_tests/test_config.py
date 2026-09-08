@@ -4992,6 +4992,46 @@ class TestLazySingletons:
 
         assert isinstance(_get_credentials(), Credentials)
 
+    def test_bootstrap_captures_langsmith_before_project_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failing project lookup still leaves an encodable launch snapshot."""
+        import deepagents_code.config as config_mod
+        from deepagents_code import project_utils
+
+        def _boom() -> None:
+            msg = "project context unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(project_utils, "get_server_project_context", _boom)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "launch-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        original_done = config_mod._bootstrap_state.done
+        original_error = config_mod._bootstrap_state.error
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        config_mod._bootstrap_state.done = False
+        config_mod._bootstrap_state.error = None
+
+        try:
+            config_mod._ensure_bootstrap()
+
+            # Bootstrap swallows the failure by contract. The snapshot needs
+            # only `os.environ`, so it must survive -- otherwise the server
+            # cannot start at all.
+            assert config_mod._bootstrap_state.error is not None
+            assert (
+                config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_API_KEY"]
+                == "launch-key"
+            )
+            config_mod._encode_user_langsmith_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.error = original_error
+
     def test_bootstrap_warns_on_conflicting_override(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -1797,18 +1797,23 @@ def _ensure_bootstrap() -> None:
             return
 
         try:
-            from deepagents_code.project_utils import (
-                get_server_project_context as _get_server_project_context,
-            )
-
-            ctx = _get_server_project_context()
-            _bootstrap_state.start_path = ctx.user_cwd if ctx else None
+            # First, because this needs nothing but `os.environ`. Anything below
+            # can raise into the handler, which this contract says to survive;
+            # leaving the snapshot empty instead makes `_encode_user_langsmith_env`
+            # refuse, and the server never starts at all.
             _bootstrap_state.launch_langsmith_env = _langsmith_selectors_from(
                 os.environ
             )
             _bootstrap_state.user_langsmith_env = dict(
                 _bootstrap_state.launch_langsmith_env
             )
+
+            from deepagents_code.project_utils import (
+                get_server_project_context as _get_server_project_context,
+            )
+
+            ctx = _get_server_project_context()
+            _bootstrap_state.start_path = ctx.user_cwd if ctx else None
             _load_dotenv(
                 start_path=_bootstrap_state.start_path,
                 capture_user_langsmith=True,

@@ -26,7 +26,10 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
-from deepagents_code._constants import LANGSMITH_API_KEY_ENV_VARS
+from deepagents_code._constants import (
+    LANGSMITH_API_KEY_ENV,
+    LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+)
 from deepagents_code._git import find_git_common_dir
 from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
@@ -968,7 +971,7 @@ constant is the single name its `/auth` handling compares against.
 """
 
 SERVICE_API_KEY_ENV: dict[str, str] = {
-    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV,
     TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
@@ -981,9 +984,12 @@ before launch.
 """
 
 SERVICE_API_KEY_FALLBACK_ENV_VARS: dict[str, tuple[str, ...]] = {
-    LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV_VARS[1:],
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
 }
-"""Ordered fallback env vars accepted by each non-model service runtime."""
+"""Fallback env vars per non-model service, tried after its primary env var.
+
+A service absent from this map has no fallbacks.
+"""
 
 CODEX_PROVIDER = "openai_codex"
 """Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.

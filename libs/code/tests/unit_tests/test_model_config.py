@@ -922,6 +922,28 @@ class TestServiceCredentials:
         assert status.source is ProviderAuthSource.ENV
         assert status.env_var == "LANGSMITH_API_KEY"
 
+    def test_service_fallbacks_key_off_known_services(self) -> None:
+        """Every fallback entry names a service that actually exists.
+
+        Both readers use `.get(service, ())`, so a renamed or misspelled key
+        degrades to "no fallbacks" indistinguishably from "none configured".
+        """
+        from deepagents_code.model_config import (
+            SERVICE_API_KEY_ENV,
+            SERVICE_API_KEY_FALLBACK_ENV_VARS,
+        )
+
+        unknown = set(SERVICE_API_KEY_FALLBACK_ENV_VARS) - set(SERVICE_API_KEY_ENV)
+        assert not unknown, f"Fallbacks for unknown services: {sorted(unknown)}."
+
+    def test_service_without_fallbacks_declares_none(self) -> None:
+        """Tavily has no fallback, so its option must not inherit LangSmith's."""
+        from deepagents_code.config_manifest import get_option
+
+        option = get_option("credentials.tavily")
+        assert option is not None
+        assert option.fallback_env_vars == ()
+
     def test_service_status_env_var_stays_canonical(
         self,
         fake_state_dir: Path,  # noqa: ARG002

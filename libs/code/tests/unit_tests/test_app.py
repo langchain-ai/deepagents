@@ -17960,6 +17960,30 @@ class TestResolveResumeThread:
         assert "older than the configured maximum age" in blocked
         assert "your config.toml" in blocked
 
+    async def test_max_resume_age_larger_than_current_date_allows_threads(self) -> None:
+        """An age that predates `datetime.min` clamps to the earliest cutoff."""
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.declaring_nothing("managed config"),
+            user=TomlSnapshot.from_table(
+                "config.toml",
+                {"threads": {"max_resume_age": "999999999d"}},
+            ),
+        )
+        with (
+            patch(
+                "deepagents_code.configuration.resolver.get_config_resolver",
+                return_value=resolver,
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_updated_at",
+                AsyncMock(return_value="0001-01-01T00:00:00+00:00"),
+            ),
+        ):
+            assert await DeepAgentsApp._thread_resume_block("oldest") is None
+
     async def test_stricter_resume_policy_wins(self) -> None:
         """When both forms are configured, the newer effective cutoff wins."""
         from deepagents_code.configuration.resolver import resolver_from_snapshots

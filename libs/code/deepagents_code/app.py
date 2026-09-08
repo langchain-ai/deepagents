@@ -5824,7 +5824,9 @@ class DeepAgentsApp(App):
             elif key.endswith("max_resume_age") and isinstance(value, str):
                 seconds = parse_duration_seconds(value)
                 if seconds is not None:
-                    cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
+                    cutoff = datetime.min.replace(tzinfo=UTC)
+                    with suppress(OverflowError):
+                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
                     cutoffs.append((cutoff, _ranked_source(resolved), True))
         return max(cutoffs, default=None)
 

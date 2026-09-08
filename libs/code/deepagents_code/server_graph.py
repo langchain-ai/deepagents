@@ -16,7 +16,6 @@ import atexit
 import logging
 import sys
 from collections import OrderedDict
-from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -777,15 +776,7 @@ def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
     config = ServerConfig.from_env()
     current_config = config.resolve_workspace(binding.cwd, binding.project_root)
     bound_policy = binding.workspace_config()
-    # Extension trust is resolved from a mutable on-disk store, so granting it
-    # in another session looks exactly like drift. A grant is user-authorized
-    # and only ever adds privilege, so pin the bound value instead of refusing:
-    # the thread keeps the trust it was bound with, and the grant takes effect
-    # on the next binding. A revocation still has to refuse, immediately.
-    if bound_policy.get("trust_project_extensions") is False and (
-        current_config.trust_project_extensions is True
-    ):
-        current_config = replace(current_config, trust_project_extensions=False)
+    current_config = current_config.preserve_bound_extension_trust(bound_policy)
     drifted = drifted_project_fields(
         bound_policy, current_config.to_project_workspace_policy()
     )

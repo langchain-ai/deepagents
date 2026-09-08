@@ -22,6 +22,8 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_I
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from deepagents import FsToolName
 
     from deepagents_code.project_utils import ProjectContext
@@ -611,6 +613,24 @@ class ServerConfig:
             trust_project_extensions=is_project_extensions_trusted(target_root),
             extension_paths=(),
         )
+
+    def preserve_bound_extension_trust(
+        self, bound_policy: Mapping[str, object]
+    ) -> ServerConfig:
+        """Keep an existing thread's extension trust when a new grant appears.
+
+        Args:
+            bound_policy: Server policy persisted when the thread was bound.
+
+        Returns:
+            A config that defers new grants to new threads. Revocations remain
+            visible so binding and runtime validation can reject them.
+        """
+        if bound_policy.get("trust_project_extensions") is False and (
+            self.trust_project_extensions is True
+        ):
+            return replace(self, trust_project_extensions=False)
+        return self
 
     def workspace_fingerprint(self) -> str:
         """Fingerprint the resolved runtime config except workspace identity.

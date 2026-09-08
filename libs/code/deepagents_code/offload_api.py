@@ -36,6 +36,7 @@ from deepagents_code.server_graph import _workspace_runtime as get_server_runtim
 from deepagents_code.workspace import (
     WorkspaceConflictError,
     bind_thread_workspace,
+    get_thread_workspace,
     require_thread_workspace,
 )
 
@@ -254,6 +255,11 @@ async def workspace(request: Request) -> JSONResponse:
                     {"detail": "workspace configuration does not match server policy"},
                     status_code=409,
                 )
+        existing = await get_thread_workspace(thread_id)
+        if existing is not None and existing.workspace_id == identity.workspace_id:
+            trusted = trusted.preserve_bound_extension_trust(
+                existing.workspace_config()
+            )
         binding = await bind_thread_workspace(
             thread_id,
             identity.cwd,

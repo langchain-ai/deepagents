@@ -84,6 +84,66 @@ async def _workspace_route_client(
 
 
 class TestWorkspaceRoute:
+    @pytest.fixture(autouse=True)
+    def workspace_database(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_SERVER_DB_PATH", str(tmp_path / "sessions.db")
+        )
+
+    @pytest.mark.parametrize("initial_trust", [False, True])
+    async def test_reconnect_after_extension_trust_changes(
+        self, tmp_path, initial_trust: bool
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.workspace import get_thread_workspace
+
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(offload_api, "get_server_runtime", new=AsyncMock()),
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch(
+                "deepagents_code.extensions.trust.is_project_extensions_trusted",
+                return_value=initial_trust,
+            ) as trust,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app), base_url="http://test"
+            ) as client:
+                url = "/dcode/threads/thread-1/workspace"
+                first = await client.post(url, json={"cwd": str(other)})
+                assert first.status_code == 200
+                original = await get_thread_workspace("thread-1")
+
+                trust.return_value = not initial_trust
+                resumed = await client.post(url, json={"cwd": str(other)})
+                assert resumed.status_code == (409 if initial_trust else 200)
+                if not initial_trust:
+                    assert resumed.json() == first.json()
+                assert await get_thread_workspace("thread-1") == original
+
+                fresh = await client.post(
+                    "/dcode/threads/thread-2/workspace", json={"cwd": str(other)}
+                )
+                assert fresh.status_code == 200
+                binding = await get_thread_workspace("thread-2")
+                assert binding is not None
+                assert binding.workspace_config()["trust_project_extensions"] is (
+                    not initial_trust
+                )
+
     async def test_server_supplies_policy_when_client_omits_claim(
         self, tmp_path
     ) -> None:

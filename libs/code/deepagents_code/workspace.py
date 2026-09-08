@@ -269,6 +269,29 @@ SERVER_CONFIG_DRIFT_REASON = (
 )
 
 
+def drifted_project_fields(
+    bound_config: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+) -> list[str]:
+    """Name the project-scoped fields that drifted from their binding.
+
+    The refusal these feed is safe either way, but it is not diagnosable
+    without the field names: the resolution reads the extension trust store on
+    every call, so a transient read failure reports as a policy change. These
+    values are paths and booleans, never secrets, so naming them is safe.
+
+    Returns:
+        The drifted field names, sorted; empty when the policy is unchanged.
+    """
+    from deepagents_code._server_config import PROJECT_WORKSPACE_FIELDS
+
+    return sorted(
+        key
+        for key in PROJECT_WORKSPACE_FIELDS
+        if bound_config.get(key) != current_config.get(key)
+    )
+
+
 def project_policy_differs(
     bound_config: Mapping[str, Any],
     current_config: Mapping[str, Any],
@@ -278,12 +301,7 @@ def project_policy_differs(
     Returns:
         `True` when any project-scoped field differs between the two policies.
     """
-    from deepagents_code._server_config import PROJECT_WORKSPACE_FIELDS
-
-    return any(
-        bound_config.get(key) != current_config.get(key)
-        for key in PROJECT_WORKSPACE_FIELDS
-    )
+    return bool(drifted_project_fields(bound_config, current_config))
 
 
 def _binding_conflict(

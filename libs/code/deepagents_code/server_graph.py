@@ -16,6 +16,7 @@ import atexit
 import logging
 import sys
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -39,7 +40,7 @@ from deepagents_code.workspace import (
     PROJECT_POLICY_DRIFT_REASON,
     SERVER_CONFIG_DRIFT_REASON,
     WorkspaceConflictError,
-    project_policy_differs,
+    drifted_project_fields,
     resolve_workspace,
 )
 
@@ -754,18 +755,44 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
 def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
     """Resolve current workspace policy and reject drift from its binding.
 
+    Refusals name the fields that drifted. This runs on every request, and it
+    reads the extension trust store each time, so a transient read failure
+    reports as a policy change; without the field names that refusal is not
+    diagnosable. The values are paths and booleans, never secrets.
+
     Returns:
         The current server configuration resolved for the workspace.
     """
     config = ServerConfig.from_env()
     current_config = config.resolve_workspace(binding.cwd, binding.project_root)
-    if project_policy_differs(
-        binding.workspace_config(),
-        current_config.to_project_workspace_policy(),
+    bound_policy = binding.workspace_config()
+    # Extension trust is resolved from a mutable on-disk store, so granting it
+    # in another session looks exactly like drift. A grant is user-authorized
+    # and only ever adds privilege, so pin the bound value instead of refusing:
+    # the thread keeps the trust it was bound with, and the grant takes effect
+    # on the next binding. A revocation still has to refuse, immediately.
+    if bound_policy.get("trust_project_extensions") is False and (
+        current_config.trust_project_extensions is True
     ):
-        conflict = WorkspaceConflictError.from_reason(PROJECT_POLICY_DRIFT_REASON)
+        current_config = replace(current_config, trust_project_extensions=False)
+    drifted = drifted_project_fields(
+        bound_policy, current_config.to_project_workspace_policy()
+    )
+    if drifted:
+        logger.warning(
+            "Workspace %s project policy drifted since binding: %s",
+            binding.cwd,
+            ", ".join(drifted),
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({', '.join(drifted)})"
+        )
         raise conflict
     if current_config.workspace_fingerprint() != binding.config_fingerprint:
+        logger.warning(
+            "Workspace %s server config fingerprint changed since binding",
+            binding.cwd,
+        )
         conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
         raise conflict
     return current_config

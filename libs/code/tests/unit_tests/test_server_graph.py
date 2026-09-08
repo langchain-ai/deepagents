@@ -777,6 +777,77 @@ class TestWorkspaceRuntime:
 
         make.assert_awaited_once()
 
+    async def test_cached_runtime_survives_a_granted_extension_trust(
+        self, tmp_path
+    ) -> None:
+        """Granting trust elsewhere must not brick an already-bound thread.
+
+        Trust is resolved from a mutable on-disk store, so a grant in another
+        session looked exactly like drift -- and because the check runs before
+        the cache lookup, every request on the thread refused with no way to
+        recover. A grant only adds privilege, so the bound value is pinned and
+        takes effect on the next binding instead.
+        """
+        module = _import_fresh_server_graph()
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        launch_config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
+
+        with patch(trust, return_value=False):
+            binding = _bind(launch_config, other)
+
+        with (
+            patch(trust, return_value=False),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        # The user grants trust for this project in another session.
+        with (
+            patch(trust, return_value=True),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        # The thread keeps the trust it was bound with, not the new grant.
+        make.assert_awaited_once()
+        call = make.await_args
+        assert call is not None
+        assert call.kwargs["config_override"].trust_project_extensions is False
+
+    async def test_project_policy_drift_names_the_drifted_fields(
+        self, tmp_path
+    ) -> None:
+        """An opaque refusal cannot be told apart from a trust-store read failure."""
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        launch_config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
+
+        with patch(trust, return_value=True):
+            binding = _bind(launch_config, other)
+
+        with (
+            patch(trust, return_value=False),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            pytest.raises(
+                WorkspaceConflictError, match=r"\(trust_project_extensions\)"
+            ),
+        ):
+            await module._workspace_runtime(binding)
+
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError
 

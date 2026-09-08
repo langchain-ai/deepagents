@@ -308,6 +308,8 @@ asyncio.run(main())
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
         """Server PTC overrides should reach the interpreter snapshot."""
+        from deepagents_code.config import _tracing_environment_values
+
         graph_obj = object()
         model_obj = object()
         observed: dict[str, object] = {}
@@ -330,9 +332,12 @@ asyncio.run(main())
             Credentials=SimpleNamespace(
                 snapshot_from_environment=MagicMock(return_value=settings_obj)
             ),
+            _ensure_bootstrap=MagicMock(),
             _preview_dotenv_environ=MagicMock(return_value=environment),
             active_environment=MagicMock(return_value=environment),
             use_environment=__import__("contextlib").nullcontext,
+            _tracing_environment_values=_tracing_environment_values,
+            is_langsmith_redaction_enabled=MagicMock(return_value=True),
             configure_langsmith_secret_redaction=MagicMock(),
             reconcile_tracing_environment=MagicMock(),
             create_model=MagicMock(

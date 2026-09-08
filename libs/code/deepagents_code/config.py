@@ -1000,6 +1000,22 @@ def _environment_before_tracing_reconcile() -> dict[str, str]:
     return env
 
 
+def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | None]:
+    """Resolve the canonical selectors published to the LangSmith SDK.
+
+    Returns:
+        Selector values, with `None` denoting an unset variable.
+    """
+    return {
+        var: (
+            _resolve_env_var_from(environ, var)
+            if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
+            else environ.get(var) or None
+        )
+        for var in _TRACING_RECONCILED_ENV_VARS
+    }
+
+
 def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
     """Publish a workspace's tracing settings to the process environment.
 
@@ -1021,14 +1037,7 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
         environ: The active workspace environment snapshot.
     """
     baseline = _environment_before_tracing_reconcile()
-    values = {
-        var: (
-            _resolve_env_var_from(environ, var)
-            if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
-            else environ.get(var) or None
-        )
-        for var in _TRACING_RECONCILED_ENV_VARS
-    }
+    values = _tracing_environment_values(environ)
     _reconciled_tracing_values.update(
         {var: (baseline.get(var), value) for var, value in values.items()}
     )

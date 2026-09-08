@@ -58,6 +58,42 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
+_server_tracing_settings: tuple[dict[str, str | None], bool] | None = None
+_server_tracing_initialized = False
+
+
+def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
+    """Pin tracing for the server lifetime before any runtime can execute.
+
+    LangSmith uses process-wide env caches and a default client. Replacing
+    them, even under a build lock, reroutes cached and concurrently executing
+    runtimes. Only workspaces with matching tracing settings can share this
+    process. Keep the reservation across failed builds and cache eviction.
+
+    Called on the server loop with no suspension between claim and setup.
+    """
+    from deepagents_code.config import (
+        _tracing_environment_values,
+        configure_langsmith_secret_redaction,
+        reconcile_tracing_environment,
+    )
+
+    global _server_tracing_settings, _server_tracing_initialized  # noqa: PLW0603  # process-lifetime policy
+    settings = (_tracing_environment_values(environ), redact)
+    if _server_tracing_settings is not None and settings != _server_tracing_settings:
+        reason = (
+            "its LangSmith tracing settings differ from this server's; "
+            "start a separate server for this workspace"
+        )
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    _server_tracing_settings = settings
+    if not _server_tracing_initialized:
+        reconcile_tracing_environment(environ)
+        # Keep redaction on the server task: its fail-closed disable must
+        # reach this task's LangSmith ContextVar, not a worker's copied context.
+        configure_langsmith_secret_redaction()
+        _server_tracing_initialized = True
 
 
 def _print_startup_error(message: str) -> None:
@@ -277,15 +313,22 @@ async def _make_graphs(
     # rejects when invoked directly from the server loop (see issue #5043),
     # for the same reason as the offload in `_make_graphs_in_environment`.
     def _resolve_workspace_environment() -> tuple[
-        Mapping[str, str], CredentialsSnapshot, EnvironmentContext
+        Mapping[str, str], CredentialsSnapshot, EnvironmentContext, bool
     ]:
         from deepagents_code.config import (
             Credentials,
+            _ensure_bootstrap,
             _preview_dotenv_environ,
+            is_langsmith_redaction_enabled,
             use_environment,
         )
 
+        # Finish the one-time global credential publication before pinning
+        # tracing. A later lazy import of `agent` must not overwrite the pin.
+        _ensure_bootstrap()
         environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        with use_environment(environ):
+            redact = is_langsmith_redaction_enabled()
         return (
             environ,
             Credentials.snapshot_from_environment(
@@ -293,13 +336,18 @@ async def _make_graphs(
                 environ=environ,
             ),
             use_environment,
+            redact,
         )
 
-    workspace_env, workspace_credentials, use_environment = await asyncio.to_thread(
-        _resolve_workspace_environment
-    )
+    (
+        workspace_env,
+        workspace_credentials,
+        use_environment,
+        redact,
+    ) = await asyncio.to_thread(_resolve_workspace_environment)
 
     with use_environment(workspace_env):
+        _configure_server_tracing(workspace_env, redact=redact)
         return await _make_graphs_in_environment(
             config=config,
             project_context_override=project_context_override,
@@ -326,17 +374,8 @@ async def _make_graphs_in_environment(
     # `blockbuster` rejects when invoked directly from the server loop (see
     # issue #5043). Importing `deepagents_code.agent` / first `settings` access
     # can also trigger `find_project_root()` -> `Path.cwd()`.
-    #
-    # Keep LangSmith redaction configuration on the server task: its fail-closed
-    # path calls `langsmith.configure(enabled=False)`, which sets both a global
-    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
-    # only updates a copied worker context, so a ContextVar disable there would
-    # not reach a parent tracing context that already has `enabled=True` (ContextVar
-    # wins over the global flag).
     def _resolve_project_context_and_settings() -> tuple[
         ProjectContext | None,
-        Any,
-        Any,
         Any,
         Any,
         Any,
@@ -347,10 +386,8 @@ async def _make_graphs_in_environment(
 
         from deepagents_code.agent import create_cli_agent, load_async_subagents
         from deepagents_code.config import (
-            configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
-            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -360,8 +397,6 @@ async def _make_graphs_in_environment(
             load_async_subagents,
             create_model,
             is_memory_auto_save_enabled,
-            configure_langsmith_secret_redaction,
-            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -371,15 +406,8 @@ async def _make_graphs_in_environment(
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        configure_langsmith_secret_redaction,
-        reconcile_tracing_environment,
         resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
-    # Publish this workspace's tracing settings before deciding on redaction:
-    # the decision reads the snapshot, the SDK reads `os.environ`.
-    reconcile_tracing_environment(workspace_env)
-    configure_langsmith_secret_redaction()
-
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file
     # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`

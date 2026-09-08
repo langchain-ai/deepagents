@@ -140,6 +140,9 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     Each test that *needs* LangSmith variables should set them explicitly via
     `monkeypatch.setenv` or `patch.dict("os.environ", ...)`.
     """
+    import deepagents_code.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_reconciled_tracing_values", {})
     for key in (
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",

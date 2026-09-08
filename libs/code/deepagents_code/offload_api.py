@@ -36,7 +36,7 @@ from deepagents_code.server_graph import _workspace_runtime as get_server_runtim
 from deepagents_code.workspace import (
     WorkspaceConflictError,
     bind_thread_workspace,
-    canonical_workspace_config,
+    get_thread_workspace,
     require_thread_workspace,
 )
 
@@ -44,12 +44,14 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from starlette.requests import Request
 
+    from deepagents_code._server_config import ServerConfig
     from deepagents_code.cost_tracking import PreparedOperationCost
     from deepagents_code.offload_middleware import (
         OffloadExecution,
         OffloadResponse,
         _OffloadState,
     )
+    from deepagents_code.workspace import WorkspaceBinding
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,14 @@ _TRACE_FLUSH_TIMEOUT = 2.0
 """Seconds allowed for the shutdown trace flush."""
 _TRACE_FLUSH_POLL_INTERVAL = 0.05
 """Seconds between completion checks while the daemon flush thread runs."""
+_WORKSPACE_REQUEST_FIELDS = frozenset({"config_fingerprint", "cwd", "workspace_config"})
+"""Every field a workspace bind request may carry.
+
+One of the allowlists that gate this trust boundary; an unknown key is rejected
+rather than ignored, so a client cannot smuggle policy past the claim check.
+Declared here, beside the other request-shape constants, so the set of gates is
+visible in one place.
+"""
 
 
 def _run_trace_flush(done: threading.Event, failures: list[BaseException]) -> None:
@@ -202,29 +212,59 @@ async def workspace(request: Request) -> JSONResponse:
             {"detail": "request body must be an object"}, status_code=422
         )
     try:
-        from deepagents_code._server_config import ServerConfig
+        from deepagents_code._server_config import (
+            PROJECT_WORKSPACE_FIELDS,
+            ServerConfig,
+        )
+        from deepagents_code.workspace import resolve_workspace
 
-        server_config = ServerConfig.from_env()
-        trusted_config = server_config.to_workspace_payload()
-        if "workspace_config" in body or "config_fingerprint" in body:
-            _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
-            _, claimed_policy_fingerprint = canonical_workspace_config(
-                body.get("workspace_config")
+        if unknown := body.keys() - _WORKSPACE_REQUEST_FIELDS:
+            names = ", ".join(sorted(unknown))
+            return JSONResponse(
+                {"detail": f"unknown workspace request field(s): {names}"},
+                status_code=422,
             )
+        server_config = ServerConfig.from_env()
+
+        def _resolve() -> tuple[WorkspaceBinding, ServerConfig]:
+            identity = resolve_workspace(body.get("cwd"))
+            return identity, server_config.resolve_workspace(
+                identity.cwd,
+                identity.project_root,
+            )
+
+        identity, trusted = await asyncio.to_thread(_resolve)
+        if "workspace_config" in body or "config_fingerprint" in body:
+            claim = body.get("workspace_config")
+            if not isinstance(claim, dict):
+                return JSONResponse(
+                    {"detail": "workspace_config must be an object"},
+                    status_code=422,
+                )
+            if claim.keys() & PROJECT_WORKSPACE_FIELDS:
+                return JSONResponse(
+                    {"detail": "clients cannot claim project workspace policy"},
+                    status_code=409,
+                )
             claimed_config_fingerprint = body.get("config_fingerprint")
             if (
-                claimed_policy_fingerprint != trusted_policy_fingerprint
-                or claimed_config_fingerprint != server_config.workspace_fingerprint()
+                claimed_config_fingerprint != trusted.session_workspace_fingerprint()
+                or claim != trusted.to_session_workspace_claim()
             ):
                 return JSONResponse(
                     {"detail": "workspace configuration does not match server policy"},
                     status_code=409,
                 )
+        existing = await get_thread_workspace(thread_id)
+        if existing is not None and existing.workspace_id == identity.workspace_id:
+            trusted = trusted.preserve_bound_extension_trust(
+                existing.workspace_config()
+            )
         binding = await bind_thread_workspace(
             thread_id,
-            body.get("cwd"),
-            trusted_config,
-            config_fingerprint=server_config.workspace_fingerprint(),
+            identity.cwd,
+            trusted.to_workspace_payload(),
+            config_fingerprint=trusted.workspace_fingerprint(),
         )
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)

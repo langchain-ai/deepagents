@@ -120,7 +120,8 @@ async def test_host_wraps_agent_run_in_langsmith_context(tmp_path, monkeypatch) 
             "metadata": {
                 "assistant_id": "assistant",
                 "channel": "test",
-                "conversation_id": "chat",
+                "conversation_id": "test:chat",
+                "origin_conversation_id": "chat",
                 "sender_id": "sender",
                 "message_id": None,
             },

@@ -127,6 +127,24 @@ class FailingStartChannel(RecordingChannel):
         raise RuntimeError(message)
 
 
+class PartiallyStartingChannel(RecordingChannel):
+    """Channel that acquires a resource and then fails, like the WhatsApp bridge."""
+
+    def __init__(self, provider: str = "broken") -> None:
+        super().__init__(provider=provider)
+        self.bridge_running = False
+
+    async def start(self) -> None:
+        self.started = True
+        self.bridge_running = True
+        message = "bridge did not become ready"
+        raise RuntimeError(message)
+
+    async def stop(self) -> None:
+        self.bridge_running = False
+        await super().stop()
+
+
 class FailingRecoveryAgent(BlockingAgent):
     async def recover_interrupted(self, conversation_id: str) -> None:
         self.recoveries.append(conversation_id)
@@ -461,7 +479,7 @@ async def test_follow_up_preserves_pending_device_authorization(tmp_path: Path) 
         ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
     )
     await _wait_for_sent_count(channel, 1)
-    active = host._tasks["chat"]
+    active = host._tasks["telegram:chat"]
     await host.receive_message(
         channel,
         ChannelMessage(conversation_id="chat", text="cancel it", sender_id="attacker"),
@@ -475,7 +493,7 @@ async def test_follow_up_preserves_pending_device_authorization(tmp_path: Path) 
         ChannelMessage(conversation_id="chat", text="any update?", sender_id="operator"),
     )
 
-    assert host._tasks["chat"] is active
+    assert host._tasks["telegram:chat"] is active
     assert not active.done()
     assert [request.text for request in agent.requests] == ["login"]
     assert channel.sent[-1] == (
@@ -561,7 +579,7 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["block", "second"]
-    assert agent.recoveries == ["chat"]
+    assert agent.recoveries == ["test:chat"]
     assert channel.sent == [("chat", "reply:second")]
 
 
@@ -613,7 +631,7 @@ async def test_stop_keeps_ack_when_recovery_fails(tmp_path: Path, caplog) -> Non
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/stop"))
     await host.stop()
 
-    assert agent.recoveries == ["chat"]
+    assert agent.recoveries == ["test:chat"]
     assert channel.sent == [("chat", "Stopped current run.")]
     assert "Failed to recover interrupted conversation" in caplog.text
 
@@ -632,8 +650,8 @@ async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> N
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["first", "second"]
-    assert agent.requests[0].conversation_id == "chat"
-    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert agent.requests[0].conversation_id == "test:chat"
+    assert agent.requests[1].conversation_id.startswith("test:chat:talon-reset:")
     assert channel.sent == [
         ("chat", "seen:0"),
         ("chat", "Started a fresh conversation."),
@@ -668,7 +686,7 @@ async def test_new_command_remains_active_after_restart(tmp_path: Path) -> None:
     await _wait_for_sent_count(restarted_channel, 1)
     await restarted_host.stop()
 
-    assert restarted_agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert restarted_agent.requests[0].conversation_id.startswith("test:chat:talon-reset:")
     assert restarted_channel.sent == [("chat", "seen:0")]
 
 
@@ -684,7 +702,7 @@ async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["hello"]
-    assert agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert agent.requests[0].conversation_id.startswith("test:chat:talon-reset:")
     assert channel.sent == [
         ("chat", "Started a fresh conversation."),
         ("chat", "seen:0"),
@@ -705,7 +723,7 @@ async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> Non
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["block", "second"]
-    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert agent.requests[1].conversation_id.startswith("test:chat:talon-reset:")
     assert channel.sent == [
         ("chat", "Started a fresh conversation."),
         ("chat", "reply:second"),
@@ -780,8 +798,8 @@ async def test_new_recovers_old_thread_before_reset(tmp_path: Path) -> None:
     await _wait_for_request(agent, "second")
     await host.stop()
 
-    assert agent.recoveries == ["chat"]
-    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert agent.recoveries == ["test:chat"]
+    assert agent.requests[1].conversation_id.startswith("test:chat:talon-reset:")
 
 
 async def test_recovery_failure_starts_replacement_with_metadata(tmp_path: Path) -> None:
@@ -820,7 +838,7 @@ async def test_cancellation_timeout_blocks_until_host_restart(
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="fourth"))
     assert [request.text for request in agent.requests] == ["block"]
     assert len(channel.sent) == 3
-    assert "chat" in host._blocked
+    assert "test:chat" in host._blocked
     await host.stop()
 
 
@@ -1403,9 +1421,9 @@ async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path
     assert text == "reply:scheduled prompt"
     assert [request.text for request in agent.requests] == ["block", "scheduled prompt"]
     assert agent.recoveries == []
-    assert agent.requests[0].conversation_id == "chat"
+    assert agent.requests[0].conversation_id == "test:chat"
     assert agent.requests[1].conversation_id == f"{job.id}:talon-cron"
-    assert not host._tasks["chat"].done()
+    assert not host._tasks["test:chat"].done()
     agent.released.set()
     await host.stop()
 
@@ -1485,7 +1503,7 @@ async def test_failed_turn_replies_without_leaking_the_error(
     try:
         with caplog.at_level(logging.ERROR, logger="deepagents_talon.host"):
             await host.receive_message(channel, ChannelMessage("chat", "hello"))
-            await asyncio.wait_for(host._tasks["chat"], 2)
+            await asyncio.wait_for(host._tasks["test:chat"], 2)
 
         assert [conversation for conversation, _ in channel.sent] == ["chat"]
         assert channel.sent[0][1]
@@ -1512,7 +1530,7 @@ async def test_start_unwinds_started_components_when_a_channel_fails(tmp_path: P
 
     assert first.started is True
     assert first.stopped is True
-    assert second.stopped is False
+    assert second.stopped is True
     assert agent.stopped is True
     assert scheduler.started is False
     assert host.running is False
@@ -1633,7 +1651,7 @@ async def test_finished_conversations_do_not_accumulate_state(tmp_path: Path) ->
     try:
         for index in range(3):
             await host.receive_message(channel, ChannelMessage(f"chat{index}", "hello"))
-            await asyncio.wait_for(host._tasks[f"chat{index}"], 2)
+            await asyncio.wait_for(host._tasks[f"test:chat{index}"], 2)
         await asyncio.sleep(0)
 
         assert len(channel.sent) == 3
@@ -1663,6 +1681,67 @@ async def test_history_reset_keeps_the_archive_when_the_counter_cannot_persist(
 
         assert agent.cleared == []
         assert "try /reset-all-history again" in channel.sent[-1][1]
-        assert host._agent_conversation_id("chat") == "chat"
+        assert host._agent_conversation_id("test:chat") == "test:chat"
     finally:
         await host.stop()
+
+
+async def test_conversation_root_is_channel_keyed_whatever_the_host_looks_like(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    lone = TalonHost(config=_config(tmp_path), agent=BlockingAgent(), channels=[channel])
+    archiving = TalonHost(
+        config=_config(tmp_path),
+        agent=ArchiveAgent(),
+        channels=[channel, RecordingChannel(provider="telegram")],
+    )
+
+    # One channel with no history used to key by the bare conversation id, so
+    # adding a channel or enabling history re-keyed every thread underneath.
+    assert lone._conversation_root("test", "chat") == "test:chat"
+    assert archiving._conversation_root("test", "chat") == "test:chat"
+
+
+async def test_channel_keyed_threads_still_reply_to_the_channel_conversation(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    try:
+        await host.receive_message(channel, ChannelMessage("chat", "hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+
+        assert agent.requests[0].conversation_id == "test:chat"
+        # The channel's own id has to travel separately now that it is not the
+        # thread id: cron origins and replies address the conversation, not the thread.
+        assert agent.requests[0].metadata["origin_conversation_id"] == "chat"
+        assert channel.sent == [("chat", "reply:hello")]
+    finally:
+        await host.stop()
+
+
+async def test_start_releases_the_channel_that_failed_partway_through(tmp_path: Path) -> None:
+    failing = PartiallyStartingChannel()
+    never_reached = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[failing, never_reached],
+        scheduler=RecordingScheduler(),
+    )
+
+    with pytest.raises(RuntimeError, match="bridge did not become ready"):
+        await host.start()
+
+    # The failing channel is the one holding a subprocess, so it is the one that
+    # must be stopped; nothing else got as far as starting.
+    assert failing.bridge_running is False
+    assert failing.stopped is True
+    assert never_reached.started is False
+    assert agent.stopped is True
+    assert host.running is False

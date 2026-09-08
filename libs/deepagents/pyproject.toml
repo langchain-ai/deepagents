@@ -24,14 +24,14 @@ dependencies = [
     "langchain-core>=1.6.2,<2.0.0",
     "langchain-anthropic>=1.7.1,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
-    "langsmith>=0.12.1",
+    "langsmith>=0.12.2",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
 
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.7.5,<2.0.0"]
-quickjs = ["langchain-quickjs>=0.3.6"]
+quickjs = ["langchain-quickjs>=0.3.7"]
 video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
 
 [project.urls]

@@ -5879,16 +5879,20 @@ class DeepAgentsApp(App):
                 return
 
             if blocked := await self._thread_resume_block(candidate):
+                from deepagents_code.tui.modals.resume_blocked import (
+                    ResumeBlockedScreen,
+                )
+
+                choice = await self._push_screen_result_future(
+                    ResumeBlockedScreen(blocked)
+                )
+                if choice != "new":
+                    self.exit()
+                    return
                 self._lc_thread_id = generate_thread_id()
                 self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
-                self.notify(
-                    f"{blocked} Starting new session.",
-                    severity="warning",
-                    timeout=8,
-                    markup=False,
-                )
                 return
 
             # Commit the resolved thread before the cwd-switch offer so a
@@ -5990,6 +5994,8 @@ class DeepAgentsApp(App):
         # Phase 1: Resolve resume thread (if any) before server startup
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
+            if self._exiting:
+                return
 
         # Run deferred model creation. runtime_state.model_name / model_provider
         # are already set eagerly for the status bar display; this call

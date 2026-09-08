@@ -17817,8 +17817,10 @@ class TestResolveResumeThread:
             server_proc=None,
         )
 
-    async def test_launch_resume_blocked_before_cutoff(self) -> None:
-        """A stale launch-time target falls back before mutating resume state."""
+    async def test_launch_resume_blocked_offers_new_session(self) -> None:
+        """A stale launch-time target waits for an explicit fresh-session choice."""
+        from deepagents_code.tui.modals.resume_blocked import ResumeBlockedScreen
+
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
@@ -17837,11 +17839,49 @@ class TestResolveResumeThread:
                     AsyncMock(return_value="Thread stale-thread cannot be resumed."),
                 ),
             ):
-                await app._resolve_resume_thread()
+                task = asyncio.create_task(app._resolve_resume_thread())
+                await pilot.pause()
+                assert isinstance(app.screen, ResumeBlockedScreen)
+                assert app._resuming is True
+                await pilot.press("enter")
+                await task
 
             assert app._lc_thread_id != "stale-thread"
             assert app._resuming is False
             assert app._should_adopt_resumed_model is False
+            assert app._resume_thread_resolved_event.is_set()
+
+    async def test_launch_resume_blocked_exit_does_not_start_session(self) -> None:
+        """Declining a blocked resume exits without starting a fresh thread."""
+        app = self._make_app("agent")
+        original_thread_id = app._lc_thread_id
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "stale-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_thread_resume_block",
+                    AsyncMock(return_value="Thread stale-thread cannot be resumed."),
+                ),
+                patch.object(app, "exit") as exit_app,
+            ):
+                task = asyncio.create_task(app._resolve_resume_thread())
+                await pilot.pause()
+                await pilot.press("escape")
+                await task
+
+            exit_app.assert_called_once_with()
+            assert app._lc_thread_id == original_thread_id
+            assert app._resuming is True
+            assert app._resume_thread_resolved_event.is_set()
 
     async def test_resume_policy_allows_cutoff_boundary_and_blocks_older(self) -> None:
         """The cutoff is inclusive and unverifiable timestamps fail closed."""

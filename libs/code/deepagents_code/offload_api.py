@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
 
     from deepagents_code._server_config import ServerConfig
     from deepagents_code.cost_tracking import PreparedOperationCost
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import (
         OffloadExecution,
         OffloadResponse,
@@ -199,11 +201,17 @@ def _runtime_unavailable_detail(consequence: str) -> str:
     )
 
 
+def _mcp_server_info_payload(
+    server_info: list[MCPServerInfo] | None,
+) -> list[dict[str, Any]] | None:
+    return None if server_info is None else [asdict(server) for server in server_info]
+
+
 async def workspace(request: Request) -> JSONResponse:
     """Create or verify the durable workspace assigned to a thread.
 
     Returns:
-        A validated workspace descriptor or an error response.
+        A validated workspace descriptor and its MCP metadata, or an error.
     """
     thread_id = request.path_params["thread_id"]
     body = await request.json()
@@ -276,7 +284,7 @@ async def workspace(request: Request) -> JSONResponse:
     # `ValueError` to 422, but a `ValueError` out of the runtime build is server
     # misconfiguration, not a malformed request.
     try:
-        await get_server_runtime(binding)
+        runtime = await get_server_runtime(binding)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     except SystemExit:
@@ -304,7 +312,12 @@ async def workspace(request: Request) -> JSONResponse:
             {"detail": "Workspace was bound but thread metadata could not be updated."},
             status_code=503,
         )
-    return JSONResponse({"workspace": binding.to_payload()})
+    return JSONResponse(
+        {
+            "workspace": binding.to_payload(),
+            "mcp_server_info": _mcp_server_info_payload(runtime.mcp_server_info),
+        }
+    )
 
 
 def _extensions(request: Request) -> JSONResponse:

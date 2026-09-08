@@ -25609,6 +25609,54 @@ class TestResumeThreadCwdSwitch:
         assert screen._project_settings_change_detected is True
         retarget.assert_awaited_once_with(reload_manager=reload_manager)
 
+    async def test_offer_switch_reuses_hostable_server(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.config import credentials
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        agent = RemoteAgent("http://test:0")
+        switch_workspace = AsyncMock(return_value=[])
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._agent = agent
+        app._server_kwargs = {"cwd": str(current)}
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app, "_preview_project_settings_change", AsyncMock(return_value=False)
+        )
+        monkeypatch.setattr(
+            credentials, "reload_from_environment", lambda **_kwargs: []
+        )
+        replace_server = AsyncMock()
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace_server)
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
+
+        with (
+            patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True
+            )
+
+        assert outcome == "continue"
+        assert Path.cwd() == target
+        assert app._server_kwargs["cwd"] == str(target)
+        switch_workspace.assert_awaited_once_with(
+            {"configurable": {"thread_id": "thread-1"}}, str(target)
+        )
+        replace_server.assert_not_awaited()
+        retarget.assert_awaited_once_with(reload_manager=False)
+
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
         tmp_path: Path,

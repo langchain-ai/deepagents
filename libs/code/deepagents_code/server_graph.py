@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadOperation
     from deepagents_code.workspace import WorkspaceBinding
 
@@ -268,13 +269,7 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
 
 
 class ServerRuntime(NamedTuple):
-    """The one-per-process result of building this server's agent.
-
-    A named tuple rather than a bare tuple so the three slots are addressed by
-    name: `agent` is structurally opaque to the type checker (the SDK exposes no
-    usable compiled-graph type here), so a positional transposition would hand
-    LangGraph the backend as its compiled graph with no complaint.
-    """
+    """The one-per-process result with named slots to prevent transposition."""
 
     agent: Any
     """Compiled LangGraph agent graph served as `agent`."""
@@ -284,6 +279,9 @@ class ServerRuntime(NamedTuple):
 
     offload: OffloadOperation
     """Server-owned thread offload operation bound to `backend`."""
+
+    mcp_server_info: list[MCPServerInfo] | None = None
+    """Workspace-scoped MCP metadata for the interactive client."""
 
 
 async def _make_graphs(
@@ -558,6 +556,7 @@ async def _make_graphs_in_environment(
             agent=agent,
             backend=composite_backend,
             offload=offload,
+            mcp_server_info=mcp_server_info,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy

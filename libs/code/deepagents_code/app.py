@@ -6068,6 +6068,42 @@ class DeepAgentsApp(App):
             ),
         )
 
+    def _refresh_mcp_client_state(self) -> None:
+        info = self._mcp_server_info or []
+        self._mcp_tool_count = sum(len(server.tools) for server in info)
+        self._mcp_unauthenticated = sum(
+            1 for server in info if server.needs_attention()
+        )
+        self._mcp_errored = sum(1 for server in info if server.status == "error")
+        self._mcp_awaiting_reconnect = sum(
+            1 for server in info if server.status == "awaiting_reconnect"
+        )
+        try:
+            self.query_one("#welcome-banner", WelcomeBanner).set_connected(
+                self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
+            )
+        except NoMatches:
+            logger.warning("Welcome banner not found during MCP state refresh")
+        except ScreenStackError:
+            logger.debug("Screen stack empty during MCP state refresh", exc_info=True)
+        self._sync_status_connection()
+        if self._active_mcp_viewer is not None:
+            viewer = self._active_mcp_viewer
+
+            async def _refresh_viewer() -> None:
+                await viewer.refresh_server_info(info)
+
+            task = asyncio.create_task(_refresh_viewer())
+            task.add_done_callback(_log_task_exception)
+        if self._active_plugin_manager is not None:
+            self._active_plugin_manager.update_connection_state(
+                info,
+                mcp_connecting=False,
+            )
+
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
         """Handle successful background server startup."""
         # Latch before `_connecting` clears: the `_sync_status_connection` below
@@ -6107,33 +6143,7 @@ class DeepAgentsApp(App):
 
             task = asyncio.create_task(_drop())
             task.add_done_callback(_log_task_exception)
-        self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
-        self._mcp_unauthenticated = sum(
-            1 for s in (event.mcp_server_info or []) if s.needs_attention()
-        )
-        self._mcp_errored = sum(
-            1 for s in (event.mcp_server_info or []) if s.status == "error"
-        )
-        self._mcp_awaiting_reconnect = sum(
-            1 for s in (event.mcp_server_info or []) if s.status == "awaiting_reconnect"
-        )
-
-        # Update welcome banner to show ready state
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(
-                self._mcp_tool_count,
-                mcp_unauthenticated=self._mcp_unauthenticated,
-                mcp_errored=self._mcp_errored,
-                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
-            )
-        except NoMatches:
-            logger.warning("Welcome banner not found during server ready transition")
-        except ScreenStackError:
-            logger.debug(
-                "Screen stack empty during server ready transition", exc_info=True
-            )
-        self._sync_status_connection()
+        self._refresh_mcp_client_state()
 
         # Refresh the status bar model so a successful retry after a failed
         # startup (e.g. `/model` switching providers after `ModelConfigError`)
@@ -6144,33 +6154,6 @@ class DeepAgentsApp(App):
             logger.warning("Status bar not found during server ready transition")
         else:
             self._sync_status_model()
-
-        if self._active_mcp_viewer is not None:
-            viewer = self._active_mcp_viewer
-
-            async def _refresh_viewer() -> None:
-                # No local `suppress` — the `_log_task_exception` done
-                # callback is the single error sink. Silencing here
-                # would make that callback dead code (its `task.result()`
-                # call could never see a raised exception) and a real
-                # `DuplicateIds` / `AttributeError` would leave the
-                # viewer stuck on the connecting placeholder with no
-                # signal in the logs.
-                await viewer.refresh_server_info(self._mcp_server_info or [])
-
-            task = asyncio.create_task(_refresh_viewer())
-            task.add_done_callback(_log_task_exception)
-
-        # A `/plugins` manager opened mid-startup holds a connecting snapshot
-        # (empty `mcp_server_info`, `mcp_connecting=True`) that would otherwise
-        # suppress the settled connected/`/reload` status until the modal is
-        # reopened. Push both halves: clearing the flag alone would render
-        # every MCP-declaring plugin as disconnected instead.
-        if self._active_plugin_manager is not None:
-            self._active_plugin_manager.update_connection_state(
-                self._mcp_server_info or [],
-                mcp_connecting=False,
-            )
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -29012,6 +28995,61 @@ class DeepAgentsApp(App):
             self.on_deep_agents_app_server_ready(event)
             return "continue"
 
+    async def _reuse_server_after_cwd_switch(
+        self, cwd: Path, thread_id: str
+    ) -> Literal["continue", "abort", "restart"]:
+        remote = self._remote_agent()
+        if remote is None or self._sandbox_type is not None:
+            return "restart"
+        from langgraph_sdk.errors import ConflictError
+
+        previous_cwd = Path(self._cwd)
+        previous_server_cwd = (
+            self._server_kwargs.get("cwd") if self._server_kwargs is not None else None
+        )
+        previous_mcp_info = self._mcp_server_info
+        workspace_snapshot = remote._snapshot_workspace()
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        try:
+            mcp_info = await remote.aswitch_workspace(config, str(cwd))
+        except ConflictError:
+            return "restart"
+        except Exception as exc:
+            logger.exception("Server could not validate the destination workspace")
+            self.notify(
+                f"Could not switch to the thread cwd ({type(exc).__name__}: {exc}). "
+                "Staying in the current directory.",
+                severity="error",
+                timeout=10,
+                markup=False,
+            )
+            return "abort"
+        try:
+            self._preserve_launch_relative_server_paths(previous_cwd)
+            await self._switch_process_cwd(cwd)
+            if self._server_kwargs is not None:
+                self._server_kwargs["cwd"] = self._cwd
+            self._mcp_server_info = mcp_info
+            self._mcp_optimistic_original_server_info.clear()
+            self._pending_mcp_login_reconnect = False
+            self._pending_mcp_disable_reconnect_servers.clear()
+            self._mcp_viewer_disable_toggled = False
+            self._sync_pending_mcp_reconnect()
+            self._refresh_mcp_client_state()
+        except BaseException:
+            remote._restore_workspace(workspace_snapshot)
+            self._mcp_server_info = previous_mcp_info
+            if self._server_kwargs is not None:
+                self._server_kwargs["cwd"] = previous_server_cwd
+            if not await asyncio.to_thread(
+                self._cwd_paths_equal, self._cwd, previous_cwd
+            ):
+                await self._switch_process_cwd(previous_cwd)
+            self._refresh_mcp_client_state()
+            raise
+        else:
+            return "continue"
+
     @staticmethod
     async def _preview_project_settings_change(cwd: Path) -> bool:
         """Return whether switching cwd would refresh project settings."""
@@ -29217,7 +29255,14 @@ class DeepAgentsApp(App):
             return "abort"
         if choice == "switch":
             if restart_server:
-                outcome = await self._replace_server_after_cwd_switch(target)
+                reuse_outcome = await self._reuse_server_after_cwd_switch(
+                    target, thread_id
+                )
+                outcome = (
+                    await self._replace_server_after_cwd_switch(target)
+                    if reuse_outcome == "restart"
+                    else reuse_outcome
+                )
                 if outcome == "abort":
                     # A failed restart returns "abort" just like a user-declined
                     # abort, so the caller cannot tell them apart.

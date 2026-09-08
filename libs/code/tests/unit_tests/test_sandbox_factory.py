@@ -731,6 +731,47 @@ def test_vercel_delegates_inherited_oidc_with_identifiers(
         assert _VercelProvider._resolve_sdk_kwargs() == {}
 
 
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"VERCEL_TOKEN": "personal-token", "VERCEL_PROJECT_ID": "prj_1"},
+        {"VERCEL_TOKEN": "personal-token"},
+        {"VERCEL_PROJECT_ID": "prj_1", "VERCEL_TEAM_ID": "team_1"},
+    ],
+)
+def test_vercel_delegates_an_incomplete_set_inherited_from_the_server(
+    server: dict[str, str],
+) -> None:
+    """An incomplete set the workspace did not pin is the server's own config.
+
+    Personal-scope Vercel accounts leave `VERCEL_TEAM_ID` unset, so demanding
+    the full set turned a working server-level configuration into a startup
+    failure. There is no workspace identity to protect here -- the SDK resolves
+    exactly these values.
+    """
+    with (
+        _bind_environment(server),
+        patch.dict("os.environ", server, clear=True),
+    ):
+        assert _VercelProvider._resolve_sdk_kwargs() == {}
+
+
+def test_vercel_fails_closed_when_the_workspace_overrides_part_of_the_set() -> None:
+    """A workspace override differs from the server, so it must not delegate."""
+    with (
+        _bind_environment(
+            {"VERCEL_TOKEN": "workspace-token", "VERCEL_PROJECT_ID": "prj_1"}
+        ),
+        patch.dict(
+            "os.environ",
+            {"VERCEL_TOKEN": "server-token", "VERCEL_PROJECT_ID": "prj_1"},
+            clear=True,
+        ),
+        pytest.raises(ValueError, match="VERCEL_TEAM_ID not set"),
+    ):
+        _VercelProvider._resolve_sdk_kwargs()
+
+
 @pytest.mark.parametrize("server_oidc", [False, True])
 def test_vercel_oidc_does_not_discard_workspace_identifiers(
     server_oidc: bool,

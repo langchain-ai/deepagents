@@ -1031,18 +1031,19 @@ class _VercelProvider(SandboxProvider):
 
         Each value resolves prefixed-first then canonical via `resolve_env_var`,
         against the bound workspace environment. Credentials stay SDK-managed
-        when none of the three variables resolves, or when token-free OIDC
-        settings match the server environment that the SDK reads.
+        when none of the three variables resolves, and when every resolved
+        value matches the server environment the SDK reads for itself -- there
+        is no workspace identity to protect in either case.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
             credential resolution to the Vercel SDK.
 
         Raises:
-            ValueError: If only part of the `VERCEL_TOKEN` / `VERCEL_PROJECT_ID`
-                / `VERCEL_TEAM_ID` set resolves and SDK-managed OIDC cannot
-                preserve the workspace settings. Delegating there would use
-                the server's identity instead of the workspace credentials.
+            ValueError: If the workspace overrides part of the `VERCEL_TOKEN` /
+                `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` set but not all of it.
+                Delegating there would use the server's identity instead of
+                the credentials the workspace pinned.
         """
         from deepagents_code.model_config import resolve_env_var
 
@@ -1058,16 +1059,18 @@ class _VercelProvider(SandboxProvider):
         # read -- gating on the prefix alone silently discarded it.
         if not any(values.values()):
             return {}
-        # OIDC can coexist with inherited project/team IDs without an API
-        # token. Delegate only if the SDK sees the same settings; otherwise
-        # workspace overrides would silently be discarded.
-        if (
-            not values["token"]
-            and os.environ.get("VERCEL_OIDC_TOKEN")
-            and all(
-                value == (os.environ.get(f"VERCEL_{key.upper()}") or None)
-                for key, value in values.items()
-            )
+        # Nothing here came from the workspace: `resolve_env_var` reads
+        # `active_environment()`, which falls back to `os.environ`, so the
+        # server's own `VERCEL_*` resolve identically. There is no workspace
+        # identity to protect and the SDK resolves exactly these values, so
+        # delegate instead of demanding the full set. That covers inherited
+        # token-free OIDC, and a personal-scope token, where `VERCEL_TEAM_ID`
+        # is optional and demanding it turned a working setup into a startup
+        # failure. A workspace override differs from the server, so it still
+        # takes the fail-closed path below.
+        if all(
+            value == (os.environ.get(f"VERCEL_{key.upper()}") or None)
+            for key, value in values.items()
         ):
             return {}
         missing = sorted(

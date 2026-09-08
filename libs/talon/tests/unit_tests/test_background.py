@@ -86,26 +86,26 @@ async def test_chat_continues_then_main_processes_background_result(tmp_path, mo
     try:
         await host.receive_message(channel, ChannelMessage("chat", "research"))
         await asyncio.wait_for(entered.wait(), 2)
-        await asyncio.wait_for(host._tasks["chat"], 2)
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
         await host.receive_message(channel, ChannelMessage("chat", "hello"))
-        await asyncio.wait_for(host._tasks["chat"], 2)
-        assert runtime.background.owners() == {"chat"}
-        assert not runtime.background.results("chat")
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+        assert runtime.background.owners() == {"test:chat"}
+        assert not runtime.background.results("test:chat")
         release.set()
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
         await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks["chat"], 2)
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
         assert channel.sent == [
             ("chat", "Working on it"),
             ("chat", "Still here"),
             ("chat", "Processed research"),
         ]
-        state = await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})
+        state = await runtime._graph.aget_state({"configurable": {"thread_id": "test:chat"}})
         assert any(
             "raw research result" in str(message.content) for message in state.values["messages"]
         )
-        assert child_threads[0] != "chat"
-        assert not runtime.background.results("chat")
+        assert child_threads[0] != "test:chat"
+        assert not runtime.background.results("test:chat")
     finally:
         release.set()
         await host.stop()
@@ -138,14 +138,14 @@ async def test_commands_cancel_only_this_threads_children_when_main_idle(
         for owner in ("one", "two"):
             await host.receive_message(channel, ChannelMessage(owner, "research"))
             await asyncio.wait_for(entered.get(), 2)
-            await asyncio.wait_for(host._tasks[owner], 2)
+            await asyncio.wait_for(host._tasks[f"test:{owner}"], 2)
         assert channel.sent == [("one", "Started"), ("two", "Started")]
         await host.receive_message(channel, ChannelMessage("one", command))
         assert len(cancelled) == 1
-        assert runtime.background.owners() == {"two"}
-        assert not runtime.background.results("one")
+        assert runtime.background.owners() == {"test:two"}
+        assert not runtime.background.results("test:one")
         if command == "/new":
-            assert host._agent_conversation_id("one") != "one"
+            assert host._agent_conversation_id("test:one") != "test:one"
     finally:
         await host.stop()
     assert len(cancelled) == 2

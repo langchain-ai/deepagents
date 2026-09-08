@@ -938,10 +938,27 @@ class TalonHost:
         channel_key: str,
         conversation_id: str,
     ) -> str:
-        if len(self.channels) <= 1 and not (
-            isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled
-        ):
-            return conversation_id
+        """Key a conversation by its channel, always.
+
+        This value is the LangGraph thread id and the key of the persisted reset
+        counters. It used to be the bare conversation id for a host with one
+        channel and no history, so adding a second channel or enabling history
+        re-keyed every existing conversation. Keying unconditionally costs that
+        migration once instead of on each such change.
+
+        Upgrading a host that had one channel and no history therefore abandons
+        its checkpoints and its reset counters: those rows stay in the stores
+        under the old bare key, unreachable, and every conversation starts
+        empty with its `/new` count back at zero. This is deliberate; there is
+        no migration, and the simplification is not accidental.
+
+        Args:
+            channel_key: Trusted channel provider identifier.
+            conversation_id: Channel-specific conversation identifier.
+
+        Returns:
+            Conversation root shared by every turn of one chat on one channel.
+        """
         return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:

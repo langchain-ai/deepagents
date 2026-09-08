@@ -20,13 +20,11 @@ if TYPE_CHECKING:
 _SCHEMA_VERSION = 3
 """Binding schema generation.
 
-Bumped to 3 when project-scoped policy became per-workspace. Before that,
-`offload_api` bound every workspace with the launch config's fingerprint, so a
-version-2 row for a directory outside the launch project holds a fingerprint
-over a different field set. Comparing it against a resolved fingerprint is
-meaningless, and treating the mismatch as drift left those threads refusing
-every request with no way to re-bind. `_binding_differs` therefore compares
-the stored session policy for stale rows and `_bind` migrates them in place.
+Version 3 resolves project policy per workspace. Version 2 used the launch
+config's fingerprint for every directory, so its project policy values may
+differ from the newly resolved ones. After checking workspace identity and
+session policy, `_bind` migrates old rows instead of rejecting that mismatch
+as configuration drift.
 """
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
@@ -142,14 +140,7 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
 
 
 def _canonical_json(value: object) -> str:
-    """Serialize *value* in the one wire format this module fingerprints.
-
-    Client claims and server verification must agree on this encoding, so it
-    has a single definition rather than a copy per caller.
-
-    Returns:
-        Canonical JSON with sorted keys and no insignificant whitespace.
-    """
+    """Return JSON with consistent key ordering and spacing for fingerprinting."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
@@ -255,10 +246,9 @@ def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
 def _is_migratable(existing: WorkspaceBinding) -> bool:
     """Whether a row's recorded policy predates the current schema.
 
-    A stale row's fingerprint was computed over a different field set, so it
-    cannot be compared against a freshly resolved one. Workspace identity is
-    still compared, so migrating only ever rewrites policy for the same
-    directory.
+    Older rows may contain launch-project policy instead of workspace policy.
+    `_binding_differs` checks workspace identity and recorded session policy
+    before allowing migration.
 
     Returns:
         `True` when the row has no fingerprint yet, or an older schema.

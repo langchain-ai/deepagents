@@ -180,7 +180,7 @@ async def test_current_schema_migrates_on_reopen(tmp_path, workspace_database) -
 async def test_a_stale_schema_row_rebinds_instead_of_conflicting(
     tmp_path, workspace_database
 ) -> None:
-    """A version-2 row's fingerprint spanned a different field set.
+    """A version-2 row's fingerprint used launch-project policy values.
 
     Those rows were bound with the launch config's fingerprint regardless of
     directory, so comparing one against a resolved fingerprint reported drift

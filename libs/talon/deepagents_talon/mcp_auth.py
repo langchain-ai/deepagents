@@ -71,6 +71,7 @@ _GITHUB_MCP_HOST = "api.githubcopilot.com"
 _DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _HTTP_TIMEOUT_SECONDS = 5.0
 _DISCOVERY_TIMEOUT_SECONDS = 10.0
+_RESOLVE_TIMEOUT_SECONDS = 5.0
 _MAX_OAUTH_RESPONSE_BYTES = 64 * 1024
 _MIN_RESPONSE_STATUS = 200
 _REDIRECT_STATUS = 300
@@ -391,7 +392,7 @@ async def _discover_device_metadata(
         # Every await inside the timeout must yield, so name resolution runs on a
         # worker thread; a blocking getaddrinfo here cannot be interrupted.
         async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
-            issuer = await asyncio.to_thread(_safe_https_url, auth_server_url)
+            issuer = await _resolved_https_url(auth_server_url)
             async with _oauth_http_client() as client:
                 for candidate in build_oauth_authorization_server_metadata_discovery_urls(
                     issuer, issuer
@@ -418,7 +419,7 @@ async def _read_device_metadata(
 ) -> _AuthorizationServerMetadata | None:
     if _origin(candidate) != _origin(issuer):
         return None
-    body = await _get_json(client, await asyncio.to_thread(_safe_https_url, candidate))
+    body = await _get_json(client, await _resolved_https_url(candidate))
     if body is None:
         return None
     try:
@@ -533,7 +534,7 @@ async def _request_device_code(
         raise MCPAuthorizationError(msg)
     try:
         device = _DeviceCodeResponse.model_validate(body)
-        device.verification_uri = await asyncio.to_thread(_safe_https_url, device.verification_uri)
+        device.verification_uri = await _resolved_https_url(device.verification_uri)
     except (ValidationError, ValueError) as exc:
         msg = "Authorization server returned an invalid device code response."
         raise MCPAuthorizationError(msg) from exc
@@ -690,6 +691,45 @@ def _safe_https_url(url: str) -> str:
     return validate_safe_url(url, allow_http=False)
 
 
+async def _resolved_https_url(url: str) -> str:
+    """Validate and resolve `url` off the event loop, under its own bound.
+
+    `asyncio.to_thread` keeps a blocking `getaddrinfo` from stalling the host,
+    but it also puts the resolution outside HTTPX's timeouts, which bound only
+    the request a client makes afterwards. Without a bound here, a slow or
+    hostile resolver stalls whichever flow is waiting on it: the device login or
+    the token refresh never returns, even though the loop stays responsive.
+
+    The bound is deliberately separate from the request timeout rather than
+    shared with it. Resolution happens before there is a client or a request to
+    charge it to, and letting it consume the request budget would make a healthy
+    authorization server look unreachable. It also does not use the discovery
+    bound, which covers a loop of several requests rather than one name lookup.
+
+    A thread cannot be cancelled, so a timed-out resolution keeps running until
+    the C call returns; only the waiter gives up. Every caller goes through here
+    rather than calling `asyncio.to_thread` directly, so boundedness does not
+    depend on which callers happen to sit inside a timeout -- that dependence is
+    how the device-code and registration paths ended up unbounded.
+
+    Args:
+        url: Endpoint to validate and resolve.
+
+    Returns:
+        The validated URL.
+
+    Raises:
+        MCPAuthorizationError: The resolution did not finish in time.
+        ValueError: The URL is not a safe public HTTPS URL.
+    """
+    try:
+        async with asyncio.timeout(_RESOLVE_TIMEOUT_SECONDS):
+            return await asyncio.to_thread(_safe_https_url, url)
+    except TimeoutError:
+        msg = "Timed out resolving an OAuth endpoint."
+        raise MCPAuthorizationError(msg) from None
+
+
 async def _issuer_endpoint(
     endpoint: AnyHttpUrl | None,
     metadata: _AuthorizationServerMetadata,
@@ -697,7 +737,7 @@ async def _issuer_endpoint(
     if endpoint is None:
         msg = "OAuth endpoint is missing."
         raise MCPAuthorizationError(msg)
-    validated = await asyncio.to_thread(_safe_https_url, str(endpoint))
+    validated = await _resolved_https_url(str(endpoint))
     if _origin(validated) != _origin(str(metadata.issuer)):
         msg = "OAuth endpoint does not match the authorization server."
         raise MCPAuthorizationError(msg)
@@ -748,7 +788,7 @@ async def _validate_oauth_url(url: str) -> None:
     msg = _UNSAFE_ENDPOINT_MESSAGE
     try:
         parsed = urlparse(url)
-        await asyncio.to_thread(_safe_https_url, url)
+        await _resolved_https_url(url)
     except ValueError:
         raise MCPAuthorizationError(msg) from None
     if parsed.username is not None or parsed.password is not None:

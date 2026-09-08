@@ -29,6 +29,7 @@ from deepagents_talon.mcp_auth import (
     _issuer_endpoint,
     _OAuthSafeTransport,
     _present_device_code,
+    _register_device_client,
     build_oauth_provider,
     extract_oauth_callback_url,
     format_login_error,
@@ -1151,3 +1152,42 @@ async def test_fresh_grant_without_a_refresh_token_clears_the_stored_one(
     assert stored is not None
     assert stored.access_token == "fresh"  # noqa: S105
     assert stored.refresh_token is None
+
+
+async def test_device_registration_bounds_slow_name_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """to_thread keeps the loop free, but nothing else bounded this resolution."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth._RESOLVE_TIMEOUT_SECONDS", 0.05)
+    released = threading.Event()
+
+    def slow_resolve(url: str, **_kwargs: object) -> str:
+        released.wait(5.0)
+        return url
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.validate_safe_url", slow_resolve)
+    metadata = _AuthorizationServerMetadata(
+        issuer="https://auth.example",
+        token_endpoint="https://auth.example/token",  # noqa: S106
+        registration_endpoint="https://auth.example/register",
+        grant_types_supported=["urn:ietf:params:oauth:grant-type:device_code"],
+        device_authorization_endpoint="https://auth.example/device",
+    )
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    started = time.monotonic()
+    try:
+        with pytest.raises(MCPAuthorizationError, match="Timed out resolving"):
+            await _register_device_client(metadata)
+    finally:
+        released.set()
+        ticker.cancel()
+    assert time.monotonic() - started < 1.0
+    assert ticks > 0

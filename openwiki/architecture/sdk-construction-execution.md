@@ -1,7 +1,7 @@
 ---
 type: architecture
 title: SDK Construction & Execution
-description: How create_deep_agent resolves models and profiles, assembles prompts, tools, subagents, middleware, and graph configuration, then hands execution to the LangChain and LangGraph agent runtime.
+description: How create_deep_agent resolves models, profiles, backends, prompts, middleware, subagents, permissions, and configuration into a LangChain-compiled LangGraph agent.
 tags: [create_deep_agent, deepagents, graph, agent-loop, middleware, langgraph, construction, execution]
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
@@ -16,234 +16,125 @@ sources:
     resource: repo://libs/deepagents/deepagents/_tools.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-59612eea63cbfafbd628feda
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
+    at: 2026-09-07T08:06:36.835Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-07T08:06:36.835Z" }
 ---
 
 # SDK Construction & Execution
 
-[`create_deep_agent`][create_deep_agent] is the public assembly entry point for
-Deep Agents. It is an opinionated constructor over LangChain's `create_agent()`:
-it resolves Deep Agents configuration and passes an assembled model, prompt,
-tools, middleware, schemas, and persistence options to LangChain for graph
-compilation. It does **not** implement a separate agent runtime.
+[`create_deep_agent`][create_deep_agent] is Deep Agents' public assembly API. It is an opinionated constructor over LangChain's `create_agent()`: it resolves Deep Agents policy and dependencies, then delegates graph compilation and invocation semantics to LangChain and LangGraph. It does not define a separate agent runtime.
 
-This distinction is important when changing or operating an agent:
+Construction is synchronous: it resolves defaults, materializes stacks, and validates profile policy before returning a configured compiled graph. Runtime starts only when a caller invokes that graph. The package re-exports the constructor, `DeepAgentState`, subagent types, filesystem types, and provider/harness profile registration APIs from `deepagents`.
 
-- **Construction time** is the synchronous `create_deep_agent` call. It chooses
-  defaults, materializes profile middleware, validates profile exclusions, and
-  returns a configured compiled graph (or raises before a graph is returned).
-- **Runtime** begins only when the caller invokes that graph. LangChain and
-  LangGraph own the model/tool loop; Deep Agents influences it through the
-  middleware and configuration installed during construction.
-
-## Assembly boundary
+## Construction and execution boundary
 
 ```mermaid
 flowchart TD
-    Start["create_deep_agent inputs"] --> Model["resolve model and harness profile"]
-    Model --> Config["rewrite tools and resolve backend"]
-    Config --> Subs["prepare inline and async subagents"]
-    Subs --> Stack["assemble and validate middleware"]
-    Stack --> Prompt["compose authored system prompt"]
-    Prompt --> Compile["LangChain create_agent"]
+    Input["create_deep_agent inputs"] --> Resolve["resolve model and select harness profile"]
+    Resolve --> Shared["rewrite tools and choose shared backend"]
+    Shared --> Split{"subagent specification"}
+    Split --> Declarative["declarative subagent builds its own stack"]
+    Split --> Forked["forked declarative subagent inherits conversation"]
+    Split --> Compiled["compiled subagent retained as supplied"]
+    Split --> Async["async subagent routed to async middleware"]
+    Declarative --> MainStack["assemble main middleware stack"]
+    Forked --> MainStack
+    Compiled --> MainStack
+    Async --> MainStack
+    MainStack --> Compile["LangChain create_agent compiles graph"]
     Compile --> Graph["configured compiled graph"]
-    Graph --> Runtime["LangGraph invocation and agent loop"]
+    Graph --> Invoke["caller invokes graph"]
+    Invoke --> Loop["LangGraph model and tool loop"]
+    Loop --> Final["final response"]
 ```
 
-Caption: `create_deep_agent` owns the construction steps through compilation;
-the returned graph enters the LangChain/LangGraph execution boundary when
-invoked.
+Caption: the main agent is compiled by `create_deep_agent`; declarative and forked subagents are prepared for `SubAgentMiddleware`, compiled subagents remain external compiled runnables, and async subagents cross an asynchronous remote-task boundary before LangGraph executes the returned graph.
 
-The package re-exports `create_deep_agent`, `DeepAgentState`, subagent types,
-and profile registration APIs from `deepagents`. The constructor accepts a
-model, caller tools, `system_prompt`, middleware and subagents, plus skills,
-memory, permissions, backend, interrupts, schemas, persistence, debugging,
-name, and cache options.
-
-## Model, profile, tools, and backend
+## Resolution policy: model, profile, tools, and backend
 
 ### Model and profile selection
 
-A supplied `BaseChatModel` is retained. A string is initialized by
-`init_chat_model` with settings from the matching provider profile, so provider
-profiles are the extension point for provider-specific initialization behavior.
-If `model=None`, the constructor emits a deprecation warning and builds
-`ChatAnthropic(model_name="claude-sonnet-4-6")`; explicit models will be
-required when support for `None` is removed in version 1.0.0.
+A supplied `BaseChatModel` is retained. A string is passed to `init_chat_model` together with settings from the registered provider profile. Provider profiles therefore affect **model construction**; harness profiles are selected after model resolution and affect prompt assembly, tool visibility, middleware, and default-subagent behavior. Both profiles can be registered as extension points.
 
-The resolved model and, when supplied, the original model string select a
-harness profile. A profile is construction policy: it can supply prompt base and
-suffix text, tool-description overrides, tool exclusions, extra middleware, a
-default-general-purpose-subagent configuration, and middleware exclusions.
-A declarative subagent resolves its model and profile independently, rather than
-inheriting its parent's model-specific profile.
+Passing `model=None` is deprecated and emits a warning; for now it constructs `ChatAnthropic(model_name="claude-sonnet-4-6")`. The warning says that `None` support will be removed in 1.0.0. The original string spec is retained for harness-profile selection, while a supplied instance is inspected as the resolved model.
 
-### Tools and backend
+A harness profile can contribute a base prompt and suffix, tool-description overrides and exclusions, extra middleware, middleware exclusions, and settings for the auto-added general-purpose subagent. A declarative subagent resolves its model and harness profile independently; it does not automatically reuse the parent's model-specific policy.
 
-Before compilation, profile description overrides are applied to caller tools
-without mutating caller-owned dict tools or `BaseTool` instances. Plain
-callables remain unchanged. This prepares the tools passed to `create_agent`;
-built-in filesystem and subagent tools are contributed by middleware.
+### Tool preparation and storage ownership
 
-When `backend` is omitted, one `StateBackend()` instance is created and shared
-by filesystem, skills, memory, and summarization middleware in the main agent
-and constructed subagents. Caller tools are additive to the built-in suite.
-A profile's `excluded_tools` is enforced by an exclusion middleware appended
-last, after custom middleware, so it filters the request tool surface including
-tools injected by middleware rather than merely removing the original input
-list.
+Profile description overrides copy dict tools and `BaseTool` instances before changing their descriptions, leaving caller-owned objects untouched. Plain callables are deliberately left unchanged. The resulting caller tools go to `create_agent`; filesystem, task, and async-task capabilities are middleware-provided rather than added to that input list.
 
-## Prompt and subagent construction
+If `backend` is omitted, construction makes one `StateBackend()` and supplies that instance to the filesystem, skills, memory, and summarization middleware it creates for the main agent and subagents. This is the storage/execution boundary: a backend supplies file storage and execution behavior, while filesystem permissions are separately enforced in middleware.
 
-### Authored system prompt
+## Prompt and subagent assembly
 
-The harness profile first produces its prompt contribution from an empty base.
-For the main agent the authored ordering is **USER → BASE → SUFFIX**, with blank
-lines between present parts:
+### Authored prompt versus runtime prompt
 
-- `system_prompt=None` produces the profile contribution alone (and is empty
-  when the profile has no prompt fields).
-- A string is followed by the profile contribution.
-- A `SystemMessage` preserves its existing content blocks, including
-  `cache_control` markers; nonempty profile text is added as a new text block.
+The main profile contribution is calculated from an empty base. For a string prompt, the result is the caller text followed by two newlines and the profile text; the profile text itself is **BASE then SUFFIX**. Thus the complete authored ordering is **USER → BASE → SUFFIX**. With `None`, only the profile text is used. For a `SystemMessage`, its existing content blocks are retained and nonempty profile text is appended as a new text block, preserving such fields as `cache_control` on existing blocks.
 
-Middleware may add dynamic prompt material at runtime. The prompt assembled here
-is therefore the authored starting point, not a claim that every eventual model
-request contains only this text.
+This is the authored starting prompt, not the entire eventual model request. Installed middleware can add dynamic prompt material, including loaded skills and memory, during execution.
 
-### Three subagent forms
+### Main agent and four subagent boundaries
 
-The constructor processes caller subagents before deciding whether to add the
-default. It partitions specs as follows:
+The constructor first partitions caller subagents, then decides whether the default synchronous subagent is needed:
 
-- A spec containing `graph_id` is an `AsyncSubAgent`; it is collected for
-  `AsyncSubAgentMiddleware`, rather than the inline `task` tool.
-- A spec with `runnable` is a precompiled `CompiledSubAgent` and is retained as
-  an inline subagent.
-- Other specs are declarative `SubAgent`s. The constructor resolves their model
-  and profile, applies tool overrides, builds their middleware, resolves
-  permissions and interrupts, and supplies their prompt.
+- **Declarative `SubAgent`** specifications are completed locally: the constructor resolves model/profile, tools, permissions and interrupts; creates a middleware stack; and produces the prompt passed to `SubAgentMiddleware`. They inherit parent tools when `tools` is absent, and inherit parent permissions and `interrupt_on` unless they specify those fields. A supplied permissions list replaces, rather than merges with, the parent's rules.
+- A **forked declarative subagent** (`mode="fork"`) is a special declarative path. It receives the parent conversation and state, mirrors prompt-producing parent middleware, and appends its own prompt as an addendum. It cannot declare its own skills, avoiding a divergent reconstructed prompt. The mode is experimental; it remains a subagent and must not recursively delegate.
+- A **`CompiledSubAgent`** has `runnable` and is used as supplied through the synchronous `task` path. It is responsible for its own graph configuration, including state schema and approval behavior.
+- An **`AsyncSubAgent`** is recognized by `graph_id`, collected separately, and exposed by `AsyncSubAgentMiddleware`, not `SubAgentMiddleware`. It represents a non-blocking background task, currently for LangSmith-deployed agents, with tools to launch, inspect, update, cancel, and list tasks.
 
-Declarative subagents inherit parent tools unless they declare `tools`, and
-inherit parent permissions and `interrupt_on` unless they declare their own.
-Their own permissions replace the parent's list rather than merging it. A
-precompiled or remote subagent is already configured elsewhere and does not
-inherit the parent's interrupt or state schema. A forked declarative subagent is
-an exception to normal isolation: it continues the parent conversation, rebuilds
-from the parent's prompt-producing middleware, and appends its own prompt as an
-addendum.
+Unless the active harness profile disables it or an inline subagent is already named `general-purpose`, a default general-purpose declarative subagent is inserted at the front of the inline list. Inline subagents install `SubAgentMiddleware` and therefore the `task` capability. If the default is disabled and there are no other inline subagents, no `task` tool is installed; async subagents are independent of that decision. A general-purpose profile can override that default subagent's description and prompt; its prompt override takes precedence over the harness base prompt, while the harness suffix still applies.
 
-Unless a caller supplied an inline subagent named `general-purpose` or the
-profile sets its default-general-purpose `enabled` field to `False`, construction
-inserts a default general-purpose inline subagent at the front. Inline subagents
-cause `SubAgentMiddleware` to expose `task`; when none exist, that tool is not
-installed. Async subagents are independent and are exposed through their async
-middleware.
+## Middleware, permissions, and failure invariants
 
-## Middleware assembly and construction failures
+### Main-stack ordering
 
-The main stack's core order is: optional `SkillsMiddleware`,
-`FilesystemMiddleware`, optional `SubAgentMiddleware`, summarization,
-`PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`. Profile
-extra middleware and provider-appropriate prompt-caching middleware form the
-start of the tail; optional `MemoryMiddleware` and a
-`HumanInTheLoopMiddleware` follow. Caller middleware is merged after the core:
-a middleware with the same `.name` replaces that slot in place, while a new name
-is inserted after the last core member and before the tail.
+The main core is assembled in this order: optional `SkillsMiddleware`, `FilesystemMiddleware`, optional `SubAgentMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, then optional `AsyncSubAgentMiddleware`. The tail is profile extra middleware, provider-appropriate prompt-caching middleware, optional `MemoryMiddleware`, and optional `HumanInTheLoopMiddleware`.
 
-Filesystem permission rules are enforced by `FilesystemMiddleware`, not by the
-backend. Permission-derived interrupt settings are merged with caller
-`interrupt_on` settings, with an explicit caller setting winning for the same
-tool; a resulting nonempty mapping adds `HumanInTheLoopMiddleware`. Thus,
-construction configures the interrupt boundary but the pause itself is runtime
-graph behavior.
+Caller middleware is merged after the core is established: an item whose `.name` matches an existing slot replaces it in place; a new name is inserted after the final core item and before the tail. Profile exclusions are applied both before and after caller middleware. Finally, if the profile excludes tools, `_ToolExclusionMiddleware` is appended last, so a custom middleware cannot restore an excluded tool in a runtime model request.
 
-Harness exclusions are applied after base assembly and again after caller
-middleware merge. Class exclusions use exact type and string exclusions use the
-middleware `.name`. An exclusion must match somewhere across the main and
-default-general-purpose stacks; a name that matches multiple concrete classes,
-or an exclusion matching no middleware, raises `ValueError`. This makes stale
-profile policy a construction failure rather than silent runtime drift.
+The default general-purpose stack and each declarative stack are related but not identical. The general-purpose stack uses the parent profile and backend; a declarative subagent uses its own resolved profile. Only caller middleware that replaces an original general-purpose stack slot is inherited by the default subagent, preventing main-only additions from leaking into delegated work.
 
-`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding:
-the former backs built-in file tools and permission enforcement, and the latter
-backs `task` dispatch. A harness profile cannot exclude either; doing so raises
-`ValueError`. Tool exclusion is distinct from removing middleware: it is the
-safe mechanism for withholding a tool from the model while retaining required
-scaffolding.
+### Permission and exclusion safeguards
 
-For the detailed ordering and hook responsibilities, see
-[middleware-stack.md](middleware-stack.md). For backend behavior and permission
-scope, see [backends.md](../concepts/backends.md).
+`FilesystemMiddleware`, not the backend, evaluates filesystem permission rules for built-in filesystem tools. Rules are evaluated in declaration order and the first match wins; no matching rule allows the call. A deny rule returns a permission error. An interrupt rule yields generated `interrupt_on` configuration; this is merged with caller `interrupt_on`, with the caller's entry winning for a duplicate tool. A nonempty result installs `HumanInTheLoopMiddleware`, which makes approval a runtime graph interruption. Direct backend use does not enforce these rules.
 
-## Compilation, state, and invocation
+`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding. A harness profile may not exclude either by class or name, because that would remove filesystem/permission support or `task` dispatch; construction raises `ValueError` instead. Exclusions otherwise match exact middleware type or exact `.name`. An excluded entry must match a constructed stack (aggregated across the main and default-general-purpose stacks for the main profile); an unmatched entry, a private name, or a string name that maps to multiple concrete middleware classes is an error. These checks turn stale or ambiguous profile policy into a construction-time failure rather than silently changing runtime behavior.
 
-`create_agent()` receives the assembled model, authored prompt, caller tools,
-main middleware stack, response format, context schema, checkpointer, store,
-debug flag, name, cache, and state schema. With no custom schema,
-`DeepAgentState` is used. It extends `AgentState` and gives `messages` a
-`DeltaChannel` reducer with snapshot frequency 50, reducing checkpoint growth
-for message history from O(N²) to O(N).
+## Compilation, state, and operational configuration
 
-A custom `state_schema` is passed both to the parent graph and to
-`SubAgentMiddleware`, so declarative subagents can compile with those fields.
-The API's type contract requires a `DeepAgentState` extension to preserve the
-message reducer, but the constructor deliberately does not runtime-validate the
-`TypedDict` subclass constraint. Prefer middleware state schemas for fields that
-are private to a middleware feature; private state keys are identified and
-provided to `SubAgentMiddleware` for handoff isolation.
+The final `create_agent()` call receives the resolved model, authored prompt, rewritten caller tools, main stack, response format, context schema, checkpointer, store, debug flag, name, cache, and state schema. Checkpoint, store, cache, and debug behavior is thereby passed through to the upstream runtime. `state_schema` is a typing-only contract: it should extend `DeepAgentState`, but the constructor cannot runtime-check the `TypedDict` subclass relationship.
 
-The compiled graph is immediately wrapped with `.with_config(...)` to set
-`recursion_limit` to `9_999` and attach LangSmith metadata: `ls_integration` is
-`deepagents`, `lc_versions` records the Deep Agents version, and `lc_agent_name`
-uses the supplied name. The checkpointer, store, cache, and debug settings are
-passed through to LangChain; their runtime semantics remain owned by LangChain
-and LangGraph.
+Without a supplied schema, the graph uses `DeepAgentState`. Its `messages` channel uses `DeltaChannel` with the Deep Agents reducer and snapshot frequency 50, reducing checkpoint growth for message history from O(N²) to O(N). A supplied schema is passed to `SubAgentMiddleware`, allowing declarative subagents to compile with shared custom fields. Compiled and async/remote subagents retain the schemas of their own graphs. The constructor also identifies private state fields from the graph and middleware schemas and gives that set to `SubAgentMiddleware` for delegation isolation.
 
-## Runtime handoff
+The returned compiled graph is wrapped with `.with_config(...)`: it sets `recursion_limit` to `9_999` and attaches LangSmith metadata identifying the Deep Agents integration, Deep Agents version, and agent name.
 
-When the caller invokes the returned graph, LangGraph drives the per-turn agent
-loop. The model sees the system prompt, current message history, and the tool
-surface produced by middleware. It can return a final response or request tools;
-tool results are added to graph state and the loop continues until no more tool
-calls are requested (subject to the configured recursion limit).
+## Runtime handoff and extension decisions
 
-Deep Agents changes that execution indirectly through middleware. Middleware can
-prepare or wrap model calls, alter the available tools and prompt, summarize or
-offload history, write typed state, and enforce filesystem permissions around
-tool execution. In contrast, a plain `tools=` callable runs only after the model
-selects it and cannot alter the preceding model request. This is the core
-extension boundary: add a tool for a callable capability, or add middleware when
-the capability must govern context, tool availability, state, or execution
-policy.
+On invocation, LangGraph drives the turn loop. The model receives message history, the system prompt, and the current middleware-produced tool surface. It either returns a final response or requests tools; tool results are appended to graph state and the loop continues, subject to the recursion limit.
+
+Deep Agents shapes this loop principally through middleware. Middleware can run before or around model calls and tool execution, alter tools and prompts, summarize or offload history, write typed state, and enforce filesystem policy. In contrast, a callable from `tools=` runs only after the model selects it and cannot rewrite the preceding request. Use a tool for a callable capability; use middleware when the capability must govern context, state, tool visibility, or execution policy.
 
 ## Focused verification
 
-`libs/deepagents/tests/unit_tests/test_graph.py` exercises the assembly
-contract without treating the upstream runtime as Deep Agents code. Its focused
-coverage includes profile lookup, immutable tool-description rewrites, authored
-prompt ordering and `SystemMessage` block preservation, default subagent and
-`task`-tool presence, provider prompt-caching wiring, tool exclusion, profile
-exclusion failure modes, custom middleware replacement/order, per-subagent
-profile isolation, state-schema propagation, and compiled-graph metadata. See
-[testing-guide.md](../testing/testing-guide.md) for repository test execution
-and [build-a-deep-agent.md](../workflows/build-a-deep-agent.md) for user-facing
-construction guidance.
+`libs/deepagents/tests/unit_tests/test_graph.py` verifies the assembly contract: immutable tool-description rewrites; profile prompt ordering and `SystemMessage` block preservation; profile tool exclusion at model-request time; custom middleware replacement and ordering; default subagent construction; exclusion failures; state-schema propagation into declarative subagents; and compiled-graph configuration metadata. Representative runtime behavior is deliberately upstream-owned, while this suite checks the Deep Agents wiring that determines it.
+
+See [middleware-stack.md](middleware-stack.md) for hook ordering, [backends.md](../concepts/backends.md) for backend behavior, [permissions-hitl.md](../concepts/permissions-hitl.md) for approval policy, and [subagents-skills.md](../concepts/subagents-skills.md) for delegation and skills concepts.
 
 ## Related pages
 
 - [overview.md](overview.md) — system-level architecture.
-- [profiles-models.md](../concepts/profiles-models.md) — registering and
-  selecting provider and harness profiles.
-- [subagents-skills.md](../concepts/subagents-skills.md) — subagent and skill
-  concepts.
-- [middleware-stack.md](middleware-stack.md) — stack ordering and hooks.
+- [middleware-stack.md](middleware-stack.md) — middleware hook responsibilities.
+- [backends.md](../concepts/backends.md) — storage and execution backends.
+- [permissions-hitl.md](../concepts/permissions-hitl.md) — filesystem permissions and approval interrupts.
+- [subagents-skills.md](../concepts/subagents-skills.md) — subagent and skill behavior.
 
 [create_deep_agent]: https://reference.langchain.com/python/deepagents/graph/create_deep_agent

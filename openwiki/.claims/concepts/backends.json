@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:15a66ed749f457abe8631b84337223b3aa2954e9759a34ae14584077da5ae285",
+  "pageVersion": "sha256:c551c0d34569ac410cd558ef5dd9fb365c00aed33d9ff7ca92e104aa57b9b582",
   "claims": [
     {
       "id": "claim_9b577faaad1344b3b39669ae32d672d9",
@@ -142,15 +142,11 @@
     },
     {
       "id": "claim_871a48bf244e40fcae469b68795e6e4d",
-      "statement": "BaseSandbox is the reusable base for isolated backends: concrete subclasses implement only execute() and upload_files(), and all other file operations (ls, grep, glob, read, edit) are derived by running shell/python3 scripts through execute().",
+      "statement": "BaseSandbox is the reusable base for execution-capable backends: subclasses provide execute(), upload_files(), download_files(), and id, while inherited file operations are derived through execute() and transfer helpers.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1-L13",
-          "version": "repo-lines-v1:sha256:5cb23410e35851872e3ce06814abc352babb3806bcbe3fa631bfcc32e642f98f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlYmFlYjQ5NmQwYWRjMDk1OTM0MTQxYWExYTI1MGYwYjVmZmZjMDFmNzg1NTgwYTBmMTViODJlYzM1ZWI3NDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1411-L1411",
-          "version": "repo-lines-v1:sha256:8716d164b51903a763797e2c1a0d80e695084cafec05f96377114f6d0a939623:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODcxNmQxNjRiNTE5MDNhNzYzNzk3ZTJjMWEwZDgwZTY5NTA4NGNhZmVjMDVmOTYzNzcxMTRmNmQwYTkzOTYyMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODcxNmQxNjRiNTE5MDNhNzYzNzk3ZTJjMWEwZDgwZTY5NTA4NGNhZmVjMDVmOTYzNzcxMTRmNmQwYTkzOTYyMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGNjNGE3ZDFjYzc5NmFiYTNlNDY3MjMzMjdmNTE3ZTlmODExOTgyZDI1MGYwNzAyOTg2ZTRiNTc2NGFkOTU4OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDU4NGVjMzMzODI5OTBiNzkxNWI5NDkzMmJjYWMwNjc4NjgxMDg5ZjljZDZjZDUyN2QyOGU3OTBmZDgzMWM1OSJ9"
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1411-L1430",
+          "version": "repo-lines-v1:sha256:1a9ee91060c98d5fd81bdcb1dd9ba0c7d031077bdf4b48f6f697e8861b08f7c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3MTZkMTY0YjUxOTAzYTc2Mzc5N2UyYzFhMGQ4MGU2OTUwODRjYWZlYzA1Zjk2Mzc3MTE0ZjZkMGE5Mzk2MjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjMmExZDBmMmQ3OTFmYmM2NGVjNWFjNjFhMTkyYjgwYjQ2NTBmOGExYjQ1M2I2YzBjYzYzZmZjMTkxOGEzYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxMWNiMmExNWM0MzkzNjc3ZmY1Zjc1MDRhMTk2N2ZkNDk2YWZkMDFhZTc1NDNkMTMyZjIzMWNiODYyYTc3ZTkifQ"
         }
       ]
     },
@@ -315,10 +311,42 @@
           "version": "repo-lines-v1:sha256:a679faccd50ba604ad1a7f845edc36b29fad9d1affa6da4484c08e27735ca93e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ZjM0Mzk1NTI5YWJiMjcwMjM5OThhMGVkMmI0ZmRlNWUxMzg0NGMwZjQ0NDFiYTU2ZGU2OWY2M2E5ZTg0MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViYzc1ZGE3N2E5YjcyYmNlOTYxOWQ2YmEyOTliYTMwMmI1MzhhNTMwYzA3NTQ5NDAxNThjYTAxZWM0MDRlNDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmMmFjYzVjZTdlM2I4MGEzNTUxNGRlNjZiZmRiNzUwOGQwNmVkOGEzNTEzMjA0NWJiNjA0NWJkNjgyZjliZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxMmVmZWExZTMwYmYwZWRjNWRmMmExNzk5OTc5MzBmZDFjZDAwY2YzMTViNmZkZWFmODVmYzFiMjJmZmY2OWIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d4917133d46d4f37b410b2de0ca3c467",
+      "statement": "ContextHubBackend batches accepted mutations behind a short worker window, presents pending and in-flight changes through a local read overlay, waits for each mutation's commit outcome, and refreshes/rematerializes mutations when Hub commit conflicts occur before retrying.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/context_hub.py#L161-L231",
+          "version": "repo-lines-v1:sha256:205818727bd60eeb1aa50811353347976078c46d4ecd23274d4128d72c1944ad:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiMjk1YjZiZTE5M2RhMzU5YWVjYjdkNDNlOGQ1YzkwMGI1Nzk4NWJmOTE2ZGY2NjNmM2JkN2UyZDFlNzM4Y2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NDJiY2U2MmEyMTRlNTE2YjY5ZjAwY2NkOTZjNTJjMjNlN2U0ZmNhNGExYTI3MGUwNzhkZmM5YzM2NmQyYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwNjZkZGI2ZjVjYWFlZjY2MjVhY2QzNmI5NjJkMTY5MzI0MDM5N2MwOTIwYTE5NjdjOGJmZTBjZmMzMzQzYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZjg1NTRlYmNkMDQ2MDJjNDRiNGI0MjFiMWY1OTYwZmRkZjk5MjY3N2FiMGViYjVlNGNhOGUyODkxZDlkMjcifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/context_hub.py#L305-L374",
+          "version": "repo-lines-v1:sha256:b9b828762e26356e34be16a46e58cdbe03b290607506d4729b15d97d27ba3f6e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiYjk1ZGFlYTkwN2M2ZTgxOGI1YmVhNTcyZjRmZTY4NmJiNTE1MjVkYTk0ZjNhMTMxZWY4OThiMWI2MTk1NTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlMTEyYzEwMzZmNmNkMDk0YTE2MDNlNDJmZmQwYWM4MTA4MTM3NWRhZmY4ZTEyMmM0NDY2YWJkMTNlNGU3NzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4MjhkZDg1MzNiZjQ1OGMyNjk5MWVkN2FlMDVjOGQ3MTg0MzZiZjM4MjAxZTRmZDYyY2RiZTczYWE5MGNiNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2Y2FkZDcwMjQ1NDVkN2UwODc1OTAzZmY2NzJkNDA4M2ZjMGZlMDNhM2VhYTFhY2QyODY3ZTU3YjM0Mjg5YWUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/context_hub.py#L434-L491",
+          "version": "repo-lines-v1:sha256:d0034662b4f259678cb6ff6b147b3b79546f94e94b591a8144e92210ac9a6f63:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4ZGRlMmNmOTE5MzllODk5NDNmMzI1NDhlYmNmMGNkMzgyNWJhNmFjMmY1YTBiOThmNjczZTI0NjVjZDAxMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxYTAzNzVhNjZkZWYwMzI2NDJhMWQwYWFhMDJlYjg3OTQxYzUxYzFlZmJiZjExYWZlMGE5OTQxMTNlYjhlMDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1NzEyOWQ3NzMxYjA1NzlmZDAzNmZjYmEzOTU4NTViNmY5NWZmN2JhOGUzZmE3NjQ2ZjYyNDlkMTY5OGMwZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlYzhhY2VmNzAwNTU0ZjZlZWNlMGZjOTc2MWU4ZjVlNjFkNWNkZjc2MGI4NjEwYzA3ZTI0ZDkwNjZmODIxMTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2a8b4cd55143448bad90dd98958bcef5",
+      "statement": "FilesystemMiddleware distinguishes configured model-visible tools from backend capability: its allowlist can omit tools entirely, read_file is mandatory in an explicit list, and listing execute or delete is a no-op when the backend does not support that operation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1681-L1717",
+          "version": "repo-lines-v1:sha256:0dc569355a6c586584e5f04c3ff3852a787773fbd23f290b5e0777fb2b948724:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZGQ2MGVlZWNlYmMzOTllOWRkMzQwNDYyYTk1Mzc3ZmFmZDIxNmU1N2QzMmI0OTNiODc2ODRhY2U1NWNlYmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NWI0YTNmMzcxZjMzYzRiZThhOWJkMzk4MTM5MjZmZDJhMmIxZTYzM2IzOGNjODI0NmFmZGIxNjE3YjI4YzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhMmU5YzRlNmEzZGU5Njg4NzM5YTExODE4NjRlNzQxYTM5MTM3YjUxYTVlZGRiZmI3YjVmMTU2Y2ZjYzgzYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMTgzNDM4MGIwZDEyYWI5YzgyMGYyY2U3ZWMyZWZjNjljMTU2OWJmNmY2OTQ3YzM0N2M4MTI4ZjU0OTdmZDkifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1779-L1792",
+          "version": "repo-lines-v1:sha256:0ddf2f9ffda086f6caf266f4b540c9c3f6bc4b32f98895ae4b89e5c97d6b8d1d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlNmQ4NGMxYjdlMDcyM2EzZWUxYTEzMzZkMzM2MGZhMzc2ZWE1ZjQ3ODY5MmZlZTQ0NjdkMjRmY2ZjNDk2MWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMDhhMWZlZWM3N2ZjMjE3NmVkYzk3MGY4NGVmNWE2ZTQxOTg4ZWRjYjY5YWYzNjBmMzg4ZjVhZWFiMWIyMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkN2Y0N2YyZjdjMjA0NDBkMTFjNmI1MGU0MDc5MWI4ZGI3MWM2MjgwZGY4ODVhZjBlN2MwYzIxOTUwZDAxMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmMGVhZTUxMTc1MzQwOGVkMjk4ZjAzYjI2Yzc3ZWNiZGU5MDlhNzkyMGNlNDQyYzM3NWVjMjJiMzliYjAzMjQifQ"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.4.0",
-    "at": "2026-08-26T21:35:57.774Z"
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

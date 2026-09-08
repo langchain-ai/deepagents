@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4be21f7fdf0b600e6a7371eee96ba62e07bf49d2d82982a991327f09973c9f16",
+  "pageVersion": "sha256:dbc4e040fd7e2684b1b997db7e704509c9ed89cb603157a5efb0ae9db059b24b",
   "claims": [
     {
       "id": "claim_8766e596f8da45d8b87d026c97243b7e",
@@ -257,10 +257,42 @@
           "version": "repo-lines-v1:sha256:ab6882fb1a0ba697d6bc314465bed7a57a21cda5e5846dbb8c85cb9883e1a143:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ZjA4YWI0Mjc4YmIxMDA0NjBlZDIyZGFjMWE2ZmE5YzY1YmI5OGMyYTk2Zjc2ZjUyZDgyMjZkNDk3NDk2MjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5NGE2MGI5OTg4ODkzZTk0MTZkMWY4ODZmZjA4ZDUwMzU1NjEyODgzMzA5ZjNhODlkNTc2ODQyNTliNDc3YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMTMwNDlhNTIwZGVjYzdiMWVkMGMwOTI4YzgzYWNjYzBmMzhkM2FkNzUxNTFiNjY0ZTAzZmJiMDI1NTFmZjEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bf9f3483213d4dc2ab5add983becd31c",
+      "statement": "Local pricing overrides depend on the private upstream APIs `genai_prices.types._providers_from_raw` and `genai_prices.data_snapshot.find_provider_by_id`; because the genai-prices range spans 0.1.x patches and those names have no compatibility promise, both integration paths must be re-verified when the dependency range changes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L1041-L1088",
+          "version": "repo-lines-v1:sha256:7ff368a3ffbfb82932f3e52ae2e6e2b68e8b415de1d8b672ae7fc7107f9e9790:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMjdkY2MzZTUxMTI4ZTQ5MTMzZjUyNDczYWI0OGJkMGE5ZjM4ZWI4M2YxYTVkNGEyNzJmNTRkNzliMzIwMjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhMmI2ZDZkZDBmYjQ5ODQ4MjkwYmJmYzNkZmQ1YjViODNiYjMyNTM4NWZiYjYwNWI5ODk2MWNhYjdiOGFjM2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyZWZhOWM2ODVjNTg0NzhiODRkMjZkMGFkOGM1OWU1MjZkOGE5N2I2NDg0YjdkMDMzOTJjMjJkZjNhNDVlNjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L924-L950",
+          "version": "repo-lines-v1:sha256:94bb49a9ad4a815a94307bb1e3f923466a8b9ebf4d8ea0534f20326ee95ddfd8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5MTYxODU2NzQwYzJkZmE1Y2YyMDBhMzAxMzQ4MjhiOTBmOGYzMWFhMTI0ZDRiNTYwNjJkODliZTM0MjVlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjZjIyMWU1ODExMzczMjAwMDZjODNlOGFhZjhmNTJmMzFlZGQwYmVkMTE1MWJlNjBlMmJlYmIwZjYzZjA5MGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlMzEwODEwNjY4OWUyYTIwNjEzYTUzMzg4N2RlNjM5NWExODU1ODY1ODI2MWZiYjhkNjMxYTBkYzMzZjViYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkN2Y3MDU0MTFkZTdlN2Y1ZDQ5YWRmZDk5OGUzN2E3ZjdjZGM0MTk5NGFjMjAwZTdiMWZlOTc5NjE3Y2RmZDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L67-L74",
+          "version": "repo-lines-v1:sha256:b9cc3ee7a66360095eefdc1990f709e6243a3fdc725d11b4307a81391133410f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTA5NjNmMTdmNmJhNGQ1MDBlNmJjYTgzMmNkYjQzNjg3YzMyOGE2MjA1MGJiZjY5ODA3N2Y4YzZiOWY0MWU0MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTg0NjVjYzIwOTcxNzY1MWJiYTIxNjcwNmE4ZmZjMjliZTIzZThhZGNlZTM1YmU3NmJhMjUyOWM4YzRhMWM1OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTQ1OTkyYjQzODg5OWFjMGExZTUyZjEwN2NmMGIzNDM5MDhhYzY2ODE1MmY1OWVkNGNiMWFiZjE4MDQ1MTAwNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzNjNDk1NWQ2N2E4MTE5YzBkZTU2ZWU3ZmI0ZGIwMDU5YThjYjJkNjNjZjk5MmNmZDc1NDg3MGVjNTMzMGVlYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a5d6f25e149f41c1b0aa47e4d4222653",
+      "statement": "The hourly pricing updater refuses an upstream snapshot with fewer providers than the bundled catalog; it raises so genai-prices retains the prior healthy snapshot rather than installing a truncated catalog.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L411-L475",
+          "version": "repo-lines-v1:sha256:9f89d973562648764e8d378932050c00152acee85870f1c08476df6c13d74d6c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViMGJlNWJhZTkzYjI1YWIzNmRjNjBkYjUxZDc4ZmMzMWM0Zjg1YTk2YTVmNzRiODZhYmQ5ZmI4MzQ0OTk3N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYzMwYjdiMmNjNTdkYTdhMTk5NjZjYjVhNWYzZDA1YWEyMDk2ZDQzMjhiY2JjYzZhMzBiODgwMjcwZTE3NmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5YmRhMDhhYTZmM2FjMTA3OTg5OTgwYTU3MTUxNGQxZjc0NTM5MWI4ZGZhNDAwNGVmNTJjZTY0MTc2OTlmZDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L501-L515",
+          "version": "repo-lines-v1:sha256:59e36342e354c472a357dbc1399fb390aafda4e2a3c770f7220bd590f99ceadb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0ZmY2NTMxZDliMjg3NTk3NmU2YzcyMWU4NTg5MTQ1MzUwZjFlYjU5YzJlYzFlMDZmNGFkMTAyYjMwMzhkYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlNTQxNThlMWFiYmNjODg0YzUwNWEzMTE2OWI5MTZlZThmN2RkNDQ3ZTQ3Njc3MGNhYjBmODk4ZGY0MTI4NDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2Yzk0NzgzN2Q4NWM5NjBhNjAxNGM0MTViNWExNmMxOWYzNDA3ZWFjNGFjMTlkODFlZTg5ZGQ2ZWFlMzRiMzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2MDNjNWYyNDg2MTJkMmU4NWQwMDlmNjc1ZTA5Y2JlOTAwNDFmOGIyYWUyYjc3MzU2ZDBmMzY4OTFjNGEwM2IifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

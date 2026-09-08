@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:924d3d661076000dc78760e048b93918138f003c84929b7e32a7d7cb3877e837",
+  "pageVersion": "sha256:6260b3effde9dca316e9d4afe1d31507242c071c25871a33fd4bd85ec837e377",
   "claims": [
     {
       "id": "claim_06a0d901f13947189d630ebc5186be5a",
@@ -224,7 +224,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/main.py#L3571-L3614",
-          "version": "repo-lines-v1:sha256:00116b97d610f877fadbe7316a9b677a37c56b69c30ba1cee72c21fa9b9438bc:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMWNiOGU2NmNhODI1Y2M5NGRiMDExZGI2ZGEwYzFmNTdiOWQ4ZTI2ZDFjNTczM2I0MWUyMzNlNDZiMGRmNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOGViZDJlMDcxMzNmNDg2YTRhNTQyODdiZTNiM2VkMzBmMWM5ZWM4YTgyZDM0YmQxZjdiMmQxY2NmNzFjNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxMDk2ZDg1ZDA3NjkxYmU1YjVjZGUwZjBiNDZlZGE2NDg0Mzg4NGU2MDEyYTFiNWRhYjdmN2JkMWIzMWE4MmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNDEzNjhjZDdjNmQ4Y2Q2NmM1ODhkZGNlYjUyMTAxNTU0NjM1MWJjNDViMWEzN2Y5YjNiODJlMmFmZTAzZmUifQ"
+          "version": "repo-lines-v1:sha256:d7a6e251ead49312ea5dbacbd949f8d3cea3bc48d300dff95f519afb135a51fb:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMWNiOGU2NmNhODI1Y2M5NGRiMDExZGI2ZGEwYzFmNTdiOWQ4ZTI2ZDFjNTczM2I0MWUyMzNlNDZiMGRmNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOGViZDJlMDcxMzNmNDg2YTRhNTQyODdiZTNiM2VkMzBmMWM5ZWM4YTgyZDM0YmQxZjdiMmQxY2NmNzFjNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxMDk2ZDg1ZDA3NjkxYmU1YjVjZGUwZjBiNDZlZGE2NDg0Mzg4NGU2MDEyYTFiNWRhYjdmN2JkMWIzMWE4MmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNDEzNjhjZDdjNmQ4Y2Q2NmM1ODhkZGNlYjUyMTAxNTU0NjM1MWJjNDViMWEzN2Y5YjNiODJlMmFmZTAzZmUifQ"
         },
         {
           "resource": "repo://libs/code/deepagents_code/sessions.py#L1536-L1553",
@@ -287,20 +287,6 @@
       ]
     },
     {
-      "id": "claim_4315f4ccf66548119cb7f59113436ef4",
-      "statement": "dcode local thread deletion removes checkpoint and writes rows, then attempts offloaded conversation-history cleanup; cleanup failure does not change the Boolean result, which reports only whether checkpoint rows were deleted.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/sessions.py#L1500-L1533",
-          "version": "repo-lines-v1:sha256:5587725a4573ae05c2d1e39a99132d8ea6ec59b798b9cc976cc79c517b69b782:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlODkxZmVkNGNiNDE4MDQ4NTBiZWNiNGIyMTE2OWRkMGIxMzE5NGY2Zjg1NDdhMWIxOTk1Zjk1M2E3MWE5NDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZWZhZTFlOWM2ZTZmNDJiOTc0ODY1NWIzOGJhNjE4NTUxZjg0OTllNjRkNDRjMzY4MDcxMjY4N2JiODljODAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxMzZmYTMyYjhmMzZmMmM0ODQxMTIyZDE0ZWFkNzc1MjhlNzM0OWYyYWYzMDg1ZWQ0YWM3OGI2OWVjY2Q0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_sessions.py#L232-L285",
-          "version": "repo-lines-v1:sha256:ea587ff56d39e5ec7732dbd89a4902d75a2437b40e57f5a71517f88099a76527:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmMGRhYzg4MThhMjQ1YWRjOTgzYmRkMjc4MDQ4NDE3Y2M1YWZkYzkyOTA1YjU1NGVkOWFlMGQ4ZjMxOTViMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2NzIxM2RkNDFmN2RhYTYyMDk1MWI3ZGY3NWE5NjdmMWExOGUzY2ZlMzgxZTA0YmFhYTFjYjA4MTFjNDkzOGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMTMwNDlhNTIwZGVjYzdiMWVkMGMwOTI4YzgzYWNjYzBmMzhkM2FkNzUxNTFiNjY0ZTAzZmJiMDI1NTFmZjEifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_d9096653d57e41ca9ee45de9559166f4",
       "statement": "The default subagent mode is isolated and handoff is its legacy alias: both pass a fresh task HumanMessage plus permitted parent fields and filter excluded/private result fields. Experimental fork instead inherits prepared parent context; declarative forks retain private channels except fork exclusions, while opaque compiled forks exclude private keys.",
       "evidence": [
@@ -339,10 +325,124 @@
           "version": "repo-lines-v1:sha256:ac900a8111069f7ec2d0a28100bcb9c2f9e78f21017dcc38eb0697af657a5848:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjYmMzZTdkNTBkNTRhMDEwYTA2NmNlZTE5ODE2MGFjZTE1MTVlZWVjZjJhZjAzN2UzOWVmZGVjYzQzN2VkZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5MzY5YzMwYjlhZmRiM2NmYTgxMzAyOGJlYTgyZWM0NDZmYTNjNTE0ODQzYjUzMjU4YTg2MWI2M2YxMmFmMWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3ZWVlNTQyMjgzMDEzZTBjYTQwMjNjNWNhNDg4OTZjNzRmNzMyYTUzNzI4N2ZlYzIyYTVhYzIzYjE3ZDkzMmQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_445ae96e526240118fe5e71163451ef9",
+      "statement": "Remote dcode binds each thread atomically to a canonical, fingerprinted workspace and resource-policy record in SQLite; subsequent binding attempts that differ in workspace identity or policy raise WorkspaceConflictError.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L136-L172",
+          "version": "repo-lines-v1:sha256:b1d49640002c006428cd7bce95de1156031f1dfd80b6aca6a4af7795502e0254:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiMDBmYTc3YTAzNDIzZDQ0ZTI0NzdmMWNkYjI5YzIxZmExODEyMGQ0NTdjMWM3YjY5MmI2MTEzZjI3NzJiNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5N2U5NzFkYjU5MGQxYzk4ZTcxNDY2ODhhMjM5NzRjY2RjNzZjNDI0ZWUzNTAwMDFhODk5YzNjOTU5OTVkMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NzQxNGRkOTlmOWE4ZjgzNzUxOGM0ZGJmOThiN2NmMmY3NjFiM2FkNTI2MWZjZjQ2NjgwZGVmYzQwNWU5YTEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L228-L280",
+          "version": "repo-lines-v1:sha256:8fd3b6cdfe51cabf4111bddc221dc5498db85f0984a9f1046a2331d472239052:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YmZjZTBhNmM1OTFkNjBlMzQ4OGJjOGE4MTJjYzQxYjQ5MGI0NjcyYzk0NDljZmFiOGY0MGE1YWE5NzU3MzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxNDY1MGJkOGU5MTZkMzY4ZTk1MTFkNDZiOTI5NDg2NzQ2ZWI1M2RiMmQwYWZjNDhmNzY4NTY3Njg5YTMxYzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZjdiNzUwNDNiMTJjZjE3ODE0OTI1ZmRkNTcyNjEyOTA1M2M5YmJjZDYyYjJkMjk4ZTljNjljYmUwOWQ2MDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L295-L319",
+          "version": "repo-lines-v1:sha256:34f4880c67a001eef57ae9ca8bbc441e229e06989ef1fb2f31d89dc31a116dd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExMzM1Y2JiYTU3MDhmZDYwNTk2Y2MwMGU5YThiZjNjNTZjNWJmZjQwMDI2NGRkNzgwOWZjOGExNGVhYjdkM2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxMDFmYThhZWM4NzliZTczNjc5MjMzMDcxNGM0ZDJjMzE5ZTQxMDRkMjk2MDYzNzIxYjNhYjY3MmYyMjYxMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMjkwOTcyYTUxZjJkYTI4ZmRkY2IyMmEwZDQ3OTRkZGNkMGY1NzYwOGU3ZmQ1YzhjMDY5NDMwZjRmOWI0NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ZmZkNjU3ODMzNGI3MGFiM2ZiNmViYTBmMDA3YTg4ZWNkZjI0YmIzODZiZTFlMWE2N2Q2YjVjMmI0YjFmZTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cb109a34165a4aeca3da2655e8102ba9",
+      "statement": "Before remote dcode execution, the server requires a thread ID and workspace context, validates them against the durable binding and re-resolves workspace identity; changed context, policy, schema, or identity is rejected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L785-L795",
+          "version": "repo-lines-v1:sha256:26dff16bac1e0331c2c4087c11de13eb0003e111a2608ec9c8235ab7d7cfc3ca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlOTc2MDJkZGJjNTAzZDI2MDAzYzY0ZTQ1NmQ3OTdhYWI3NWM2MmNhY2VhZDgxYTJmZjdlYjBhZjZmNjI5MGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYjM3ZTA2NjA3YWU2YjhlMzRlNWZjNjdjODZhMDVlZDIwNzA2M2NkYjNiNTczOTkzNjk4YTg1ZDhiZjMxZjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyNGEyNzFiMzFhNmM4ODhkZjE3ZWRmOTdhMTQ2ZDUxNzA0M2U5NDdjOTcxYTY2OTg5OGNiMzNmNzE3YWFkM2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxNjNkZjE0MzFkYjFhNmQ3MGMyYjM3OWM2OWJkYzg1NjdmZTVhZTY3ZmRiZjcwZDEyMjcyOTBmYTYxNmU3NDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L333-L395",
+          "version": "repo-lines-v1:sha256:24e96f416e7bba7d1f21f06c32ffd2c46bed6dfdd095dad891609f5085c3b14a:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MDZkOTRiMzNmMzRkYzMwYWRjZGJkYmQ0ZjQ0OWJkNzk4MzRmN2JmNGQ4OTBkZWM3NTljNzQwMDFmMGM5YzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NTVkZmFmNWE5MDJlNjA1NmY3ODhlYzAwOTUyMDcwOWFhMmI0Mjc0NjBmYzI1ZDQwNDQ3MzcwM2ZjNzI4NGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1Yjk5YTM2NjRiYzk5YzkwOWQ3NjkwNTFiYjBlNjk0ZjBiNWFhZTgwNzRjMmQzZDFiNzFjZjQ3YTJmOGMzMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c610bae429714bb2a3c4fca3d748767c",
+      "statement": "ACP uses each generated session ID as the LangGraph thread_id and only advertises session/load when load_sessions is enabled; durable loading depends on a graph checkpointer that survives server restarts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L229-L245",
+          "version": "repo-lines-v1:sha256:2f20d2591ca2436bc66fc1ffe155fdb294c1edfd76855e42766e432ab2f90508:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZDdhMDdhODNkZDE5OTZmYjUxNjg0YjQyYWVjYWY0ZTkwZmI3OGJhNzIzMGU1NDJlZDdiZDAxZDQyMzAxYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyNjMwZjZmNzBhMjllNDU0YzkzYjIyMTRlNmY4ZmRmNTQ4YTdhMGM5NTU1NDNkZTYyMjJlMDlkZTVjNjIwZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzNWQ0NTc5MDllOGNmNTJmZDQxZGVkNzZlZDZlNGNhMzg1ZTNjODEwN2E1MzdiNTlkYTYwZGNiYjU2NDVlMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5Y2U2ZGE3ZmFiNWYxMmVhZGRlOTk4MmMxZTEzMGY2OTExYWUzMjM4NDQ0NmI4NTg5ZTdkYmNjNDc1NmRiYmUifQ"
+        },
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L346-L380",
+          "version": "repo-lines-v1:sha256:45c637fb6517fbdb853eb0c15720a4a1f31a1d811dcd27ee0438008d4f7fe758:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MDMyYTY3NWQ3OWE4MDZkZWEyMzI5ZDdkOWI1YzhlZDdkOTM2NjhmZTBkMWEyODBlZTQxNGVlNGQ3ZTJkMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNDQ1MDViMWI3NWUzYzcwNjBjN2I2NmZiMjIwN2M4NGExN2YzNTdkZGYxYjY3Y2U2OWJiYmRhOWNlMjFlYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyNWM2MWFiZmExNjQ1OTFmMWYyODI3MmUwNjFkNzg2ZTM5ZmNjM2E4ZDkxOGYzZWNjNjVlZTI1NzdlMDdmN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgyZGM2MTFlNmJhZmZlODdkMzE2ZGRlNDVmY2EyNGI5ZDVmYzJkZGVmODRiMmVhZWE1YTEzOGVlZjZiM2QwMTEifQ"
+        },
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L792-L816",
+          "version": "repo-lines-v1:sha256:654bb18437cabf7c69646798cbabda8a57d27de801ac8f30a1842548ad80a90c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhNGI5N2RhZGE0YTMwMjlkNDg5MWFhNzY4ZTNiMTJiOTNkMTA0NGY3NmNmMjg2YTY3YjE2Mzc4ZTI4MzE2NDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZTBiN2YzYWI0NDYwY2FjNDk0MjQ2ZjcyNTZlODU4NjBjZmI5NTI4MTE2MzE5MGQ4M2Q4YWJiZTY1YTQ3M2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjNTJiMWU4ODQ2OWM5ODMwYTA3NzkyZjU3ZThlOTVmOWYzNjQ2Nzk1YzczNDU0YTRmYjNhODhmZDI0NzZjNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlNjhlMTA4YTc1YjFkMDg5MGI3NDcyOTdiYmVlNTc2ZWIwZjNhN2I0N2EzODU1Yzg0NGJiODQ3YmQ1NWU2NGIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ab58a99de523443fabac3296c0166e5a",
+      "statement": "ACP session loading verifies the persisted ACP marker and matching cwd, restores saved options, and replays checkpoint-history messages as ACP updates; it rejects missing sessions and cwd mismatches.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L394-L428",
+          "version": "repo-lines-v1:sha256:46b9c974b06fed92e82e9dfee0251350726d492a9fd57b7f15947beac5508f3d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzcxMjY1MTEyZTI4NmE3NDdjYWMzNDY5MmJmMGNkY2Q2YjRkMzJiNDQ4MTI0ZmQzNTQyZjhjZTMwN2MzZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhNDc0ZWI4N2ZhZjY1N2E4MThiZmFiNGVjMmE2NGI5NTJiNjQ4N2I2ZjhkMGJmNmRiYTIwZjFlMTdiNjg3NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3OTg3OWRkZjdlYzI5OTQ5OWJkMzc2ZDlkOTYyYmM0MTFlZjJmYmE4MDVjYjFhZDU1NjYxYWYyZDQ1Yzg2YjcifQ"
+        },
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L818-L840",
+          "version": "repo-lines-v1:sha256:fe8d8233be0c40e500568b16fe8b19186997e917f25d102a1357d97776c8890e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzNWNmMTEwZGJlNTA2MWY0OTdiODU2OWE3YzA3Yzc4MzdhNGVlMmFmZDIzMzU4YWRhYmQ0NjkzZTcwMDYyNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkZTZhZDQ0NTJkZTcxNmNlZTIzYTc4YjAzMjUzZTA4NmZhZTBjOTJlOTlmNWE3ODhhYmFlY2Y4ZGU4OTBkYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhOTQ2NWQ5Y2Q2ZjBmMDJjNjJhM2M0NDZhOTQ5MWRjODUyMmUxZDNkZDY5NWM1Nzg4ZTA1ZmViNmM1MTY2MDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRjYjA1MWFmNGI2ZGNjY2U3ZWRmN2E3MzAxNTYwMTVhZTliOTY5OTlkMDZiMjRhOWM3NjIwMTc1YzRlMWY4OGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_44ad17894571437881808abe00c1a318",
+      "statement": "Talon maps conversation_id to the LangGraph thread_id. DeepAgentRuntime defaults to InMemorySaver, while the configured host path initializes an AsyncSqliteSaver and wraps it with ConversationSaver and SQLiteConversationArchive at the configured checkpoint path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L190-L221",
+          "version": "repo-lines-v1:sha256:5f84ea96440cb9ace5f299ec114aa0cbc47a97e6bc2ce3231aa19c8de3b545ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmYzkyMjNhY2Y4NmU1MDA5NmE0NDUzMzMzNDE4ODZkMTc0MWU1NTdhZDFmMDRhMjA2ZmFhOGJmOTg2MzdhOWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5YzVjZjJmMGZkYjM0YTEzOWJmMzBiYzhjYjM3YjYwOTlmODcxNjViOTJkMjlkYmJjYzA1ZjAyNWFiY2QxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYTViZmQzZDAyM2QwZTZjOGZlZDdkNzg2ODYyNWQ3MTg2NDdmNzAxNTk3MmY2ZGJjODNhYmYzOWZlNjBlOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmZjNmMGI1MmVlOGQxMjZkMzc3NGYxMmI3MmM5YjY0NTRlMDEwYWE4OGM3ODFiZjc3MGY4OTEzY2VjZmI1ZjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L255-L256",
+          "version": "repo-lines-v1:sha256:3eb5ba29216fbff9c4afe6d5946f9ea9497134885360e4ebb036443591038ba5:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdmZTUyMjJkNTAzOWU0MDI2MjFkMDFlOWJjNGIwYzM3M2YyOTA3YzNjMDJmOGMwMzYwMDdkZGQyMjJiZDMyOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY5MzBiYjgwMmUzYWM5NGM0MjZkMjJmMTExODI0NTA1OWNmMGQ1MzRhNjU1NmJjNDZmNGViYTQ0MTQ3Y2M5MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmE4MGYxMDVkMDM2ZGFjMWQ4ZGU5YWUxZTJiMzQ3NWI2N2VmNTJkNmFlNjFiMDhlNDUzOTdiNTI3M2Q4ODJlZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODRhYjlmYzU5N2JlMTYxMGZjNzNlYjBhMGFiN2MxNTM4ZmMyYmJiOTVhZGMxY2NkNmZkOTZmODhhYzlhZGM3NiJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L304-L320",
+          "version": "repo-lines-v1:sha256:1d0414b46064c9e2ae8453d1626f4fd1155604e67c998434dc623998f77ec252:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MDljNjBlMTcwZjNmYTFmY2Q4MWQxOWM4ODAyZTBkNGM5MTliOGRkZjBjYzI3MTljMjM1ODRjMzYxNDAzNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiNjg4M2E5YjZhYzQ4MTEwMjY0NDA2N2I0MjdiNGI0MGQ1OTA5MzEwMjNlMjYxZTExYjE0NWU5ODcwOWZlYzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1ZWVlNGJkOTNmZjY3YWFlYjlhMGYwNGZkMjQ5MjBjMmQ2YWJlYWZiMWVmYTdjNDdkZTk0MDFlMmVkMmU4NmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhYWU4ZWVkNmUwZTA5ZTdmMmFiMGNjM2JlZTI5YjBmNmQ2YjhjNmE3YTczNWYyZWI0OTY3MDRkODQwMzU1YjEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L607-L625",
+          "version": "repo-lines-v1:sha256:64de02caaa846391bbc2a4c1d8ecaddff3b3b661e56d58a345c29c2641ed74d1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDYzNTcwYTdhODU2N2M4ZjIwOTBhNTYzMjIzNjI5ODJhZTRlYjE2NzViZmM2ODAzMTkxZTY3N2E2YjE1NDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmNmM5NTAwYzBhYmQyYTdlZDIxZjA0YzI5MTcyZGNkZmJmZTFiNWIzZWEyOTY1YTY1M2M4MDliNDkxOGQ0MzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkOTlhOTg3MjRjNDM2MzQzZTMyMGFkMDczMTg2YTZmMTkwNTkzNWU4MTI0NjRhZjcyODYyOWNkODExODUxYzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2MTQ2MmQ5MzhiYjhkNWM3NzFiN2MwMmM5NGY1MTMyMGZlNjk2OWIzODMyYjYzZmUxZWE5ZjdhNjZlNzgyMDUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cb3b8a16a6b340da8b5ddd41b212cb0f",
+      "statement": "Talon's ConversationSaver archives scoped root-namespace message revisions in addition to delegating LangGraph checkpoints, but its checkpoint and archive writes have no cross-store transaction: archive failure propagates after checkpoint persistence and retry is idempotent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive.py#L114-L148",
+          "version": "repo-lines-v1:sha256:f1471e738a56f148a5883afe335f2e7be2aa5483e32ce8a4a8e276190920a9b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NjRhNTMwMGM0OGU5MDNmYTA5NzY4ZWNkOGEyMzc2MzQ5ZGE3YjcwYjJmZjZmZjA0N2E1M2Y3MDY5NzRlZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1ZTZiMzJjODVmYjBmN2VhMTA1NTFjYTA2Y2VjOTI4MjlkYjE5N2M2NGZhM2U4ZGYyZjc4MGNmODczMTU4YjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ5ZDVjODhmYmM4MzU1MTBmMTY0NjBkZGY1ZWEyYjUzMzRlODg4MDM5ZDc2ZThiYWQzNzFkYTVmMGUyYjFhNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwNTVhNTdjMzBhZWM0ZWI4ZDM4MjI5ZWNmNjk4ZWY0NTExZTBiMWQxYTFmZDgzNDg2MjliZmU4NDM5NTBkZTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L127-L187",
+          "version": "repo-lines-v1:sha256:f4b29613858d29ab3be6ab87ce9cd4be7a68a9e10961255f0255d959d39596c5:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4YTNjM2RhZWU1NmFkOGY5NWFkNmY2ZDU5MTVmZjViM2U1YzZhZjE3ZDhiYTQ3MjhmMDExMmYzZmExNGY1YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDA0ZGI2NDdmNGUzNTk0NzJjNjhjNjA1MDZkNTkwNzIwNGY5ZmE2YjBlODhlYzA1MTQ4OTRmNmNiN2UyYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhYWQwZmU2M2RiMzllMzNkMzNjNGQ2ZjdjNjgwODMzZDM1YzVhMDNmNjAzNjA4Mjk5Mjc0Y2E0MWVmZmU2NDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkZWUzMjNlOTNhYzViOWRhZGMzN2Q1N2I1OGNjNjM4YjdiOTA4MjIxMTFjNjdiM2JiNTM4MzY1M2IyZWM4Y2MifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L234-L240",
+          "version": "repo-lines-v1:sha256:200b15a8a301e8a1d32c90cfb290b81e4e5b1f258bb051c9a3326b6d848f15f6:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTE4NjE3NzY5NWJiNDkwYzZkYWZkMGQwNjM1ZGZiYjM1MWZiOWRiNGUyNDg2MGI1ZTBiNDMyOTUwOTU2MzZmOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTYwZTg5Zjk4ODE4ZGVkMTAyNjBiNWJhZmIwZTYxNzEzYmY0NDY2Yzk3ODkxODE5NjdkMGFjOWMyOGI0ZjQxYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjNlNTJkMjYxMTgwNmYxZTYxMjNlZWE4NzVlNmQ0MGVjMmYwODA2NjUzMjlhMTdiNDI0NzNkZGQzZmNkMmJiNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDcwMTQ5ZTA2OWFkNjdlY2NmNDczNjQ2ZmYxYzc1MDA1MGQzMjlkMTEwMDE4ZGM1NzY2ODc4ZWFmYTFkNjA3ZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_fbeed0132e2b4e78b332712ce780587f",
+      "statement": "dcode deletes its SQLite checkpoint and writes rows before calling offloaded-history cleanup; because cleanup is not caught, its exception propagates even though the checkpoint deletion may already have committed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L1511-L1533",
+          "version": "repo-lines-v1:sha256:cd9072468b4de32283234bdd6041ebdb434ba91ade6c239ce2a294dc975ee1ff:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZWZhZTFlOWM2ZTZmNDJiOTc0ODY1NWIzOGJhNjE4NTUxZjg0OTllNjRkNDRjMzY4MDcxMjY4N2JiODljODAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyM2Q4Zjc1NjU5OGVlODFlNTNmNDI5MGE4NmY3Mjc0NjJiNDRjN2IzYTRmM2M4MTI2YTU2ODIwNWNhYzQyOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-03T08:05:39.427Z"
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

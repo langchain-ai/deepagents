@@ -433,9 +433,10 @@ class ConfigOption[T]:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
-    mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
-    `LANGSMITH_PROJECT`.
+    Credential fallbacks apply `DEEPAGENTS_CODE_` prefix overrides dynamically,
+    including empty-prefix shadowing. Other fallbacks are read literally so
+    `config`/`config get` mirror runtime fallbacks such as
+    `get_langsmith_project_name` reading bare `LANGSMITH_PROJECT`.
     """
 
     toml_keys: tuple[str, ...] | None = None
@@ -1974,26 +1975,6 @@ def _is_secret_env(name: str) -> bool:
     return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
-def _prefix_aware_fallbacks(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Expand canonical fallbacks in `resolve_env_var` lookup order.
-
-    Args:
-        names: Canonical fallback environment variable names.
-
-    Returns:
-        Prefixed and canonical spellings for each fallback, in precedence order.
-    """
-    return tuple(
-        candidate
-        for name in names
-        for candidate in (
-            (name,)
-            if name.startswith("DEEPAGENTS_CODE_")
-            else (f"DEEPAGENTS_CODE_{name}", name)
-        )
-    )
-
-
 def _credential_options() -> tuple[ConfigOption[object], ...]:
     """Build credential options from the canonical provider/key registries.
 
@@ -2027,9 +2008,7 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 summary=summary,
                 kind=OptionKind.STR,
                 env_var=env_var,
-                fallback_env_vars=_prefix_aware_fallbacks(
-                    SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ())
-                ),
+                fallback_env_vars=SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ()),
                 redacted=redacted,
                 provider=name,
                 dependency_module=dependency[0] if dependency else None,

@@ -411,6 +411,22 @@ def ranked_toml_value[T](
     return RankedProviderValue(rank, durable, status, result)
 
 
+def _prefix_aware_env_name(name: str, environ: Mapping[str, str]) -> str:
+    """Select a prefix override by presence, including an explicitly empty one.
+
+    Args:
+        name: Canonical environment variable name.
+        environ: Environment mapping being resolved.
+
+    Returns:
+        The prefixed name when present, otherwise the canonical name.
+    """
+    prefixed = (
+        name if name.startswith("DEEPAGENTS_CODE_") else f"DEEPAGENTS_CODE_{name}"
+    )
+    return prefixed if prefixed in environ else name
+
+
 def ranked_environment_value[T](
     option: ConfigOption[T],
     environ: Mapping[str, str],
@@ -431,14 +447,13 @@ def ranked_environment_value[T](
 
     names: list[str] = []
     if option.env_var:
-        canonical = option.env_var
-        prefixed = (
-            canonical
-            if canonical.startswith("DEEPAGENTS_CODE_")
-            else f"DEEPAGENTS_CODE_{canonical}"
+        names.append(_prefix_aware_env_name(option.env_var, environ))
+    if option.group == "Credentials":
+        names.extend(
+            _prefix_aware_env_name(name, environ) for name in option.fallback_env_vars
         )
-        names.append(prefixed if prefixed in environ else canonical)
-    names.extend(option.fallback_env_vars)
+    else:
+        names.extend(option.fallback_env_vars)
 
     status = ProviderStatus("environment", None, ProviderHealth.OK)
     last_invalid: Invalid | None = None

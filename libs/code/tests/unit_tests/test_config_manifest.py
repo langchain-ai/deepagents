@@ -688,10 +688,6 @@ def test_resolve_langsmith_service_prefers_stored(monkeypatch):
     option = get_option("credentials.langsmith")
     assert option is not None
     assert option.redacted is True
-    assert option.fallback_env_vars == (
-        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
-        "LANGCHAIN_API_KEY",
-    )
     is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
@@ -739,6 +735,39 @@ def test_resolve_langsmith_falls_back_to_prefixed_langchain_api_key(monkeypatch)
     assert is_set is True
     assert source == "env (DEEPAGENTS_CODE_LANGCHAIN_API_KEY)"
     assert value == "from-prefix"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_langsmith_empty_prefixed_fallback_shadows_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty fallback override keeps config display aligned with runtime."""
+    from deepagents_code.model_config import (
+        ProviderAuthState,
+        get_service_auth_status,
+    )
+
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", raising=False)
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    assert _resolve(option, {}, managed_toml_data={})[0] is True
+
+    # Reuse the manifest entry so prefix selection must happen at resolution.
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+    assert get_service_auth_status("langsmith").state is ProviderAuthState.MISSING
+    is_set, _, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is False
+    assert value is None
+
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY")
+    assert _resolve(option, {}, managed_toml_data={}) == (
+        True,
+        "env (LANGCHAIN_API_KEY)",
+        "from-fallback",
+    )
 
 
 def test_resolve_langsmith_primary_env_wins_over_fallback(monkeypatch):

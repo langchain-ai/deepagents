@@ -65,7 +65,7 @@ from deepagents_code.project_utils import (
 class TestRuntimeDotenvReload:
     """Tests for project-scoped dotenv refresh behavior."""
 
-    def test_direct_reload_initializes_langsmith_carrier(
+    def test_direct_reload_initializes_langsmith_state(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -91,11 +91,14 @@ class TestRuntimeDotenvReload:
 
             runtime.reload_from_environment(start_path=tmp_path)
 
-            carrier = json.loads(os.environ[config_mod._USER_LANGSMITH_ENV_CARRIER])
-            assert carrier == {
-                "launch": dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
-                "user": dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
-            }
+            # `_bootstrap_state` is the source of truth; `_build_server_env`
+            # encodes the carrier from it at every spawn. Reload deliberately
+            # does not publish it into the client's own environment, so assert
+            # the state rather than an env var.
+            blank = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+            assert config_mod._bootstrap_state.launch_langsmith_env == blank
+            assert config_mod._bootstrap_state.user_langsmith_env == blank
+            assert config_mod._USER_LANGSMITH_ENV_CARRIER not in os.environ
         finally:
             config_mod._bootstrap_state.launch_langsmith_env = original_launch
             config_mod._bootstrap_state.user_langsmith_env = original_user

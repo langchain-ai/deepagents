@@ -4027,14 +4027,12 @@ class Credentials:
             refresh_loaded=True,
             capture_user_langsmith=True,
         )
-        if restore_launch:
-            # Only republish a carrier built from settings this reload trusted.
-            # On the branch above, `os.environ` still holds the agent's own key,
-            # so `_load_dotenv` just recaptured that into `user_langsmith_env`.
-            # Encoding it would turn one unreadable carrier into a well-formed
-            # one that every later restore accepts in silence -- laundering the
-            # fail-closed refusal into a permanent leak.
-            os.environ[_USER_LANGSMITH_ENV_CARRIER] = _encode_user_langsmith_env()
+        # The refreshed values are not republished into `os.environ`. Reload runs
+        # only in the client, where `_bootstrap_state` is already the source of
+        # truth and `_build_server_env` re-encodes from it at every spawn. Writing
+        # the carrier here bought nothing and left the user's plaintext API key,
+        # inside a JSON blob no secret scrubber recognizes, in the environment
+        # every client-spawned child inherits.
         apply_stored_langsmith_auth()
         refreshed, blocked = self._reload_values(
             start_path=start_path,

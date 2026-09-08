@@ -4,11 +4,20 @@ import asyncio
 
 import pytest
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+
+
+@pytest.fixture(autouse=True)
+def stub_child_compilation(monkeypatch):
+    monkeypatch.setattr(
+        "deepagents_talon.subagents._compile_fresh",
+        lambda spec, *_args: {**spec, "runnable": RunnableLambda(lambda state: state)},
+    )
 
 
 def _write_agent(path, prompt):
@@ -21,6 +30,7 @@ def _graph_factory(entered=None, release=None):
         names = ",".join(
             agent.get("system_prompt", agent.get("graph_id", ""))
             for agent in kwargs["subagents"] or []
+            if agent["name"] != "general-purpose"
         )
 
         async def reply(state):

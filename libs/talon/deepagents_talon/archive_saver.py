@@ -29,7 +29,7 @@ if TYPE_CHECKING:
         DeltaChannelHistory,
     )
 
-    from deepagents_talon.archive import SQLiteConversationArchive
+    from deepagents_talon.store_archive import StoreConversationArchive
 
 V = TypeVar("V", int, float, str)
 
@@ -47,7 +47,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
     """
 
     def __init__(
-        self, checkpointer: BaseCheckpointSaver[V], *, archive: SQLiteConversationArchive
+        self, checkpointer: BaseCheckpointSaver[V], *, archive: StoreConversationArchive
     ) -> None:
         """Wrap the saver without taking ownership of either store."""
         super().__init__(serde=checkpointer.serde)

@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-specific pytest topology and execution policy for Deep Agents, dcode, ACP, Talon, and evals. It explains the offline unit boundary, warnings-as-errors policy, asynchronous tests, benchmarks, and credentialed live evaluations.
+- [Testing Strategy and Change Validation](testing-guide.md) - Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.

@@ -24,13 +24,15 @@ from urllib.parse import quote
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._paths import (
     DEEPAGENTS_HOME_ENV,
+    DEFAULT_PROFILE_MARKER_ENV,
     PATHS,
     export_profile_env,
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
-    _dotenv_loaded_values,
-    export_user_tracing_env,
+    _USER_LANGSMITH_ENV_CARRIER,
+    _encode_user_langsmith_env,
+    _strip_dotenv_loaded_values,
 )
 
 if TYPE_CHECKING:
@@ -405,16 +407,15 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
-    for key, value in _dotenv_loaded_values.items():
-        if env.get(key) == value:
-            env.pop(key)
+    _strip_dotenv_loaded_values(env)
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
 
-    # Capture a launch-time PYTHONPATH before stripping it. Never trust an
-    # inherited carrier var: pop it first, then set it only from the real value.
+    # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
+    # carrier vars: overwrite them only from bootstrap state in this process.
     env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    env.pop(_USER_LANGSMITH_ENV_CARRIER, None)
     inherited_pythonpath = os.environ.get("PYTHONPATH")
 
     for key in (
@@ -428,36 +429,44 @@ def _build_server_env() -> dict[str, str]:
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
-
-    # Relay the caller's pre-bootstrap tracing values. The server inherits an
-    # environment where bootstrap already replaced them, so it cannot recapture
-    # them itself; without this, `execute` commands would run under the agent's
-    # LangSmith key and project.
-    export_user_tracing_env(env)
+    env[_USER_LANGSMITH_ENV_CARRIER] = _encode_user_langsmith_env()
     return env
+
+
+_IMMUTABLE_SERVER_ENV_KEYS = frozenset(
+    {
+        DEEPAGENTS_HOME_ENV,
+        DEFAULT_PROFILE_MARKER_ENV,
+        _INHERITED_PYTHONPATH_ENV,
+        _USER_LANGSMITH_ENV_CARRIER,
+    }
+)
+"""Keys `_build_server_env` owns outright, immune to caller overrides.
+
+`persist_env` validates its keys against `SERVER_ENV_PREFIX`, but `update_env`
+accepts any key, so without this an `update_env` caller could point the server
+at a different profile than the client (splitting the trust root across the two
+processes), forge the LangSmith carrier that authenticates approval-gated user
+commands, or inject a `PYTHONPATH` into them. Dropping the keys before the
+overrides apply keeps that a single list to extend rather than one re-pin per
+key, which is how `_INHERITED_PYTHONPATH_ENV` was missed.
+"""
 
 
 def _server_env_with_overrides(
     persistent: Mapping[str, str], scoped: Mapping[str, str]
 ) -> dict[str, str]:
-    """Assemble the server environment, then re-pin the profile selection.
-
-    `persist_env` validates its keys against `SERVER_ENV_PREFIX`, but
-    `update_env` accepts any key. The final call therefore is not redundant:
-    without it an `update_env("DEEPAGENTS_HOME"=...)` caller could point the
-    server at a different profile than the client, splitting the trust root
-    across the two processes.
+    """Assemble the server environment, ignoring overrides of pinned keys.
 
     Returns:
         The child environment for the server subprocess.
     """
     env = _build_server_env()
-    env.update(persistent)
-    env.update(scoped)
+    overrides: dict[str, str] = {**persistent, **scoped}
     # Profile selection is immutable and is not a restart override. Say so when
     # a caller actually tried: silently pointing the server somewhere other
     # than they asked is the kind of thing that gets debugged twice.
-    requested = env.get(DEEPAGENTS_HOME_ENV)
+    requested = overrides.get(DEEPAGENTS_HOME_ENV)
     if requested is not None and requested != str(PATHS.profile.root):
         logger.warning(
             "Ignoring the %s=%r override for the server subprocess. The "
@@ -466,7 +475,9 @@ def _server_env_with_overrides(
             requested,
             PATHS.profile.root,
         )
-    export_profile_env(env)
+    for key in _IMMUTABLE_SERVER_ENV_KEYS:
+        overrides.pop(key, None)
+    env.update(overrides)
     return env
 
 

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +88,47 @@ class TestServerGraph:
         assert calls == 1
         assert results == [graph_obj, graph_obj, graph_obj]
 
+    def test_config_bootstrap_runs_off_the_blockbuster_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile validation must not block the server event loop."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        env = os.environ.copy()
+        env["DEEPAGENTS_HOME"] = str(profile)
+        env.pop("DEEPAGENTS_HOME_IS_DEFAULT", None)
+        code = """
+import asyncio
+from unittest.mock import AsyncMock, patch
+from blockbuster import blockbuster_ctx
+from deepagents_code._server_config import ServerConfig
+import deepagents_code.server_graph as module
+
+async def main():
+    runtime = module.ServerRuntime(object(), object(), object())
+    with patch.object(
+        module,
+        "_make_graphs_in_environment",
+        new=AsyncMock(return_value=runtime),
+    ):
+        with blockbuster_ctx():
+            assert await module._make_graphs(
+                config_override=ServerConfig(no_mcp=True)
+            ) is runtime
+
+asyncio.run(main())
+"""
+
+        process = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert process.returncode == 0, process.stderr
+
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""
         module = _import_fresh_server_graph()
@@ -148,6 +193,36 @@ class TestServerGraph:
 
         assert result == [fetch_url, readonly, web_search]
 
+    @pytest.mark.parametrize("read_only", [False, None, True])
+    def test_mcp_search_marker_cannot_bypass_read_only_gate(
+        self, read_only: bool | None
+    ) -> None:
+        """Server-controlled annotation extras cannot grant criteria access."""
+        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+        from mcp.types import Tool, ToolAnnotations
+
+        from deepagents_code.tools import create_web_search_tool
+
+        module = _import_fresh_server_graph()
+        remote = convert_mcp_tool_to_langchain_tool(
+            None,
+            Tool(
+                name="remote_tool",
+                inputSchema={"type": "object", "properties": {}},
+                annotations=ToolAnnotations.model_validate(
+                    {
+                        "readOnlyHint": read_only,
+                        "destructiveHint": True,
+                        "deepagents_web_search": True,
+                    }
+                ),
+            ),
+            connection={"transport": "stdio", "command": "unused", "args": []},
+        )
+        search = create_web_search_tool("")
+
+        assert module._criteria_context_tools([remote, search], [remote]) == [search]
+
     async def test_make_graph_emits_marker_and_exits_on_failure(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -182,7 +257,6 @@ class TestServerGraph:
             tools, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
-                has_tavily=True,
                 tavily_api_key="workspace-key",
             )
 
@@ -224,6 +298,7 @@ class TestServerGraph:
             tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
+                tavily_api_key=None,
             )
 
         assert tools == [fetch_tool, thread_tool]
@@ -233,6 +308,8 @@ class TestServerGraph:
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
         """Server PTC overrides should reach the interpreter snapshot."""
+        from deepagents_code.config import _tracing_environment_values
+
         graph_obj = object()
         model_obj = object()
         observed: dict[str, object] = {}
@@ -255,10 +332,14 @@ class TestServerGraph:
             Credentials=SimpleNamespace(
                 snapshot_from_environment=MagicMock(return_value=settings_obj)
             ),
+            _ensure_bootstrap=MagicMock(),
             _preview_dotenv_environ=MagicMock(return_value=environment),
             active_environment=MagicMock(return_value=environment),
             use_environment=__import__("contextlib").nullcontext,
+            _tracing_environment_values=_tracing_environment_values,
+            is_langsmith_redaction_enabled=MagicMock(return_value=True),
             configure_langsmith_secret_redaction=MagicMock(),
+            reconcile_tracing_environment=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,

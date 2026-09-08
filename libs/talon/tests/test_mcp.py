@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -1308,3 +1309,33 @@ async def test_authenticate_reports_failure_for_a_grouped_session_error(
 
     assert result == {"status": "failed", "server_name": "notion"}
     assert await provider.refresh_if_needed() is None
+
+
+async def test_login_succeeds_and_logs_a_failure_alongside_the_completion_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The marker is only raised after credentials persist, so the login did succeed."""
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}})
+
+    async def complete_then_fail(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_device_completion)
+            group.start_soon(_raise_connection_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp"):
+        result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "Logged in to MCP server 'remote'.\n"
+    assert captured.err == ""
+    assert "after credentials were saved" in caplog.text
+    assert "connection reset" in caplog.text

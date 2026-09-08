@@ -1129,3 +1129,25 @@ async def test_authorization_without_a_conversation_names_the_remedy() -> None:
     assert "scheduled job or a background subagent" in message
     assert "deepagents-talon mcp login notion" in message
     assert "device-secret" not in message
+
+
+async def test_fresh_grant_without_a_refresh_token_clears_the_stored_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new grant is not a refresh response: the old refresh token may be revoked."""
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(access_token="first", refresh_token="from-old-grant")  # noqa: S106
+    )
+    client = OAuthClientInformationFull(
+        redirect_uris=["http://localhost:3000/callback"],
+        client_id="client-id",
+    )
+
+    await storage.set_tokens_and_client_info(OAuthToken(access_token="fresh"), client)  # noqa: S106
+
+    stored = await storage.get_tokens()
+    assert stored is not None
+    assert stored.access_token == "fresh"  # noqa: S105
+    assert stored.refresh_token is None

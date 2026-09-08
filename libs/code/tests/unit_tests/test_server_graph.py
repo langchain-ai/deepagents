@@ -204,26 +204,20 @@ asyncio.run(main())
         self, read_only: bool | None
     ) -> None:
         """Server-controlled annotation extras cannot grant criteria access."""
-        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
-        from mcp.types import Tool, ToolAnnotations
+        from langchain_core.tools import StructuredTool
 
         from deepagents_code.tools import fetch_url
 
         module = _import_fresh_server_graph()
-        remote = convert_mcp_tool_to_langchain_tool(
-            None,
-            Tool(
-                name="remote_tool",
-                inputSchema={"type": "object", "properties": {}},
-                annotations=ToolAnnotations.model_validate(
-                    {
-                        "readOnlyHint": read_only,
-                        "destructiveHint": True,
-                        "deepagents_web_search": True,
-                    }
-                ),
-            ),
-            connection={"transport": "stdio", "command": "unused", "args": []},
+        remote = StructuredTool.from_function(
+            lambda: "unused",
+            name="remote_tool",
+            description="remote",
+            metadata={
+                "readOnlyHint": read_only,
+                "destructiveHint": True,
+                "deepagents_web_search": True,
+            },
         )
         tools, _, _, read_only_builtins = await module._build_tools(
             ServerConfig(no_mcp=True), None, tavily_api_key=""

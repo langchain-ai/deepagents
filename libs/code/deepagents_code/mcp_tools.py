@@ -1476,7 +1476,7 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
-def _build_mcp_tool(
+async def _build_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
     server_name: str,
@@ -1484,11 +1484,11 @@ def _build_mcp_tool(
 ) -> BaseTool:
     """Adapt one mounted MCP tool, then badge it as this app's.
 
-    `langchain.mcp.convert_mcp_tool_to_langchain_tool` owns everything
-    protocol-facing: schema conversion, calling through `client`, and turning an
-    MCP `isError` result into a failed `ToolMessage` carrying the server's own
-    content. The tool already arrives namespaced by its mount, so nothing here
-    renames it.
+    `langchain.mcp.as_langchain_tool` owns everything protocol-facing: schema
+    conversion, calling through `client`, and turning an MCP `isError` result
+    into a failed `ToolMessage` carrying the server's own content. The tool
+    arrives namespaced by its mount; that name is recomposed here so it stays
+    within the strictest provider limit.
 
     Args:
         mcp_tool: MCP tool metadata, as returned by `Client.list_tools`.
@@ -1497,17 +1497,96 @@ def _build_mcp_tool(
 
     Returns:
         A LangChain `BaseTool` wrapper around the MCP tool.
-    """
-    from langchain.mcp import convert_mcp_tool_to_langchain_tool
 
-    tool = convert_mcp_tool_to_langchain_tool(mcp_tool, client)
+    Raises:
+        TypeError: If the adapter returns an unsupported tool type.
+    """
+    from langchain.mcp import as_langchain_tool
+
+    tool = await as_langchain_tool(mcp_tool, client)
+    from langchain_core.tools import StructuredTool
+
+    if not isinstance(tool, StructuredTool):
+        msg = f"MCP adapter returned unsupported tool type {type(tool).__name__}"
+        raise TypeError(msg)
+    call = tool.coroutine
+    if call is not None:
+        from deepagents_code.mcp_middleware import normalize_mcp_arguments
+
+        async def normalized_call(**arguments: Any) -> Any:  # noqa: ANN401
+            return await call(
+                **normalize_mcp_arguments(arguments, mcp_tool.input_schema)
+            )
+
+        tool.coroutine = normalized_call
+
+    # Mounting already namespaced the tool as `server_tool`, but that name still
+    # has to satisfy the strictest provider limit, so it is recomposed through
+    # the same capping `main` applies. The bare name is recovered from the mount
+    # prefix and kept in metadata: it is what tool filters and the `/mcp` viewer
+    # show, and it is unrecoverable once the name is truncated and hashed.
+    original_tool_name = _unprefixed_tool_name(mcp_tool.name, server_name)
+    tool.name = _mcp_tool_name(server_name, original_tool_name)
+    annotations = (
+        mcp_tool.annotations.model_dump(by_alias=True, exclude_none=True)
+        if mcp_tool.annotations is not None
+        else {}
+    )
     tool.metadata = {
         **(tool.metadata or {}),
+        **annotations,
         "_deepagents_code_mcp": True,
         "_deepagents_code_mcp_server": server_name,
         _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
     }
     return tool
+
+
+def _unprefixed_tool_name(mounted_name: str, server_name: str) -> str:
+    """Recover the server-side tool name from its mounted form.
+
+    Mounting yields `f"{server_name}_{tool}"`. The prefix is stripped back off
+    so the name recorded in metadata -- and matched by tool filters -- is the
+    one the server actually published, which is otherwise unrecoverable once
+    the composed name has been truncated and hashed.
+
+    Args:
+        mounted_name: Tool name as returned by the router's `list_tools`.
+        server_name: Server the tool was mounted under.
+
+    Returns:
+        The bare tool name, or `mounted_name` unchanged if it is not prefixed.
+    """
+    prefix = f"{server_name}_"
+    if mounted_name.startswith(prefix):
+        return mounted_name[len(prefix) :]
+    return mounted_name
+
+
+def _mcp_tool_name(server_name: str, tool_name: str) -> str:
+    """Compose a provider-safe MCP tool name.
+
+    Args:
+        server_name: Owning MCP server name.
+        tool_name: Server-side tool name.
+
+    Returns:
+        A deterministic name no longer than the strictest provider limit.
+    """
+    raw_name = f"{server_name}_{tool_name}"
+    sanitized = _MCP_TOOL_NAME_RE.sub("_", raw_name).strip("_") or "unnamed"
+    if sanitized == raw_name and len(sanitized) <= _MCP_TOOL_NAME_MAX_LENGTH:
+        return sanitized
+    digest = sha256(f"{server_name}\0{tool_name}".encode()).hexdigest()[
+        :_MCP_TOOL_NAME_HASH_LENGTH
+    ]
+    server = _MCP_TOOL_NAME_RE.sub("_", server_name).strip("_") or "unnamed"
+    tool = _MCP_TOOL_NAME_RE.sub("_", tool_name).strip("_") or "unnamed"
+    available = _MCP_TOOL_NAME_MAX_LENGTH - len(digest) - 2
+    tool_length = min(len(tool), available // 2)
+    server_length = min(len(server), available - tool_length)
+    tool_length = min(len(tool), available - server_length)
+    return f"{server[:server_length]}_{tool[:tool_length]}_{digest}"
 
 
 _GLOB_METACHARS = frozenset("*?[")
@@ -1631,7 +1710,12 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
-    from langchain import mcp as _langchain_mcp  # noqa: F401
+    from langchain_core._api import (  # noqa: PLC2701
+        suppress_langchain_beta_warning,
+    )
+
+    with suppress_langchain_beta_warning():
+        from langchain import mcp as _langchain_mcp  # noqa: F401
 
     try:
         from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
@@ -1757,17 +1841,17 @@ async def _mount_backends(
     backends: Mapping[str, ClientTransport],
     *,
     redact: Mapping[str, bool],
-) -> tuple[FastMCPClient[Any], AsyncExitStack, dict[str, tuple[MCPServerStatus, str]]]:
-    """Connect every backend and mount it on one router.
+) -> tuple[
+    FastMCPClient[Any],
+    AsyncExitStack,
+    dict[str, list[Any]],
+    dict[str, tuple[MCPServerStatus, str]],
+]:
+    """Connect, discover, and mount every backend on one router.
 
-    FastMCP can build this composite itself from an `MCPConfig`, but it reports
-    a backend that fails to connect as a log line and moves on. The TUI has to
-    tell a user *which* server is down and whether the fix is a login, so the
-    mount loop is owned here instead, and each failure is classified the way
-    `MCPServerInfo` needs.
-
-    Mounting namespaces each backend's tools with its config key, which is where
-    the `server_tool` names come from.
+    Discovery runs against each backend before aggregation so tool ownership and
+    per-server failures remain exact. The TUI can then identify a failed server,
+    and filters cannot be bypassed by ambiguous mounted names.
 
     Args:
         backends: Ready transports keyed by server name.
@@ -1775,8 +1859,8 @@ async def _mount_backends(
             that interpolates `${VAR}` references.
 
     Returns:
-        The router client, the stack holding every backend open, and a
-            `(status, error)` entry for each server that failed to connect.
+        The router client, the stack holding every backend open, discovered tools
+            keyed by server, and a `(status, error)` entry for each failed server.
     """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
     from fastmcp import FastMCP
     from fastmcp.client import Client as FastMCPClient
@@ -1785,6 +1869,7 @@ async def _mount_backends(
 
     router: Any = FastMCP(name="deepagents-code")
     stack = AsyncExitStack()
+    discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
     for server_name, transport in backends.items():
@@ -1794,16 +1879,15 @@ async def _mount_backends(
                 log_handler=_server_log_handler(server_name),
             )
             await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
-            # `StatefulProxyClient.__aexit__` is deliberately a no-op — it only
-            # decrements a nesting count — so `async with` would not itself stop
-            # a `keep_alive` stdio subprocess. Closing the router client happens
-            # to cascade to the mounted backends today, but that is an
-            # implementation detail of the proxy; tear down explicitly so
-            # teardown does not depend on it, mirroring
-            # `MCPConfigTransport._create_proxy`. Callbacks run LIFO, so
-            # `transport.close()` is pushed first in order to run last.
+            # `StatefulProxyClient.__aexit__` leaves persistent sessions open, so
+            # own both teardown callbacks explicitly. LIFO closes the client first.
             stack.push_async_callback(transport.close)
             stack.push_async_callback(backend._disconnect, force=True)
+            tools = await backend.list_tools()
+            discovered[server_name] = [
+                tool.model_copy(update={"name": f"{server_name}_{tool.name}"})
+                for tool in tools
+            ]
             router.mount(create_proxy(backend), namespace=server_name)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
@@ -1814,7 +1898,7 @@ async def _mount_backends(
                 redact=redact.get(server_name, False),
             )
 
-    return FastMCPClient(router), stack, failures
+    return FastMCPClient(router), stack, discovered, failures
 
 
 def _classify_connect_failure(
@@ -2113,46 +2197,13 @@ async def _load_tools_from_config(
     runtime_manager = (
         session_manager if session_manager is not None else MCPSessionManager()
     )
-    client, stack, mount_failures = await _mount_backends(backends, redact=redacts)
+    client, stack, by_server, mount_failures = await _mount_backends(
+        backends, redact=redacts
+    )
     runtime_manager.adopt(client, stack)
     skipped.update(mount_failures)
 
-    # One `list_tools` covers every mounted backend; FastMCP paginates
-    # internally and bounds itself, so a server returning a non-terminating
-    # cursor cannot hang the load.
-    try:
-        async with client:
-            mounted_tools = await client.list_tools()
-    except BaseException:
-        await runtime_manager.cleanup()
-        raise
-
-    def _owner(tool_name: str) -> str | None:
-        """Return the server a mounted tool belongs to.
-
-        Mounting prefixes each tool with `server_`, and a server name may itself
-        contain an underscore — so `a_b_read` is ambiguous between server `a`
-        and server `a_b`. The longest configured name that matches wins, which
-        is the mount FastMCP actually resolved it against.
-        """
-        candidates = [
-            name
-            for name in backends
-            if tool_name.startswith(f"{name}_") and name not in skipped
-        ]
-        return max(candidates, key=len) if candidates else None
-
-    by_server: dict[str, list[Any]] = {name: [] for name in backends}
-    for mcp_tool in mounted_tools:
-        owner = _owner(mcp_tool.name)
-        if owner is None:
-            logger.debug(
-                "MCP tool %r matched no configured server; ignoring", mcp_tool.name
-            )
-            continue
-        by_server[owner].append(mcp_tool)
-
-    def _build_server(
+    async def _build_server(
         server_name: str,
         server_config: dict[str, Any],
     ) -> tuple[list[BaseTool], MCPServerInfo]:
@@ -2171,12 +2222,14 @@ async def _load_tools_from_config(
         """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
         redact_failure_details = redacts[server_name]
         try:
-            server_tools: list[BaseTool] = [
-                _build_mcp_tool(
-                    mcp_tool=mcp_tool, server_name=server_name, client=client
+            server_tools = await asyncio.gather(
+                *(
+                    _build_mcp_tool(
+                        mcp_tool=mcp_tool, server_name=server_name, client=client
+                    )
+                    for mcp_tool in by_server[server_name]
                 )
-                for mcp_tool in by_server[server_name]
-            ]
+            )
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
             # Pair each schema by the server-side name retained in the adapted

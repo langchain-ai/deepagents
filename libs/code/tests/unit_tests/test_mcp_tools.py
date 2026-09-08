@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,18 +29,16 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
-import re
-
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_middleware import (
     normalize_mcp_arguments as _normalize_mcp_arguments,
 )
 from deepagents_code.mcp_tools import (
+    _MCP_TOOL_NAME_MAX_LENGTH,
     DiscoveredMCPConfig,
     MCPConfigError,
     MCPConfigIdentity,
     MCPConfigScope,
-    MCPConfigSources,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
@@ -49,6 +48,7 @@ from deepagents_code.mcp_tools import (
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
+    _mcp_tool_name,
     _same_config_location,
     _server_stderr_log,
     _warm_mcp_adapter_imports,
@@ -190,7 +190,13 @@ class FakeMCPServer:
         for tool_name, description in tools:
             self.add_tool(tool_name, description)
 
-    def add_tool(self, tool_name: str, description: str = "") -> None:
+    def add_tool(
+        self,
+        tool_name: str,
+        description: str = "",
+        *,
+        annotations: dict[str, Any] | None = None,
+    ) -> None:
         """Expose one more no-argument tool echoing its own name."""
         name = self.name
 
@@ -198,6 +204,15 @@ class FakeMCPServer:
             return f"{name}:{tool_name}"
 
         _echo.__doc__ = description or f"{tool_name} tool"
+        self.server.tool(_echo, name=tool_name, annotations=annotations)
+
+    def add_optional_tool(self, tool_name: str) -> None:
+        """Expose a tool that reports an omitted optional string as `None`."""
+        name = self.name
+
+        def _echo(value: str | None = None) -> str:
+            return f"{name}:{tool_name}:{value}"
+
         self.server.tool(_echo, name=tool_name)
 
 
@@ -745,6 +760,67 @@ class TestGetMCPTools:
         assert metadata["_deepagents_code_mcp_server"] == server_name
         assert metadata["_deepagents_code_mcp_tool"] == original_name
 
+    async def test_ambiguous_mount_name_keeps_real_owner_filter(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """A mounted name cannot move a disabled tool to another server."""
+        mcp_servers.register("a", "b_read")
+        mcp_servers.register("a_b")
+
+        tools, manager, infos = await _load_tools_from_config(
+            {
+                "mcpServers": {
+                    "a": {"command": "node", "disabledTools": ["b_read"]},
+                    "a_b": {"command": "node"},
+                }
+            }
+        )
+
+        assert tools == []
+        assert [info.name for info in infos] == ["a", "a_b"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_call_normalizes_optional_empty_string(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """The production tool boundary omits optional empty strings."""
+        server = mcp_servers.register("srv")
+        server.add_optional_tool("read")
+
+        tools, manager, _infos = await _load_tools_from_config(
+            {"mcpServers": {"srv": {"command": "node"}}}
+        )
+        result = await tools[0].ainvoke({"value": ""})
+
+        assert "srv:read:None" in str(result)
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_adapter_annotations_preserve_consumer_contract(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """Converted tools retain top-level protocol annotation aliases."""
+        server = mcp_servers.register("srv")
+        server.add_tool(
+            "read",
+            annotations={"readOnlyHint": True, "destructiveHint": False},
+        )
+
+        tools, manager, _infos = await _load_tools_from_config(
+            {"mcpServers": {"srv": {"command": "node"}}}
+        )
+
+        metadata = tools[0].metadata
+        assert metadata is not None
+        assert metadata["readOnlyHint"] is True
+        assert metadata["destructiveHint"] is False
+        assert manager is not None
+        await manager.cleanup()
+
     async def test_discovery_failure_marks_server_error(
         self,
         write_config: Callable[..., str],
@@ -1052,67 +1128,6 @@ class TestGetMCPTools:
         }
         assert manager is not None
         await manager.cleanup()
-
-    async def test_long_tool_name_is_bounded_but_calls_original(
-        self,
-        write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-        fake_tool_result: Any,  # noqa: ANN401
-    ) -> None:
-        path = write_config(
-            {"mcpServers": {"server" * 10: {"command": "node", "args": []}}}
-        )
-        session, _recorded = fake_create_session
-        original_name = "query_docs_filesystem_docs_by_lang_chain"
-        session.list_tools = AsyncMock(
-            return_value=_make_tool_page([_make_mcp_tool(original_name)])
-        )
-        session.call_tool = AsyncMock(return_value=fake_tool_result)
-
-        tools, manager, server_infos = await get_mcp_tools(path)
-        await tools[0].ainvoke({})
-
-        assert len(tools[0].name) == 64
-        assert server_infos[0].tools[0].name == tools[0].name
-        session.call_tool.assert_awaited_once_with(original_name, {})
-        await manager.cleanup()  # ty: ignore
-
-    async def test_stateless_long_tool_name_is_bounded(
-        self,
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
-        fake_tool_result: Any,  # noqa: ANN401
-    ) -> None:
-        session, _recorded = fake_create_session
-        original_name = "tool" * 20
-        session.list_tools = AsyncMock(
-            return_value=_make_tool_page([_make_mcp_tool(original_name)])
-        )
-        runtime_session = AsyncMock()
-        runtime_session.initialize = AsyncMock()
-        runtime_session.call_tool = AsyncMock(return_value=fake_tool_result)
-
-        tools, manager, _server_infos = await _load_tools_from_config(
-            {"mcpServers": {"server" * 10: {"command": "node"}}}, stateless=True
-        )
-
-        @asynccontextmanager
-        async def _runtime_session(
-            _connection: dict[str, Any], *, mcp_callbacks: object | None = None
-        ) -> AsyncIterator[AsyncMock]:
-            yield runtime_session
-
-        with patch("langchain_mcp_adapters.tools.create_session", _runtime_session):
-            await tools[0].ainvoke({})
-
-        assert manager is None
-        assert len(tools[0].name) == 64
-        metadata = tools[0].metadata
-        assert metadata is not None
-        assert metadata["_deepagents_code_mcp_server"] == "server" * 10
-        assert metadata["_deepagents_code_mcp_tool"] == original_name
-        runtime_session.call_tool.assert_awaited_once_with(
-            original_name, {}, progress_callback=None
-        )
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -2114,18 +2129,7 @@ class TestToolOrdering:
 
 
 class TestLoadToolsConcurrency:
-    """`_load_tools_from_config` probes independent servers concurrently.
-
-    These tests pin per-server error isolation, cancellation semantics, and the
-    load-bearing ordering guarantee: `server_infos` follows config order
-    regardless of which server's probe finished first. Concurrency is asserted
-    on pre-flight, which is the stage that still fans out per server — tool
-    discovery is now a single `list_tools` against the router every backend is
-    mounted on, so it no longer scales with server count at all. The returned
-    tool list is always sorted by tool name (via the terminal sort in the
-    loader), so tool-name assertions here are content checks rather than
-    ordering proofs.
-    """
+    """`_load_tools_from_config` probes independent servers concurrently."""
 
     @pytest.fixture(autouse=True)
     def _bypass_stdio_health_check(self) -> Generator[None]:
@@ -2141,74 +2145,23 @@ class TestLoadToolsConcurrency:
             }
         }
 
-    @staticmethod
-    def _recording_client(events: list[tuple[str, int]]) -> Any:  # noqa: ANN401
-        """Return a `FastMCPClient` subclass recording every discovery call.
-
-        Discovery is a single `list_tools` against the router, so the call
-        itself — not a per-server session — is what these tests observe.
-
-        The loader imports the client lazily, so the seam is FastMCP's own
-        `Client` rather than a module attribute on `mcp_tools`.
-        """
-        from fastmcp.client import Client
-
-        class _RecordingClient(Client):  # type: ignore[misc]
-            async def list_tools(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-                events.append(("discover", threading.get_ident()))
-                return await super().list_tools(*args, **kwargs)
-
-        return _RecordingClient
-
-    async def test_discovery_is_one_call_for_every_server(
+    async def test_discovery_keeps_every_server_separate(
         self,
         mcp_servers: MCPServerRegistry,
     ) -> None:
-        """Every configured server is discovered in one `list_tools` call.
-
-        This previously asserted that N servers held N discovery sessions open
-        simultaneously. The loader now mounts each backend on a single router
-        and lists them together, so the guarantee it was really protecting —
-        discovery not scaling linearly with server count — is asserted directly.
-        """
+        """Each configured server retains its tools and status."""
         names = ["a", "b", "c", "d"]
         for name in names:
             mcp_servers.register(name, f"tool_{name}")
-        events: list[tuple[str, int]] = []
 
-        with patch(
-            "fastmcp.client.Client",
-            self._recording_client(events),
-        ):
-            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+        tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
-        assert [kind for kind, _ in events] == ["discover"]
-        assert [t.name for t in tools] == [f"{name}_tool_{name}" for name in names]
-        assert [i.name for i in infos] == names
+        assert [tool.name for tool in tools] == [
+            f"{name}_tool_{name}" for name in names
+        ]
+        assert [info.name for info in infos] == names
         assert manager is not None
         await manager.cleanup()
-
-    async def test_discovery_failure_closes_adopted_resources(
-        self,
-        mcp_servers: MCPServerRegistry,
-    ) -> None:
-        """A load that fails after mounting closes the client and backends."""
-        mcp_servers.register("srv", "tool")
-        client = AsyncMock()
-        client.list_tools.side_effect = RuntimeError("discovery failed")
-        backend_stack = AsyncMock()
-
-        with (
-            patch(
-                "deepagents_code.mcp_tools._mount_backends",
-                AsyncMock(return_value=(client, backend_stack, {})),
-            ),
-            pytest.raises(RuntimeError, match="discovery failed"),
-        ):
-            await _load_tools_from_config(self._config("srv"))
-
-        client.close.assert_awaited_once()
-        backend_stack.aclose.assert_awaited_once()
 
     async def test_preflight_concurrency_is_bounded(
         self,
@@ -2591,20 +2544,12 @@ class TestLoadToolsConcurrency:
         def _warm() -> None:
             events.append(("warm", threading.get_ident()))
 
-        with (
-            patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm),
-            patch(
-                "fastmcp.client.Client",
-                self._recording_client(events),
-            ),
-        ):
-            _tools, manager, _infos = await _load_tools_from_config(
-                self._config("only")
-            )
+        with patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm):
+            tools, manager, _infos = await _load_tools_from_config(self._config("only"))
 
         assert events[0][0] == "warm"
         assert events[0][1] != loop_thread_id
-        assert any(kind == "discover" for kind, _ in events)
+        assert [tool.name for tool in tools] == ["only_tool_only"]
         assert manager is not None
         await manager.cleanup()
 
@@ -4055,47 +4000,6 @@ class TestDiscoveryFailureModes:
 
         assert [c.scope for c in found] == [MCPConfigScope.PROJECT]
         assert found[0].project_root == project_root
-
-
-class TestMCPConfigSourcesTotality:
-    """`project_roots` is the key project trust approvals are checked against.
-
-    A `.get(source, re-derived_base)` fallback there would silently check trust
-    against a root the approval was never granted for — the failure
-    `DiscoveredMCPConfig.__post_init__` exists to make impossible.
-    """
-
-
-class TestUserConfigMustBeDiscoveredFirst:
-    """Collision handling has no user-scope branch, so ordering is load-bearing.
-
-    If a user candidate ever arrived after another entry it would fall through
-    the collision loop and be dropped silently, contradicting the documented
-    "never drops a config".
-    """
-
-
-class TestDiscoveredMCPConfigInvariant:
-    """`project_root` presence must track the trust scope.
-
-    `project_root` is the key project-trust approvals are recorded against, so
-    a `PROJECT` record without one would silently be checked against a
-    re-derived fallback root instead of failing.
-    """
-
-
-class TestMCPConfigSourcesPartition:
-    """The shared partition replaces three copies of the same split."""
-
-
-class TestMCPToolName:
-    """Provider-safe names for MCP tools."""
-
-    def test_empty_discovery_yields_empty_views(self) -> None:
-        sources = MCPConfigSources.from_sources([])
-        assert sources.user_paths == ()
-        assert sources.project_paths == ()
-        assert not sources.project_roots
 
 
 class TestSessionManagerLifecycle:

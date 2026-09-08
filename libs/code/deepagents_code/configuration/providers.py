@@ -169,6 +169,20 @@ def coerce_environment_value[T](
         if value:
             return _found_for(option, value)
         return Invalid(f"Ignoring {name}={raw!r} (expected non-empty string)")
+    if kind is OptionKind.ISO_DATETIME:
+        from deepagents_code.config_manifest import normalize_iso_datetime
+
+        if value := normalize_iso_datetime(raw):
+            return _found_for(option, value)
+        return Invalid(
+            f"Ignoring {name}={raw!r} (expected ISO 8601 date or aware datetime)"
+        )
+    if kind is OptionKind.DURATION_SECONDS:
+        from deepagents_code.config_manifest import normalize_duration
+
+        if value := normalize_duration(raw):
+            return _found_for(option, value)
+        return Invalid(f"Ignoring {name}={raw!r} (expected duration such as 7d)")
     if kind is OptionKind.EXTENSION_TRUST_DELEGATE:
         from deepagents_code.extensions.settings import parse_trust_policy
 
@@ -298,6 +312,16 @@ def coerce_toml_value[T](
             return _found_for(option, raw)
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
+            return _found_for(option, value)
+    elif kind is OptionKind.ISO_DATETIME:
+        from deepagents_code.config_manifest import normalize_iso_datetime
+
+        if value := normalize_iso_datetime(raw):
+            return _found_for(option, value)
+    elif kind is OptionKind.DURATION_SECONDS:
+        from deepagents_code.config_manifest import normalize_duration
+
+        if value := normalize_duration(raw):
             return _found_for(option, value)
     elif kind is OptionKind.MODEL_LIST_DELEGATE:
         from deepagents_code.model_config import parse_model_allowlist

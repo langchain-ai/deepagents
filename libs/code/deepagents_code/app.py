@@ -18,6 +18,7 @@ import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from typing import (
@@ -5784,6 +5785,95 @@ class DeepAgentsApp(App):
         with _DEEPAGENTS_IMPORT_LOCK:
             return self._discover_skills_and_roots()
 
+    @staticmethod
+    def _resume_cutoff_explanation(source: str) -> str:
+        """Explain why the active resume cutoff exists and who set it.
+
+        Returns:
+            A short user-facing provenance and rationale sentence.
+        """
+        if source == "managed config":
+            owner = "Your administrator set this policy through managed config"
+        elif source == "config.toml":
+            owner = "This policy was set in your config.toml"
+        else:
+            owner = "This policy was set by active configuration"
+        return (
+            f"{owner} to keep older threads from restoring stale context after "
+            "model or policy changes."
+        )
+
+    @staticmethod
+    def _resume_cutoff() -> tuple[datetime, str, bool] | None:
+        """Resolve the strictest configured thread-resume cutoff.
+
+        Returns:
+            The cutoff, its source, and whether it is rolling, or `None`.
+        """
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            _ranked_source,
+            get_option,
+            parse_duration_seconds,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        resolver = get_config_resolver()
+        cutoffs: list[tuple[datetime, str, bool]] = []
+        for key in ("threads.resume_after", "threads.max_resume_age"):
+            option = get_option(key)
+            if option is None:
+                continue
+            resolved = resolver.get(option)
+            _emit_ranked_diagnostics(option, resolved)
+            value = resolved.value
+            if key.endswith("resume_after") and isinstance(value, str):
+                cutoffs.append(
+                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
+                )
+            elif key.endswith("max_resume_age") and isinstance(value, str):
+                seconds = parse_duration_seconds(value)
+                if seconds is not None:
+                    cutoff = datetime.min.replace(tzinfo=UTC)
+                    with suppress(OverflowError):
+                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
+                    cutoffs.append((cutoff, _ranked_source(resolved), True))
+        return max(cutoffs, default=None)
+
+    @staticmethod
+    async def _thread_resume_block(thread_id: str) -> str | None:
+        """Return why configured policy blocks resuming a thread, if applicable."""
+        from deepagents_code.config_manifest import normalize_iso_datetime
+        from deepagents_code.sessions import get_thread_updated_at
+
+        policy = DeepAgentsApp._resume_cutoff()
+        if policy is None:
+            return None
+        cutoff, source, rolling = policy
+        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
+        updated_value = await get_thread_updated_at(thread_id)
+        normalized = normalize_iso_datetime(updated_value)
+        if normalized is None:
+            logger.warning(
+                "Blocking resume for thread %s: missing or invalid updated_at %r",
+                thread_id,
+                updated_value,
+            )
+            return (
+                f"Thread {thread_id} cannot be resumed because its last-updated "
+                f"time could not be verified.\n\n{explanation}"
+            )
+        if datetime.fromisoformat(normalized) >= cutoff:
+            return None
+        reason = (
+            "it is older than the configured maximum age"
+            if rolling
+            else f"it was last updated before {cutoff.isoformat()}"
+        )
+        return (
+            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
+        )
+
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
 
@@ -5846,6 +5936,23 @@ class DeepAgentsApp(App):
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
+                return
+
+            if blocked := await self._thread_resume_block(candidate):
+                from deepagents_code.tui.modals.resume_blocked import (
+                    ResumeBlockedScreen,
+                )
+
+                choice = await self._push_screen_result_future(
+                    ResumeBlockedScreen(blocked)
+                )
+                if choice != "new":
+                    self.exit()
+                    return
+                self._lc_thread_id = generate_thread_id()
+                self._initial_resume_requested = False
+                self._resuming = False
+                self._sync_status_connection()
                 return
 
             # Commit the resolved thread before the cwd-switch offer so a
@@ -5947,6 +6054,8 @@ class DeepAgentsApp(App):
         # Phase 1: Resolve resume thread (if any) before server startup
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
+            if self._exiting:
+                return
 
         # Run deferred model creation. runtime_state.model_name / model_provider
         # are already set eagerly for the status bar display; this call
@@ -28403,6 +28512,9 @@ class DeepAgentsApp(App):
         )
 
         try:
+            if blocked := await self._thread_resume_block(target.thread_id):
+                await self._mount_message(AppMessage(blocked))
+                return
             choice = await self._push_screen_wait(
                 ThreadAgentSwitchPromptScreen(
                     thread_id=target.thread_id,
@@ -29471,181 +29583,192 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Thread switch already in progress."))
             return
 
-        # Save previous state for rollback on failure
-        prev_thread_id = self._lc_thread_id
-        prev_session_thread = self._session_state.thread_id
-        prev_previous_thread = self._session_state.previous_thread_id
-        prev_cwd = Path(self._cwd)
-
-        # Not rollback state, unlike the block above: sampled here because
-        # `_clear_messages` further down empties the store, and this has to
-        # describe the outgoing thread. See `_store_has_server_output`.
-        previous_thread_has_agent_output = self._store_has_server_output()
-
-        cwd_choice = await self._offer_thread_cwd_switch(
-            thread_id,
-            restart_server=True,
-            abort="thread_switch",
-        )
-        if cwd_choice == "abort":
-            return
-
         self._thread_switching = True
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=False)
-
-        prefetched_payload: _ThreadHistoryPayload | None = None
-        outgoing_ended = False
         try:
-            self._update_status(f"Loading thread: {thread_id}")
-            await self._set_spinner("Loading thread")
-            prefetched_payload = await self._fetch_thread_history_data(thread_id)
-            from deepagents_code.hooks.models.domain import (
-                SessionEndCause,
-                SessionStartCause,
-            )
-
-            await _wait_for_session_end(
-                self._hooks.on_session_end(
-                    SessionEndCause.RESUME,
-                    thread_id=prev_session_thread,
-                )
-            )
-            outgoing_ended = True
-
-            # Clear conversation (similar to /clear, without creating a new thread)
-            await self._set_spinner(None)
-            self._pending_messages.clear()
-            self._queued_widgets.clear()
-            self._sync_status_queued()
-            await self._clear_messages()
-            await self._set_spinner("Loading thread")
-            self._context_tokens = 0
-            self._tokens_approximate = False
-            self._update_tokens(0)
-            self._reset_thread_usage()
-            self._update_status("")
-
-            # Switch to the selected thread
-            self._session_state.thread_id = thread_id
-            self._lc_thread_id = thread_id
-
-            self._update_welcome_banner(
-                thread_id,
-                missing_message="Welcome banner not found during thread switch to %s",
-                warn_if_missing=False,
-            )
-
-            # Adopt the switched-to thread's model (session-only), mirroring
-            # launch-time `-r` resume — unless `--model` pinned an explicit
-            # choice for this session. Consumed by `_load_thread_history`.
-            self._should_adopt_resumed_model = not self._model_explicitly_set
-
-            await self._reload_hooks()
-            # Load thread history. A restored goal review is deferred so it
-            # mounts *below* the previous-thread hint: it is an interactive
-            # prompt, and leaving an informational note beneath it reads as
-            # though the note were the pending question. Remounted a few lines
-            # down, mirroring how the startup sequence defers the same review.
-            await self._load_thread_history(
-                thread_id=thread_id,
-                preloaded_payload=prefetched_payload,
-                resolve_pending_goal=False,
-            )
-
-            # The switch succeeded: record the thread we just left so a
-            # subsequent bare `/threads -r` steps back to it rather than
-            # resolving `previous == current` and reporting "Already on
-            # thread". Set once the switch is materially complete -- the thread
-            # ID is committed and history is loaded. `_run_session_start_hook`
-            # below can still raise, so the rollback path restores this pointer
-            # explicitly rather than relying on statement order.
-            self._session_state.previous_thread_id = prev_session_thread
-
-            # Mount after the history load so the hint lands at the bottom of
-            # the fresh transcript, giving a one-step path back to the thread
-            # just left — the same affordance `/clear` offers. Deliberately not
-            # described as sitting under the "Resumed thread" note: that note is
-            # only mounted on `_load_thread_history`'s happy path, so an empty
-            # or failed load leaves the hint under something else. Suppressed
-            # entirely for a thread the user did no work in — chiefly the
-            # `/clear` then bare `/threads -r` round trip, where the thread
-            # being left was created moments ago and never used.
-            await self._mount_previous_thread_hint(
-                prev_session_thread,
-                had_agent_output=previous_thread_has_agent_output,
-            )
-
-            # Landing on a new thread re-arms the same-thread toast, so stepping
-            # back to a thread and re-selecting it announces itself again.
-            self._last_thread_unchanged = None
-            if await self._run_session_start_hook(SessionStartCause.RESUME):
-                await self._maybe_compact_after_resume()
-
-            # Deferred above so it lands last, keeping the interactive prompt
-            # at the bottom of the transcript. Guarded because this runs inside
-            # the rollback handler's `try`: failing to restore a review must
-            # not undo a switch that already completed.
-            try:
-                await self._remount_pending_goal_rubric_review()
-            except Exception:
-                logger.exception("Failed to restore pending goal review")
-        except Exception as exc:
-            if prefetched_payload is None:
-                logger.exception("Failed to prefetch history for thread %s", thread_id)
-                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
-                await self._mount_message(
-                    AppMessage(
-                        f"Failed to switch to thread {thread_id}: {exc}. "
-                        "Use /threads to try again.",
-                    ),
-                )
+            blocked = await self._thread_resume_block(thread_id)
+            if blocked:
+                await self._mount_message(AppMessage(blocked))
                 return
-            logger.exception("Failed to switch to thread %s", thread_id)
-            # Restore previous thread IDs so the user can retry
-            self._session_state.thread_id = prev_session_thread
-            self._lc_thread_id = prev_thread_id
-            # Also restore the back-pointer. A raise after it was set (the
-            # session-start hook) would otherwise leave `previous == current`,
-            # making a later bare `/threads -r` a no-op with nowhere to step
-            # back to.
-            self._session_state.previous_thread_id = prev_previous_thread
-            self._update_welcome_banner(
-                prev_session_thread,
-                missing_message=(
-                    "Welcome banner not found during rollback to thread %s; "
-                    "banner may display stale thread ID"
-                ),
-                warn_if_missing=True,
+
+            # Save previous state for rollback on failure
+            prev_thread_id = self._lc_thread_id
+            prev_session_thread = self._session_state.thread_id
+            prev_previous_thread = self._session_state.previous_thread_id
+            prev_cwd = Path(self._cwd)
+
+            # Not rollback state, unlike the block above: sampled here because
+            # `_clear_messages` further down empties the store, and this has to
+            # describe the outgoing thread. See `_store_has_server_output`.
+            previous_thread_has_agent_output = self._store_has_server_output()
+
+            cwd_choice = await self._offer_thread_cwd_switch(
+                thread_id,
+                restart_server=True,
+                abort="thread_switch",
             )
-            await self._restore_cwd_after_failed_thread_switch(prev_cwd)
-            rollback_restore_failed = False
-            if outgoing_ended:
-                await self._reload_hooks()
-            # Attempt to restore the previous thread's visible history
+            if cwd_choice == "abort":
+                return
+
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=False)
+
+            prefetched_payload: _ThreadHistoryPayload | None = None
+            outgoing_ended = False
             try:
-                await self._clear_messages()
-                await self._load_thread_history(thread_id=prev_session_thread)
-            except Exception:  # Resilient session state saving
-                rollback_restore_failed = True
-                msg = (
-                    "Could not restore previous thread history after failed "
-                    "switch to %s"
+                self._update_status(f"Loading thread: {thread_id}")
+                await self._set_spinner("Loading thread")
+                prefetched_payload = await self._fetch_thread_history_data(thread_id)
+                from deepagents_code.hooks.models.domain import (
+                    SessionEndCause,
+                    SessionStartCause,
                 )
-                logger.warning(msg, thread_id, exc_info=True)
-            if outgoing_ended:
-                await self._run_session_start_hook(SessionStartCause.RESUME)
-            error_message = f"Failed to switch to thread {thread_id}: {exc}."
-            if rollback_restore_failed:
-                error_message += " Previous thread history could not be restored."
-            error_message += " Use /threads to try again."
-            await self._mount_message(AppMessage(error_message))
+
+                await _wait_for_session_end(
+                    self._hooks.on_session_end(
+                        SessionEndCause.RESUME,
+                        thread_id=prev_session_thread,
+                    )
+                )
+                outgoing_ended = True
+
+                # Clear conversation (similar to /clear, without creating a new thread)
+                await self._set_spinner(None)
+                self._pending_messages.clear()
+                self._queued_widgets.clear()
+                self._sync_status_queued()
+                await self._clear_messages()
+                await self._set_spinner("Loading thread")
+                self._context_tokens = 0
+                self._tokens_approximate = False
+                self._update_tokens(0)
+                self._reset_thread_usage()
+                self._update_status("")
+
+                # Switch to the selected thread
+                self._session_state.thread_id = thread_id
+                self._lc_thread_id = thread_id
+
+                self._update_welcome_banner(
+                    thread_id,
+                    missing_message=(
+                        "Welcome banner not found during thread switch to %s"
+                    ),
+                    warn_if_missing=False,
+                )
+
+                # Adopt the switched-to thread's model (session-only), mirroring
+                # launch-time `-r` resume — unless `--model` pinned an explicit
+                # choice for this session. Consumed by `_load_thread_history`.
+                self._should_adopt_resumed_model = not self._model_explicitly_set
+
+                await self._reload_hooks()
+                # Load thread history. A restored goal review is deferred so it
+                # mounts *below* the previous-thread hint: it is an interactive
+                # prompt, and leaving an informational note beneath it reads as
+                # though the note were the pending question. Remounted a few lines
+                # down, mirroring how the startup sequence defers the same review.
+                await self._load_thread_history(
+                    thread_id=thread_id,
+                    preloaded_payload=prefetched_payload,
+                    resolve_pending_goal=False,
+                )
+
+                # The switch succeeded: record the thread we just left so a
+                # subsequent bare `/threads -r` steps back to it rather than
+                # resolving `previous == current` and reporting "Already on
+                # thread". Set once the switch is materially complete -- the thread
+                # ID is committed and history is loaded. `_run_session_start_hook`
+                # below can still raise, so the rollback path restores this pointer
+                # explicitly rather than relying on statement order.
+                self._session_state.previous_thread_id = prev_session_thread
+
+                # Mount after the history load so the hint lands at the bottom of
+                # the fresh transcript, giving a one-step path back to the thread
+                # just left — the same affordance `/clear` offers. Deliberately not
+                # described as sitting under the "Resumed thread" note: that note is
+                # only mounted on `_load_thread_history`'s happy path, so an empty
+                # or failed load leaves the hint under something else. Suppressed
+                # entirely for a thread the user did no work in — chiefly the
+                # `/clear` then bare `/threads -r` round trip, where the thread
+                # being left was created moments ago and never used.
+                await self._mount_previous_thread_hint(
+                    prev_session_thread,
+                    had_agent_output=previous_thread_has_agent_output,
+                )
+
+                # Landing on a new thread re-arms the same-thread toast, so stepping
+                # back to a thread and re-selecting it announces itself again.
+                self._last_thread_unchanged = None
+                if await self._run_session_start_hook(SessionStartCause.RESUME):
+                    await self._maybe_compact_after_resume()
+
+                # Deferred above so it lands last, keeping the interactive prompt
+                # at the bottom of the transcript. Guarded because this runs inside
+                # the rollback handler's `try`: failing to restore a review must
+                # not undo a switch that already completed.
+                try:
+                    await self._remount_pending_goal_rubric_review()
+                except Exception:
+                    logger.exception("Failed to restore pending goal review")
+            except Exception as exc:
+                if prefetched_payload is None:
+                    logger.exception(
+                        "Failed to prefetch history for thread %s", thread_id
+                    )
+                    await self._restore_cwd_after_failed_thread_switch(prev_cwd)
+                    await self._mount_message(
+                        AppMessage(
+                            f"Failed to switch to thread {thread_id}: {exc}. "
+                            "Use /threads to try again.",
+                        ),
+                    )
+                    return
+                logger.exception("Failed to switch to thread %s", thread_id)
+                # Restore previous thread IDs so the user can retry
+                self._session_state.thread_id = prev_session_thread
+                self._lc_thread_id = prev_thread_id
+                # Also restore the back-pointer. A raise after it was set (the
+                # session-start hook) would otherwise leave `previous == current`,
+                # making a later bare `/threads -r` a no-op with nowhere to step
+                # back to.
+                self._session_state.previous_thread_id = prev_previous_thread
+                self._update_welcome_banner(
+                    prev_session_thread,
+                    missing_message=(
+                        "Welcome banner not found during rollback to thread %s; "
+                        "banner may display stale thread ID"
+                    ),
+                    warn_if_missing=True,
+                )
+                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
+                rollback_restore_failed = False
+                if outgoing_ended:
+                    await self._reload_hooks()
+                # Attempt to restore the previous thread's visible history
+                try:
+                    await self._clear_messages()
+                    await self._load_thread_history(thread_id=prev_session_thread)
+                except Exception:  # Resilient session state saving
+                    rollback_restore_failed = True
+                    msg = (
+                        "Could not restore previous thread history after failed "
+                        "switch to %s"
+                    )
+                    logger.warning(msg, thread_id, exc_info=True)
+                if outgoing_ended:
+                    await self._run_session_start_hook(SessionStartCause.RESUME)
+                error_message = f"Failed to switch to thread {thread_id}: {exc}."
+                if rollback_restore_failed:
+                    error_message += " Previous thread history could not be restored."
+                error_message += " Use /threads to try again."
+                await self._mount_message(AppMessage(error_message))
+            finally:
+                await self._set_spinner(None)
+                self._update_status("")
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=not self._agent_running)
         finally:
             self._thread_switching = False
-            await self._set_spinner(None)
-            self._update_status("")
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=not self._agent_running)
 
     async def _mount_resume_adoption_failure(
         self, desired: str, reason: str, *, hint: str = ""

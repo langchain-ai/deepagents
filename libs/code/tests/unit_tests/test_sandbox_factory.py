@@ -709,7 +709,50 @@ def test_vercel_delegates_when_the_workspace_configured_nothing() -> None:
         assert _VercelProvider._resolve_sdk_kwargs() == {}
 
 
-def test_vercel_fails_closed_on_a_partial_workspace_credential_set() -> None:
+@pytest.mark.parametrize(
+    "identifiers",
+    [
+        {"VERCEL_PROJECT_ID": "server-project"},
+        {"VERCEL_TEAM_ID": "server-team"},
+        {"VERCEL_PROJECT_ID": "server-project", "VERCEL_TEAM_ID": "server-team"},
+    ],
+)
+def test_vercel_delegates_inherited_oidc_with_identifiers(
+    identifiers: dict[str, str],
+) -> None:
+    """Inherited project/team IDs do not disable the SDK's OIDC auth."""
+    environment = {"VERCEL_OIDC_TOKEN": "test-oidc-token", **identifiers}
+    with (
+        _bind_environment(environment),
+        patch.dict("os.environ", environment, clear=True),
+    ):
+        assert _VercelProvider._resolve_sdk_kwargs() == {}
+
+
+@pytest.mark.parametrize("server_oidc", [False, True])
+def test_vercel_oidc_does_not_discard_workspace_identifiers(
+    server_oidc: bool,
+) -> None:
+    """Delegating cannot drop workspace settings the SDK cannot read."""
+    environment = {
+        "VERCEL_OIDC_TOKEN": "test-oidc-token",
+        "VERCEL_PROJECT_ID": "workspace-project",
+    }
+    server = {"VERCEL_OIDC_TOKEN": "test-oidc-token"} if server_oidc else {}
+    with (
+        _bind_environment(environment),
+        patch.dict("os.environ", server, clear=True),
+        pytest.raises(ValueError, match="workspace Vercel configuration"),
+    ):
+        _VercelProvider._resolve_sdk_kwargs()
+
+
+@pytest.mark.parametrize("oidc", [None, "test-oidc-token"])
+@pytest.mark.parametrize("prefix", ["", "DEEPAGENTS_CODE_"])
+def test_vercel_fails_closed_on_a_partial_workspace_credential_set(
+    oidc: str | None,
+    prefix: str,
+) -> None:
     """A partial set must not fall back to the server's Vercel identity.
 
     An empty mapping hands auth back to the Vercel SDK, which resolves
@@ -718,15 +761,13 @@ def test_vercel_fails_closed_on_a_partial_workspace_credential_set() -> None:
     then silently run its sandbox under the server's broader identity.
     """
     environment = {
-        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+        f"{prefix}VERCEL_TOKEN": "workspace-token",
     }
     with (
-        patch(f"{_FACTORY}.active_environment", return_value=environment),
-        patch(
-            "deepagents_code.model_config.resolve_env_var",
-            side_effect=lambda name: environment.get(f"DEEPAGENTS_CODE_{name}"),
+        _bind_environment(environment),
+        patch.dict(
+            "os.environ", {"VERCEL_OIDC_TOKEN": oidc} if oidc else {}, clear=True
         ),
-        patch.dict("os.environ", {}, clear=True),
         pytest.raises(ValueError, match="VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"),
     ):
         _VercelProvider._resolve_sdk_kwargs()

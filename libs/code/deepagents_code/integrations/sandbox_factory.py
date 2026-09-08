@@ -6,6 +6,7 @@ import contextlib
 import importlib
 import importlib.util
 import logging
+import os
 import shlex
 import string
 import time
@@ -970,8 +971,8 @@ class _VercelProvider(SandboxProvider):
 
         Each value resolves prefixed-first then canonical via `resolve_env_var`,
         against the bound workspace environment. Credentials stay SDK-managed
-        (OIDC, or `VERCEL_*` in the server's own environment) only when none of
-        the three variables resolves for this workspace.
+        when none of the three variables resolves, or when token-free OIDC
+        settings match the server environment that the SDK reads.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
@@ -979,9 +980,9 @@ class _VercelProvider(SandboxProvider):
 
         Raises:
             ValueError: If only part of the `VERCEL_TOKEN` / `VERCEL_PROJECT_ID`
-                / `VERCEL_TEAM_ID` set resolves. Delegating to the SDK there
-                would authenticate the sandbox with the server's own Vercel
-                identity instead of the credentials this workspace pinned.
+                / `VERCEL_TEAM_ID` set resolves and SDK-managed OIDC cannot
+                preserve the workspace settings. Delegating there would use
+                the server's identity instead of the workspace credentials.
         """
         from deepagents_code.model_config import resolve_env_var
 
@@ -996,6 +997,18 @@ class _VercelProvider(SandboxProvider):
         # `resolve_env_var` but no longer reaches the SDK's own `os.environ`
         # read -- gating on the prefix alone silently discarded it.
         if not any(values.values()):
+            return {}
+        # OIDC can coexist with inherited project/team IDs without an API
+        # token. Delegate only if the SDK sees the same settings; otherwise
+        # workspace overrides would silently be discarded.
+        if (
+            not values["token"]
+            and os.environ.get("VERCEL_OIDC_TOKEN")
+            and all(
+                value == (os.environ.get(f"VERCEL_{key.upper()}") or None)
+                for key, value in values.items()
+            )
+        ):
             return {}
         missing = sorted(
             f"VERCEL_{key.upper()}" for key, value in values.items() if not value

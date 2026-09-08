@@ -2120,10 +2120,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
         session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
+            summary = s._create_summary(to_summarize) if s.method == "summary" else None
             file_path = s._offload_to_backend(s._backend, to_summarize, session_id)
             if s.method == "offload":
                 self._require_offload(file_path)
-            summary = s._create_summary(to_summarize) if s.method == "summary" else None
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
@@ -2156,10 +2156,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
         session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
+            summary = await s._acreate_summary(to_summarize) if s.method == "summary" else None
             file_path = await s._aoffload_to_backend(s._backend, to_summarize, session_id)
             if s.method == "offload":
                 self._require_offload(file_path)
-            summary = await s._acreate_summary(to_summarize) if s.method == "summary" else None
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)

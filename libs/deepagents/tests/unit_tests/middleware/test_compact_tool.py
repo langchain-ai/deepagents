@@ -368,11 +368,12 @@ class TestCompactErrorHandling:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None) as offload,
             patch.object(mw._summarization, "_create_summary", side_effect=RuntimeError("model unavailable")),
         ):
             result = mw._run_compact(runtime)
 
+        offload.assert_not_called()
         assert isinstance(result, Command)
         assert result.update is not None
         msg = result.update["messages"][0]
@@ -394,7 +395,7 @@ class TestCompactErrorHandling:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None) as offload,
             patch.object(
                 mw._summarization,
                 "_acreate_summary",
@@ -403,6 +404,7 @@ class TestCompactErrorHandling:
         ):
             result = await mw._arun_compact(runtime)
 
+        offload.assert_not_awaited()
         assert isinstance(result, Command)
         assert result.update is not None
         msg = result.update["messages"][0]

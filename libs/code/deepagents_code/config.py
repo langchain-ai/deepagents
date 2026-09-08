@@ -3306,12 +3306,12 @@ def _parse_extra_skills_dirs(
     in user-specified locations without being rejected by the path
     containment check.
 
-    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, colon-separated) takes
-    precedence: when set, `config.toml` values are ignored.
+    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, separated by
+    `os.pathsep`) takes precedence: when set, `config.toml` values are ignored.
 
     Args:
-        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (colon-separated), or
-            `None` if unset.
+        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (separated by
+            `os.pathsep`), or `None` if unset.
         config_toml_dirs: List of path strings from
             `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
@@ -3322,7 +3322,7 @@ def _parse_extra_skills_dirs(
     if env_raw:
         dirs = [
             _resolve_extra_skills_path(p.strip())
-            for p in env_raw.split(":")
+            for p in env_raw.split(os.pathsep)
             if p.strip()
         ]
         return dirs or None

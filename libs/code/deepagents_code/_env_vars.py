@@ -289,7 +289,7 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 """Override the default Unix-socket path for the external event listener."""
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
-"""Colon-separated paths added to the skill containment allowlist."""
+"""Paths added to the skill containment allowlist, split with `os.pathsep`."""
 
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.

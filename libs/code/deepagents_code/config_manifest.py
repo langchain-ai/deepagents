@@ -163,7 +163,7 @@ class OptionKind(Enum):
     `option_accepts_toml` is the public seam over that same coercion.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`, `EXTENSION_TRUST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
-    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    bespoke parsers (their semantics — dynamic debug fallback, pathsep-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
     coerced by the providers themselves (`ranked_theme_toml_value` and
@@ -2470,7 +2470,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Tools",
         summary=(
             "Extra directories added to the skill symlink containment "
-            "allowlist (env is colon-separated)."
+            "allowlist (env uses the platform path separator)."
         ),
         kind=OptionKind.SKILLS_DIRS_DELEGATE,
         env_var=_env_vars.EXTRA_SKILLS_DIRS,

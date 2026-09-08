@@ -777,6 +777,38 @@ class TestWorkspaceRuntime:
 
         make.assert_awaited_once()
 
+    async def test_launch_binding_uses_the_explicit_server_project_root(
+        self, tmp_path
+    ) -> None:
+        """The binding must agree with the config `_get_runtime()` builds from.
+
+        `resolve_workspace` derives the project root with `find_project_root`,
+        but `get_server_project_context` prefers an explicit
+        `DEEPAGENTS_CODE_SERVER_PROJECT_ROOT`. Where they disagreed, the launch
+        binding recorded scrubbed project policy while the process-wide runtime
+        kept the launch project's MCP servers and extensions live.
+        """
+        module = _import_fresh_server_graph()
+        # `explicit` is not a project root by discovery, so `find_project_root`
+        # cannot return it -- only the explicit setting can.
+        workdir = tmp_path / "workdir"
+        explicit = tmp_path / "explicit"
+        workdir.mkdir()
+        explicit.mkdir()
+        config = ServerConfig(
+            cwd=str(workdir),
+            project_root=str(explicit),
+            mcp_config_path="/launch/.mcp.json",
+            sandbox_setup="/launch/setup.sh",
+        )
+
+        binding = await module._default_workspace_binding(config)
+
+        assert binding is not None
+        policy = binding.workspace_config()
+        assert policy["mcp_config_path"] == "/launch/.mcp.json"
+        assert policy["sandbox_setup"] == "/launch/setup.sh"
+
     async def test_cached_runtime_survives_a_granted_extension_trust(
         self, tmp_path
     ) -> None:

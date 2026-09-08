@@ -741,8 +741,19 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
         return None
 
     def _bind() -> WorkspaceBinding:
+        # First pass resolves identity only (cwd plus project root); its
+        # fingerprints are digests of an empty policy and are discarded.
         identity = resolve_workspace(config.cwd)
-        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+        # Resolve policy against the root the runtime will actually use.
+        # `resolve_workspace` always derives it with `find_project_root`, while
+        # `get_server_project_context` prefers an explicit
+        # `DEEPAGENTS_CODE_SERVER_PROJECT_ROOT`. Where those disagree, using the
+        # derived root made this binding record scrubbed project policy while
+        # `_get_runtime()` -- which takes no override -- kept the launch
+        # project's MCP servers and extensions live.
+        resolved = config.resolve_workspace(
+            identity.cwd, config.project_root or identity.project_root
+        )
         return resolve_workspace(
             identity.cwd,
             resolved.to_workspace_payload(),

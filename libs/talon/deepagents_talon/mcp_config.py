@@ -11,6 +11,7 @@ import re
 import secrets
 import stat
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -51,6 +52,12 @@ _ENUMS = {
     "type": {"stdio", "http", "sse", "streamable_http", "streamable-http"},
     "auth": {"oauth"},
 }
+_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_POLL_SECONDS = 0.05
+
+
+class _UnsafeUpdateError(ValueError):
+    """An auto-approved update would run new code while reusing stored secrets."""
 
 
 def agent_workspace_root(env: Mapping[str, str] | None = None) -> Path:
@@ -120,6 +127,9 @@ class MCPConfigStore:
             workspace; a path inside it is warned about, not rejected.
         on_update: Schedule a reload after a successful write.
         agent_root: Agent workspace root. Defaults to the process workspace.
+        auto_approve: Whether updates skip the approval interrupt. Defaults to
+            the process environment; pass the runtime's own value so this and
+            the interrupt cannot disagree.
     """
 
     def __init__(
@@ -128,11 +138,13 @@ class MCPConfigStore:
         on_update: Callable[[], None],
         *,
         agent_root: Path | None = None,
+        auto_approve: bool | None = None,
     ) -> None:
         """Capture the operator path and a process-local revision key."""
         self._path = warn_agent_workspace_path(path, agent_root, subject="MCP configuration")
         self._on_update = on_update
         self._revision_key = secrets.token_bytes(32)
+        self._auto_approve = auto_approve_enabled() if auto_approve is None else auto_approve
 
     def tools(self) -> tuple[BaseTool, BaseTool]:
         """Return the read and single-server update capabilities."""
@@ -159,8 +171,9 @@ class MCPConfigStore:
                 server_name: Server name from mcpServers, or a new name.
                 server: Complete replacement settings, or null to remove. Copy
                     <redacted> at the same field to preserve its stored value.
-                    Omitted fields are removed. Use ${ENV_VAR} references for
-                    credentials; never request or include literal secrets.
+                    Omitted fields are removed, except settings Talon does not
+                    manage, which are preserved and never shown. Use ${ENV_VAR}
+                    references for credentials; never include literal secrets.
                 expected_revision: Revision returned by get_mcp_configuration.
 
             Changes can execute commands or send credentials to configured URLs.
@@ -208,12 +221,16 @@ class MCPConfigStore:
         try:
             if not _NAME.fullmatch(name):
                 return {"status": "error", "message": "Invalid server name."}
-            with self._locked():
+            with locked_path(self._path):
                 raw, document = self._read()
                 if not hmac.compare_digest(self._revision(raw), revision):
                     return {"status": "conflict", "message": "Read the configuration again."}
                 self._replace_server(document, name, server)
                 _atomic_write(self._path, document)
+        except TimeoutError:
+            return {"status": "conflict", "message": "Configuration is busy; try again."}
+        except _UnsafeUpdateError as exc:
+            return {"status": "error", "message": str(exc)}
         except (OSError, ValueError, TypeError, RecursionError):
             return {
                 "status": "error",
@@ -222,24 +239,6 @@ class MCPConfigStore:
         self._on_update()
         return {"status": "updated", "available": "after_successful_reload"}
 
-    @contextmanager
-    def _locked(self) -> Iterator[None]:
-        _require_posix()
-        import fcntl  # noqa: PLC0415  # Keep Talon importable on non-POSIX hosts.
-
-        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(
-            self._path.with_name(self._path.name + ".lock"),
-            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(descriptor, "rb") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-
     def _replace_server(
         self, document: dict[str, object], name: str, server: dict[str, object] | None
     ) -> None:
@@ -247,9 +246,129 @@ class MCPConfigStore:
         if server is None:
             servers.pop(name, None)
             return
-        replacement = cast("dict[str, object]", _restore(server, servers.get(name)))
+        previous = servers.get(name)
+        replacement = cast("dict[str, object]", _restore(server, previous))
         _validate_server(replacement)
-        servers[name] = replacement
+        if self._auto_approve:
+            _reject_unapproved_execution_change(server, replacement, previous)
+        # Settings Talon does not manage are invisible to the model, so an edit
+        # must put them back rather than drop them.
+        servers[name] = replacement | _unmanaged_fields(previous)
+
+
+@contextmanager
+def locked_path(path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    """Hold an exclusive lock for `path` while the block runs.
+
+    The lock is a sidecar `.lock` file beside `path`, so readers that only open
+    the target are unaffected. Acquisition is non-blocking with a bounded retry:
+    a stale holder surfaces as a timeout the caller can report, rather than
+    wedging a tool call or a worker thread with nothing shown to anyone.
+
+    Args:
+        path: File the lock protects.
+        timeout: Seconds to keep retrying before giving up. Defaults to
+            `_LOCK_TIMEOUT_SECONDS`, read at call time.
+
+    Yields:
+        None, with the lock held.
+
+    Raises:
+        TimeoutError: Another holder still had the lock when `timeout` elapsed.
+    """
+    _require_posix()
+    import fcntl  # noqa: PLC0415  # Keep Talon importable on non-POSIX hosts.
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(
+        path.with_name(path.name + ".lock"),
+        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(descriptor, "rb") as lock:
+        deadline = time.monotonic() + (_LOCK_TIMEOUT_SECONDS if timeout is None else timeout)
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    msg = f"Timed out waiting for the lock on {path}"
+                    raise TimeoutError(msg) from None
+                time.sleep(_LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def auto_approve_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether MCP configuration updates skip the approval interrupt.
+
+    Args:
+        env: Runtime environment to read. Falls back to the process environment.
+
+    Returns:
+        Whether the operator opted out of approving each update.
+    """
+    value = (env or {}).get(MCP_CONFIG_AUTO_APPROVE_ENV) or os.environ.get(
+        MCP_CONFIG_AUTO_APPROVE_ENV, ""
+    )
+    return value.strip().lower() == "true"
+
+
+def _unmanaged_fields(previous: object) -> dict[str, object]:
+    if not isinstance(previous, dict):
+        return {}
+    stored = cast("dict[str, object]", previous)
+    return {key: value for key, value in stored.items() if key not in _FIELDS}
+
+
+def _reject_unapproved_execution_change(
+    submitted: dict[str, object],
+    replacement: dict[str, object],
+    previous: object,
+) -> None:
+    """Refuse an unapproved change that runs new code with a secret it never saw.
+
+    `_restore` fills `<redacted>` path-wise, so a caller can keep a stored `env`
+    secret while replacing `command`/`args` -- or flip the derived transport,
+    which turns a URL into a command line. With the approval interrupt disabled
+    that reaches a real credential unreviewed, so refuse the combination and let
+    the caller resend the settings without reusing redacted values.
+
+    Args:
+        submitted: Settings as supplied, before redacted values were restored.
+        replacement: Settings after restoring them.
+        previous: Stored settings for this server, if any.
+
+    Raises:
+        _UnsafeUpdateError: The update reuses a stored secret and changes what runs.
+    """
+    if not _restores_redacted(submitted):
+        return
+    old = cast("dict[str, object]", previous) if isinstance(previous, dict) else {}
+    changed = any(replacement.get(field) != old.get(field) for field in ("command", "args"))
+    if not changed and _derived_transport(replacement) == _derived_transport(old):
+        return
+    msg = (
+        "Auto-approved MCP updates cannot change command, args, or transport while "
+        "reusing <redacted> values. Resend the settings with literal ${ENV_VAR} "
+        "references instead, or ask the operator to re-enable update approval."
+    )
+    raise _UnsafeUpdateError(msg)
+
+
+def _restores_redacted(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_restores_redacted(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_restores_redacted(item) for item in value)
+    return value == _REDACTED
+
+
+def _derived_transport(server: dict[str, object]) -> object:
+    return server.get("transport", server.get("type", "stdio" if "command" in server else "http"))
 
 
 def _require_posix() -> None:
@@ -264,6 +383,7 @@ def _redact_server(server: object) -> object:
     return {
         key: value if isinstance(value, str) and value in _ENUMS.get(key, set()) else _redact(value)
         for key, value in server.items()
+        if key in _FIELDS
     }
 
 
@@ -304,9 +424,7 @@ def _validate_server(server: dict[str, object]) -> None:
         raise ValueError(msg)
     _validate_fields(server)
     _validate_references(server)
-    transport = server.get(
-        "transport", server.get("type", "stdio" if "command" in server else "http")
-    )
+    transport = _derived_transport(server)
     for field, choices in _ENUMS.items():
         if field in server and server[field] not in choices:
             msg = "Invalid MCP transport or authentication"

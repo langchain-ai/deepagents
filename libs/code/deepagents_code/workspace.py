@@ -16,7 +16,17 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+"""Binding schema generation.
+
+Bumped to 3 when project-scoped policy became per-workspace. Before that,
+`offload_api` bound every workspace with the launch config's fingerprint, so a
+version-2 row for a directory outside the launch project holds a fingerprint
+over a different field set. Comparing it against a resolved fingerprint is
+meaningless, and treating the mismatch as drift left those threads refusing
+every request with no way to re-bind. `_binding_differs` therefore skips the
+fingerprint check for a stale row and `_bind` migrates it in place.
+"""
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
 
@@ -229,9 +239,23 @@ def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
     )
 
 
+def _is_migratable(existing: WorkspaceBinding) -> bool:
+    """Whether a row's recorded policy predates the current schema.
+
+    A stale row's fingerprint was computed over a different field set, so it
+    cannot be compared against a freshly resolved one. Workspace identity is
+    still compared, so migrating only ever rewrites policy for the same
+    directory.
+
+    Returns:
+        `True` when the row has no fingerprint yet, or an older schema.
+    """
+    return not existing.config_fingerprint or existing.schema_version < _SCHEMA_VERSION
+
+
 def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> bool:
     return existing.workspace_id != proposed.workspace_id or (
-        bool(existing.config_fingerprint)
+        not _is_migratable(existing)
         and existing.config_fingerprint != proposed.config_fingerprint
     )
 
@@ -313,13 +337,15 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
         existing = _row_binding(row)
         if _binding_differs(existing, proposed):
             raise _binding_conflict(thread_id, existing, proposed)
-        if not existing.config_fingerprint:
+        if _is_migratable(existing):
+            # Guard on the fingerprint this transaction actually read, so a
+            # concurrent migration cannot be overwritten after the fact.
             conn.execute(
                 """
                 UPDATE dcode_thread_workspaces
                 SET schema_version = ?, resource_key = ?, config_fingerprint = ?,
                     workspace_config_json = ?
-                WHERE thread_id = ? AND config_fingerprint = ''
+                WHERE thread_id = ? AND config_fingerprint = ?
                 """,
                 (
                     proposed.schema_version,
@@ -327,6 +353,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
                     proposed.config_fingerprint,
                     proposed.workspace_config_json,
                     thread_id,
+                    existing.config_fingerprint,
                 ),
             )
             return proposed

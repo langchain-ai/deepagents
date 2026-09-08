@@ -164,7 +164,7 @@ async def test_current_schema_migrates_on_reopen(tmp_path, workspace_database) -
     config = {"enable_shell": True}
     binding = await bind_thread_workspace("thread-1", str(tmp_path), config)
 
-    assert binding.schema_version == 2
+    assert binding.schema_version == 3
     assert binding.config_fingerprint
     assert (await require_thread_workspace("thread-1", binding.to_payload())) == binding
     with sqlite3.connect(workspace_database) as conn:
@@ -172,7 +172,44 @@ async def test_current_schema_migrates_on_reopen(tmp_path, workspace_database) -
             "SELECT schema_version FROM dcode_thread_workspaces WHERE thread_id = ?",
             ("thread-1",),
         ).fetchone()[0]
-    assert stored_version == 2
+    assert stored_version == 3
+
+
+async def test_a_stale_schema_row_rebinds_instead_of_conflicting(
+    tmp_path, workspace_database
+) -> None:
+    """A version-2 row's fingerprint spanned a different field set.
+
+    Those rows were bound with the launch config's fingerprint regardless of
+    directory, so comparing one against a resolved fingerprint reported drift
+    forever and the thread could never re-bind.
+    """
+    binding = await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": True})
+    with sqlite3.connect(workspace_database) as conn:
+        conn.execute(
+            """
+            UPDATE dcode_thread_workspaces
+            SET schema_version = 2, config_fingerprint = 'stale-launch-fingerprint'
+            WHERE thread_id = ?
+            """,
+            ("thread-1",),
+        )
+
+    rebound = await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": False})
+
+    assert rebound.schema_version == 3
+    assert rebound.workspace_config()["no_mcp"] is False
+    assert rebound.config_fingerprint != "stale-launch-fingerprint"
+    assert (await require_thread_workspace("thread-1", rebound.to_payload())) == rebound
+    assert rebound.workspace_id == binding.workspace_id
+
+
+async def test_a_current_schema_row_still_conflicts_on_drift(tmp_path) -> None:
+    """Migration must not become a general-purpose rebind."""
+    await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": True})
+
+    with pytest.raises(WorkspaceConflictError):
+        await bind_thread_workspace("thread-1", str(tmp_path), {"no_mcp": False})
 
 
 def test_relative_workspace_is_rejected() -> None:

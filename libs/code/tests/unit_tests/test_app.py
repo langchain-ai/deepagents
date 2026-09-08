@@ -25898,8 +25898,37 @@ class TestResumeThreadCwdSwitch:
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
         fetch.assert_not_awaited()
-        # Abort returns before the switch lock is acquired; leaving it set would
-        # permanently block `/threads` for the session.
+        # Aborting must release the switch lock so `/threads` remains usable.
+        assert app._thread_switching is False
+
+    @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+    async def test_threads_switch_cwd_failure_allows_retry(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        error_type: type[BaseException],
+    ) -> None:
+        """A failed or cancelled cwd lookup must not block subsequent switches."""
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+        lookup = AsyncMock(side_effect=error_type("cwd lookup failed"))
+        monkeypatch.setattr("deepagents_code.sessions.get_thread_cwd", lookup)
+
+        with pytest.raises(error_type, match="cwd lookup failed"):
+            await app._resume_thread("new-thread")
+
+        assert app._thread_switching is False
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        offer = AsyncMock(return_value="abort")
+        monkeypatch.setattr(app, "_offer_thread_cwd_switch", offer)
+        await app._resume_thread("new-thread")
+        offer.assert_awaited_once()
+        mount.assert_not_awaited()
         assert app._thread_switching is False
 
     async def test_threads_reselect_offers_abort(

@@ -887,7 +887,13 @@ def _load_dotenv(
 
 
 _TRACING_API_KEY_ENV_VARS = LANGSMITH_API_KEY_ENV_VARS
-"""Env vars that hold the LangSmith API key used for trace ingestion."""
+"""Env vars that hold the LangSmith API key used for trace ingestion.
+
+Alias of `LANGSMITH_API_KEY_ENV_VARS`, kept as a local name so the tracing
+bootstrap reads it alongside `_TRACING_ENABLE_ENV_VARS` and
+`_TRACING_ENDPOINT_ENV_VARS`. The shared constant also drives the `/auth`
+credential surface, so edit it there rather than here.
+"""
 
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.

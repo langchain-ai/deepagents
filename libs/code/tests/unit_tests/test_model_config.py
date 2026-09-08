@@ -922,6 +922,30 @@ class TestServiceCredentials:
         assert status.source is ProviderAuthSource.ENV
         assert status.env_var == "LANGSMITH_API_KEY"
 
+    def test_missing_langsmith_detail_names_the_fallback(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """The MISSING message names every env var that would have worked."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.MISSING
+        assert status.detail == (
+            "LANGSMITH_API_KEY or LANGCHAIN_API_KEY is not set or is empty"
+        )
+
+    def test_missing_tavily_detail_names_only_its_env_var(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A service without fallbacks keeps a single-variable message."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.MISSING
+        assert status.detail == "TAVILY_API_KEY is not set or is empty"
+
     def test_service_fallbacks_key_off_known_services(self) -> None:
         """Every fallback entry names a service that actually exists.
 

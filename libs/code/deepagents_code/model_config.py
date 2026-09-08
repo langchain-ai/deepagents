@@ -2813,15 +2813,19 @@ def is_langsmith(name: str) -> bool:
 def get_service_auth_status(service: str) -> ProviderAuthStatus:
     """Return credential readiness for a non-model service (e.g. `"tavily"`).
 
-    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
-    so a stored key beats the env var and the `/auth` manager can render the
-    same `[stored]` / `[env: ...]` / `[missing]` badges.
+    Checks a stored key, then `SERVICE_API_KEY_ENV[service]`, then each entry in
+    `SERVICE_API_KEY_FALLBACK_ENV_VARS[service]` in order. Mirrors
+    `get_provider_auth_status`, so a stored key beats the env vars and the
+    `/auth` manager can render the same `[stored]` / `[env: ...]` / `[missing]`
+    badges. Recorded env var names stay canonical; callers resolve the
+    `DEEPAGENTS_CODE_` spelling at display time.
 
     Args:
         service: Service name (e.g. `"tavily"`).
 
     Returns:
-        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+        `CONFIGURED` when a stored, env, or fallback env credential is set,
+            else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
     configured = _resolve_configured(
@@ -2829,11 +2833,14 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
     )
     if configured:
         return configured
+    accepted = " or ".join(
+        (env_var, *SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ()))
+    )
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,
         env_var=env_var,
-        detail=f"{env_var} is not set or is empty",
+        detail=f"{accepted} is not set or is empty",
     )
 
 

@@ -1983,7 +1983,9 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
     providers and services can never silently miss the config surface.
 
     Returns:
-        One credential `ConfigOption` per known provider/key env var.
+        One credential `ConfigOption` per provider in `PROVIDER_API_KEY_ENV`
+            and per service in `SERVICE_API_KEY_ENV`. Service entries win on a
+            name collision.
     """
     from deepagents_code.model_config import (
         PROVIDER_API_KEY_ENV,

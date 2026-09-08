@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:de0b39bf3730a2e3661d809916c363e76a1441e6292131ee9db32c0a34995565",
+  "pageVersion": "sha256:cb754809de4d8754458e8ad64112e9b08cf869ab00f4fdfc255f612403cd14b0",
   "claims": [
     {
       "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
@@ -103,20 +103,6 @@
         {
           "resource": "repo://libs/evals/deepagents_evals/cli.py#L319-L342",
           "version": "repo-lines-v1:sha256:045e15b11c33904cf824864cb2527752d9563db651bfee24a2887d7956a96ad1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZDI0OWJiZjZkY2FmYjUxMWEwZmI5MGRiMjY1ZDhkZGIzODcxZDk2MDg0ZWMzOTYyMTlmMGY5ZTUxMWE1ZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MWMwNzQzZDUzNmE4MzBlZmJmZWJlZWFkMmE3NTRmNDQwNzBkYWM5YmE4MjUwOWU3NWY5OGRhMWVkYzVjYTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NWQxNTk2MWJjZDBiZTU5MmYzMzdlOTZjZmU1N2JmNDY5Mzc5YTZkYTg5YWQ4YzA2NDhmZTE0MDdiNjAwMGEifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_8b2d83dd99734cffb050a806f62b34a1",
-      "statement": "deepagents-evals trials delegates to scripts/run_trials.py to run N trials and aggregate, and deepagents-evals aggregate re-runs the same script in --aggregate-only mode over a directory of existing reports.",
-      "evidence": [
-        {
-          "resource": "repo://libs/evals/deepagents_evals/cli.py#L393-L456",
-          "version": "repo-lines-v1:sha256:79953426a2c56c757376f465ec61fdf576b11eb5cdcdd10400a3af50f7ace7fd:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZDkyNmMwMDlmNjlkY2NhMDM1NDZkMGJiY2Y1YmIxMWRiMDRmNDA4NWJkMzk5MGNmMzY5MmI0OTA4ZTJiODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNmIwYTc3YzFiM2YwOWNmZWIxZGIzNjFlZmUwYjRkM2Y3Y2Q2NzkzMjZmNmFiZjQ4OTIyMzNmZmQwMmI3NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwODYzM2U3Y2E4MWVmNjMwZDU5YjcyNWYxMjdkNmI4YTFjZGUxNGE5MzU2MDRlMGJjMjM4OTlmZmQxMWQyNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkYzlkNGFlOTkwNmIwN2NkYTdjMzgzOTRhNGRkNDIyMGI3NjA1ZjVlYjM1YjY5MjgzNzQ2ODhiMTIzZTBlYmMifQ"
-        },
-        {
-          "resource": "repo://libs/evals/deepagents_evals/cli.py#L459-L471",
-          "version": "repo-lines-v1:sha256:c3cc794bbe9ca34c3c324c48067cb52b4584a9eb8e963939365da33e46fe12fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlNWI0MTQ4MmQ5ZDNjNTFhN2M2MjhmMzQyN2FkM2FjZDJjZjk3NTgxNzdhOWU2ZmY3MmU0ZDNjMDZlY2I2NjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNmIwYTc3YzFiM2YwOWNmZWIxZGIzNjFlZmUwYjRkM2Y3Y2Q2NzkzMjZmNmFiZjQ4OTIyMzNmZmQwMmI3NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhMWMyYjhkYzM2NGNkMTQ1ZTg0YjQ4YzUwN2U2Yzg0MmVlMTM0MzdlMjk5YWQ0NmJjYTdlYjNjYWM4NjliOGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkOWQ2NDA2MDYzZmM1YTk2ZGRiMjk5ZTI1MDM1ZWJmNTg1YWNhNjEwOTlmYjUwNzYwYmFlYzZiOGU5Y2Q1ZGUifQ"
         }
       ]
     },
@@ -239,28 +225,6 @@
         {
           "resource": "repo://libs/evals/deepagents_evals/cli.py#L416-L438",
           "version": "repo-lines-v1:sha256:5f791bf039dd4f97ac8f5e983f3778a3cc9fb70202b1145be9651352b0179d2f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMmE1MjlkYzE2Y2UzNWU5ZmJhZjUxMWM1NGFlMzgxNmEzODlhNmJmNTdlZDFjMmFmZjFiODhlYjYwYzhhMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkYzIyNDU3NzcwNjYyNzM3YjA3NDNjMzBhN2MzZjM5ZDhjOWYwYTVjZTY5ODM2YTVhZGU4MjVlZjY0YzlmOWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5MjNlNDc1ODJmNGQwZWFhYTNjNzk4YjdiOTQwZGI3MjZiNjE3ZThiOGJiZjgxNGU3MDkxZDA5OTg1ZTIxMTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhNzI0OTA1OTAxY2RjODkxYmIyZmNkZWYwY2VhODRiYzdiZTYxNWRlMDAyYzJjY2MwMzkxOGE3NTk3NmQxZDAifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_1cf3e7965edd40fb9b5f008a296fc795",
-      "statement": "libs/evals is organized into cooperating pieces: deepagents_evals (the CLI plus radar/tau3_subset/trial_summary modules), deepagents_clbench, deepagents_harbor, harbor_adapters, and datasets.",
-      "evidence": [
-        {
-          "resource": "repo://libs/evals/deepagents_evals/cli.py#L532-L544",
-          "version": "repo-lines-v1:sha256:fd4fef85fa20cff44884128c7c58dbf6e11ca3d98ca35ef7e8864ecca8e2f25e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZWMzMTVlODUwZDVkZTJiZDc3ODIyYmQwZWVhZDVhNDY5YjhkNTc2NzUyNDE0NzNhYzJmMGI1ZDlkZTczNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllZWRmZWNhZmU4MDNmZDRhODM0ZjA1OTRlZDJiZjE3ZDVkMmY2NWViZmFmMjA1YzlmMzk1OTRlMGQzYjE3YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwMGQ4MDU5ZWZiOGIyYjcwMDA4NjY5MmE2NGRmMmViZTVlMTlhMzdkNDJjNWI3N2E4YTEwOGM4NWFkZTUzN2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZWY5NzZmYzMyYjg4NDk5MWM3NzVmODc5YjcwYTJkMzNjZDVjN2Q0MDhmMjFiOWY3NWFkNThhZWQzNDgxMGEifQ"
-        },
-        {
-          "resource": "repo://libs/evals/deepagents_evals/tau3_subset.py#L1-L18",
-          "version": "repo-lines-v1:sha256:1feef31da66d5c591b0f653204d7feec71b7bbb5d880402625dce3f268f361f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZmUyYzFlYTE0MWVmZjI0NTYzN2Y3Yzg0ZjJkYTIyNDIwZmM4OTEzMzYwOWRkZTk5OGMxN2I3Njc0NjliYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
-        },
-        {
-          "resource": "repo://libs/evals/deepagents_evals/trial_summary.py#L1-L1",
-          "version": "repo-lines-v1:sha256:1f1ebb3f119183610b37e61126414101921b7610a90a56159339ddc5b4e7a8ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYxZWJiM2YxMTkxODM2MTBiMzdlNjExMjY0MTQxMDE5MjFiNzYxMGE5MGE1NjE1OTMzOWRkYzViNGU3YThhYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYxZWJiM2YxMTkxODM2MTBiMzdlNjExMjY0MTQxMDE5MjFiNzYxMGE5MGE1NjE1OTMzOWRkYzViNGU3YThhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
-        },
-        {
-          "resource": "repo://libs/evals/harbor_adapters/contextbench/adapter.py",
-          "version": "repo-file-v1:sha256:565498d79afd864c2c38809d6955b2f77e1afddf20251ab4645e76ab7587e995"
         }
       ]
     },
@@ -393,10 +357,40 @@
           "version": "repo-lines-v1:sha256:92a62124152af4e8b29cf07ae0857e92b6e5ced1e9db2342fc0c709b0ab2785e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZDA3OGYwNWQ1NzJiNDI3MzBlYWZkZTQ0ZDRhMjMxNmI4NzljNDM3Yjk4NWRmOGZlNDVhMTQ1ZjViYWViNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTFhNTM5NTJiYmYxMzJmYjlkMjJkNGU5MDllOWUwYThlMTdjMzMwYmFhNGIwYWY5Mjc5ODFkM2FiMDc0ZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1MTBmZDhkMTE5YzNmNmNjZjgzYzhiYzJhNWU5NWQwMDIxMzJiM2JkM2Q5ZGY3YWYxNzIyMzdkNDI4MjIxMTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyN2JhNGQwNDU2ZGU0OWYxM2I5NGRjZWM1ZDEwM2RmZjM2YWE3NDZkMzU1MjllOTgyZWRmNTRmMzdmNTU5ZDQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_409a92d04f1046f8bb89e45e01ae8088",
+      "statement": "run_agent creates invocation inputs from the query, optional initial files, and extra state; invokes the compiled graph with a thread ID; logs inputs and outputs to LangSmith; converts the mapping result into an AgentTrajectory; and applies the optional scorer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/tests/evals/utils.py#L1445-L1493",
+          "version": "repo-lines-v1:sha256:bb0e0d97bd45556f81f02ecc57b765e50481383dc5d5d468ca2fb46027a29eac:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4ZTY3NjcxYTY1OTU3NjZkMWJhNGY4ZjRjMTYxZTVmYmViZTZlNTRhMjI3ZTI2NzczZDMxODkwODJkZjE3YzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NjczOTc5MGYyOGMyZmQyZDVlZDlhZDMwMzFlMGY2ZGU1ZjE4MTlkNmE2NmFjY2MyZGE3Njc1ZGZiYzJkMzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlYzEwM2E4YmM2ZWUxYjc4N2JhODI3NTE1OGE5MWYxN2E4MGZkMDE3MDZkYmYxNzNkOTdjMjU1YWM2MjMzYjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e736839dfff244c499625b1502fb64f2",
+      "statement": "The eval-catalog drift unit test invokes scripts/generate_eval_catalog.py --check and tells maintainers to regenerate stale output with make eval-catalog.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_eval_catalog.py#L9-L29",
+          "version": "repo-lines-v1:sha256:f1869d1ae9dea823ed77597e7467ebc72d82f54d750da71c0b33a3a5ea4fea13:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1ODY4N2Y1ODdiZjIzNTM5ZmFiZTU4YTAyNjFlMjA3MWEzODk2ZDM3MDExNjdhMmMzNzUzNDhmNTY0OGRiZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5ZjFiZmEyMjNiOGU0OGIwMTRmNzY1MjIxZWMxNDM0Zjk3NWNiMjVmNGVjMzYzMjkwNjcxNzk4NWIxMDY0MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a7cbeea4ce634fb882f5ec46ac82e457",
+      "statement": "Categories and labels are centrally declared in deepagents_evals/categories.json; the separate radar_categories set omits unit_test and langchain/middleware.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/categories.json#L2-L29",
+          "version": "repo-lines-v1:sha256:4780bc44c667683f4a179fe16bf86f46897af46021d5d69e5bfb9a98dda4f074:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3M2QxZjMyMjZjY2VmMDVjNWM4Mjg4ZmJkZmFmM2ZkOTdkODA4ZGMzODQ5ZTM2Zjc0NmMxYmNiOWFiMDQ5ZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

@@ -1,14 +1,13 @@
 ---
 type: configuration-model
 title: dcode Configuration Layering
-description: How dcode resolves ranked configuration sources, maintains coherent file-snapshot generations, handles reload failures, and hands invocation settings to its server subprocess.
+description: How dcode resolves ranked configuration sources, maintains coherent file-snapshot generations, protects managed policy and project dotenv trust boundaries, and constructs workspace-scoped server runtimes.
 tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-07T08:06:36.835Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
+  - id: openwiki-source-b1a0880848a5075f2c358358
+    resource: repo://libs/code/deepagents_code/_env_vars.py
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
   - id: openwiki-source-b9ef532d79a0667acf40e58b
@@ -27,13 +26,18 @@ sources:
     resource: repo://libs/code/deepagents_code/configuration/writer.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-4a7b6def251b42596a410ebc
+    resource: repo://libs/code/deepagents_code/model_config.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-4df2bda291da47157bed7cbb
     resource: repo://libs/code/tests/unit_tests/test_reload.py
   - id: openwiki-source-f598809da8d8fbff2d7ae090
     resource: repo://libs/code/tests/unit_tests/test_server_manager.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-07T08:06:36.835Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-08T08:05:55.853Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
 ---
 
 # dcode Configuration Layering
@@ -79,6 +83,12 @@ There are three intentionally different read models:
 
 The environment provider is non-durable, whereas TOML and defaults are durable. This design accommodates dotenv bootstrap and cwd changes without making file snapshots live.
 
+### Dotenv and credential trust boundary
+
+A dotenv stack is derived from an explicit environment mapping: existing shell values win, then an enabled nearest project `.env` and the global profile `.env` can fill absent values. `resolve_read_project_dotenv()` must run before that project layer is applied, so it uses a local configuration read rather than bootstrapping the shared resolver as a side effect.
+
+A cloned project's `.env` cannot set the project-MCP allow/deny lists, auto-classifier model or timeout, forked-subagent mode, `LANGGRAPH_DEFAULT_RECURSION_LIMIT`, or `TERM_PROGRAM`. Those are user-level security, execution, or tracing decisions and remain available through shell exports and the trusted global dotenv. Environment lookups that use `resolve_env_var()` additionally give `DEEPAGENTS_CODE_{NAME}` precedence over the canonical credential/provider variable; an explicitly empty prefixed value suppresses the canonical value.
+
 ## Reload and failure semantics
 
 dcode does not watch files. Editing `config.toml` does not affect shared-resolver reads until a generation advance: an in-app write to `DEFAULT_CONFIG_PATH` or `/reload`. A committed write to another path deliberately does not refresh the shared resolver. If refresh after a default-path write fails, the failure is logged—not returned as a write failure—because the bytes are already committed; this process continues serving prior values until a later refresh or restart.
@@ -112,11 +122,30 @@ Direct readers do not weaken the shared-generation contract; they make their own
 - `resolve_startup_mode_with_source()` needs the raw `[startup]` table for its `recent` fallback, which a `ResolvedValue` does not expose.
 - Reload preview reads a fresh user candidate to show the edit under review, but does not refresh managed policy because a dry run must not mutate the policy generation. It uses its explicit preview environment rather than accepting a hit from the shared resolver’s active environment.
 
-## Handoff to the server process
+## Handoff and workspace isolation in the server process
 
-The interactive app launches `langgraph dev` in a separate Python process, so it cannot share the client resolver’s memory. `ServerConfig` is the typed invocation payload: the client builds it from CLI-derived arguments, normalizes user-relative paths against the captured project context, and serializes it to `DEEPAGENTS_CODE_SERVER_*` variables. `None` clears a variable rather than becoming an empty string.
+The interactive app launches `langgraph dev` in a separate Python process, so it cannot share the client resolver’s memory. `ServerConfig` is the typed invocation payload: the launcher builds it from CLI-derived arguments, normalizes user-relative paths against the captured project context, and serializes it to `DEEPAGENTS_CODE_SERVER_*` variables. `None` clears a variable rather than becoming an empty string.
 
-The server graph reconstructs the same schema with `ServerConfig.from_env()` before building its graph. It then constructs a workspace-scoped dotenv/environment snapshot off the server event loop and binds that immutable environment for runtime construction. This is a process-boundary handoff of resolved invocation intent—not a transfer of the parent resolver cache or a promise that later parent reloads update an already-running server.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server as langgraph dev server
+    participant Binding as Workspace binding
+    participant Graph as Server graph
+    Client->>Server: ServerConfig via prefixed environment
+    Client->>Binding: set workspace payload and fingerprint
+    Server->>Graph: reconstruct ServerConfig from environment
+    Graph->>Binding: require thread workspace
+    Binding-->>Graph: immutable workspace policy
+    Graph->>Graph: snapshot dotenv and credentials off event loop
+    Graph->>Graph: build or reuse workspace runtime
+```
+
+The client-to-server invocation handoff and the execution-time workspace binding are separate checks.
+
+`make_graph()` requires a thread ID and valid workspace context for an execution request, obtains the thread's persisted binding, and selects its runtime from that binding. When it builds a workspace runtime, the server reads `ServerConfig.from_env()` again, substitutes the binding's cwd/project root, and rejects a changed server payload when its fingerprint or non-secret workspace policy differs from the binding. Cached workspace runtimes are keyed by immutable binding resource keys and bounded with an LRU; a configured sandbox is process-wide and can be claimed by only one workspace.
+
+Before graph assembly, `_make_graphs()` creates a workspace-specific dotenv mapping and `CredentialsSnapshot` in a worker thread, freezes that mapping, and enters `use_environment(workspace_env)` for construction. Resolver reads, credential-dependent tool selection, extension gating, and explicit `environ=workspace_env` passed to agent construction therefore use that immutable workspace snapshot. This is neither a transfer of the parent resolver cache nor a promise that later parent reloads or mutable server environment changes update an already-built workspace runtime.
 
 Security-sensitive payload fields are validated again at reconstruction. In particular, a present filesystem-tool allowlist must be a non-empty JSON list of recognized tool names and must include `read_file`; malformed or unsafe values raise rather than falling back to unrestricted access.
 
@@ -126,4 +155,5 @@ Security-sensitive payload fields are validated again at reconstruction. In part
 2. Choose rank and merge strategy deliberately, preserving managed-policy precedence and keyword-only managed/user snapshot construction.
 3. Use `get_config_resolver()` for ordinary process reads. Document any direct snapshot as a caller-level exception and decide whether it needs the CLI tier.
 4. Preserve last-usable behavior and test failed managed refreshes so lower-ranked settings cannot become effective.
-5. When adding a server-facing setting, add it to the shared `ServerConfig` serialization/deserialization contract and validate it at the subprocess boundary.
+5. Treat a project `.env` as untrusted for user-level security controls; preserve denylist enforcement and explicit environment snapshots.
+6. When adding a server-facing setting, add it to the shared `ServerConfig` serialization/deserialization contract, include it deliberately in the workspace payload/fingerprint when it affects resources, and validate it at the subprocess boundary.

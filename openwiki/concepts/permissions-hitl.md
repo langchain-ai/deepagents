@@ -1,11 +1,11 @@
 ---
-type: security concept
-title: Permissions & Human Approval
-description: Filesystem permission enforcement, path-scoped human interruptions, and dcode session approval modes. Explains why tool visibility, denial, and interactive pauses are separate controls.
-tags: [permissions, human-in-the-loop, security, filesystem, approvals, interrupts]
+type: security and approval concept
+title: Permissions and Human Approval
+description: Explains filesystem permission enforcement and path-scoped HITL, dcode approval modes and shell policy, and Talon's channel-mediated approval lifecycle. Distinguishes tool availability, policy enforcement, and human authorization.
+tags: [permissions, human-in-the-loop, security, filesystem, approvals, interrupts, talon, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-07T08:06:36.835Z
+    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -25,107 +25,131 @@ sources:
     resource: repo://libs/deepagents/README.md
   - id: openwiki-source-f1280171b9d75cd28add0ec3
     resource: repo://libs/deepagents/THREAT_MODEL.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-07T08:06:36.835Z" }
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-cebe4ea270e21dce4de9b074
+    resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
 ---
 
-# Permissions & Human Approval
+# Permissions and Human Approval
 
-This page distinguishes three related but different controls:
+Permissions, approval prompts, and tool availability are related but distinct controls. A tool schema can be available to the model while a particular call is rejected at execution time; an interrupt can pause an otherwise permitted call; and an approval is not a general sandbox boundary. See [filesystem tools](/openwiki/concepts/tools-filesystem.md), [configuration layering](/openwiki/concepts/config-layering.md), [Talon](/openwiki/integrations/talon.md), and [security](/openwiki/operations/security.md).
 
-- **Tool visibility** determines which tool schemas the model can call. It is not authorization.
-- **Filesystem permissions** enforce `allow`, `deny`, or `interrupt` for paths when filesystem tools run.
-- **Human-in-the-loop (HITL) interrupts** pause a configured call for a decision; `ask_user` is instead a tool the agent uses to ask questions.
+## Boundary model and enforcement locations
 
-See [filesystem tools](/openwiki/concepts/tools-filesystem.md) for the tool interface, [backends](/openwiki/concepts/backends.md) for where operations execute, [middleware stack](/openwiki/architecture/middleware-stack.md) for composition, and [security](/openwiki/operations/security.md) for operational boundaries.
+Deep Agents follows a **trust-the-LLM** model: an agent can do anything its installed tools permit. Meaningful containment therefore belongs in the tool implementation, backend, or sandbox—not in prompt instructions asking the model to behave. HITL is opt-in and only covers calls configured to interrupt. In particular, `StateBackend` cannot execute shell commands; `LocalShellBackend` is an explicit opt-in with substantially more power.
 
-## Security boundary and visibility
+| Question | Control | Enforcement point |
+| --- | --- | --- |
+| Can the model propose a call? | Tool visibility / installed schemas | Agent construction |
+| May a filesystem operation affect this path? | `FilesystemPermission` | `FilesystemMiddleware` and filesystem tool execution |
+| Must a person decide before a configured call proceeds? | `HumanInTheLoopMiddleware` / `interrupt_on` | Graph routing before tool execution |
+| May a dcode shell command run without an interactive pause? | Approval mode or `ShellAllowListMiddleware` | dcode HITL routing or inline tool-call middleware |
+| How is a Talon decision obtained? | `ToolApprovalHandler` | Channel host and runtime resume loop |
 
-Deep Agents follows a “trust the LLM” model: an agent can do what its available tools allow. Deployers must enforce boundaries at the tool or sandbox layer, rather than rely on a model to self-police. In particular, HITL is opt-in; it is not a default safety guarantee. The default `StateBackend` has no shell execution capability, whereas `LocalShellBackend` is an explicit, powerful opt-in.
+A denied tool call may still be visible in the model transcript: it returns an error instead of performing its effect, so the model can adapt. For bulk filesystem reads, individual denied result entries are removed; the control is still execution/result enforcement rather than schema hiding.
 
-A permission rule is **enforcement, not schema hiding**. A filesystem tool can remain available to the model even if a particular invocation is denied. The tool then returns a permission-denied error instead of doing the operation, and the model can react to that error. This does not mean protected paths are generally disclosed: bulk read results are filtered to remove entries denied by their individual paths.
+## SDK filesystem permissions
 
-## `FilesystemPermission` rules
+A `FilesystemPermission` rule contains read and/or write `operations`, absolute glob `paths`, and a `mode`:
 
-`FilesystemPermission` has `operations` (`read` and/or `write`), absolute glob `paths`, and a `mode`:
-
-| Mode | Meaning |
+| Mode | Effect |
 | --- | --- |
-| `allow` | Default; the matching operation proceeds. |
-| `deny` | The tool returns a permission-denied error and does not perform the operation. |
-| `interrupt` | Graph assembly configures HITL so a matching call pauses for a human decision. |
+| `allow` | The matching operation proceeds; it is the default. |
+| `deny` | The tool returns a permission-denied error without doing the operation. |
+| `interrupt` | Graph assembly arranges a human approval interruption for a matching call. |
 
-Patterns must start with `/`; patterns containing a `..` component are rejected, including after normalizing backslashes; and `~` is rejected as unsupported. Rule resolution is ordered and first-match-wins: rules for another operation are skipped, and no match defaults to `allow`. Put more specific exceptions before broad rules when using normal read/write resolution.
+Patterns must begin with `/`; `..` is forbidden after backslash normalization; and `~` is rejected as unsupported. Resolution is ordered and first-match-wins: rules for another operation are skipped, and no match is `allow`. Put a more-specific exception before a broad rule.
 
-Filesystem tools validate a path, check permission before calling the backend, and turn `deny` into an error. This is separate from interruption: `FilesystemMiddleware` itself enforces denials and result filtering; it does not pause a graph.
+Filesystem tools validate paths and perform their permission check before calling the backend. `FilesystemMiddleware` itself only enforces denial and filters results—it does not pause execution. The separate interrupt bridge is important: an approval cannot override a tool-level `deny`, because a resumed or edited call re-enters the tool and is checked again.
 
-### Bulk reads and recursive delete
+### Bulk reads and deletion
 
-`ls`, `glob`, and `grep` may return many paths. Their result helpers remove entries whose individual read permission resolves to `deny`; interrupt-mode entries remain because approval, if required, occurred before tool execution. A direct call whose root itself is denied returns an error rather than a partial operation.
+`ls`, `glob`, and `grep` can return many paths. Their result filters exclude entries whose individual read permission is `deny`; entries with `interrupt` pass through because the relevant approval occurs before the tool runs. A direct operation rooted at a denied path returns an error rather than silently becoming a partial operation.
 
-`delete` is deliberately stricter. If the target may be a directory, any deny-write glob that could match the target or a descendant blocks deletion regardless of rule order. An earlier broad `allow` cannot safely override a later protected descendant. Only after the backend confirms a plain leaf file does deletion use first-match resolution. Wildcard overlap logic preserves safe sibling cases such as a denied `/work/*.log` while deleting `/work/notes.txt`, but fails closed where a match might be affected.
+Deletion is stricter because it may be recursive. When a target may have descendants, every deny-write pattern that could match the target or its subtree blocks deletion irrespective of declaration order. This prevents an earlier broad allow from defeating a later protected descendant. The code uses backend listings to distinguish a confirmed leaf file from a possible directory; unavailable or ambiguous backend information is treated conservatively. Once a target is confirmed as a leaf, ordinary first-match resolution applies. Wildcard-overlap logic permits demonstrably separate siblings, such as deleting `/work/notes.txt` under a deny for `/work/*.log`, but fails closed when overlap is possible.
 
 ## Permission-derived HITL
 
-`_build_interrupt_on_from_permissions` bridges interrupt-mode filesystem rules into the `interrupt_on` mapping consumed by `HumanInTheLoopMiddleware`. If there are no interrupt rules it returns `{}`. Otherwise it creates a configuration for each relevant filesystem tool with `approve`, `edit`, `reject`, and `respond` available, and a per-call `when` predicate.
+`_build_interrupt_on_from_permissions` converts interrupt-mode filesystem rules into the `interrupt_on` mapping used by `HumanInTheLoopMiddleware`. It returns `{}` if no rule requests interruption. For each filesystem tool that could be affected, it creates an `InterruptOnConfig` with `approve`, `edit`, `reject`, and `respond` and a per-call `when` predicate.
 
-`create_deep_agent` merges this mapping with caller-provided `interrupt_on` for the main agent and its general-purpose subagent. It installs one `HumanInTheLoopMiddleware` when the merged mapping is non-empty, while passing the original permission list separately to `FilesystemMiddleware`. Thus an interrupt prompt is not the filesystem authorization implementation; the filesystem tool still owns its deny check.
+`create_deep_agent` merges this derived mapping with caller-provided `interrupt_on` for both the main agent and its general-purpose subagent. It installs a single `HumanInTheLoopMiddleware` only when the merged map is non-empty, while independently giving the original rules to `FilesystemMiddleware`.
 
-### Scope-aware predicates
-
-Exact-path tools—`read_file`, `write_file`, and `edit_file`—interrupt only if the validated path resolves to `interrupt` under normal first-match rules. Consequently, an earlier matching `deny` prevents a prompt and the tool returns denial.
-
-Bulk tools—`ls`, `glob`, `grep`, and `delete`—can affect a subtree, so they interrupt whenever the search root can overlap an interrupt-rule anchor. Missing bulk paths interrupt conservatively. Current-directory aliases normalized to `/.` are treated as `/`, preventing `path="."` from bypassing a protected subtree. `glob` additionally examines its `pattern`: absolute patterns can ignore the supplied search path, and relative patterns containing `..` are conservatively gated.
+- **Exact-path tools**—`read_file`, `write_file`, and `edit_file`—interrupt only when normal first-match resolution says `interrupt`. A prior matching `deny` wins, so no unnecessary prompt is displayed.
+- **Bulk tools**—`ls`, `glob`, `grep`, and `delete`—interrupt when their search subtree can overlap an interrupt-rule anchor. A missing bulk path fires conservatively. `.` and other current-directory aliases normalized as `/.` are treated as `/` to prevent a bypass.
+- For `glob`, the predicate also considers `pattern`: an absolute pattern can redirect the search root, while a relative pattern containing `..` cannot be safely localized and is gated.
 
 ```mermaid
 flowchart TD
-    Call["Filesystem tool call"] --> Check{"Validated path resolves to deny"}
-    Check -->|Yes| Denied["Return permission-denied error"]
-    Check -->|No| Gate{"Interrupt predicate fires"}
-    Gate -->|No| Execute["Execute filesystem tool"]
-    Gate -->|Yes| Pause["Pause for human decision"]
-    Pause --> Decision{"Decision"}
-    Decision -->|approve or edit| Recheck["Tool rechecks deny before execution"]
-    Decision -->|reject or respond| Skip["Skip execution"]
-    Recheck --> Execute
-    Execute --> Filter["Filter denied bulk-result entries"]
+    Call["Filesystem tool call"] --> DenyCheck{"Path resolves to deny"}
+    DenyCheck -->|Yes| Denied["Return permission error"]
+    DenyCheck -->|No| InterruptCheck{"Interrupt predicate fires"}
+    InterruptCheck -->|No| Run["Run tool against backend"]
+    InterruptCheck -->|Yes| Pause["Pause for human decision"]
+    Pause --> Decision{"Human decision"}
+    Decision -->|approve or edit| Recheck["Recheck permission in tool"]
+    Decision -->|reject or respond| Skip["Skip tool execution"]
+    Recheck --> Run
+    Run --> Filter["Filter denied bulk entries"]
 ```
 
-Caption: Verified filesystem flow: tool-level denial and graph-level interruption are separate gates.
+Caption: Filesystem denial is enforced by the tool, while path-scoped approval is graph routing before it.
 
-Approval or edit does not override a denial: the resumed call re-enters the tool and repeats its pre-execution check. `respond` returns a human response without executing the tool.
+## dcode approval modes and shell policy
 
-## dcode approval modes
+`ApprovalMode` is a per-session policy: `manual` pauses every gated call, `auto` enables classifier-backed review for an eligible graph, and `yolo` bypasses the approval gate. Invalid or non-string inputs coerce to `manual`. The Shift+Tab cycle is Manual → Auto → YOLO → Manual when available; Auto is omitted when ineligible, YOLO when `startup.yolo_switcher` is disabled, and exiting YOLO always returns to Manual.
 
-Dcode applies a session-level policy to its gated tools. `ApprovalMode` defines:
+The live value is a per-thread LangGraph Store record in `("deepagents_code", "approval_mode")`, keyed by a SHA-256 hash of the thread ID. Missing stores, malformed records, bad keys, and read errors return `None`, which callers interpret as Manual. This makes loss or corruption of control state fail closed rather than silently enabling autonomous execution.
 
-- **`manual`**: gated calls require human approval.
-- **`auto`**: the Auto middleware applies deterministic policy and classifier review. It can resume classifier-allowed calls, explicitly deny policy or unavailable-classifier cases, and send calls requiring human review to HITL. A graph without eligible Auto support treats a live Auto mode as Manual for the stock interrupt predicate.
-- **`yolo`**: gated calls bypass approval, except controls such as hook denials that route separately.
+`_add_interrupt_on` registers dcode's side-effecting or external-access tools—`execute`, write/edit/delete, web tools, `task`, async-subagent controls, and non-read-only MCP tools—with a shared approval predicate and approve/reject decisions. The predicate honors a prior trusted hook decision, bypasses for YOLO, and allows an Auto bypass only for an Auto-eligible graph; otherwise it interrupts. `AsyncApprovalHITLMiddleware` asynchronously rereads the live mode after the model response and passes stock HITL a transient `_RoutingDecision`. That private, in-process marker is neither checkpointed nor forgeable through serialized graph input; synchronous use warns and falls back to Manual.
 
-Invalid mode values coerce to `manual`. Shift+Tab cycles Manual → Auto → YOLO → Manual when both optional modes are available; Auto is omitted when ineligible, YOLO is omitted when `startup.yolo_switcher` is disabled, and leaving YOLO always returns to Manual. YOLO requires explicit acknowledgement to enter; disabling the switcher removes it from the cycle but still allows Shift+Tab to exit a session launched in YOLO.
+Auto is not a blanket allowlist. `AutoModeHITLMiddleware` applies deterministic policy followed by classifier review: classifier-allowed calls can continue, policy-denied or classifier-unavailable calls become error messages, and `require_human` calls escalate to an approval prompt. Its deterministic shell allowance is deliberately narrow: it permits fixed repository commands or configured command entries only after rejecting shell control syntax and broad executables or wildcard entries.
 
-The live mode is stored per thread in the LangGraph Store namespace `("deepagents_code", "approval_mode")`. `approval_mode_key` uses SHA-256 of the thread id rather than placing the raw id in the store key. Missing stores, invalid keys, malformed records, and read failures yield `None`, which callers interpret as Manual. Typed Auto and YOLO context values require a valid live-store key; this prevents an untrusted context snapshot from activating autonomous mode.
+For non-interactive dcode operation, `interrupt_shell_only=True` disables HITL only when a restrictive shell allow-list is available, then installs `ShellAllowListMiddleware`. It checks `execute` before execution and returns an error `ToolMessage` for a command outside the list, avoiding an interrupt/resume cycle. If no restrictive list can be resolved, dcode logs a warning and retains normal HITL; an empty list is invalid, and the unrestricted `SHELL_ALLOW_ALL` sentinel must use `auto_approve=True` instead. `auto_approve=True` disables all HITL interruptions. Patch Tool Calls from the code interpreter bypass `interrupt_on`/HITL altogether, so `InterpreterConfig.ptc` is their effective control.
 
-### Dcode gated tools and routing
+## Talon: approvals mediated by the originating channel
 
-`_add_interrupt_on` registers `execute`, filesystem mutation tools, web tools, `task`, async-subagent controls, and non-read-only MCP tools. Dcode’s configurations expose `approve` and `reject` decisions. Their shared predicate first respects an explicit pre-tool hook decision, then resolves the current mode. YOLO does not interrupt; Auto bypasses the stock prompt only where its classifier-capable graph is eligible; otherwise the call interrupts.
+Talon is an experimental runtime that translates graph interrupts into a channel conversation rather than exposing a local approval UI. `DeepAgentRuntime` invokes the graph asynchronously, detects `__interrupt__` values, obtains one decision for each interrupt, builds LangGraph `Command(resume=...)` payloads for every action request, and repeats for at most `DEFAULT_MAX_APPROVAL_ROUNDS` (50). A missing interrupt ID or an all-unresumable batch is an error rather than an implicit approval.
 
-`AsyncApprovalHITLMiddleware` reads the live mode asynchronously after the model response, then supplies a transient `_RoutingDecision` to stock HITL routing. The marker is a private in-process type in a shallow routing-state copy, not checkpointed data, so serialized graph input cannot forge it. A synchronous invocation warns and falls back to Manual behavior.
+`interrupt_on_with_env_overlay` merges a supplied map with comma-separated tool names from `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS`; the environment overlay wins for duplicate names. When the MCP configuration update tool is present, Talon adds an approve/reject gate unless `MCP_CONFIG_AUTO_APPROVE_ENV=true`; async-subagent tools are added by default when those agents exist.
 
-Auto is not merely a visibility toggle or a blanket “safe tool” list. `AutoModeHITLMiddleware` performs deterministic policy and classifier review over proposed calls; only classifier-allowed calls resume automatically, policy-denied or classifier-unavailable calls receive error messages, and `require_human` calls are escalated.
+For a channel turn, `TalonHost` passes an approval callback through `AgentRequest`. The host stores a pending future by agent conversation, posts the tool names and argument preview, and resumes it from an approve/reject reply or a thumbs-up/thumbs-down reaction. A text reply is accepted only from the sender that started the run when that identity is known. A reaction additionally must match the provider, conversation, exact approval-prompt message, and sender. Invalid replies re-prompt; mismatches are ignored and logged. The implementation logs stable references by default, with raw approval identifiers only if `DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS=true`.
 
-Patch-Tool-Calls host-bridge calls are outside `interrupt_on` and HITL. Dcode therefore constrains them with a separate budget rather than representing them as per-call human approvals.
+Talon fails closed where no interactive channel operator exists: scheduled (`trigger == "cron"`) calls and channel calls without an approval handler receive reject decisions with explanatory messages. Approval interrupt and resolution events record action count, names, a stable conversation reference, interrupt ID, trigger, decision, and resolution.
 
-## `ask_user` is a separate interruption
+```mermaid
+sequenceDiagram
+    participant Channel
+    participant Host as TalonHost
+    participant Runtime as DeepAgentRuntime
+    participant Graph
+    Channel->>Host: inbound turn
+    Host->>Runtime: AgentRequest with approval handler
+    Runtime->>Graph: async invoke
+    Graph-->>Runtime: approval interrupt
+    Runtime->>Host: ToolApprovalRequest
+    Host->>Channel: prompt actions and arguments
+    Channel->>Host: approve or reject reply or reaction
+    Host-->>Runtime: decision
+    Runtime->>Graph: Command resume decisions
+```
 
-`AskUserMiddleware` adds an `ask_user` tool so the agent can ask text, multiple-choice, or multi-select questions during execution. The tool calls LangGraph `interrupt()` from within tool execution and resumes by converting the reply into a `ToolMessage`; it is not a permission prompt for another tool.
+Caption: Talon carries a graph approval interruption over the same channel that initiated the conversation and resumes only after a validated decision.
 
-`_parse_answers` makes resume semantics explicit. A mismatched answer count is an error, not padding or truncation; cancellation creates `(cancelled)` answers and remains a successful user choice; malformed responses create explicit error answers and an error status. Non-string answers are shown after coercion but do not gain authorization trust.
+## `ask_user` is not an approval gate
 
-A valid answered exchange can carry an `AskUserAuthorizationReceipt`, bound to trusted thread, turn, and tool-call identity and bounded string answers. It is withheld for cancellations, errors, coercions, mismatched counts, or untrusted identity. Auto mode uses this receipt rather than treating arbitrary answer text as authorization. Because `interrupt()` raises `GraphInterrupt` inside the tool-call middleware chain, exception-handling middleware must re-raise `GraphBubbleUp` rather than swallow the interruption.
+`AskUserMiddleware` supplies an `ask_user` tool for text, multiple-choice, and multi-select questions. The tool calls LangGraph `interrupt()` during tool execution and resumes into a `ToolMessage`; it does not approve another tool call. Answer parsing rejects mismatched counts, represents cancellation as successful `(cancelled)` answers, and converts malformed data to explicit error answers.
 
-## Operating and testing the controls
+Only genuinely answered, bounded string responses with trusted thread, turn, and tool-call identity receive an `AskUserAuthorizationReceipt`; coercions, cancellations, and errors do not. Auto mode requires that receipt instead of treating arbitrary text as authorization. Middleware that catches exceptions around tool calls must re-raise `GraphBubbleUp`, because swallowing the `GraphInterrupt` would break the interaction.
 
-When configuring filesystem policy, use absolute, literal-leading anchors such as `/secrets/**`; leading-wildcard patterns collapse to a root anchor for bulk interruption and can prompt far more often than intended. Test both the direct target and bulk roots, especially `.`/missing paths and `glob` patterns that are absolute or contain `..`. Test recursive delete separately from leaf-file deletion because its fail-closed overlap rule is intentionally different.
+## Operational checklist and tests
 
-Relevant focused tests include `libs/deepagents/tests/unit_tests/test_permissions.py` for rule validation, precedence, bulk bypass cases, and delete overlap; `libs/code/tests/unit_tests/test_approval_mode.py` for Store fail-closed behavior; `libs/code/tests/unit_tests/test_agent.py` for live-mode and routing-marker behavior; and `libs/code/tests/unit_tests/test_ask_user_middleware.py` for resume and receipt semantics.
+- Use absolute, literal-leading protected anchors such as `/secrets/**`; leading-wildcard interrupt patterns anchor at `/` for bulk overlap and can prompt nearly every bulk call.
+- Test direct paths and bulk roots, including omitted paths, `.`, absolute glob patterns, and `..` in a relative glob pattern. Test directory deletion separately from a confirmed leaf.
+- Treat `interrupt_on` as selective approval routing, not a replacement for backend sandboxing or filesystem denial. Review interpreter PTC separately.
+- For Talon deployments, configure gates before relying on them, ensure channels provide stable message/sender identities for reaction approvals, and expect cron/no-handler execution to deny gated calls.
+
+Focused coverage includes `libs/deepagents/tests/unit_tests/test_permissions.py` for validation, precedence, bulk bypass protection, and delete overlap; `libs/code/tests/unit_tests/test_approval_mode.py` for fail-closed Store behavior; and Talon's runtime and host tests for resume payloads, channel decisions, mismatch rejection, and cron denial.

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ca58152a0c6863351ff96d887e4fafbf9552de4a46f518770e021d1893d3fa37",
+  "pageVersion": "sha256:f5b62c527274c7921d16d0f40deab52a661a4cd8c201af8073c36cb8bd3d695d",
   "claims": [
     {
       "id": "claim_d6ab0cc8ebad4b78b369748851754f92",
@@ -221,16 +221,6 @@
       ]
     },
     {
-      "id": "claim_400dfa2122f049b3afae79cfb4efc283",
-      "statement": "The Deep Research example demonstrates the full workflow: it builds a model, defines a declarative research subagent with its own tools, and calls create_deep_agent with model, tools, system_prompt, and subagents.",
-      "evidence": [
-        {
-          "resource": "repo://examples/deep_research/agent.py#L39-L59",
-          "version": "repo-lines-v1:sha256:72bbe0ccba78ecead4a5dff1bcc42df443a374c8e70e3fe26512f59d28bc276e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NjEzODY4ZDkwMjI0YTg3OTEyMGVjMTQzYWU3Yzk3NzFmZjE3MGZkNDdiYTIxYzViMzVlMjAwNDUwOWU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1ZDNmZDVkZmMwNzdiYTI2NTVkMzZiNmU0NmEzNjk3NTQyZjk0NDI1ZjY0YTg5NDRjMGY5MTFlZDAzOTFiYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_20031405f4ff4d15ad9545286b25de4d",
       "statement": "Deep Agents is an opinionated harness layered on top of LangChain's create_agent (itself on LangGraph), bundling filesystem, sub-agents, context management, and skills, and any LangGraph CompiledStateGraph can be plugged in as a sub-agent.",
       "evidence": [
@@ -367,10 +357,28 @@
           "version": "repo-lines-v1:sha256:f17154bc3941f9cff2667f0464b59523b21c086d692b3d20058ee880ad71a79b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMWY4NGU4OTBjYWM5MGQ2MGM3YzVmNTQ0NDkxMTEyOTI5NjVkZmY1MThkYzRhODQ3Y2U1Y2M0NGZkMjJjOTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmODgyYjM2MjRmMjU4ZmFkZjE2M2RhNGI2NWFkZjFlYzU0OWE3NTIxMjhjMjMwMzE1NWRmMWNjMWU1N2NkZjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmNmQ4ZTA0YjkwMDQyZWJjNGJmZWU3MmE5YWE0MDM4MjI5NDM0Y2ZjMWFiZjk0YjgzYWM2ZjJlMTBiOTcwZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_60f9b7263e2b490fbbc362d21336cbe4",
+      "statement": "The end-to-end unit suite uses scripted fake chat models to verify that a deep agent can invoke built-in filesystem tools, invoke custom tools, and complete multiple sequential tool calls while returning the resulting message state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L193-L240",
+          "version": "repo-lines-v1:sha256:33354bcaea7f4fed0bf6cd7ab60000eb4d379accaaf51ca1a28a8dacc170cb25:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMjIzYTMwYjRlMmYyNGE5MzY2M2IyMjMyMWJmNjcyNWJiNTY2YTIyNDQ5ZjZmMTdhNmE2YTEzMjY4ZWNjNzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ODIyYTg2YzBhNWY5M2QzZjI1NzY4MTI0NzEyNDcwZjg2ZjU1MGZiODlhY2UyMjlkZWY3ODEwNTI2OTI5YmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5Yzc4NDQ2ZjdjMDUzNmU1Yjc2NzA2YzhiZDI0ZDgxNzVkNWI3YjBhNGNhMTczODZjOGE3MzAzNzBhMWJkYjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjllZThiNDgwZjYyMmY3OTQ4ODAzZGIyYjcyY2M3NDYzNjU1MzUyNjc3ODkyYjM1MGM2MGI5MTg2MTc0ZTYwN2IifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L328-L370",
+          "version": "repo-lines-v1:sha256:f24e20162e1b25590c8563b21cf72330252bdbcaffd6da67da40a1e31ac251e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3MzljOGE2OGY5NWI5N2NmNWNjYjViZDE4MjNiY2RjZmM2Y2ZlNDMzZDE4NmQ4ODUxZDE5ZDIxNjdmYjFkOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1MzliNTZjMDc4ZTVkODY2ODFiM2ZiOTRiYzM2OWIzNzk4YjhlODllOWZkNTUwMGE4NDVlYmI3MDhkNDg3MTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0NmMzZDJjM2FiNDk2ZTZiOGVmMTA2MTMzNzE5ZGUwZjMzMTVmYzg2NDBhMWZhNzhmOTc5ZTdjMmI1MTMxOGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmNjhjNjA4NWMwOTQwNTJkNTZlMWE3YWZjMzI1M2QyYWE4ZjQ0OTkxOTYzNDkxMmY3MTIzZTgzNjU1OTYyNmIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L413-L468",
+          "version": "repo-lines-v1:sha256:c81c796df725e2976dceac1e7f83f7924863266b46eb91305601431be889371a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1OWNmMjJiOGMyOWEzMWFiODJhNjdhMzI2NmM1NTcwZDdlMzg3NDc4YjhjYmMwZmQxM2IwZTJjN2VhZWMzZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5NzJiYzM2YzIwY2YzMmVmMzI5YzUyMTVhYzg1ZDZhMDNhMWMxMTZkZmM2YzM3ZDhhYzQ3MmE3ZTJkZmRjN2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVjYjk4ZDcyYzQ3MGI2MTkyNmM5OWJjOWMxZmQ3ZjdjYzcwOGE3MmE2NzA5MGZmMzkxOWJjYTlmMWI4YTFkZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODVkMTViMzU3MjRiOGUxMjgxMzExNTlkOTY1MGFiNzU1NzdmMmFiYTAxYjM2YmEwNWZjM2MzNGU3MWYwYmMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e631be4d83f10d4a2ce7bebc8298aa593c5235fafd74793dc00030993a0da80d",
+  "pageVersion": "sha256:35f502611310db4144b45573df631abdadd85bbd2f7d883002195ca4bfe62183",
   "claims": [
     {
       "id": "claim_c399b6f76b1b4806b54942f95ea0f31f",
@@ -319,10 +319,38 @@
           "version": "repo-lines-v1:sha256:60452337065f32f4ee1caeb17ee80f7b3ae15e3e9394f7d4e32a2c2a9497382e:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTgxMmE1MmUwYzhmOWRjNzk3YjBlMWNiNWM4MjgyOGUxYTcxMTIzNGFkZjRiNTNlZTAzMjlkMjdkNGQ4MDAyOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGM0MjIwN2ZhMGFkNzJlMjg3ZWM1ZjEyNGJkZmUwZjdiMzM3MmRlZDlhMDIzNWYzZGU4MDA4NWMwZDdiODVlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmI3YjQwMTNmMDdkYTdkZDVhZjhmMzc4NWNmMTU2Y2E3MzA5NDQ1ODZiOGU2Y2U3MzFiOTkwMjc1N2Y1MGQ0YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGU5NGYzMDgyNzgxNjQ0ODY5ODFmYzUyYTdjYjdjMjg5ODg0NTI4MGUxZWZiODI3ZDI2YTA1MTVhMDNkODc1ZiJ9"
         }
       ]
+    },
+    {
+      "id": "claim_3236557ddd644247bbf86574c715e7b7",
+      "statement": "DeepAgentState's message reducer coerces raw message-like inputs, replaces or deduplicates messages by ID, processes removal tombstones and a remove-all sentinel, and treats a missing replay state as empty; LangGraph assigns stable message IDs before checkpoint serialization.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_messages_reducer.py#L31-L90",
+          "version": "repo-lines-v1:sha256:35f1b92457ceaa0562f7e8c603bc82f7059c56d9234657276cb936d61665ce53:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkMGY0OWQwMzY3NTBmY2FhMWJjNDhjZGYxNjBjMDVkMDlkYTE5ZmIxZmRiOThjN2VlODEwZmQ0MGE0Y2Y0NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlODMxMWMxMmE4YTAyZGUwZGJiOTkwMTkxNDFkZmU1NDg1MjczYjk0MmEzNzdlNjIzZDQxZWFkM2NhNThkMzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0MzVlMmQ5Y2NkYjdhODdjNmRmZWY5ZjVjZjAyYTBlZmQ0YTU0YTU0MDU5ZTY4YzlkM2IxNzk5MzM0YTFjNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py#L38-L135",
+          "version": "repo-lines-v1:sha256:4f63fd9a8e8311d496131d47c06823f8da89fceb364e0ed2c2aae4b2648555eb:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwY2E4MTA1M2IwMDc1YzA2Yzc2MDM3ZjM2MjIwMWI3NThkMDhmMzAxZjBiN2ZlYmM5NTczZDMxNmQ3YjY5ODMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1NWRjNzEwNTYxOTE3M2ZlOTQ0Y2RhOGMxODZlYjYzYjRjZTJkZDkxOWIyMzRjNjE0YjM5MGI2NDVmMDliYmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MDI1MWIwNzExN2RhOWFiOGMzMWY4NjZjMGY4ZjkzZDhjYWY5OGRjNTQzZmIwZWRmODc4ZjY1NzE0MjNiYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c36b6fc0ceb45978218c832d710cdc3",
+      "statement": "The compiled graph supports LangChain v3 synchronous and asynchronous event streams with parent and typed subagent projections; a fork's messages stay separate from the parent projection, and a failing subagent reaches failed status while its runtime error can propagate through stream drains.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_deep_agent_streaming.py#L193-L356",
+          "version": "repo-lines-v1:sha256:c1ca220d03e13faf49c70ad0db83fac85a0f8dfc3e6e79efd8c1949df0e55e5b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YWIwOGFlY2UzNzQxNDViZjRmZGIxMWMyNjg3YjJiYzFiN2I3OTc2NDZiOWNkYmYzMTM3ZWQyNmQ3ZTljOGZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhODI3ZDM0ODNmMTA2MDE2MTIyYWMxZDE3ZDJhN2JlOTkwMzg2YWExMzFkYTliMWE3N2EzMjQyYzE4ZGJmYTVhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YzA0YjI4NzcxNTI0YTljODQzMzczNWJmMDg2ZjJjMTgyZjg2ZWM2MTgxZDYxNjE3M2M2ZjI1ZDY4ZGVlZGZjIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_deep_agent_streaming.py#L359-L404",
+          "version": "repo-lines-v1:sha256:4bc09ef1f0037ca25c55e72d9e707662954f281a68f323c2582355b1739804c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MDI4YzkxYzk1ZjkyYTNjYjczOWQ4ODIwYzY2YzAwNWQ3OTk2ZGNiMDYzZDI0YzllOTM4NjQ0MDhkNGM0N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMzA2ZmNmYWNlZDFiNTkzYjA5MDRkODU2MTZlZDdmOGE3ZDI2NTNhMWYwNWFhZThiOTQ2YTA1ZTE3YmQ0MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3OWQyMGYxZGExNzNjZWExYWM5NTIxYmVhYTRhMGU5MjQwMjI0YzRjZDhmODc4Y2RkMWE4NmM0MzgzNmNlNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

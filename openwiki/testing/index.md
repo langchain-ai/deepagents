@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide & Boundaries](testing-guide.md) - How to select deterministic package tests, process and protocol tests, benchmarks, runtime-host checks, and credentialed real-model evaluations. It documents the package-local commands and isolation invariants that make boundary changes safe.
+- [Testing Strategy and Change Validation](testing-guide.md) - Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.

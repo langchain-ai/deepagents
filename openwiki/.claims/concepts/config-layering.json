@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c52662bf4b2ae68114e8761074943fb03dbb70114a6dc921bd9092b7df2fb504",
+  "pageVersion": "sha256:93f3abbc3aa3dca14e77dbd45a27fdd558af17084785e21098097eca223a53e1",
   "claims": [
     {
       "id": "claim_1cfe64c62dd94bdf928836136186968f",
@@ -228,7 +228,7 @@
     },
     {
       "id": "claim_c075bc8d4a964e5e87d4e3c33e1209c8",
-      "statement": "The client-to-server boundary uses the shared ServerConfig schema: the launcher builds it from CLI arguments, serializes it as DEEPAGENTS_CODE_SERVER variables, and the server graph reconstructs it with from_env before building the graph.",
+      "statement": "The launcher serializes CLI-derived ServerConfig as DEEPAGENTS_CODE_SERVER variables; the server reconstructs it for graph assembly, and execution-time graph selection verifies the persisted thread workspace binding against the current non-secret policy and configuration fingerprint before building or reusing its workspace runtime.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/_server_config.py#L1-L9",
@@ -243,8 +243,16 @@
           "version": "repo-lines-v1:sha256:cec4f7750b38ba38dca0a2d6efbe916377cf997ddfa13cc1bb5bf6e692950d26:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOWJhMDYyNWVlMmIxYmU1NGYxNTQxMDgwMDU2ZTJjMDhlYWI3NzRmYWFjODgwZTQ3ZTMyNDJlNzYyYWUwZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwY2IzNzE2ZTljMWEwYzI1MDYzY2NlYjZhMGVjZWFlM2I3Y2FmNmUzMjUxM2I5Zjg1ZDM5OWYwZjI0YjlkMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmNmQ5MDZhZTAyMjU3NTQwMTczNDUzNWZhNGQ0YTRjOTNlMmE1NjlkMjQ0NDMzOWE4NDJiNWIxMDlkMWRjZTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2M2ExOWE5NDczMjIxZjRlYTViNTdmNDdhMWI0N2I1ODhkODhhZGRiZDcyMzc4NTgyYTcwNjY1MjUyNjg5ODgifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/server_graph.py#L244-L290",
-          "version": "repo-lines-v1:sha256:0319622f6d65f3f2bb00793c89abd91451a9f97bb7fdc510b91bf9e9b0880ae2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ODQwMDMzNGNiODYyMGJhNjgxNDUxODFiNmE2YmE4YmIyMzNiMmY5N2UxYTA3NGZkNTJlMWYxZTk5YWU2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5OGMxZjNiZTBjM2E1Mjk5YWExNTVmZWM2NDc2OWYwOTM0ZmMyOWM3M2M4MTNjMjhjMTU2NTA1NjhmMzMyNTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlNGU1YzBlYWM5YTgxNjdkZTYzOTAxNGZhZjQ3ODVmZTIzMDgxOWJmZDE1M2YzZWVhY2M5MjFhOTVmNTI5YjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlNjUxNzhjN2IwM2MxN2YwYTE4MjE5N2FmZDk4MmE1M2RmYTlhNzhlMTgxN2IwYjQzMzU4NzdkZWMwM2ZlYTAifQ"
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L249-L308",
+          "version": "repo-lines-v1:sha256:05d3101ab7362d33aebbef408c4f0cb621bfd68bb219b6451e21beff97fe2299:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ODQwMDMzNGNiODYyMGJhNjgxNDUxODFiNmE2YmE4YmIyMzNiMmY5N2UxYTA3NGZkNTJlMWYxZTk5YWU2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlNGU1YzBlYWM5YTgxNjdkZTYzOTAxNGZhZjQ3ODVmZTIzMDgxOWJmZDE1M2YzZWVhY2M5MjFhOTVmNTI5YjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiODUzZDk2ZmQwZDc0YjNhNmFiYjQ4NmVjY2E2NTJmNDQ0YzUxYTU2NjQyMDM2MDIyZThjYzBiNDE3NTc3ZjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L709-L746",
+          "version": "repo-lines-v1:sha256:64148b41576139462e7be3be34163c4441b1f54bb53b487132e8619097918ff3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1MWUyNWQwMzI5MWFjMjZlY2U3ZjNmNTE5MTBkNWE1YjQ3ZmFhNjBkMmFjNzUyYjVmMjAxNjY5MzQyYzZkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyMTZkMDgyMWViN2Q5MTU2M2U2Yzg4MWQwNTQ2NzdjYzc1NjBmMGVmZTliMzI5MjQ3OTZhZTZkZmFiNzQ3YzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4ZWY5ODEzNjc0YTVhNzljNDVmZjI3MTUyMGZmNzNmZTVmYWE2Mzg1NGMxZDhiZTFlNjY0ODc3OWRjZjQxNzAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L785-L805",
+          "version": "repo-lines-v1:sha256:61fe1f2ab8e41d2ec36909ec456da58537c10cedeb17025a90e28a9bf0f2809d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyNWY1YWQzNjU2YzhmYzJmNjgxNTllOTVjMmQ4YjM2Yjk0NjM1YjIxMTdkZDc5YTE4NWNiODRiOGU1ZGYwZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNjNkZjE0MzFkYjFhNmQ3MGMyYjM3OWM2OWJkYzg1NjdmZTVhZTY3ZmRiZjcwZDEyMjcyOTBmYTYxNmU3NDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ZWY5ODEzNjc0YTVhNzljNDVmZjI3MTUyMGZmNzNmZTVmYWE2Mzg1NGMxZDhiZTFlNjY0ODc3OWRjZjQxNzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -273,10 +281,60 @@
           "version": "repo-lines-v1:sha256:a46357b4c49a71fa683c7d38b98cb592c1710bdd84c3188ebf0f96408614735c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlODBjMDgxZWU5ZTI3YTkzMWNhOTExNjJjMWFkYWExYjU2NDEyNzUzN2ZiNWI2ZmI1MWE0MTkzM2U1MzQ1ODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzYTNmNDYyZGM3NjNjMjg1NDFiOGI0ZTQzMGU0NDdiNDYxNTQ0MjMxZjQ0NTIxOGJjNDMyMTk0MjQwMDgyNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjExMmM4NjgyZWRjZTU1YzU4ZmIxNzM1NmRjYTcwN2MxNTRmYjkyNzRkZWQ3YzMzZjkyYTJjYWU5N2MyOWJiNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwZGRlMTMyMzFkYjE1Y2E1NTRjZWFiNzc4ODZmMTRiYzNhNmU3OGFiZjgyNWRkZmNiN2I4ODgzOTVkZTRjMDgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_43bd653f2ca44f438e912a1083a3b7c4",
+      "statement": "The server builds each workspace runtime against a dotenv-derived immutable environment and credential snapshot created off the server event loop; use_environment makes resolver reads during construction use that workspace snapshot rather than mutable process os.environ.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L436-L466",
+          "version": "repo-lines-v1:sha256:7bc81690970b5cefc5ec144f2ba7c611a48ddcdbb54ac8118470c9c9febcb42d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2ZDAwY2M5MTczNjIwY2JhMGMzMTc0NWI0YjA1ZDMwNzBmYjE5Y2VhM2UyOTcxYTRiNzdmZTVlYTQ5MTA4ZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5NTJhYzVjYzViMWFkOGI4MTgxYmFhMDkzYmVkOGU4YTUzYTJmOTAyODFkZWQ0ZGYyMzUxYmJjN2U3NmZhNTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4YTE5YzQ5NGE0NDJkNGUyMzJhMzJkNGE0NzZmNjE1YjVlMDhkZjZiODkzMjhmNmJiNWI1ZjBkZDc1NjU2MjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyNGY3Y2U5YjMxMWYwM2M3MmEyNTcxMTBiODZlOTgwMGY4YWRjOGViM2JlYTU3MDFhOTgxNjRkNjdhZmRmOGIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/providers.py#L1599-L1617",
+          "version": "repo-lines-v1:sha256:9469bc29c0626894782a114297e5ad208d5e256f7bf95b18cb4e0fc227835be4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmNzFhYzE0NzBmMDA0YTZlNGYzMjA0NWZmNWYxMGYxYThkODQwYTNiYjAxMTczZGIxODMwNWVmNTY4YjAzNGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyNjUxZTJmZDIyZDYzNDMxY2FiNDU3YWNkNTNiMjc2Y2I2M2JjYjE1ODg3NWNmNGU0OWVmODJiMGMzNDA0MmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiMDU4NjcxYjRlMDAyY2FhOGMwYjgzZjU3YmJlZDI5ZDJkYTI0NzcwZWEyNTdkYzI3ZjY0ZWNjYTNjZDY4YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwNWI0ZDVjMGY4MWRjNTY3YmEyMDIyZDYwNDI3NmRiYjIwMjQzYTY3Y2Y3OWNlNjBkYTdmMzJhYWZmYTQyZmUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L273-L308",
+          "version": "repo-lines-v1:sha256:a724f4122b5e8c8ae66a6a6dc9530e596fbda16c91a45adb29e7b0f68164f4b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljOWY5Nzk4Mjg1MmMzNDY1MWViODU4ZDVhNmZkNzAzNmY4ZWRmMTc0MDMzZTRlZWE2ZjAxM2FmYzZjYjZjOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1OWRkNThjNDUzYWVlZmZhNWUzZWZmYWI4MWRkNWYxY2E1MDNjNjhmNTM4NTE0Nzg3MDNlYzEzNjgzNmQ4YjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiODUzZDk2ZmQwZDc0YjNhNmFiYjQ4NmVjY2E2NTJmNDQ0YzUxYTU2NjQyMDM2MDIyZThjYzBiNDE3NTc3ZjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L311-L395",
+          "version": "repo-lines-v1:sha256:91cbd4cddda4b52e8d2e113f7f2b7148c63731c5c47cb30ff51b7b240dda466d:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwYzQzNWExZTUyMjRjZmI2NWExZjJkNjQ3NGY2MzczMjMwMDI2OTFhMDZiNDViMmQwNzdkMWNlYWNmMzk3YWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4MmM1Zjk1NmI4YzM4ZGZhNzM2MDM5ODc0MWI0YjVjMjg0MTIyZTY5ZjFjZGVhNTY3ZDA5ZjBhMjQ0OWMwMmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzY2YwYjkwZTRjOTQ5NjZlMzA4OTY3MWY3MWU1ZmYyZDlhZTE2ODNlMjM1NmIyNDkxZGMyZDk0MjNhZjZmYjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_15dd71c9b3dc4b1ea5e200fa91b66de9",
+      "statement": "Project dotenv loading fills only absent environment values and denies repository-controlled values that would alter user-level MCP authorization, Auto review controls, subagent inheritance, graph recursion fallback, or launch terminal tracing; trusted shell and global dotenv inputs remain eligible.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L329-L393",
+          "version": "repo-lines-v1:sha256:5afc30e86d472780d32d001d3b65104cf07a2e8bea4ebcf8d6876afb53d80da6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4NWM2NjJkYTIyNDQyZGM2MDc0MGJjOGMyNGJmOTE2MWVkNDMwMWFkM2JiZTY2MWY1YmUwNTk3YTgzOWI2MTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4NTcyZGZkOGQzMGIzZGI4NDI4OTA4ODU3NWUxZmZiZTEyYmUxNGI5MzEyMjI4N2MzMTU0MzA2NTQwOTNmMjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzNzFhYTNhMWI4MWI1ZTc4ZGIyMzUxMjg4M2IzMGExY2YyYTk0ZGVjY2MzNjMxNGRlNzQ1ZGFmZjNkYjExNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L512-L598",
+          "version": "repo-lines-v1:sha256:bc95e2cb136bfdc136c290d84b9da316191e61cf6c4cf4943dc8fcd841e27914:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0NjIwMDU4MjIzNWRkNzZjNTQ3N2Q2YzMyMGRjM2VjYTA4NDIxMDg0NmI3ZGZiZTcyMWE4OTE0OWUyZGIwNzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmZlNGE4Zjk2NjEyZGE3ZTE1N2UwODAwMGZjNjY1MjBjYjlmMWI2NDBkMzNlYTI4ODcyOTc1M2NlYWMwNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5OTgzN2FlZjIwNjIxNDAxMTA0MjYzMzgyZDU3NWU4ZjI3MWUyMDQxMmE3MTFmNjY1NWIyMDU1MWM0ZjQ4MGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3MGExYjZjMTIxZmFjZmUxZTg4ODYxMWZiZjU0ZjYwN2ZlMjc3ZGI5Y2I2NWZmZTY0ZTU0MjA0M2UyZWY2MmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d05ddd6950ed4e91b34d1e9c3ab40876",
+      "statement": "Environment lookup helpers can give a DEEPAGENTS_CODE_-prefixed credential or provider variable precedence over its canonical name, including treating an explicitly empty prefixed variable as suppression of the canonical value.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_env_vars.py#L15-L21",
+          "version": "repo-lines-v1:sha256:a5d5a24954f8c81476da040d0597a64fc1f10094eb3d7de0bb8cd8497e2c337a:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGExZDRjNTA5YTNmNDBlODEzNjEwMDViYTljZWI4YzNiZTk3NjZlYzViM2Q2OTI5ZTI1MDE2ODE3YWJiNzI3YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjFlMzBkZmM0Yjk4NGZlOTc3ZWUzZTE1NzNhMWJkNWNmZmIyODA5YWY1MDI0YzQxNzg5ZTM3NjQ1ZjAzM2I3NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjM1OTg1OGZjMzNhNTk4ZmU1ZDRhMTRkZDM3NGYwMTc4NGE2MjM5N2UzNWQwOGNhM2E5MTkwMjg2NmZiZmVhMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L79-L105",
+          "version": "repo-lines-v1:sha256:323259768dda211ffbd9e7d92e0304ec6751b78c3cb6ac3aabd7910d474e3036:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0ZmIyNTAzNDU5MDRiNjNkNGE5NGVjNTExNWFlYzBjM2E2ZmM1MjA0M2MzZGE3MGVlYzM5ZWM5NjViOWM4OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzZDMzYjAwOTdmZWQ4NzNmZDJiMDVhZGMyMjc1YTc1MTVhMDQyYzdmMjViNDg5MjRjZjAzZTUxMDM0MmFhNTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZmRlMjNkY2Y0MDJkMjliMjJhZWMzMzljYjNmYTIyZTUyMWRjZTk2ZWUwMmVlODA2NTcxNzRjNzZkODk5YmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU1N2M5YjNhYjYxZmI2OTExOTA5Njg5ZWNjM2EzNGRhNGJmMTdjYmExYjlhYTYyNDliNGYyY2NmNjk3ZjdkNjcifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

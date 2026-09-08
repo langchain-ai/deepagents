@@ -795,7 +795,10 @@ class TestWorkspaceRuntime:
         with (
             patch(trust, return_value=False),
             patch.object(ServerConfig, "from_env", return_value=launch_config),
-            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+            pytest.raises(
+                WorkspaceConflictError,
+                match=r"project's resolved policy.*\(trust_project_extensions\)",
+            ),
         ):
             await module._workspace_runtime(binding)
 
@@ -930,32 +933,6 @@ class TestWorkspaceRuntime:
         call = make.await_args
         assert call is not None
         assert call.kwargs["config_override"].trust_project_extensions is False
-
-    async def test_project_policy_drift_names_the_drifted_fields(
-        self, tmp_path
-    ) -> None:
-        """An opaque refusal cannot be told apart from a trust-store read failure."""
-        from deepagents_code.workspace import WorkspaceConflictError
-
-        module = _import_fresh_server_graph()
-        launch = tmp_path / "launch"
-        other = tmp_path / "other"
-        launch.mkdir()
-        other.mkdir()
-        launch_config = ServerConfig(cwd=str(launch), project_root=str(launch))
-        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
-
-        with patch(trust, return_value=True):
-            binding = _bind(launch_config, other)
-
-        with (
-            patch(trust, return_value=False),
-            patch.object(ServerConfig, "from_env", return_value=launch_config),
-            pytest.raises(
-                WorkspaceConflictError, match=r"\(trust_project_extensions\)"
-            ),
-        ):
-            await module._workspace_runtime(binding)
 
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError

@@ -698,57 +698,42 @@ def test_vercel_uses_an_unprefixed_workspace_credential() -> None:
     }
 
 
-def test_vercel_delegates_when_the_workspace_configured_nothing() -> None:
-    """With no resolved credential the SDK keeps owning auth (OIDC)."""
-    with (
-        patch(f"{_FACTORY}.active_environment", return_value={}),
-        patch(
-            "deepagents_code.model_config.resolve_env_var",
-            return_value=None,
-        ),
-        patch.dict("os.environ", {}, clear=True),
-    ):
-        assert _VercelProvider._resolve_sdk_kwargs() == {}
-
-
-@pytest.mark.parametrize(
-    "identifiers",
-    [
-        {"VERCEL_PROJECT_ID": "server-project"},
-        {"VERCEL_TEAM_ID": "server-team"},
-        {"VERCEL_PROJECT_ID": "server-project", "VERCEL_TEAM_ID": "server-team"},
-    ],
-)
-def test_vercel_delegates_inherited_oidc_with_identifiers(
-    identifiers: dict[str, str],
-) -> None:
-    """Inherited project/team IDs do not disable the SDK's OIDC auth."""
-    environment = {"VERCEL_OIDC_TOKEN": "test-oidc-token", **identifiers}
-    with (
-        _bind_environment(environment),
-        patch.dict("os.environ", environment, clear=True),
-    ):
-        assert _VercelProvider._resolve_sdk_kwargs() == {}
-
-
 @pytest.mark.parametrize(
     "server",
     [
-        {"VERCEL_TOKEN": "personal-token", "VERCEL_PROJECT_ID": "prj_1"},
-        {"VERCEL_TOKEN": "personal-token"},
-        {"VERCEL_PROJECT_ID": "prj_1", "VERCEL_TEAM_ID": "team_1"},
+        pytest.param({}, id="empty"),
+        pytest.param(
+            {
+                "VERCEL_OIDC_TOKEN": "test-oidc-token",
+                "VERCEL_PROJECT_ID": "server-project",
+            },
+            id="oidc-project",
+        ),
+        pytest.param(
+            {"VERCEL_OIDC_TOKEN": "test-oidc-token", "VERCEL_TEAM_ID": "server-team"},
+            id="oidc-team",
+        ),
+        pytest.param(
+            {
+                "VERCEL_OIDC_TOKEN": "test-oidc-token",
+                "VERCEL_PROJECT_ID": "server-project",
+                "VERCEL_TEAM_ID": "server-team",
+            },
+            id="oidc-project-and-team",
+        ),
+        pytest.param(
+            {"VERCEL_TOKEN": "personal-token", "VERCEL_PROJECT_ID": "prj_1"},
+            id="personal-token-and-project",
+        ),
+        pytest.param({"VERCEL_TOKEN": "personal-token"}, id="personal-token"),
+        pytest.param(
+            {"VERCEL_PROJECT_ID": "prj_1", "VERCEL_TEAM_ID": "team_1"},
+            id="project-and-team",
+        ),
     ],
 )
-def test_vercel_delegates_an_incomplete_set_inherited_from_the_server(
-    server: dict[str, str],
-) -> None:
-    """An incomplete set the workspace did not pin is the server's own config.
-
-    Personal-scope Vercel accounts leave `VERCEL_TEAM_ID` unset, so demanding
-    the full set turned a working server-level configuration into a startup
-    failure. There is no workspace identity to protect here -- the SDK resolves
-    exactly these values.
-    """
+def test_vercel_delegates_unchanged_server_credentials(server: dict[str, str]) -> None:
+    """Inherited credentials remain SDK-managed, including partial sets and OIDC."""
     with (
         _bind_environment(server),
         patch.dict("os.environ", server, clear=True),
@@ -923,52 +908,23 @@ def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     assert "session" not in client_module.CodeInterpreter.call_args.kwargs
 
 
-def test_agentcore_refuses_to_substitute_server_aws_credentials() -> None:
-    """A workspace that scoped its credentials must not silently fall back.
-
-    Omitting `session` lets the SDK resolve from the server process, so a
-    workspace pinned to a restricted profile would run under the server's
-    broader identity.
-    """
-    mock_boto3 = MagicMock()
-    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: typo")
-
-    with (
-        _bind_environment(
-            {"AWS_REGION": "us-test-1", "AWS_PROFILE": "restricted-profile"}
-        ),
-        patch.dict(sys.modules, {"boto3": mock_boto3}),
-        pytest.raises(ValueError, match="not substituted"),
-    ):
-        _AgentCoreProvider()
-
-
-def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
-    """A half pair is rejected before any boto3 session is built."""
+@pytest.mark.parametrize(
+    ("present", "missing"),
+    [
+        ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        ("AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID"),
+    ],
+)
+def test_agentcore_rejects_a_half_set_access_key_pair(
+    present: str, missing: str
+) -> None:
+    """Either missing credential is named before any boto3 session is built."""
     mock_boto3 = MagicMock()
 
     with (
-        _bind_environment(
-            {"AWS_REGION": "us-test-1", "AWS_ACCESS_KEY_ID": "only-the-id"}
-        ),
+        _bind_environment({"AWS_REGION": "us-test-1", present: "workspace-value"}),
         patch.dict(sys.modules, {"boto3": mock_boto3}),
-        pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY is not set"),
-    ):
-        _AgentCoreProvider()
-
-    mock_boto3.Session.assert_not_called()
-
-
-def test_agentcore_rejects_a_half_set_access_key_pair_missing_the_id() -> None:
-    """The mirrored arm must name the other variable."""
-    mock_boto3 = MagicMock()
-
-    with (
-        _bind_environment(
-            {"AWS_REGION": "us-test-1", "AWS_SECRET_ACCESS_KEY": "only-the-secret"}
-        ),
-        patch.dict(sys.modules, {"boto3": mock_boto3}),
-        pytest.raises(ValueError, match="AWS_ACCESS_KEY_ID is not set"),
+        pytest.raises(ValueError, match=f"{missing} is not set"),
     ):
         _AgentCoreProvider()
 
@@ -1023,33 +979,26 @@ def test_agentcore_blames_the_workspace_for_a_workspace_only_profile() -> None:
         _AgentCoreProvider()
 
 
-def test_modal_rejects_a_half_set_token_pair() -> None:
-    """A `None` client resolves the server's Modal identity, not the workspace's."""
+@pytest.mark.parametrize(
+    ("present", "missing"),
+    [
+        ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"),
+        ("MODAL_TOKEN_SECRET", "MODAL_TOKEN_ID"),
+    ],
+)
+def test_modal_rejects_a_half_set_token_pair(present: str, missing: str) -> None:
+    """An incomplete pair cannot fall back to the server's Modal identity."""
     mock_modal = MagicMock()
 
     with (
-        _bind_environment({"MODAL_TOKEN_ID": "only-the-id"}),
+        _bind_environment({present: "workspace-value"}),
         patch.dict(sys.modules, {"modal": mock_modal}),
-        pytest.raises(ValueError, match="MODAL_TOKEN_SECRET is not set"),
+        pytest.raises(ValueError, match=f"{missing} is not set"),
     ):
         _ModalProvider()
 
     mock_modal.App.lookup.assert_not_called()
     mock_modal.Client.from_credentials.assert_not_called()
-
-
-def test_modal_rejects_a_half_set_token_pair_missing_the_id() -> None:
-    """The mirrored arm must name the other variable."""
-    mock_modal = MagicMock()
-
-    with (
-        _bind_environment({"MODAL_TOKEN_SECRET": "only-the-secret"}),
-        patch.dict(sys.modules, {"modal": mock_modal}),
-        pytest.raises(ValueError, match="MODAL_TOKEN_ID is not set"),
-    ):
-        _ModalProvider()
-
-    mock_modal.App.lookup.assert_not_called()
 
 
 def test_modal_delegates_when_no_token_resolves() -> None:

@@ -591,12 +591,16 @@ class ServerConfig:
         Args:
             cwd: Absolute, canonical working directory for the workspace.
             project_root: Canonical project root, or `None` when the workspace
-                has none. Extension trust is then keyed on `cwd`.
+                has none. The launch cwd uses the server's explicit root when
+                configured. Otherwise, extension trust is keyed on `cwd` when
+                no root exists.
 
         Returns:
             A config whose session policy is unchanged and whose project policy
             is either the launch project's or empty.
         """
+        if self.project_root is not None and _same_workspace_project(self.cwd, cwd):
+            project_root = str(Path(self.project_root).expanduser().resolve())
         launch_root = self.project_root or self.cwd
         target_root = project_root or cwd
         if _same_workspace_project(launch_root, target_root):

@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -19,6 +20,7 @@ from deepagents_code.offload_middleware import OffloadExecution, OffloadResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
+    from pathlib import Path
 
     from deepagents_code.offload_middleware import _PendingArchive
 
@@ -89,6 +91,75 @@ class TestWorkspaceRoute:
         monkeypatch.setenv(
             "DEEPAGENTS_CODE_SERVER_DB_PATH", str(tmp_path / "sessions.db")
         )
+
+    @pytest.mark.parametrize("cached", [False, True])
+    @pytest.mark.parametrize("git_workspace", [False, True])
+    async def test_explicit_launch_root_preserves_policy_and_runtime(
+        self, tmp_path: Path, cached: bool, git_workspace: bool
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api, server_graph
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.workspace import require_thread_workspace
+
+        root = tmp_path / "project"
+        workdir = root / "workdir"
+        workdir.mkdir(parents=True)
+        if git_workspace:
+            (workdir / ".git").mkdir()
+        config = ServerConfig(
+            cwd=str(workdir),
+            project_root=str(root),
+            mcp_config_path=str(root / ".mcp.json"),
+            sandbox_setup=str(root / "setup.sh"),
+            trust_project_mcp=True,
+            trust_project_extensions=True,
+            extension_paths=(str(root / "ext.py"),),
+        )
+        runtime = create_autospec(server_graph.ServerRuntime, instance=True)
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(server_graph, "_workspace_runtimes", OrderedDict()),
+            patch.object(
+                server_graph, "_get_runtime", new=AsyncMock(return_value=runtime)
+            ),
+            patch.object(
+                server_graph, "_make_graphs", new=AsyncMock(return_value=runtime)
+            ) as make,
+            patch.object(
+                offload_api, "get_server_runtime", server_graph._workspace_runtime
+            ),
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+        ):
+            if cached:
+                assert await server_graph.get_server_runtime() is runtime
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/dcode/threads/thread-1/workspace", json={"cwd": str(workdir)}
+                )
+            assert response.status_code == 200, response.text
+            binding = await require_thread_workspace(
+                "thread-1", response.json()["workspace"]
+            )
+            assert binding.workspace_config() == config.to_workspace_payload()
+            assert await server_graph._workspace_runtime(binding) is runtime
+            if cached:
+                make.assert_not_awaited()
+            else:
+                make.assert_awaited_once()
+                assert make.await_args is not None
+                built = make.await_args.kwargs["config_override"]
+                context = make.await_args.kwargs["project_context_override"]
+                assert built.project_root == str(root)
+                assert context.project_root == root
 
     @pytest.mark.parametrize("initial_trust", [False, True])
     async def test_reconnect_after_extension_trust_changes(

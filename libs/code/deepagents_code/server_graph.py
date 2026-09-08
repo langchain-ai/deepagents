@@ -743,16 +743,9 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
         # First pass resolves identity only (cwd plus project root); its
         # fingerprints are digests of an empty policy and are discarded.
         identity = resolve_workspace(config.cwd)
-        # Resolve policy against the root the runtime will actually use.
-        # `resolve_workspace` always derives it with `find_project_root`, while
-        # `get_server_project_context` prefers an explicit
-        # `DEEPAGENTS_CODE_SERVER_PROJECT_ROOT`. Where those disagree, using the
-        # derived root made this binding record scrubbed project policy while
-        # `_get_runtime()` -- which takes no override -- kept the launch
-        # project's MCP servers and extensions live.
-        resolved = config.resolve_workspace(
-            identity.cwd, config.project_root or identity.project_root
-        )
+        # The shared policy resolver honors the explicit launch root while
+        # keeping the durable identity consistent with workspace validation.
+        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
         return resolve_workspace(
             identity.cwd,
             resolved.to_workspace_payload(),
@@ -818,7 +811,11 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
-            project_root=Path(binding.project_root) if binding.project_root else None,
+            project_root=(
+                Path(current_config.project_root)
+                if current_config.project_root
+                else None
+            ),
         )
         runtime = await _make_graphs(
             config_override=current_config,

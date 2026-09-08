@@ -106,10 +106,24 @@ class HistoryVectorIndex:
         """
         self.stopping = True
         self.wake.set()
-        tasks = [task for task in (self.task, *self._pending) if task is not None]
-        if not tasks:
-            return
-        _, unfinished = await asyncio.wait(tasks, timeout=_CLOSE_TIMEOUT_SECONDS)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CLOSE_TIMEOUT_SECONDS
+        # `_pending` is not stable here. `stopping` is only checked at the top of the
+        # worker's loop, so a worker already inside an iteration still registers its
+        # Store task afterwards - and `_batch` shields that task, so cancelling the
+        # worker does not stop it. A single snapshot would let `close()` return while
+        # a write is in flight, and the caller then tears the Store down underneath it.
+        while True:
+            tasks = [
+                task for task in (self.task, *self._pending) if task is not None and not task.done()
+            ]
+            remaining = deadline - loop.time()
+            if not tasks or remaining <= 0:
+                break
+            await asyncio.wait(tasks, timeout=remaining)
+        unfinished = [
+            task for task in (self.task, *self._pending) if task is not None and not task.done()
+        ]
         if unfinished:
             logger.warning(
                 "History vector indexing did not stop within %ss; abandoning the active batch "

@@ -436,23 +436,26 @@ class DeepAgentRuntime:
         return graph
 
     async def stop(self) -> None:
-        """Release runtime resources.
+        """Release runtime resources once no worker can still be writing.
+
+        Teardown is deliberately skipped when cancellation fails: a worker that
+        outlived its wait is still running, and closing the checkpointer under it
+        would fail or half-finish its writes. Leaking those resources is the
+        better of the two, and `TalonHost.stop` treats the raise as a component
+        failure so shutdown still completes.
 
         Raises:
             RuntimeError: If a background worker outlived its cancellation wait.
-                Graph and checkpointer teardown still runs before the raise.
         """
-        try:
-            if not await self.background.cancel():
-                msg = "Background subagents did not stop; runtime resources remain open"
-                raise RuntimeError(msg)
-        finally:
-            self._graph = None
-            cleanup = getattr(self.checkpointer, "close", None)
-            if callable(cleanup):
-                result = cleanup()
-                if isinstance(result, Awaitable):
-                    await result
+        if not await self.background.cancel():
+            msg = "Background subagents did not stop; runtime resources remain open"
+            raise RuntimeError(msg)
+        self._graph = None
+        cleanup = getattr(self.checkpointer, "close", None)
+        if callable(cleanup):
+            result = cleanup()
+            if isinstance(result, Awaitable):
+                await result
 
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Append an interruption marker after the latest committed checkpoint."""

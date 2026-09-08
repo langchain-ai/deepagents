@@ -1352,7 +1352,7 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
     assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time", "get_agent_tools"]
 
 
-async def test_stop_releases_the_checkpointer_when_workers_refuse_to_stop(
+async def test_stop_keeps_resources_open_while_a_worker_may_still_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     closed: list[str] = []
@@ -1376,10 +1376,21 @@ async def test_stop_releases_the_checkpointer_when_workers_refuse_to_stop(
     async def refuse(_owner: str | None = None) -> bool:
         return False
 
+    async def accept(_owner: str | None = None) -> bool:
+        return True
+
     monkeypatch.setattr(runtime.background, "cancel", refuse)
 
     with pytest.raises(RuntimeError, match="Background subagents did not stop"):
         await runtime.stop()
+
+    # A worker outlived its wait, so it may still write: the saver stays open and
+    # the graph stays bound rather than being torn down underneath it.
+    assert closed == []
+    assert runtime._graph is not None
+
+    monkeypatch.setattr(runtime.background, "cancel", accept)
+    await runtime.stop()
 
     assert closed == ["closed"]
     assert runtime._graph is None

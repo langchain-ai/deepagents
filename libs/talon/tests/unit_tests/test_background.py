@@ -472,3 +472,25 @@ async def test_background_worker_keeps_scoped_state_but_not_the_authorization_ha
 
     (job,) = background._jobs.values()
     assert job.result == f"{scope}|{origin}|None"
+
+
+async def test_host_shutdown_completes_when_a_worker_outlives_cancellation(tmp_path, monkeypatch):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(monkeypatch, child, [AIMessage(content="Hello")])
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=runtime, channels=[channel])
+    await host.start()
+
+    async def refuse(_owner=None):
+        return False
+
+    monkeypatch.setattr(runtime.background, "cancel", refuse)
+    await host.stop()
+
+    # The runtime raises rather than closing resources a live worker may write to,
+    # and the host treats that as a component failure so shutdown still finishes.
+    assert channel.stopped is True
+    assert host._stopped.is_set()
+    assert runtime._graph is not None

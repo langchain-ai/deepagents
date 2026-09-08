@@ -301,8 +301,12 @@ class TalonHost:
         try:
             for channel in self.channels:
                 self._bind_channel(channel)
-                await channel.start()
+                # Tracked before starting, not after: a channel that raises partway
+                # through `start()` may already hold a subprocess or polling tasks,
+                # and only its own `stop()` releases them. `_stop_component`
+                # tolerates a channel that never got that far.
                 started.append(channel)
+                await channel.start()
             if self.scheduler is not None:
                 await self.scheduler.start()
                 scheduler = self.scheduler

@@ -127,6 +127,24 @@ class FailingStartChannel(RecordingChannel):
         raise RuntimeError(message)
 
 
+class PartiallyStartingChannel(RecordingChannel):
+    """Channel that acquires a resource and then fails, like the WhatsApp bridge."""
+
+    def __init__(self, provider: str = "broken") -> None:
+        super().__init__(provider=provider)
+        self.bridge_running = False
+
+    async def start(self) -> None:
+        self.started = True
+        self.bridge_running = True
+        message = "bridge did not become ready"
+        raise RuntimeError(message)
+
+    async def stop(self) -> None:
+        self.bridge_running = False
+        await super().stop()
+
+
 class FailingRecoveryAgent(BlockingAgent):
     async def recover_interrupted(self, conversation_id: str) -> None:
         self.recoveries.append(conversation_id)
@@ -1512,7 +1530,7 @@ async def test_start_unwinds_started_components_when_a_channel_fails(tmp_path: P
 
     assert first.started is True
     assert first.stopped is True
-    assert second.stopped is False
+    assert second.stopped is True
     assert agent.stopped is True
     assert scheduler.started is False
     assert host.running is False
@@ -1704,3 +1722,26 @@ async def test_channel_keyed_threads_still_reply_to_the_channel_conversation(
         assert channel.sent == [("chat", "reply:hello")]
     finally:
         await host.stop()
+
+
+async def test_start_releases_the_channel_that_failed_partway_through(tmp_path: Path) -> None:
+    failing = PartiallyStartingChannel()
+    never_reached = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[failing, never_reached],
+        scheduler=RecordingScheduler(),
+    )
+
+    with pytest.raises(RuntimeError, match="bridge did not become ready"):
+        await host.start()
+
+    # The failing channel is the one holding a subprocess, so it is the one that
+    # must be stopped; nothing else got as far as starting.
+    assert failing.bridge_running is False
+    assert failing.stopped is True
+    assert never_reached.started is False
+    assert agent.stopped is True
+    assert host.running is False

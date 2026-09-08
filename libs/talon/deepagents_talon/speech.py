@@ -45,7 +45,7 @@ class VoiceTranscriber(Protocol):
 
 
 class _LocalSpeechPipeline(Protocol):
-    def __call__(self, audio_path: str) -> object:
+    def __call__(self, audio_path: str, /) -> object:
         """Transcribe one audio path."""
 
 

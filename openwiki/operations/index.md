@@ -1,5 +1,5 @@
 # Files
 
-- [Cost Tracking, Sessions & Runtime Stats](cost-and-sessions.md) - How dcode produces display-only model-cost estimates, prevents streamed usage revisions and replay from inflating request statistics, and persists resumable thread state through LangGraph SQLite checkpoints.
-- [Development & Build Operations](development.md) - Package-local development, validation, lockfile maintenance, and release operations for the independently versioned packages in this monorepo. Use this guide to select the correct Makefile entrypoint and avoid unintended release fan-out.
-- [Security & Threat Model](security.md) - Consolidated trust and threat-model boundaries across the deepagents SDK, the deepagents-code (dcode) coding agent, and the Talon runtime, explaining where enforcement actually happens and where it does not.
+- [dcode Cost Tracking & Session Operations](cost-and-sessions.md)
+- [Development, Build & Release Operations](development.md) - Package-local setup, validation, lockfile maintenance, CI, and release procedures for the independently versioned Python packages in this monorepo. Use the package Makefile as the command authority and follow release safeguards to prevent unintended package fan-out.
+- [Security Boundaries & Runbook](security.md) - Operational trust boundaries and safeguards for Deep Agents, dcode, and Talon, including backends, workspace bindings, extensions, MCP credentials, and channel exposure. It distinguishes implemented controls from deployer responsibilities and absent isolation.

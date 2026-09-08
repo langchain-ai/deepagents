@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3a0c444d2b3cc392a5d0c3b909480d4f927c072d3dd138f6f606c5d5fa9800f1",
+  "pageVersion": "sha256:f9c91bf4db9dfe503fb2f36719fe497ebe7b28b1bef0fd3595a104f4e962490f",
   "claims": [
     {
       "id": "claim_9e14bfcc46384dcc9a94586a9ab62f88",
@@ -213,10 +213,80 @@
           "version": "repo-lines-v1:sha256:8c39f1772e2f8bd518fec3b864b3024f1a1e784bec26b751fdba082cabdc14fe:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MjRmNjc1NWRiNGVhNDZhZmIwOTcyMjE1ZWY2MjBhZDE5NmU0OGZlZTc1MjI0NTlkMGMyMDg1ZmM4N2YxZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5MWNiOTgxMTgzMDNlNzUwY2M5OTkxMDM4YmMwM2EzMjEyNDRkNTRmM2FkZmRjYjA0OTFhNzE5OTgyMTFlYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3MmU1ZTc3YzFmN2U1ZjAxMDU2NDNhNjRjZjc3ZTY2NDhhNDAyNDUwN2RhZGQzNmVkNWJhNTI0MDY4M2U2MWUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bbb9e57713eb472282e78ffd883e5876",
+      "statement": "The temporary LangGraph runtime used by TUI and headless clients listens on loopback `127.0.0.1` with an ephemeral port by default; after the `agent` graph is ready, the client creates and workspace-binds a `RemoteAgent` with a configuration fingerprint.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L295-L329",
+          "version": "repo-lines-v1:sha256:8e8209a56e1789cf034fd9f9225ac1be70fcaef1f3f02b8f819674e52a9b0c6a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NWExZGVkOGI1MDNlYTU5ZDRiYjRiOWQ3MmUzMjg1OTdmMTkwZGM2NjE1MDFjZDQ3MjAzMWNmODg5OGNkODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhNTVlZTY1MDAzYzYyMzU5N2RlY2ZmOGZiYTU4MjQzMzc4MWNkNjY1NzhiYWNlYzAyNjZkOGRiNzIyY2Q2NzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmMjdjM2MzOGNjNGMzYWY1NDJhMjI3OWU2ZWNhZmJhMTg3YTEyYjVhMGUzMGE0YTU1NDRlOGZiMzFiYmYzY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNTI5MjZjZGQxODY0MDhhZmNkNzRiNjdlNDlmYThhYzdlYjg1ZDRiNWRlNjcxMjJkZmE4Mjk2MDQxMTg2NDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py#L389-L461",
+          "version": "repo-lines-v1:sha256:1efe802ea5d2bb79e40569a0231edb52ee3d039897a436f238f4e3bd3901a3a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNDE4ZWU1YTUyZWIzMDdlNjFhNDdmOTRjMTZiZmMzNDQ3ZDczOWNiODE4NmVlNzNkOGQ2M2IwY2Y1ZmUyY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1ZGJjMDZhMDk5YmVkMTAxNWMwNDdhN2VmZWRkYTUzNzU2MzNlZjY5ZjkxZGM1NjQ3MGM3NTk2N2UzZTI4ZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmZDlhNTE0MTI3ODI1MjYwM2Q1ODdlZDA1MWFkNWRjNWUxNWQ2MzNmYzgzMTA2NmEyZmQ5MDA0ZWZkY2VlMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4MTE4OTg3MzJmYzJlZjM2NDk4Y2Q2ZjYyMzIwMDY4ZjQ4Y2VjNjQyZDcyZTgyZTJlZTAxMWViODczYWQ3NmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4dcc53ee1a9e4cf487a40405d36955cb",
+      "statement": "ACP mode does not use the temporary loopback `server_session`: it constructs a model, loads MCP tools, opens the SQLite checkpointer, builds agents for ACP session contexts, and serves the supplied ACP server through `run_acp_agent`, with MCP cleanup in `finally`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3429-L3656",
+          "version": "repo-lines-v1:sha256:97dda1e2fc567acc936b76086d827040d7e1de8a822069d54032bfad17f8def0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjI4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwN2ExZDMxNTFhNmI1NWRjMjY0YTM5NDllNmZmYTc4NGU1NzQ5NmIzOWRlZWU1ZjNiMDQzN2YyMWIzMWQxYzg4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MjA4Mzc1NDIzMjU0MmE4NGNkYTFiNzU0YzdkYTA3YTAyYzA1OThhMDExMmI0OWMyODRlOGMxZTE3ZjRmZmNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzIyMzEwNmZkODc0MmI3MGVhMjMzZjlkYzM1OWY0YjAyYmJiMDY5YjcyODNlZWY3NjI0OTk1MTZiZDdiOWM4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMWI2ZjIwNTE1NjAxMDBmMDQ1ZmMxOWMzNmM1ZGU0OWE3ZTY2MWUyYzAxZTY5NzQzNjk3MDg3NWYwY2E1NzMyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_21683a605f0a466897563a61d52583cc",
+      "statement": "The server-side LangGraph graph factory reads the configuration schema serialized by the client through environment variables, then resolves the workspace environment, model, and tool set before compiling the runtime graph.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L1-L10",
+          "version": "repo-lines-v1:sha256:e332b3c87e281e6a0029daf7fbb9c0273b04696649cf9cdb67b4a8cdce0c51e3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4OThkYzdkMzdhNTJmMzE5YjQ3MjQyYzRkMTNmN2U5YmVkZDQ2OThlOWJhNzIwMDE0ODA2YTgxZGUwNTA1NWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L244-L299",
+          "version": "repo-lines-v1:sha256:490abb5c3d7d708d29bd0f25e0596ff47e11d14e575f5da0804fcf124b269399:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ODQwMDMzNGNiODYyMGJhNjgxNDUxODFiNmE2YmE4YmIyMzNiMmY5N2UxYTA3NGZkNTJlMWYxZTk5YWU2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlNGU1YzBlYWM5YTgxNjdkZTYzOTAxNGZhZjQ3ODVmZTIzMDgxOWJmZDE1M2YzZWVhY2M5MjFhOTVmNTI5YjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiODUzZDk2ZmQwZDc0YjNhNmFiYjQ4NmVjY2E2NTJmNDQ0YzUxYTU2NjQyMDM2MDIyZThjYzBiNDE3NTc3ZjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L356-L386",
+          "version": "repo-lines-v1:sha256:90a288f1a3c3c3aa61bd31ae7f2cfd3be98ffce791d47b62b6d08b2267666e6b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyM2VlNjViZDgyNGY5N2U4MjdiOWNkYTFlNmJmMmEzZDVhYTBiZTdiNWY0ODYxMjBjYjc0YzJmODBkNjM1ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4MmM1Zjk1NmI4YzM4ZGZhNzM2MDM5ODc0MWI0YjVjMjg0MTIyZTY5ZjFjZGVhNTY3ZDA5ZjBhMjQ0OWMwMmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNjJkMjEyYjE5ZDdjMTU5YTI0MDAyNWE3MGNkYzU2NTZlOTU0YzljNGJlOTVhNDVlMjQ4NTc4YWVjYTBiNGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzY2YwYjkwZTRjOTQ5NjZlMzA4OTY3MWY3MWU1ZmYyZDlhZTE2ODNlMjM1NmIyNDkxZGMyZDk0MjNhZjZmYjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_65ba6f7a27324b8e81226e5b81bb37a2",
+      "statement": "Piped stdin is capped at 10 MiB and is routed by precedence to an existing headless task, an interactive initial prompt, an auto-detected startup skill prompt, or a new headless task; explicit `--stdin` requires non-terminal stdin.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3659-L3827",
+          "version": "repo-lines-v1:sha256:6e965cc723319dcb442717cc0efb9e2e4ece3c701ea1f788e125928685e7c73f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNzcxZTcwY2RkOWUyOWNjYWIxODZiNThiZjE4YTJkODlhYTc4MDlhYWYwY2RiOWRkMWRjZDViMjkwNTliMGIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkMGIyZGQ5NDM0NWE3ZWUyZjcxZmVlNWU4OTI5ZjBhMjFjZjBjMjU4NTFlZjM1OWIxZTk0NGY2ZTc5ZWQwOTQ5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MzFjN2RkMmY3OWQ3NjQzYmQ0OTkyYzUzNDcyMjBiMzIyYjJjYmMxMTcwNDNlMjlhYzAyNTg1N2U4ZjE4M2NmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_390522d940a44b89aee1c25426df5ed9",
+      "statement": "ACP dependency import failures and MCP configuration loading failures report exit code 1 before serving, while an exception during ACP serving is reported as an ACP server failure and also yields exit code 1.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3544-L3574",
+          "version": "repo-lines-v1:sha256:5a363f8faab825f06ba7231a705cb2e1717c10296168ccff094c32548e2a2465:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1YmM5NzQyY2Y1M2ExMTRhYmEzY2Q5MTFjZDBmMzQ0MDczNDJiZjc5NWMwY2VhZTE3OTNhNTZlZDc3M2FlZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMDg2NmUxYmNjNWFiNzZlM2VmNTkwMTJkMGFkMzlhNjg3YWJlMDAyM2I0MzhhY2IxMTMwYTE4ODI1ZTgxOTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZDZjMTljNzhlNmYwYjY4YTkwM2JlNGFiM2IwZDFmYTBiODM4NTM0ODkwYzEwMmYyNjMwNDNlNDQ1NDc0M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3YmRjMjZiZDI3NGQxYzkzNjk0MWQxMWZiZWQ2OWE1ZjgxZjViYmNmNmUwZGI2ZjI5YzE2MzMxMjc1MDA4MGYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3642-L3656",
+          "version": "repo-lines-v1:sha256:4d5d7b9ede7b13b9eba2dc52815a24fb06ed01948884d3af9d388d119cdc77d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2YTU4YTI5MGMxMGM0MzQ0NTAxODBhZmEwMWI1MzZjNjIxODE2NTU5OTU1ZTE4NTM3NjI5YzlkMWQwYzQ1ODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyMDgzNzU0MjMyNTQyYTg0Y2RhMWI3NTRjN2RhMDdhMDJjMDU5OGEwMTEyYjQ5YzI4NGU4YzFlMTdmNGZmY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ3ZTdhNTRlOWRkZDM3ZTVmMjYxNWMxZmQ5M2U3MGQwNzk0ZTkzZjJiNTI5MzZlMTc3MjQzZTNlMTk2YTNiZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxYjZmMjA1MTU2MDEwMGYwNDVmYzE5YzM2YzVkZTQ5YTdlNjYxZTJjMDFlNjk3NDM2OTcwODc1ZjBjYTU3MzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5448-L5493",
+          "version": "repo-lines-v1:sha256:fc8be55f18ca307c5922ac2eb89fe25362689bde6163ab2cb293adecb7da5753:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlZmM5YzhkODU2YzBjYWJjMGZmZmFkOGRiMTZhNjZjZWM4YzUxNDk2MGI1ZjZjMTE0MDgwZWY4ZGE0NThmYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZWY0NmYxZTUxOThkMGExOWViNDA3M2FhYTM4MDQ3ZmEzMGVjMmYxYWFkMGNjYjc3NTY4OWFkNzFlMzgyMjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyZjEzNTc4NTFjODQwMmMzYTI0MzdlYWI0NzhkM2M1MjllZDM3ZWYwNGNlYTk4ZGExYTU0NjM0YzQ2MDIzZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3NWZlNTBjZjE3OTA1ZDU3OTA5ZGIzOTVlYzcwMmE5OWUwMGVmNjAyNmMxNTgwMGUxYTFkZTM0NzYwMWZiZGQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

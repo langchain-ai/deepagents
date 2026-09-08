@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e61314301028aff6bd57bf4381419d63a7132883c6cb581e05b009b525374faf",
+  "pageVersion": "sha256:de0b39bf3730a2e3661d809916c363e76a1441e6292131ee9db32c0a34995565",
   "claims": [
     {
       "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
@@ -363,10 +363,40 @@
           "version": "repo-lines-v1:sha256:1e381a42bd184350870a68e5f52434bbb74e19f6a909f98f8995c6d962b351f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjYWUxYjZiMjIzYWJlMzc2NmUxZmE5OTg5MmMxOGM0MjQwYTZiOTdlMjQxMjAxY2IwOTQxYWRhMDUyNDI4ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYWI5ODliYmRjZjNmYjE2YzRlMGNjNzE1Nzc4Mjk1ZTlkYjMwOTk0YzBiZDhmYmE0ZTE1YzA4ZmNiNjdmYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiZWYzMmJiMzRiMjhiZWJiNTlmYjYzMDk0Y2NiYjVlOGFmMDgzNGMzNTI2YWRlYTQyYjg3MTRmMWFjZmE0MTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_9e0a0ce2abe649cd80a98591b82888ff",
+      "statement": "The normal libs/evals test target runs pytest against tests/unit_tests with non-Unix sockets disabled, while make evals separately invokes the real-model tests/evals suite.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/Makefile#L9-L21",
+          "version": "repo-lines-v1:sha256:d490870fc89445ba3cf7f2ac87bc2cb3da12dfb6959be233da8d7290a635e42d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjZTRiYmEyZjZhYWE3NTcwNDA4MWUxZTcyNGM3NmViZjg4MDMyZjgzOTUwZGQ0NmI3MGNhYzJlMDIxOGI4ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhMDg0NjMxY2FlZTVmN2NjMjZjMmNmNTM2YTM4NjNhYjdiNTgzNmI1MDFjYzBlYjAxNTEyOGRlMWQwN2VjMjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5bc0d428a1ed456bb9d9e8d8302a893b",
+      "statement": "Within one run_trials invocation, trials run sequentially because concurrent in-process LangSmith experiment creation and provider rate limits are unsafe; CI instead parallelizes separate jobs and merges reports with aggregate-only.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/scripts/run_trials.py#L3-L16",
+          "version": "repo-lines-v1:sha256:d000a7a4c7a7aece931b8195c0ed9075cc235695a14a2f63b70c735b64d28a2b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1OWQzODgxNmZlNzE0MzNiOGVhMGM1NDhjOGFlYjVlNTg4YmQyZWQzNzAxZjk0YTM4M2RlYjhiNzU5YmQyMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3MmZiZjUyNjFiN2Y5Mjk0NzdlM2M0YzczNzg3NTc5YTEwMjQ0NWE0ZTc3ZmUzZmVlNmU0OTUyZTgyYjgwNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5MGFlOTRkMzY3YTYwNzhmMDRlZDcyNDI1MjU1MDYxZTRmMjQ3ZmI4ODkzZjJlNTMwMjcyNmJlM2I5Yjg2NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8deca7ea344043ff9edb122681d98c42",
+      "statement": "The Harbor LangGraph agent removes provider and LangSmith credential variables while performing shell operations and restores them afterward, preventing task commands from inheriting those secrets.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L61-L93",
+          "version": "repo-lines-v1:sha256:92a62124152af4e8b29cf07ae0857e92b6e5ced1e9db2342fc0c709b0ab2785e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZDA3OGYwNWQ1NzJiNDI3MzBlYWZkZTQ0ZDRhMjMxNmI4NzljNDM3Yjk4NWRmOGZlNDVhMTQ1ZjViYWViNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTFhNTM5NTJiYmYxMzJmYjlkMjJkNGU5MDllOWUwYThlMTdjMzMwYmFhNGIwYWY5Mjc5ODFkM2FiMDc0ZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1MTBmZDhkMTE5YzNmNmNjZjgzYzhiYzJhNWU5NWQwMDIxMzJiM2JkM2Q5ZGY3YWYxNzIyMzdkNDI4MjIxMTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyN2JhNGQwNDU2ZGU0OWYxM2I5NGRjZWM1ZDEwM2RmZjM2YWE3NDZkMzU1MjllOTgyZWRmNTRmMzdmNTU5ZDQifQ"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.4.0",
-    "at": "2026-08-26T21:35:57.774Z"
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-07T08:06:36.835Z"
   }
 }

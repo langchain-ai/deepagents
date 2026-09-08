@@ -368,6 +368,8 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -375,6 +377,8 @@ class StoreBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset`.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -396,13 +400,15 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        return slice_read_response(file_data, offset, limit)
+        return slice_read_response(file_data, offset, limit, cursor=cursor)
 
     async def aread(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Async version of read using native store async methods.
 
@@ -423,7 +429,7 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        return slice_read_response(file_data, offset, limit)
+        return slice_read_response(file_data, offset, limit, cursor=cursor)
 
     def write(
         self,

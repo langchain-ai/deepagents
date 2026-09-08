@@ -486,7 +486,7 @@ Mirrors the `MAX_OUTPUT_BYTES` literal in `_READ_COMMAND_TEMPLATE`.
 TRUNCATION_MSG: Final = (
     "\n\n[Output was truncated due to size limits. "
     "This paginated read result exceeded the sandbox stdout limit. "
-    "Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
+    "Continue reading with the returned continuation cursor or a smaller limit to inspect the rest of the file.]"
 )
 """Sentinel appended to `read()` content when `MAX_OUTPUT_BYTES` is hit."""
 
@@ -653,18 +653,61 @@ files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
-import codecs, os, stat as _stat, sys, base64, json
+import codecs, os, stat as _stat, sys, base64, json, zlib
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
 MAX_LINE_COUNT_BYTES = 1024 * 1024
+MAX_LINE_LENGTH = 5000
+MAX_CURSOR_ROWS = 100
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
-    'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'
+    'Continue reading with the returned continuation cursor or a smaller limit to inspect the rest of the file.]'
 )
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
+
+
+def make_cursor(size, mtime_ns, line_index, char_offset, line_text):
+    identity = format(zlib.crc32((str(size) + ':' + str(mtime_ns)).encode()) & 0xFFFFFFFF, '08x') + format(mtime_ns & 0xFFFFFFFF, '08x')
+    line_hash = format(zlib.crc32(line_text.encode('utf-8')) & 0xFFFFFFFF, '08x')
+    return 'v1:' + str(line_index) + ':' + str(char_offset) + ':' + identity + ':' + line_hash
+
+
+def readline_universal(f, max_bytes):
+    out = bytearray()
+    overflow = False
+    while True:
+        pos = f.tell()
+        chunk = f.read(262144)
+        if not chunk:
+            if not out and not overflow:
+                return None
+            return bytes(out), False, overflow
+        i_n = chunk.find(b'\\n')
+        i_r = chunk.find(b'\\r')
+        ends = [x for x in (i_n, i_r) if x != -1]
+        if not ends:
+            if not overflow:
+                out += chunk
+                if len(out) > max_bytes:
+                    overflow = True
+            continue
+        i = min(ends)
+        if not overflow:
+            out += chunk[:i]
+        if chunk[i:i+1] == b'\\r':
+            if i + 1 < len(chunk):
+                term_len = 2 if chunk[i+1:i+2] == b'\\n' else 1
+            else:
+                nxt = f.read(1)
+                term_len = 2 if nxt == b'\\n' else 1
+            f.seek(pos + i + term_len)
+        else:
+            f.seek(pos + i + 1)
+        return bytes(out), True, overflow
+
 
 try:
     st = os.stat(path)
@@ -689,9 +732,6 @@ try:
     with open(path, 'rb') as f:
         raw_prefix = f.read(8192)
 
-    # The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
-    # emoji is 4); the incremental decoder buffers a trailing partial sequence
-    # instead of raising, so legitimate text isn't misclassified as binary.
     is_binary = False
     try:
         codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
@@ -706,113 +746,169 @@ try:
 
     offset = {offset}
     limit = {limit}
+    cursor = base64.b64decode('{cursor_b64}').decode('utf-8') if '{cursor_b64}' else None
 
-    # No lines requested: no line range to report. Reached whenever a caller
-    # asks for zero lines, including a negative limit that _build_read_cmd
-    # floored to 0; without this the empty window would fall through to the
-    # offset-exceeds-length error below. Checked here, after the not-found,
-    # directory, empty-file, and binary branches, so real failures and the
-    # empty-file reminder are still reported first.
-    if limit <= 0:
+    identity = format(zlib.crc32((str(st.st_size) + ':' + str(st.st_mtime_ns)).encode()) & 0xFFFFFFFF, '08x') + format(
+        st.st_mtime_ns & 0xFFFFFFFF, '08x'
+    )
+    c_line, c_char = None, None
+    if cursor is not None:
+        fields = cursor.split(':')
+        valid = (
+            len(fields) == 5
+            and fields[0] == 'v1'
+            and fields[1].isdigit()
+            and fields[2].isdigit()
+            and len(fields[3]) == 16
+            and all(ch in '0123456789abcdef' for ch in fields[3])
+            and len(fields[4]) == 8
+            and all(ch in '0123456789abcdef' for ch in fields[4])
+        )
+        if valid:
+            c_line, c_char = int(fields[1]), int(fields[2])
+            valid = c_line <= 10 ** 9
+        if not valid:
+            print(json.dumps({{'error': 'invalid_cursor: expected a cursor returned by a previous read of this file'}}))
+            sys.exit(0)
+        if fields[3] != identity:
+            print(json.dumps({{'error': 'stale_cursor: the file changed since this cursor was issued; re-read without a cursor'}}))
+            sys.exit(0)
+
+    if limit <= 0 and cursor is None:
         print(json.dumps({{'encoding': 'utf-8', 'content': '', 'no_lines_requested': True}}))
         sys.exit(0)
+    if cursor is not None:
+        limit = min(MAX_CURSOR_ROWS, (MAX_OUTPUT_BYTES - len(TRUNCATION_MSG.encode('utf-8'))) // (2 * MAX_LINE_LENGTH + 1))
 
+    target_line = c_line if cursor is not None else offset
+    f = open(path, 'rb')
     line_count = 0
-    returned_lines = 0
-    truncated = False
-    parts = []
-    current_bytes = 0
+    while line_count < target_line:
+        if readline_universal(f, MAX_LINE_COUNT_BYTES) is None:
+            break
+        line_count += 1
+    res = readline_universal(f, MAX_LINE_COUNT_BYTES)
+    if res is None:
+        f.close()
+        print(json.dumps({{'error': 'Line offset ' + str(target_line) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+        sys.exit(0)
+    line_bytes, terminated, overflow = res
+    if overflow:
+        f.close()
+        print(json.dumps({{'error': 'resume line exceeds the maximum supported size of ' + str(MAX_LINE_COUNT_BYTES) + ' bytes'}}))
+        sys.exit(0)
+    line_text = line_bytes.decode('utf-8')
+    if cursor is not None:
+        if c_char > len(line_text):
+            f.close()
+            print(json.dumps({{'error': 'stale_cursor: the file changed since this cursor was issued; re-read without a cursor'}}))
+            sys.exit(0)
+        if format(zlib.crc32(line_text.encode('utf-8')) & 0xFFFFFFFF, '08x') != fields[4]:
+            f.close()
+            print(json.dumps({{'error': 'stale_cursor: the file changed since this cursor was issued; re-read without a cursor'}}))
+            sys.exit(0)
+
     msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
     effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+    row_budget = limit
 
-    at_eof = False
-    with open(path, 'r', encoding='utf-8', newline=None) as f:
-        while line_count < offset:
-            raw_line = f.readline()
-            if raw_line == '':
-                at_eof = True
+    parts = []
+    row_offsets = []
+    current_bytes = 0
+    next_cursor = None
+    budget_exhausted = False
+    truncated = False
+    index = target_line
+    end_index = target_line
+    pos = c_char if cursor is not None else 0
+    line = line_text
+    hit_eof = False
+    while True:
+        cut = False
+        while True:
+            if len(parts) >= row_budget:
+                cut = True
+                budget_exhausted = True
+                if pos < len(line):
+                    next_cursor = make_cursor(st.st_size, st.st_mtime_ns, index, pos, line)
                 break
-            line_count += 1
-
-        while not at_eof and returned_lines < limit and not truncated:
-            raw_line = f.readline()
-            if raw_line == '':
-                at_eof = True
-                break
-            line_count += 1
-            line = raw_line.rstrip('\\n').rstrip('\\r')
-            piece = line if returned_lines == 0 else '\\n' + line
-            piece_bytes = len(piece.encode('utf-8'))
+            chunk = line[pos:pos + MAX_LINE_LENGTH]
+            prefix = '' if not parts else '\\n'
+            piece_bytes = len(prefix.encode('utf-8')) + len(chunk.encode('utf-8'))
             if current_bytes + piece_bytes > effective_limit:
                 truncated = True
-                remaining_bytes = effective_limit - current_bytes
+                remaining_bytes = effective_limit - current_bytes - len(prefix.encode('utf-8'))
+                shown = 0
                 if remaining_bytes > 0:
-                    prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
-                    if prefix:
-                        parts.append(prefix)
-                        current_bytes += len(prefix.encode('utf-8'))
+                    partial = chunk.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                    if partial:
+                        parts.append(prefix + partial)
+                        row_offsets.append((index - target_line, pos))
+                        current_bytes += len(prefix.encode('utf-8')) + len(partial.encode('utf-8'))
+                        shown = len(partial)
+                next_cursor = make_cursor(st.st_size, st.st_mtime_ns, index, pos + shown, line)
+                cut = True
                 break
-
-            parts.append(piece)
+            parts.append(prefix + chunk)
+            row_offsets.append((index - target_line, pos))
             current_bytes += piece_bytes
-            returned_lines += 1
+            pos += len(chunk)
+            if pos >= len(line):
+                break
+        end_index = index
+        if cut:
+            break
+        index += 1
+        if len(parts) >= row_budget or f.tell() == st.st_size:
+            if f.tell() == st.st_size:
+                hit_eof = True
+            break
+        res = readline_universal(f, MAX_LINE_COUNT_BYTES)
+        if res is None:
+            hit_eof = True
+            break
+        line_bytes, terminated, overflow = res
+        if overflow:
+            next_cursor = make_cursor(st.st_size, st.st_mtime_ns, index, 0, '')
+            break
+        line = line_bytes.decode('utf-8')
+        pos = 0
+    f.close()
 
-        # The page can fill (returned_lines == limit) exactly at EOF without the
-        # loop readline ever returning an empty string. Detect that via position:
-        # after reading whole lines from a UTF-8 handle the decoder state is clean
-        # at a line boundary, so tell() is the raw byte offset and equals st_size
-        # at EOF. Worst case if this ever misjudges is a surfaced offset-exceeds-
-        # length error on the next re-read (large files only, where total_lines
-        # stays None) -- never a silent skip, since a false at_eof of True cannot
-        # arise (a clean or packed tell() past EOF cannot equal st_size).
-        if not at_eof:
-            at_eof = f.tell() == st.st_size
-
-    if returned_lines == 0 and not truncated:
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
-        sys.exit(0)
-
-    # When the page already reached EOF, reuse its scan's count for free.
-    # Otherwise re-scan for the total only when the file is small enough that
-    # the extra pass stays bounded; surrogateescape keeps an invalid byte after
-    # the requested page from invalidating content that was decoded successfully.
-    if at_eof:
+    total_lines = None
+    if st.st_size <= MAX_LINE_COUNT_BYTES:
+        pf = open(path, 'rb')
+        line_count = 0
+        while readline_universal(pf, MAX_LINE_COUNT_BYTES) is not None:
+            line_count += 1
+        pf.close()
         total_lines = line_count
-    elif st.st_size <= MAX_LINE_COUNT_BYTES:
-        with open(path, 'r', encoding='utf-8', errors='surrogateescape', newline=None) as f:
-            total_lines = sum(1 for _ in f)
-    else:
-        total_lines = None
+    elif hit_eof:
+        total_lines = index
 
     text = ''.join(parts)
     if truncated:
         text += TRUNCATION_MSG
 
-    # A byte cap can cut the final rendered line mid-way; that partial line is
-    # deliberately not counted toward returned_lines (see the truncation
-    # branch), so next_offset resumes at its start and the whole boundary line
-    # is re-read. If even the first requested line overflows the cap no full
-    # line was returned: advance by one so the read still makes progress instead
-    # of looping on the same page (that line's tail is unreadable via line
-    # offsets).
-    if truncated and returned_lines == 0:
-        returned_lines = 1
-
-    end_line = offset + returned_lines
-    if total_lines is not None:
-        next_offset = end_line if end_line < total_lines else None
+    if next_cursor is None and not budget_exhausted and not truncated:
+        if total_lines is not None:
+            next_offset = end_index + 1 if end_index + 1 < total_lines else None
+        elif hit_eof:
+            next_offset = None
+        else:
+            next_offset = end_index + 1
     else:
-        # total_lines is None only via the large-file branch above, which is
-        # reached only when the page stopped short of EOF, so lines always
-        # remain here.
-        next_offset = end_line
+        next_offset = None
     print(json.dumps({{
         'encoding': 'utf-8',
         'content': text,
         'total_lines': total_lines,
-        'start_line': offset + 1,
-        'end_line': end_line,
+        'start_line': target_line + 1,
+        'end_line': end_index + 1,
         'next_offset': next_offset,
+        'continuation_cursor': next_cursor,
+        'first_row_char_offset': c_char if cursor is not None else 0,
+        'row_chunk_offsets': row_offsets,
     }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
@@ -823,25 +919,36 @@ except PermissionError:
 
 Runs on the sandbox via `execute()`. Only the requested page is returned,
 avoiding full-file transfer for paginated text reads. The path is
-base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly.
-`offset` and `limit` are model-supplied tool arguments, so interpolation is
-only safe because `_build_read_cmd` coerces both to `int` via
+base64-encoded; `file_type`, `offset`, `limit`, and `cursor` are interpolated
+directly. `offset` and `limit` are model-supplied tool arguments, so
+interpolation is only safe because `_build_read_cmd` coerces both to `int` via
 `normalize_read_bounds` first — that coercion is what bounds them to integer
-literals, and must not be removed.
+literals, and must not be removed. `cursor` is base64-encoded like the path,
+and the script revalidates its shape before use.
+
+`limit` bounds displayed rows of `MAX_LINE_LENGTH` characters, so a long
+source line consumes several rows of the page. A page that stops with content
+undisplayed carries `continuation_cursor` (a `v1:<line>:<char>:<identity>:
+<line-hash>` resume point pinned to the file's size, mtime, and line content);
+passing it back resumes at the exact character without repeating or skipping
+text, bounded by `MAX_CURSOR_ROWS` rows per resume.
 
 Output: single-line JSON. On success (text): `{{"encoding", "content",
-"total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
-and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
-next unread line (`null` once the file is fully read). `total_lines` is `null`
-when the file is large enough that a full re-scan to count its lines would be
-unbounded. On success
+"total_lines", "start_line", "end_line", "next_offset",
+"continuation_cursor", "first_row_char_offset"}}`, where `start_line` and
+`end_line` are 1-indexed, `next_offset` is the 0-indexed offset of the next
+unread line (`null` once the file is fully read or when a continuation cursor
+takes over), `continuation_cursor` is `null` unless undisplayed content
+remains, and `first_row_char_offset` is the mid-line character offset a cursor
+resume started at. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
 reminder>}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content":
 "", "no_lines_requested": true}}`, both also without pagination keys. The
 empty-file check runs first, so an empty file yields the reminder even when
 `limit` is non-positive. On failure:
-`{{"error": ...}}`.
+`{{"error": ...}}`, including `invalid_cursor`/`stale_cursor` for cursors
+that fail shape or identity validation.
 """
 
 
@@ -890,7 +997,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
     return LsResult(entries=file_infos)
 
 
-def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
+def _build_read_cmd(file_path: str, offset: int, limit: int, cursor: str | None = None) -> str:
     file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
     # The `offset` clamp is load-bearing: the script has no negative-offset
@@ -905,6 +1012,7 @@ def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
         file_type=file_type,
         offset=offset,
         limit=limit,
+        cursor_b64=base64.b64encode(cursor.encode("utf-8")).decode("ascii") if cursor is not None else "",
     )
 
 
@@ -933,6 +1041,9 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
             start_line=data.get("start_line"),
             end_line=data.get("end_line"),
             next_offset=data.get("next_offset"),
+            continuation_cursor=data.get("continuation_cursor"),
+            first_row_char_offset=int(data.get("first_row_char_offset") or 0),
+            row_chunk_offsets=data.get("row_chunk_offsets"),
             no_lines_requested=bool(data.get("no_lines_requested")),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -1527,19 +1638,22 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
-        """Read file content with server-side line-based pagination.
+        """Read file content with server-side row-based pagination.
 
         Runs a Python script on the sandbox via `execute()` that reads the
         file, detects encoding, and applies offset/limit pagination for text
-        files. Only the requested page is returned over the wire, and text
-        output is capped to about 500 KiB to avoid backend stdout/log transport
-        failures. When that cap is exceeded, the returned content is truncated
-        with guidance to continue pagination using a different `offset` or
-        smaller `limit`.
+        files, with `limit` bounding displayed rows of 5,000 characters. Only
+        the requested page is returned over the wire, and text output is
+        capped to about 500 KiB to avoid backend stdout/log transport
+        failures. A page that stops with content undisplayed carries a
+        `continuation_cursor`; passing it back resumes at the exact character
+        without skipping or repeating text.
 
         Binary files (non-UTF-8) are returned base64-encoded without
-        pagination.
+        pagination; a `cursor` is ignored for them.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -1547,16 +1661,18 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
                 Only applied to text files, and clamped to the start of the file
                 when negative.
-            limit: Maximum number of lines to return.
+            limit: Maximum number of displayed rows to return.
 
                 Only applied to text files with content: a non-positive value
                 returns empty content with no pagination metadata. Empty files
                 return the empty-file reminder regardless of `limit`.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset` and `limit`.
 
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
         """
-        result = self.execute(_build_read_cmd(file_path, offset, limit))
+        result = self.execute(_build_read_cmd(file_path, offset, limit, cursor))
         return _parse_read_output(result.output, file_path)
 
     async def aread(
@@ -1564,9 +1680,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Async version of `read`, delegating to `aexecute`."""
-        result = await self.aexecute(_build_read_cmd(file_path, offset, limit))
+        result = await self.aexecute(_build_read_cmd(file_path, offset, limit, cursor))
         return _parse_read_output(result.output, file_path)
 
     def _write_preflight(self, file_path: str) -> WriteResult | None:

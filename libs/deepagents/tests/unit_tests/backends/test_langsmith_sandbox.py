@@ -437,54 +437,121 @@ def test_read_pagination_metadata_final_window_has_no_next_offset() -> None:
     assert result.next_offset is None
 
 
-def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
-    """A byte-capped page must not advance `next_offset` past lines it dropped.
+def test_read_truncation_emits_continuation_cursor_for_dropped_rows() -> None:
+    """A byte-capped page resumes dropped rows via cursor, never `next_offset`.
 
     Regression: `end_line`/`next_offset` were derived from the full page before
     the `MAX_OUTPUT_BYTES` cap trimmed trailing lines, so a re-read from
-    `next_offset` silently skipped the dropped lines.
+    `next_offset` silently skipped the dropped lines. Now the page carries a
+    continuation cursor instead, and resuming with it continues exactly where
+    the rendered rows stopped.
     """
     sb, mock_sdk = _make_sandbox()
     line = "x" * 100_000
     # Eight ~100 KB lines: a single 8-line page far exceeds the 500 KB cap, so
-    # the byte cap drops the tail. `next_offset` must point at the first line
-    # not fully rendered, well short of the 8-line window's end.
+    # the byte cap drops the tail.
     mock_sdk.read.return_value = ("\n".join([line] * 8)).encode("utf-8")
 
-    result = sb.read("/app/big.txt", offset=0, limit=8)
+    result = sb.read("/app/big.txt", offset=0, limit=120)
 
     assert result.error is None
     assert result.file_data is not None
     assert result.file_data["content"].endswith(TRUNCATION_MSG)
     assert result.total_lines == 8
     assert result.start_line == 1
-    assert result.next_offset is not None
-    # Resume offset is the count of fully rendered lines, not the full window.
-    assert result.end_line == result.next_offset
-    assert 0 < result.next_offset < 8
+    assert result.next_offset is None
+    assert result.continuation_cursor is not None
+    assert 1 <= result.end_line < 8
+
+    # Following the cursor chain to the end reconstructs every character
+    # exactly (no skip, no repeat) and terminates.
+    parts = [result.file_data["content"].removesuffix(TRUNCATION_MSG)]
+    cursor = result.continuation_cursor
+    for _ in range(40):
+        assert cursor is not None
+        page = sb.read("/app/big.txt", cursor=cursor)
+        assert page.error is None
+        assert page.file_data is not None
+        parts.append(page.file_data["content"].removesuffix(TRUNCATION_MSG))
+        cursor = page.continuation_cursor
+        if cursor is None:
+            break
+    assert cursor is None
+    recovered = "".join(parts).replace("\n", "")
+    assert recovered == "x" * 800_000
+    rows = [row for part in parts for row in part.split("\n")]
+    assert all(set(row) == {"x"} and len(row) <= 5000 for row in rows)
 
 
-def test_read_oversized_first_line_advances_next_offset() -> None:
-    """A first line larger than the byte cap still advances `next_offset` by one.
+def test_read_byte_cap_cut_at_multibyte_boundary_resumes_exactly() -> None:
+    """A byte cap that lands inside a multi-byte char still resumes exactly.
 
-    When even the first rendered line overflows `MAX_OUTPUT_BYTES`, the retained
-    prefix contains no line terminator, so the `or 1` fallback must advance the
-    resume offset past that line — otherwise a re-read loops on the same page.
+    The cut row's cursor must derive its char offset from the UTF-8-safe
+    decoded prefix, so no character is repeated or skipped across the chain.
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = ("é" * 400_000).encode("utf-8")
+
+    result = sb.read("/app/mb.txt", offset=0, limit=200)
+
+    assert result.error is None
+    assert result.file_data is not None
+    body = result.file_data["content"].removesuffix(TRUNCATION_MSG)
+    assert body.endswith("é")
+    assert result.continuation_cursor is not None
+    cut_char = int(result.continuation_cursor.split(":")[2])
+    assert body.replace("\n", "") == ("é" * 400_000)[:cut_char]
+
+    total = body
+    cursor = result.continuation_cursor
+    for _ in range(10):
+        assert cursor is not None
+        page = sb.read("/app/mb.txt", cursor=cursor)
+        assert page.error is None
+        assert page.file_data is not None
+        total += page.file_data["content"].removesuffix(TRUNCATION_MSG)
+        cursor = page.continuation_cursor
+        if cursor is None:
+            break
+    assert cursor is None
+    assert total.replace("\n", "") == "é" * 400_000
+
+
+def test_read_oversized_first_line_resumes_via_cursor() -> None:
+    """A first line larger than the byte cap resumes mid-line via cursor.
+
+    The old `or 1` fallback advanced `next_offset` past the unreadable line,
+    silently skipping its tail. Now the result carries a cursor that resumes at
+    the line's start, so no text is skipped and the read cannot loop.
     """
     sb, mock_sdk = _make_sandbox()
     big_line = "y" * 600_000
     mock_sdk.read.return_value = (big_line + "\nsmall1\nsmall2").encode("utf-8")
 
-    result = sb.read("/app/huge_line.txt", offset=0, limit=5)
+    result = sb.read("/app/huge_line.txt", offset=0, limit=200)
 
     assert result.error is None
     assert result.file_data is not None
     assert result.file_data["content"].endswith(TRUNCATION_MSG)
     assert result.total_lines == 3
     assert result.start_line == 1
-    # The oversized line cannot be paginated within, so resume just past it.
-    assert result.end_line == 1
-    assert result.next_offset == 1
+    assert result.next_offset is None
+    assert result.continuation_cursor is not None
+
+    # Following the cursor chain eventually surfaces the later lines whole.
+    cursor = result.continuation_cursor
+    seen = ""
+    for _ in range(10):
+        assert cursor is not None
+        page = sb.read("/app/huge_line.txt", cursor=cursor)
+        assert page.error is None
+        assert page.file_data is not None
+        seen = page.file_data["content"]
+        cursor = page.continuation_cursor
+        if cursor is None:
+            break
+    assert cursor is None
+    assert "small1" in seen and "small2" in seen
 
 
 def test_read_binary_at_exact_max_size_succeeds() -> None:

@@ -1504,7 +1504,12 @@ class TestFilesystemMiddleware:
         file_data = create_file_data(content)
         sliced = slice_read_response(file_data, offset=0, limit=100)
         assert sliced.file_data is not None
-        result = format_content_with_line_numbers(sliced.file_data["content"], start_line=1)
+        assert sliced.row_chunk_offsets is not None
+        result = format_content_with_line_numbers(
+            sliced.file_data["content"],
+            start_line=1,
+            row_chunk_offsets=sliced.row_chunk_offsets,
+        )
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
         assert lines[0] == "  1  first line"
@@ -1523,7 +1528,12 @@ class TestFilesystemMiddleware:
         file_data = create_file_data(content)
         sliced = slice_read_response(file_data, offset=2, limit=10)
         assert sliced.file_data is not None
-        result = format_content_with_line_numbers(sliced.file_data["content"], start_line=3)
+        assert sliced.row_chunk_offsets is not None
+        result = format_content_with_line_numbers(
+            sliced.file_data["content"],
+            start_line=3,
+            row_chunk_offsets=sliced.row_chunk_offsets,
+        )
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
         assert lines[0].startswith("  3  ")
@@ -1549,6 +1559,63 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+
+    def test_read_file_mid_line_page_offers_cursor_and_resume(self):
+        """A page cut mid-line advertises a cursor; passing it back resumes exactly."""
+        long_line = "x" * 12000
+        files = {"/big.txt": FileData(content=f"alpha\n{long_line}\nomega", encoding="utf-8")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        first = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt", "offset": 0, "limit": 2})
+        assert isinstance(first, ToolMessage)
+        assert "cursor='v1:1:5000:" in first.content
+        assert "takes precedence over offset/limit" in first.content
+        cursor = first.content.split("cursor='", 1)[1].split("'", 1)[0]
+
+        resumed = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt", "cursor": cursor})
+        assert isinstance(resumed, ToolMessage)
+        rows = resumed.content.split("\n")
+        assert rows[0].startswith("2.1  ")
+        assert rows[0].count("x") == 5000
+        assert rows[1].startswith("2.2  ")
+        assert rows[1].count("x") == 2000
+        assert rows[2].endswith("  omega")
+
+    def test_read_file_invalid_cursor_returns_structured_error(self):
+        files = {"/notes.txt": FileData(content="one\ntwo", encoding="utf-8")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "cursor": "not-a-cursor"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "Invalid cursor" in result.content
+
+    def test_read_file_cursor_not_forwarded_to_legacy_backend(self):
+        """Custom backends without a `cursor` parameter reject cursor reads cleanly."""
+        files = {"/notes.txt": FileData(content="one\ntwo", encoding="utf-8")}
+        backend, _ = _make_backend(files)
+        FilesystemMiddleware(backend=backend)
+
+        class LegacyBackend:
+            def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+                return backend.read(file_path, offset=offset, limit=limit)
+
+        legacy_middleware = FilesystemMiddleware(backend=LegacyBackend())
+        legacy_tool = next(tool for tool in legacy_middleware.tools if tool.name == "read_file")
+
+        plain = legacy_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
+        assert isinstance(plain, ToolMessage)
+        assert plain.status != "error"
+
+        with_cursor = legacy_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "cursor": "v1:0:0:00000000"})
+        assert isinstance(with_cursor, ToolMessage)
+        assert with_cursor.status == "error"
+        assert "does not support cursor" in with_cursor.content
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1754,7 +1821,10 @@ class TestFilesystemMiddleware:
         numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
         last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        # The char budget cut is a last-resort safety valve: the stale backend
+        # notice is dropped rather than advertising offsets past cut rows.
+        assert "Output was truncated due to size limits" in result.content
+        assert "remaining from offset" not in result.content
 
     def test_read_file_truncation_adds_notice_when_backend_reached_eof(self):
         backend, _ = _make_backend()
@@ -1778,16 +1848,17 @@ class TestFilesystemMiddleware:
         numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
         last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
-        assert numbered_lines[-1].endswith("x" * 80)
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        # The backend reached EOF but the display cut rows; the size warning
+        # stands alone rather than claiming the file was fully read.
+        assert "Output was truncated due to size limits" in result.content
 
     def test_read_file_truncation_never_splits_a_wrapped_source_line(self):
-        """When the budget cuts inside a wrapped line's rows, resume before that line.
+        """The safety truncation cuts chars but never teaches a stale offset.
 
         Source line 3 is 15000 chars, so it renders as rows `3`, `3.1`, `3.2`.
-        The char budget fits lines 1-2 but not the full wrapped line, so the
-        notice must report line 2 and resume from offset 2 — never advertise an
-        offset that lands inside the undisplayed tail of line 3.
+        The char budget cannot fit the window, so the result carries the size
+        warning alone: the backend's `next_offset` would overstate what was
+        shown and silently skip the wrapped line's tail.
         """
         backend, _ = _make_backend()
         read_result = ReadResult(
@@ -1808,11 +1879,7 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert "Output was truncated due to size limits" in result.content
-        # Line 2 is the last complete source line that fits; the wrapped line 3
-        # is dropped whole and the resume offset points at it, not inside it.
-        assert "[Read 2 lines (lines 1-2 of 10 total). 8 lines remaining from offset 2.]" in result.content
-        # No partial rendering of the wrapped line leaked through.
-        assert "c" * 5000 not in result.content
+        assert "remaining from offset" not in result.content
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""

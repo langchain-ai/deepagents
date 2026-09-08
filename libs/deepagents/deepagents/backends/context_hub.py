@@ -456,13 +456,15 @@ class ContextHubBackend(BackendProtocol):
     def _strip_prefix(path: str) -> str:
         return path.lstrip("/")
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000, *, cursor: str | None = None) -> ReadResult:
         """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
             offset: 0-indexed starting line.
             limit: Maximum number of lines.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset`.
 
         Returns:
             `ReadResult` with raw (unformatted) content.
@@ -478,7 +480,7 @@ class ContextHubBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         file_data = create_file_data(content)
-        return slice_read_response(file_data, offset, limit)
+        return slice_read_response(file_data, offset, limit, cursor=cursor)
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit `content` to `file_path`."""

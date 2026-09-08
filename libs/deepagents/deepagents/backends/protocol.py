@@ -61,6 +61,9 @@ PERMISSION_DENIED: Final = "permission_denied"
 IS_DIRECTORY: Final = "is_directory"
 INVALID_PATH: Final = "invalid_path"
 
+READ_CURSOR_UNSUPPORTED_ERROR: Final = "This backend does not support cursor-based resume; re-read using `offset` and `limit` instead."
+"""Structured error for cursor reads against backends that predate the `cursor` parameter."""
+
 
 @dataclass
 class FileDownloadResponse:
@@ -222,6 +225,36 @@ class ReadResult:
     next_offset: int | None = None
     """0-indexed offset for the next unread source line."""
 
+    continuation_cursor: str | None = None
+    """Opaque cursor for resuming mid-source-line on the next `read` call.
+
+    Set when the returned window stopped partway through the last source line
+    (a 5,000-character display row budget or a byte cap cut it short). The
+    cursor encodes the 0-indexed source line and character offset to resume
+    from, plus a content checksum; a read on modified content fails with an
+    invalid-cursor error rather than silently skipping or repeating text.
+    Callers resume by passing the cursor back as `read(..., cursor=...)`.
+    """
+
+    first_row_char_offset: int = 0
+    """Character offset within `start_line`'s source line where content begins.
+
+    Non-zero only for cursor-resumed reads that begin mid-source-line; the
+    middleware uses it to number the first rendered row as a continuation row
+    (e.g. `2.1`) rather than a primary row.
+    """
+
+    row_chunk_offsets: list[tuple[int, int]] | None = None
+    """Per-row `(line_index, char_offset)` pairs, aligned with content rows.
+
+    Set by row-based backends: entry `i` locates the `i`-th `\n`-separated row
+    of `file_data.content` as `line_index` (0-indexed from the window's first
+    source line) plus its char offset within that source line, so the
+    middleware can number continuation rows correctly (e.g. a row at offset
+    5000 of the window's second line renders as `2.1`) without re-deriving
+    chunk boundaries. `None` for legacy line-whole results.
+    """
+
     no_lines_requested: bool = False
     """The read asked for zero lines and the file was never inspected.
 
@@ -255,6 +288,9 @@ class ReadResult:
             raise ValueError(msg)
         if self.next_offset is not None and self.start_line is None:
             msg = "ReadResult.next_offset requires start_line and end_line to be set"
+            raise ValueError(msg)
+        if self.continuation_cursor is not None and (self.error is not None or self.no_lines_requested):
+            msg = "ReadResult.continuation_cursor cannot be combined with error or no_lines_requested"
             raise ValueError(msg)
         if self.total_lines is not None and self.start_line is None:
             msg = "ReadResult.total_lines requires start_line and end_line to be set"
@@ -456,6 +492,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -474,6 +512,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             file_path: Absolute path to the file to read. Must start with `'/'`.
             offset: Line number to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            cursor: Opaque continuation cursor from a previous
+                `ReadResult.continuation_cursor`. When provided, resumes at the
+                exact mid-line character the previous page stopped at and takes
+                precedence over `offset`; an invalid or stale cursor returns a
+                `ReadResult` with `error` set. Treat `None` exactly as an
+                omitted argument so pre-existing implementations that do not
+                accept `cursor` keep working.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window,
@@ -492,8 +537,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Async version of read."""
+        if cursor is not None and _method_accepts_read_cursor(type(self), "read"):
+            return await asyncio.to_thread(self.read, file_path, offset, limit, cursor=cursor)
+        if cursor is not None:
+            return ReadResult(error=READ_CURSOR_UNSUPPORTED_ERROR)
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
     def grep(
@@ -941,6 +992,23 @@ def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["
         )
         return False
     return "max_count" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
+
+
+@lru_cache(maxsize=256)
+def _method_accepts_read_cursor(cls: type[BackendProtocol], method_name: Literal["read", "aread"]) -> bool:
+    """Check whether a backend read method accepts the optional `cursor` keyword."""
+    try:
+        sig = inspect.signature(getattr(cls, method_name))
+    except (AttributeError, ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.%s; assuming cursor is not supported. "
+            "A supplied cursor will be rejected as unsupported instead of raising.",
+            cls.__qualname__,
+            method_name,
+            exc_info=True,
+        )
+        return False
+    return "cursor" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
 
 
 @lru_cache(maxsize=128)

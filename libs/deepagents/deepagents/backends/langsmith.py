@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import TYPE_CHECKING
+import zlib
+from typing import TYPE_CHECKING, Final
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -20,7 +21,33 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
+from deepagents.backends.utils import (
+    MAX_CURSOR_ROWS,
+    _chunked_rows,
+    _get_backend_read_file_type,
+    make_read_cursor,
+    normalize_read_bounds,
+    parse_read_cursor,
+)
+
+_UTF8_2_BYTE: Final = 0xE0
+_UTF8_3_BYTE: Final = 0xF0
+_ASCII_MAX: Final = 0x80
+
+
+def _utf8_char_len(data: bytes) -> int:
+    """Count characters in a UTF-8-safe byte prefix without decoding tail garbage."""
+    count = 0
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        width = 1 if byte < _ASCII_MAX else 2 if byte < _UTF8_2_BYTE else 3 if byte < _UTF8_3_BYTE else 4
+        if width > 1 and index + width > len(data):
+            break
+        index += width
+        count += 1
+    return count
+
 
 if TYPE_CHECKING:
     from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
@@ -166,11 +193,13 @@ class LangSmithSandbox(BaseSandbox):
         except SandboxClientError as e:
             return WriteResult(error=f"Failed to write file '{file_path}': {e}")
 
-    def read(  # noqa: PLR0911 - early returns for distinct error conditions
+    def read(  # noqa: PLR0911, PLR0912, PLR0915, C901 - early returns for distinct error conditions; the read pipeline's branches stay inline to mirror _READ_COMMAND_TEMPLATE
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         r"""Read file content using the LangSmith SDK.
 
@@ -184,16 +213,20 @@ class LangSmithSandbox(BaseSandbox):
             returned base64-encoded, capped at `MAX_BINARY_BYTES`.
         - Text content is normalized for universal newlines (`\r\n` and bare
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
-            `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
+            `limit` with `limit` bounding displayed rows of
+            `MAX_LINE_LENGTH` characters, and capped at `MAX_OUTPUT_BYTES`
             with `TRUNCATION_MSG` appended on overflow.
-        - A negative `offset` is clamped to the start of the file, and a
-            non-positive `limit` returns empty content with no pagination
-            metadata.
+        - A page that stops mid-source-line carries a `continuation_cursor`;
+            passing it back resumes at the exact character and takes
+            precedence over `offset`/`limit`. A negative `offset` is clamped
+            to the start of the file, and a non-positive `limit` returns
+            empty content with no pagination metadata.
 
         Args:
             file_path: Absolute path to the file to read.
             offset: Number of leading text lines to skip.
-            limit: Maximum number of text lines to return.
+            limit: Maximum number of displayed rows to return.
+            cursor: Opaque continuation cursor from a previous read.
 
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
@@ -251,44 +284,71 @@ class LangSmithSandbox(BaseSandbox):
         # clamp above is ever bypassed or removed. `no_lines_requested` flags
         # the window as never inspected so the middleware can tell it apart
         # from a genuinely empty file.
-        if limit <= 0:
+        if limit <= 0 and cursor is None:
             return ReadResult(file_data=FileData(content="", encoding="utf-8"), no_lines_requested=True)
 
         total_lines = len(lines)
-        if not lines or offset >= total_lines:
-            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
-
-        page = lines[offset : offset + limit]
-        content = "\n".join(page)
-        returned_lines = len(page)
+        identity = (len(raw), zlib.crc32(raw) & 0xFFFFFFFF)
+        if cursor is not None:
+            parsed = parse_read_cursor(cursor, content=normalized, size=identity[0], mtime_ns=identity[1])
+            if isinstance(parsed, str):
+                return ReadResult(error=f"File '{file_path}': {parsed}")
+            start_index, first_char_offset = parsed
+            page_lines = lines[start_index : start_index + MAX_CURSOR_ROWS]
+            rows, next_cursor = _chunked_rows(page_lines, identity, MAX_CURSOR_ROWS, first_char_offset=first_char_offset)
+        else:
+            if not lines or offset >= total_lines:
+                return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
+            start_index = offset
+            first_char_offset = 0
+            rows, next_cursor = _chunked_rows(lines[offset:], identity, limit)
 
         # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
         # large pages don't reintroduce the transport-size symptom this
         # override fixes.
-        encoded = content.encode("utf-8")
-        msg_bytes = TRUNCATION_MSG.encode("utf-8")
-        effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
-        if len(encoded) > effective_limit:
-            truncated = encoded[:effective_limit].decode("utf-8", errors="ignore")
-            # The byte cap can drop whole lines from the page and cut the final
-            # rendered line mid-way. Advance the resume offset only past lines
-            # that were fully rendered (each is followed by its "\n"), so a
-            # re-read from `next_offset` never silently skips unshown lines; the
-            # partial boundary line is re-read from its start. Fall back to 1
-            # when even the first line overflows the cap, to guarantee forward
-            # progress instead of re-reading the same truncated page.
-            returned_lines = truncated.count("\n") or 1
-            content = truncated + TRUNCATION_MSG
+        encoded_rows = [chunk.encode("utf-8") for _, chunk, _ in rows]
+        effective_limit = MAX_OUTPUT_BYTES - len(TRUNCATION_MSG.encode("utf-8"))
+        current_bytes = 0
+        cut_row: int | None = None
+        for row_pos, piece in enumerate(encoded_rows):
+            separator = 1 if row_pos else 0
+            if current_bytes + separator + len(piece) > effective_limit:
+                cut_row = row_pos
+                break
+            current_bytes += separator + len(piece)
+        if cut_row is not None:
+            remaining = effective_limit - current_bytes - (1 if cut_row else 0)
+            line_index, _chunk_text, chunk_offset = rows[cut_row]
+            partial_text = encoded_rows[cut_row][:remaining].decode("utf-8", errors="ignore") if remaining > 0 else ""
+            shown = _utf8_char_len(partial_text.encode("utf-8"))
+            rows = rows[:cut_row]
+            if shown:
+                rows = [*rows, (line_index, partial_text, chunk_offset)]
+            source_line = lines[start_index + line_index]
+            resume_char = chunk_offset + shown
+            if resume_char < len(source_line):
+                next_cursor = make_read_cursor(identity[0], identity[1], start_index + line_index, resume_char, source_line)
+            elif start_index + line_index + 1 < total_lines:
+                next_cursor = make_read_cursor(identity[0], identity[1], start_index + line_index + 1, 0, lines[start_index + line_index + 1])
+            else:
+                next_cursor = None
+            content = "\n".join(chunk_text for _, chunk_text, _ in rows) + TRUNCATION_MSG
+        else:
+            content = "\n".join(chunk for _, chunk, _ in rows)
+        row_chunk_offsets = [(line_index, chunk_offset) for line_index, _, chunk_offset in rows]
 
-        end_line = offset + returned_lines
-        next_offset = end_line if end_line < total_lines else None
+        end_line = start_index + rows[-1][0] + 1 if rows else start_index + 1
+        next_offset = end_line if next_cursor is None and end_line < total_lines else None
 
         return ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),
             total_lines=total_lines,
-            start_line=offset + 1,
+            start_line=start_index + 1,
             end_line=end_line,
             next_offset=next_offset,
+            continuation_cursor=next_cursor,
+            first_row_char_offset=rows[0][2] if rows else first_char_offset,
+            row_chunk_offsets=row_chunk_offsets,
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

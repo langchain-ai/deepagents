@@ -416,6 +416,8 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -431,6 +433,9 @@ class FilesystemBackend(BackendProtocol):
                 returns empty content with no pagination metadata. Empty and
                 whitespace-only files return the empty-file reminder regardless
                 of `limit`, and binary files return their full payload.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset`; binary
+                files ignore it and return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -448,6 +453,8 @@ class FilesystemBackend(BackendProtocol):
 
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
+                stat_result = os.fstat(fd)
+                identity = (stat_result.st_size, stat_result.st_mtime_ns)
                 file_type = _get_backend_read_file_type(file_path)
                 if file_type != "text":
                     if file_type == "video" and os.fstat(fd).st_size > MAX_VIDEO_INPUT_BYTES:
@@ -475,7 +482,7 @@ class FilesystemBackend(BackendProtocol):
                     # exactly like the state and store backends. `edit()`
                     # depends on that last property to detect EOF-newline
                     # mismatches in the model's `old_string`.
-                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit, cursor=cursor, identity=identity)
 
             return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:

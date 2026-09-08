@@ -679,6 +679,89 @@ class TestSliceReadResponse:
         assert self._content(result) == "   \n\t\n"
 
 
+class TestReadContinuationCursor:
+    """Row-budget slicing and cursor resume for long-line pagination (#809/#3641)."""
+
+    LONG_FILE = "alpha\n" + "x" * 12000 + "\nomega\nlast"
+
+    @staticmethod
+    def _file(content: str) -> FileData:
+        return FileData(content=content, encoding="utf-8")
+
+    def test_initial_page_ends_mid_line_with_cursor(self) -> None:
+        """`limit` bounds displayed rows: a long line emits one 5,000-char row per budget slot."""
+        result = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=2)
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["content"] == "alpha\n" + "x" * 5000
+        assert result.start_line == 1
+        assert result.end_line == 2
+        assert result.next_offset is None
+        assert result.continuation_cursor is not None
+        assert result.continuation_cursor.startswith("v1:1:5000:")
+
+    def test_cursor_resumes_through_tail_and_next_lines(self) -> None:
+        """A cursor resume returns the exact remainder without repeat or skip."""
+        first = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=2)
+        assert first.continuation_cursor is not None
+
+        resumed = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=100, cursor=first.continuation_cursor)
+        assert resumed.error is None
+        assert resumed.file_data is not None
+        rows = resumed.file_data["content"].split("\n")
+        assert rows == ["x" * 5000, "x" * 2000, "omega", "last"]
+        assert resumed.start_line == 2
+        assert resumed.end_line == 4
+        assert resumed.first_row_char_offset == 5000
+        assert resumed.continuation_cursor is None
+        assert resumed.next_offset is None
+        # Row alignment metadata renders the tail as continuation rows of line 2.
+        assert resumed.row_chunk_offsets == [(0, 5000), (0, 10000), (1, 0), (2, 0)]
+
+    def test_stale_cursor_after_file_change_returns_error(self) -> None:
+        first = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=2)
+        assert first.continuation_cursor is not None
+
+        stale = slice_read_response(self._file("rewritten\ncontent"), offset=0, limit=10, cursor=first.continuation_cursor)
+        assert stale.error is not None
+        assert "Stale cursor" in stale.error
+        assert stale.file_data is None
+
+    @pytest.mark.parametrize("cursor", ["", "garbage", "v1:0:0", "v1:0:0:zzzzzzzz", "v2:0:0:89e479c2", "v1:9999999999:0:89e479c2", "x" * 100])
+    def test_malformed_cursor_returns_error(self, cursor: str) -> None:
+        result = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=10, cursor=cursor)
+        assert result.error is not None
+        assert "Invalid cursor" in result.error or "Stale cursor" in result.error
+
+    def test_cursor_line_past_eof_is_stale(self) -> None:
+        first = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=2)
+        assert first.continuation_cursor is not None
+        parts = first.continuation_cursor.split(":")
+        forged = ":".join(["v1", "9999", "0", parts[3], parts[4]])
+        result = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=10, cursor=forged)
+        assert result.error is not None
+        assert "Stale cursor" in result.error
+
+    def test_cursor_ignores_offset_and_limit(self) -> None:
+        """A supplied cursor wins over degenerate `offset`/`limit` arguments."""
+        first = slice_read_response(self._file(self.LONG_FILE), offset=0, limit=2)
+        assert first.continuation_cursor is not None
+        resumed = slice_read_response(self._file(self.LONG_FILE), offset=-5, limit=0, cursor=first.continuation_cursor)
+        assert resumed.error is None
+        assert resumed.file_data is not None
+        assert resumed.file_data["content"].split("\n")[0] == "x" * 5000
+
+    def test_normal_line_pagination_unchanged(self) -> None:
+        """Whole-line windows keep offset/next_offset semantics with no cursor."""
+        fd = self._file("\n".join(f"line{i}" for i in range(10)))
+        page = slice_read_response(fd, offset=2, limit=3)
+        assert page.file_data is not None
+        assert page.file_data["content"] == "line2\nline3\nline4\n"
+        assert page.next_offset == 5
+        assert page.continuation_cursor is None
+        assert page.row_chunk_offsets == [(0, 0), (1, 0), (2, 0)]
+
+
 class TestGrepMaxCount:
     """`max_count` total-cap semantics for `grep_matches_from_files`.
 

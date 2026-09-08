@@ -35,7 +35,7 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellB
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
-from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, _content_identity, create_file_data, make_file_identity_tag, slice_read_response
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
@@ -493,9 +493,13 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """`limit` bounds source lines; wrapped continuations don't displace later lines."""
-        # 18k chars wraps into 4 rows (2, 2.1, 2.2, 2.3) but still counts as one
-        # source line against `limit`.
+        """`limit` bounds displayed rows; continuation rows consume the budget.
+
+        #809: a long line's continuation rows count against `limit`, so a
+        `limit=3` page covers line 1 plus the first two 5,000-char chunks of
+        the 18k-char line 2 — nothing is cut silently, and the notice carries
+        a cursor to resume mid-line.
+        """
         very_long_line = "x" * 18000
         lines = [
             "short line 0",
@@ -509,7 +513,6 @@ class TestDeepAgentEndToEnd:
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # `limit=3` source lines → lines 1, 2 (all 4 wrapped chunks), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -545,18 +548,16 @@ class TestDeepAgentEndToEnd:
 
         assert "short line 0" in file_content
         assert "xxx" in file_content
-        # All four wrapped chunks of source line 2 render in order.
-        for marker in ("  2  ", "2.1  ", "2.2  ", "2.3  "):
-            assert marker in file_content, f"missing continuation marker {marker!r}"
-        # Source line 3 is the third source line and must be included.
-        assert "short line 2" in file_content
-        # Source lines 4 and 5 fall outside `limit=3`.
-        assert "short line 3" not in file_content
-        assert "short line 4" not in file_content
-        # The partial window surfaces the resume offset end-to-end for every
+        # The budget fits the first two wrapped chunks of source line 2; the
+        # rest of the line is reachable through the cursor, not this page.
+        assert "2.1  " in file_content
+        assert "2.2  " not in file_content
+        assert "short line 2" not in file_content
+        assert "cursor='v1:1:10000:" in file_content
+        # The partial window surfaces the resume cursor end-to-end for every
         # backend (StateBackend included, which has no standalone read test).
-        assert "lines 1-3 of 5 total" in file_content
-        assert "2 lines remaining from offset 3.]" in file_content
+        assert "lines 1-2 of 5 total" in file_content
+        assert "takes precedence over offset/limit" in file_content
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -1221,18 +1222,19 @@ class TestDeepAgentEndToEnd:
         assert len(tool_messages) > 0
         file_content = tool_messages[0].content
 
-        # `limit=1` (one source line) renders the wrapped chunks; size cap
-        # still trims when the formatted result exceeds the byte budget.
-        assert "1.1" in file_content
-        assert "Output was truncated due to size limits" in file_content
+        # `limit=1` shows the first 5,000-char row of the line; the size cap
+        # trims nothing further, and the notice carries a resume cursor.
+        assert "1.1" not in file_content
+        assert "cursor='v1:0:5000:" in file_content
         assert len(file_content) <= 80000
 
     def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Wrapped long lines must not displace later source lines across pagination.
+        """Cursor resume must not skip or repeat wrapped-line text across pages.
 
         Regression for #2453: previously `limit` re-truncated formatted output
         after wrapping, so a 15k-char line on page 1 pushed `important
-        instruction` off the page, and page 2 resumed past it.
+        instruction` off the page, and page 2 resumed past it. Page 1 now ends
+        mid-line-2 with a cursor, and page 2 resumes at the exact character.
         """
         long_line = "x" * 15000
         content = f"line1\n{long_line}\nimportant instruction\nline4"
@@ -1258,7 +1260,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "offset": 3, "limit": 3},
+                                "args": {"file_path": file_path, "cursor": "v1:1:15000:PLACEHOLDER"},
                                 "id": "call_2",
                                 "type": "tool_call",
                             }
@@ -1278,19 +1280,25 @@ class TestDeepAgentEndToEnd:
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 2
-        combined = tool_messages[0].content + tool_messages[1].content
-        assert "important instruction" in combined
-        assert "line4" in combined
-        # The primary row and both continuation chunks of the wrapped line 2
-        # must render in order, before `important instruction`, with nothing
-        # dropped at the page boundary.
-        for marker in ("  2  ", "2.1  ", "2.2  "):
-            assert marker in combined, f"missing continuation marker {marker!r}"
-        idx_first = combined.index("  2  ")
-        idx_cont1 = combined.index("2.1  ")
-        idx_cont2 = combined.index("2.2  ")
-        idx_next = combined.index("important instruction")
-        assert idx_first < idx_cont1 < idx_cont2 < idx_next
+        page1, page2 = tool_messages[0].content, tool_messages[1].content
+        # Page 1: line 1 + the first two chunks of line 2 (budget = 3 rows).
+        assert "2.1  " in page1 and "2.2  " not in page1
+        cursor = page1.split("cursor='", 1)[1].split("'", 1)[0]
+        assert cursor.startswith("v1:1:10000:")
+        # The model's second call used a placeholder cursor, which must fail
+        # as a structured error rather than resume at a wrong position.
+        assert "Invalid cursor" in page2 or "Stale cursor" in page2
+        # Re-issuing with the real cursor resumes at the exact character. The
+        # backend pinned the cursor to its file identity, so rebuild the pin
+        # against this in-memory copy before validating the resume position.
+        fields = cursor.split(":")
+        identity = _content_identity(create_file_data(content)["content"])
+        pinned = ":".join(["v1", fields[1], fields[2], make_file_identity_tag(*identity), fields[4]])
+        resumed = slice_read_response(create_file_data(content), 0, 100, cursor=pinned)
+        assert resumed.error is None and resumed.file_data is not None
+        resumed_rows = resumed.file_data["content"].split("\n")
+        assert resumed_rows == ["x" * 5000, "important instruction", "line4"]
+        assert resumed.continuation_cursor is None
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

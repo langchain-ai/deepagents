@@ -9,6 +9,7 @@ import functools
 import logging
 import os
 import re
+import zlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -86,8 +87,161 @@ Derived from Google's multimodal API supported formats:
 """
 
 MAX_LINE_LENGTH = 5000
+"""Width of one displayed text row; longer source lines split into continuation rows.
+
+`read_file` applies this as the page budget: `limit` counts displayed rows of
+this width, not raw source lines, and a page that stops mid-source-line emits a
+continuation cursor so nothing is skipped.
+"""
+
+MAX_CURSOR_ROWS: Final = 100
+"""Maximum displayed rows a cursor-resume read may return.
+
+Bounds a resume on a pathologically long source line; the resume result then
+carries its own cursor pointing at the following row.
+"""
+
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
+
+_CURSOR_VERSION: Final = "v1"
+_CURSOR_MAX_LINE_INDEX: Final = 1_000_000_000
+"""Upper bound on the line index a cursor may address (files past 1e9 lines are unsupported)."""
+
+_CURSOR_MAX_LENGTH: Final = 128
+"""Maximum accepted cursor length; a `v1` cursor never exceeds it."""
+
+_CURSOR_FIELD_COUNT: Final = 5
+_IDENTITY_HEX_LENGTH: Final = 16
+_LINE_HASH_HEX_LENGTH: Final = 8
+
+_INVALID_CURSOR_ERROR: Final = "Invalid cursor: expected a cursor returned by a previous read of this file"
+_STALE_CURSOR_ERROR: Final = "Stale cursor: the file changed since this cursor was issued; re-read without a cursor"
+
+
+def make_file_identity_tag(size: int, mtime_ns: int) -> str:
+    """Hash bounded file identity metadata into a hex tag for cursor pinning."""
+    return format(zlib.crc32(f"{size}:{mtime_ns}".encode()) & 0xFFFFFFFF, "08x") + format(mtime_ns & 0xFFFFFFFF, "08x")
+
+
+def make_read_cursor(size: int, mtime_ns: int, line_index: int, char_offset: int, line_text: str) -> str:
+    """Build an opaque cursor pinning a mid-line resume point to the file.
+
+    The cursor binds the position to the file's identity (size and mtime
+    nanoseconds, hashed) and to the target line's current content, so a resume
+    fails rather than landing at a wrong position when the file changed.
+
+    Args:
+        size: File size in bytes.
+        mtime_ns: File modification time in nanoseconds.
+        line_index: 0-indexed source line to resume on.
+        char_offset: 0-indexed character within that line to resume at.
+        line_text: Current content of the resume line.
+
+    Returns:
+        A versioned cursor string encoding the position and pin hashes.
+    """
+    line_hash = format(zlib.crc32(line_text.encode("utf-8")) & 0xFFFFFFFF, "08x")
+    return f"{_CURSOR_VERSION}:{line_index}:{char_offset}:{make_file_identity_tag(size, mtime_ns)}:{line_hash}"
+
+
+def _parse_cursor_fields(cursor: str) -> tuple[int, int, str, str] | None:
+    """Split a cursor into `(line_index, char_offset, identity, line_hash)`, or `None` if malformed."""
+    if not isinstance(cursor, str) or len(cursor) > _CURSOR_MAX_LENGTH:
+        return None
+    parts = cursor.split(":")
+    if len(parts) != _CURSOR_FIELD_COUNT or parts[0] != _CURSOR_VERSION:
+        return None
+    line_text, char_text, identity, line_hash = parts[1], parts[2], parts[3], parts[4]
+    if not (
+        line_text.isdigit()
+        and char_text.isdigit()
+        and len(identity) == _IDENTITY_HEX_LENGTH
+        and re.fullmatch(r"[0-9a-f]{16}", identity)
+        and len(line_hash) == _LINE_HASH_HEX_LENGTH
+        and re.fullmatch(r"[0-9a-f]{8}", line_hash)
+    ):
+        return None
+    line_index = int(line_text)
+    char_offset = int(char_text)
+    if line_index > _CURSOR_MAX_LINE_INDEX:
+        return None
+    return (line_index, char_offset, identity, line_hash)
+
+
+def parse_read_cursor(cursor: str, *, content: str, size: int, mtime_ns: int) -> tuple[int, int] | str:
+    """Validate a cursor against the file it resumes from.
+
+    Parsing is strictly bounded: exact field shape, digit-only bounded
+    integers, and pin hashes so a cursor from modified content or a different
+    file fails instead of resuming at a wrong position.
+
+    Args:
+        cursor: Opaque cursor previously returned in `ReadResult.continuation_cursor`.
+        content: Full LF-normalized file content the cursor is applied to.
+        size: Current file size in bytes.
+        mtime_ns: Current file modification time in nanoseconds.
+
+    Returns:
+        `(line_index, char_offset)` on success, or an error message string.
+    """
+    fields = _parse_cursor_fields(cursor)
+    if fields is None:
+        return _INVALID_CURSOR_ERROR
+    line_index, char_offset, identity, line_hash = fields
+    if identity != make_file_identity_tag(size, mtime_ns):
+        return _STALE_CURSOR_ERROR
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if line_index >= len(lines) or char_offset > len(lines[line_index]):
+        return _STALE_CURSOR_ERROR
+    if format(zlib.crc32(lines[line_index].encode("utf-8")) & 0xFFFFFFFF, "08x") != line_hash:
+        return _STALE_CURSOR_ERROR
+    return (line_index, char_offset)
+
+
+def _chunked_rows(
+    lines: list[str],
+    identity: tuple[int, int],
+    line_budget: int,
+    *,
+    first_char_offset: int = 0,
+) -> tuple[list[tuple[int, str, int]], str | None]:
+    """Pack source lines into displayed rows of at most `MAX_LINE_LENGTH` chars.
+
+    Args:
+        lines: Source lines to render, each assumed newline-free.
+        identity: `(size, mtime_ns)` of the file, used to pin resume cursors.
+        line_budget: Maximum number of displayed rows to return. Must be `>= 1`.
+        first_char_offset: Character offset into `lines[0]` to start at, used by
+            cursor resumes that begin mid-line.
+
+    Returns:
+        Tuple of `(rows, cursor)`. Each row is `(index_into_lines, text,
+        char_offset)`. `cursor` resumes at the first undisplayed character
+        when the budget cut a line short mid-way; `None` otherwise, including
+        when whole lines beyond the budget went undisplayed (a cursorless
+        re-read from `next_offset` covers those).
+    """
+    size, mtime_ns = identity
+    rows: list[tuple[int, str, int]] = []
+    for line_index, line in enumerate(lines):
+        offset = first_char_offset if line_index == 0 else 0
+        if offset >= len(line) and line:
+            continue
+        while True:
+            if len(rows) >= line_budget:
+                return rows, make_read_cursor(size, mtime_ns, line_index, offset, line)
+            chunk = line[offset : offset + MAX_LINE_LENGTH]
+            rows.append((line_index, chunk, offset))
+            offset += len(chunk)
+            if offset >= len(line):
+                break
+        if len(rows) >= line_budget:
+            break
+    return rows, None
+
 
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
@@ -209,8 +363,10 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
 def format_content_with_line_numbers(
     content: str | list[str],
     start_line: int = 1,
+    *,
+    row_chunk_offsets: list[tuple[int, int]] | None = None,
 ) -> str:
-    """Format file content with line numbers.
+    r"""Format file content with line numbers.
 
     Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
     (e.g., `5.1`, `5.2`). Line markers are separated from source content
@@ -219,6 +375,12 @@ def format_content_with_line_numbers(
     Args:
         content: File content as string or list of lines
         start_line: Starting line number
+        row_chunk_offsets: When set, `content` is already chunked into
+            displayed rows (one per `\n`-separated entry) and entry `i` holds
+            that row's char offset within its source line. Rows are numbered
+            from those offsets (e.g. a row at offset 5000 of line 5 renders as
+            `5.1`), and no re-chunking occurs. Backends set this via
+            `ReadResult.row_chunk_offsets` for row-paginated results.
 
     Returns:
         Formatted content with line numbers and continuation markers
@@ -229,6 +391,17 @@ def format_content_with_line_numbers(
             lines = lines[:-1]
     else:
         lines = content
+
+    if row_chunk_offsets is not None:
+        prealigned: list[tuple[str, str]] = []
+        marker_width = 0
+        for line, (line_index, chunk_offset) in zip(lines, [tuple(pair) for pair in row_chunk_offsets], strict=True):
+            line_num = line_index + start_line
+            chunk_idx = chunk_offset // MAX_LINE_LENGTH
+            marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
+            prealigned.append((marker, line))
+            marker_width = max(marker_width, len(marker))
+        return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in prealigned)
 
     rows: list[tuple[str, str]] = []
     marker_width = 0
@@ -448,17 +621,35 @@ def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
+    *,
+    cursor: str | None = None,
+    identity: tuple[int, int] | None = None,
 ) -> ReadResult:
-    """Slice file data to the requested line range without formatting.
+    """Slice file data to the requested window without formatting.
 
     The returned `ReadResult` carries the raw (unformatted) window in
     `file_data`; line-number formatting is applied downstream by the
     middleware layer.
 
+    For cursorless reads, `limit` bounds displayed rows: source lines longer
+    than `MAX_LINE_LENGTH` are emitted as successive 5,000-character chunks,
+    each chunk consuming one row of the budget. A page that stops mid-line
+    sets `continuation_cursor` so the next read can resume at the exact
+    character without skipping or repeating text; lines beyond the budget
+    stay reachable cursorless via `next_offset`. Cursor resumes ignore
+    `offset`/`limit` and return the tail of the cursor's source line plus
+    following lines, up to `MAX_CURSOR_ROWS` rows.
+
     Args:
         file_data: `FileData` dict.
         offset: Line offset (0-indexed).
-        limit: Maximum number of lines.
+        limit: Maximum number of displayed rows.
+        cursor: Opaque continuation cursor from a previous
+            `ReadResult.continuation_cursor`. Takes precedence over `offset`
+            and `limit` when provided.
+        identity: `(size, mtime_ns)` of the underlying file, used to pin
+            emitted cursors and validate supplied ones. When omitted, a
+            pseudo-identity derived from the content pins cursors instead.
 
     Both bounds are clamped through `normalize_read_bounds` before slicing, so
     a negative `offset` reads from the first line and a negative `limit` is
@@ -466,13 +657,14 @@ def slice_read_response(
 
     Returns:
         `ReadResult` with the sliced raw content and pagination metadata
-            (`total_lines`, `start_line`, `end_line`, `next_offset`). The
-            pagination fields are left unset for empty or whitespace-only
-            content, and when the clamped `limit` is `0`; the zero-`limit`
-            result additionally sets `no_lines_requested` so the middleware
-            can tell the never-inspected window apart from a genuinely empty
-            file. `error` is set instead when the offset exceeds the file
-            length.
+            (`total_lines`, `start_line`, `end_line`, `next_offset`,
+            `continuation_cursor`). The pagination fields are left unset for
+            empty or whitespace-only content, and when the clamped `limit` is
+            `0`; the zero-`limit` result additionally sets
+            `no_lines_requested` so the middleware can tell the
+            never-inspected window apart from a genuinely empty file. `error`
+            is set instead when the offset exceeds the file length or the
+            cursor is invalid or stale.
     """
     content = file_data_to_string(file_data)
     offset, limit = normalize_read_bounds(offset, limit)
@@ -487,35 +679,100 @@ def slice_read_response(
     # middleware can tell it apart from a genuinely empty file, which arrives
     # via the blank-content branch above (its `ReadResult` is otherwise
     # identical: empty content, no pagination metadata).
-    if limit == 0:
+    if limit == 0 and cursor is None:
         return ReadResult(file_data=_copy_file_data_with_content(file_data, ""), no_lines_requested=True)
 
-    # `splitlines(keepends=True)` retains each line's terminator, including
-    # the absence of one on the final line. Joining with `""` therefore
-    # round-trips the trailing-newline state of the file faithfully —
-    # required so `edit()` can report EOF-newline mismatches accurately. It
-    # also splits on CR / CRLF, so line indexing matches the LF-normalized
-    # form without first rewriting the whole (potentially huge) string.
-    lines = content.splitlines(keepends=True)
-    start_idx = offset
-    end_idx = min(start_idx + limit, len(lines))
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     total_lines = len(lines)
 
-    if start_idx >= total_lines:
+    if cursor is not None:
+        return _resume_read_response(file_data, normalized, lines, total_lines, cursor, identity or _content_identity(normalized))
+
+    if offset >= total_lines:
         return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
-    # Normalize line endings to LF, but only across the requested window.
-    # State/Store backends may carry CRLF or CR content as written;
-    # downstream tooling (edit match, grep, format) assumes LF.
-    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
-    next_offset = end_idx if end_idx < total_lines else None
-    return ReadResult(
+    rows, next_cursor = _chunked_rows(lines[offset:], identity or _content_identity(normalized), max(limit, 1))
+    last_line_index, last_chunk, last_chunk_offset = rows[-1]
+    end_idx = offset + last_line_index
+    next_offset = end_idx + 1 if next_cursor is None and end_idx + 1 < total_lines else None
+    sliced = "\n".join(chunk for _, chunk, _ in rows)
+    if (
+        next_cursor is None
+        and last_chunk_offset + len(last_chunk) == len(lines[last_line_index])
+        and (end_idx + 1 < total_lines or normalized.endswith("\n"))
+    ):
+        sliced += "\n"
+    result = ReadResult(
         file_data=_copy_file_data_with_content(file_data, sliced),
         total_lines=total_lines,
-        start_line=start_idx + 1,
-        end_line=end_idx,
+        start_line=offset + 1,
+        end_line=end_idx + 1,
         next_offset=next_offset,
+        continuation_cursor=next_cursor,
+        row_chunk_offsets=[(line_index, chunk_offset) for line_index, _, chunk_offset in rows],
     )
+    result.first_row_char_offset = rows[0][2] if rows else 0
+    return result
+
+
+def _content_identity(content: str) -> tuple[int, int]:
+    """Derive a stable pseudo-identity for content without filesystem metadata."""
+    encoded = content.encode("utf-8")
+    return len(encoded), zlib.crc32(encoded) & 0xFFFFFFFF
+
+
+def _resume_read_response(
+    file_data: FileData,
+    normalized: str,
+    lines: list[str],
+    total_lines: int,
+    cursor: str,
+    identity: tuple[int, int],
+) -> ReadResult:
+    r"""Resume a read from a continuation cursor's mid-line position.
+
+    Args:
+        file_data: `FileData` dict the cursor is applied to.
+        normalized: Full LF-normalized file content.
+        lines: `normalized` split on `"\n"` with a trailing empty entry dropped.
+        total_lines: Length of `lines`.
+        cursor: Cursor string to validate and resume from.
+        identity: `(size, mtime_ns)` of the underlying file, for cursor pins.
+
+    Returns:
+        `ReadResult` for the resumed window, or an error result for a
+            malformed, stale, or out-of-range cursor.
+    """
+    parsed = parse_read_cursor(cursor, content=normalized, size=identity[0], mtime_ns=identity[1])
+    if isinstance(parsed, str):
+        return ReadResult(error=parsed)
+    line_index, char_offset = parsed
+    page_lines = lines[line_index : line_index + MAX_CURSOR_ROWS]
+    rows, next_cursor = _chunked_rows(page_lines, identity, MAX_CURSOR_ROWS, first_char_offset=char_offset)
+    last_line_index = line_index + rows[-1][0]
+    next_offset = last_line_index + 1 if next_cursor is None and last_line_index + 1 < total_lines else None
+    sliced = "\n".join(chunk for _, chunk, _ in rows)
+    _, last_chunk, last_offset = rows[-1]
+    if (
+        next_cursor is None
+        and last_offset + len(last_chunk) == len(lines[last_line_index])
+        and (last_line_index + 1 < total_lines or normalized.endswith("\n"))
+    ):
+        sliced += "\n"
+    result = ReadResult(
+        file_data=_copy_file_data_with_content(file_data, sliced),
+        total_lines=total_lines,
+        start_line=line_index + 1,
+        end_line=last_line_index + 1,
+        next_offset=next_offset,
+        continuation_cursor=next_cursor,
+        row_chunk_offsets=[(line_index, chunk_offset) for line_index, _, chunk_offset in rows],
+    )
+    result.first_row_char_offset = rows[0][2]
+    return result
 
 
 def perform_string_replacement(

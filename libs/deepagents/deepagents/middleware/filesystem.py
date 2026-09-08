@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
+    READ_CURSOR_UNSUPPORTED_ERROR,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -58,6 +59,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     _apply_grep_max_count,
     _method_accepts_max_count,
+    _method_accepts_read_cursor,
     _supports_delete,
     execute_accepts_timeout,
 )
@@ -805,7 +807,8 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
 
     Args:
         read_result: Backend read result carrying the pagination metadata
-            (`start_line`, `end_line`, `next_offset`, `total_lines`).
+            (`start_line`, `end_line`, `next_offset`, `total_lines`,
+            `continuation_cursor`).
 
     Returns:
         A model-facing notice describing the window that was read and where to
@@ -815,12 +818,21 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
     start_line = read_result.start_line
     end_line = read_result.end_line
     next_offset = read_result.next_offset
-    if start_line is None or end_line is None or next_offset is None:
+    cursor = read_result.continuation_cursor
+    if start_line is None or end_line is None or (next_offset is None and cursor is None):
         return ""
 
     total_lines = read_result.total_lines
     read_count = end_line - start_line + 1
     read_unit = "line" if read_count == 1 else "lines"
+    total_part = f" of {total_lines} total" if total_lines is not None else ""
+    if cursor is not None:
+        return (
+            f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}{total_part}); "
+            f"the page ended before the next undisplayed row. Resume exactly where it stopped with "
+            f"cursor={cursor!r} (takes precedence over offset/limit). Do not reuse offset alone, or "
+            f"the remainder of line {end_line} may be skipped.]"
+        )
     if total_lines is None:
         return f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}). More lines remain from offset {next_offset}.]"
     if end_line >= total_lines:
@@ -932,38 +944,26 @@ def _truncate_paginated_read(
     read_result: ReadResult,
     token_limit: int | None,
 ) -> str:
-    """Truncate a paginated read without skipping undisplayed source lines.
+    """Truncate a paginated read that overflows the tool-result char budget.
 
-    The backend computes the pagination notice from the full window it
-    returned, but the char budget may drop trailing rows from what the model
-    actually sees. Appending the backend's notice verbatim would then advertise
-    a `next_offset` past those dropped lines, so a re-read would silently skip
-    them. This recomputes the notice from the last *complete* rendered row that
-    still fits, and falls back to the size warning alone (no stale offset) when
-    not even one full source line fits.
+    Backends bound the page to `limit` displayed rows, so this is a last-resort
+    safety cut rather than normal pagination. Because a hard char cut can split
+    a source line mid-row and the backend's notice would then overstate what
+    was shown, the notice is dropped on this path; the model is pointed at
+    reformatting instead.
 
     Args:
         content: Line-numbered content produced by
             `format_content_with_line_numbers` (a marker followed by two spaces
             and the source content).
         file_path: Path used to format the truncation message.
-        read_result: Backend read result carrying the window metadata; the
-            adjusted `next_offset` is derived from its 1-indexed line range.
+        read_result: Backend read result carrying the window metadata.
         token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
             falsy, content is returned with its notice untouched.
 
     Returns:
-        The (possibly truncated) content with a notice that never overstates
-            which source lines were shown.
-
-    Examples:
-        If the backend returns source lines 11-20 with `next_offset=20`, but
-        the budget fits only through line 14, the returned notice reports lines
-        11-14 and tells the caller to resume from offset 14 rather than 20.
-
-        A long source line may be rendered as rows `14` and `14.1`. If the
-        budget fits row `14` but not `14.1`, neither row is retained: the notice
-        reports line 13 as the last displayed line and resumes from offset 13.
+        The (possibly truncated) content; the pagination notice is appended
+            only when the content fits the budget.
     """
     notice = _remaining_lines_notice(read_result)
     if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
@@ -971,79 +971,31 @@ def _truncate_paginated_read(
 
     truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
     threshold = NUM_CHARS_PER_TOKEN * token_limit
-    if read_result.start_line is not None and read_result.end_line is not None:
-        # Build the safe places where the content can be truncated. A long source
-        # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
-        # at every newline could keep only part of that source line. `position`
-        # tracks each rendered row's end in `content`; comparing the integer part
-        # of adjacent row markers records a boundary only after the final row for
-        # a source line. The loop below uses these boundaries to find the latest
-        # complete source line that fits alongside the truncation message and the
-        # pagination notice.
-        rows = content.split("\n")
-        position = 0
-        boundaries: list[tuple[int, int]] = []
-        for index, row in enumerate(rows):
-            position += len(row)
-            marker = row.lstrip().partition("  ")[0].partition(".")[0]
-            source_line = int(marker)
-            # Rows numbered past the window's last source line are not file
-            # content: a byte-capped backend page appends its own truncation
-            # banner (preceded by a blank line), which `format_content_with_line_numbers`
-            # then numbers as `end_line + 1`, `end_line + 2`, .... Stop before
-            # them so a banner row is never chosen as a boundary — resuming from
-            # its inflated number would overshoot `total_lines` and skip real
-            # lines. Rows are numbered monotonically, so the first out-of-range
-            # row means the rest are banner too.
-            if source_line > read_result.end_line:
-                break
-            next_source_line = None
-            if index + 1 < len(rows):
-                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
-                next_source_line = int(next_marker)
-            if next_source_line != source_line:
-                boundaries.append((position, source_line))
-            position += 1
-
-        # Only advertise source lines whose complete rendered rows fit. If the
-        # byte cut landed partway through a row, resuming after that row would
-        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
-        # after the last one shown, which for a 1-indexed `end_line` is exactly
-        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
-        for boundary, end_line in reversed(boundaries):
-            adjusted_result = ReadResult(
-                total_lines=read_result.total_lines,
-                start_line=read_result.start_line,
-                end_line=end_line,
-                next_offset=end_line,
-            )
-            adjusted_notice = _remaining_lines_notice(adjusted_result)
-            if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
-                return content[:boundary] + truncation_msg + adjusted_notice
-
     # No complete source line fits. Keep the size warning but omit the
     # backend's stale pagination offset.
     max_content_length = max(0, threshold - len(truncation_msg))
     return content[:max_content_length] + truncation_msg
 
 
-def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
+def _pad_blank_rows(content: str, read_result: ReadResult) -> str | list[str]:
     r"""Restore blank source rows a page loses to `split("\n")`.
 
     Backends that join a page's lines with `"\n"` as a separator leave a blank
     final row indistinguishable from a trailing terminator, which
-    `format_content_with_line_numbers` drops. Pads to the window the backend
-    reported and never truncates, since a backend may append a truncation
-    banner numbered past `end_line`.
+    `format_content_with_line_numbers` drops. Row-paginated results skip
+    padding entirely: `row_chunk_offsets` already aligns each `\n`-separated
+    entry with its displayed row.
 
     Args:
         content: Serialized content for the read window.
-        start_line: First source line in the window.
-        end_line: Last source line in the window.
+        read_result: Backend read result carrying the window metadata.
 
     Returns:
         A list of rows when padding was needed, `content` unchanged otherwise.
     """
+    start_line, end_line = read_result.start_line, read_result.end_line
+    if start_line is None or end_line is None or read_result.row_chunk_offsets is not None:
+        return content
     rows = content.split("\n")
     if rows and rows[-1] == "":
         rows.pop()
@@ -1155,12 +1107,22 @@ class ReadFileSchema(BaseModel):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+        description="Line number to start reading from (0-indexed). Use for pagination of large files. Ignored when `cursor` is provided.",
     )
 
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
-        description="Maximum number of lines to read. Use for pagination of large files.",
+        description="Maximum number of displayed rows to read. Use for pagination of large files. Ignored when `cursor` is provided.",
+    )
+
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque continuation cursor copied verbatim from a previous read's "
+            "'Resume exactly where it stopped with cursor=' notice. Takes precedence over "
+            "`offset`/`limit` and resumes at the exact character where the previous page "
+            "stopped. Never construct a cursor by hand; an invalid or stale cursor returns an error."
+        ),
     )
 
 
@@ -1273,8 +1235,9 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
+- `limit` counts displayed rows: lines over 5,000 characters are split into continuation rows (e.g. 5.1, 5.2), and each continuation row consumes one row of the budget.
+- When a page ends before the next row is displayed, the result ends with a `cursor='...'` notice. Pass that cursor back verbatim (as `cursor`) to resume at the exact character; it takes precedence over `offset`/`limit`. Resuming with `offset` alone would skip the undisplayed remainder of the last line.
 - Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
-- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.
 - Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
@@ -1882,7 +1845,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=LsSchema,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # tool body wires per-call validation, cursor dispatch, and result shaping
         """Create the read_file tool."""
         video_enabled = video_dependencies_available()
         default_description = READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
@@ -1978,21 +1941,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            rows: str | list[str] = content
-            if read_result.start_line is not None and read_result.end_line is not None:
-                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
-            content = format_content_with_line_numbers(
-                rows,
-                # `max(offset, 0)` so the fallback gutter stays 1-indexed: a
-                # backend that returns numberable text without `start_line`
-                # would otherwise render a zero or negative line marker, which
-                # the row-marker parsers downstream assume never happens.
-                start_line=read_result.start_line or max(offset, 0) + 1,
-            )
-            # `limit` already bounded raw source lines at the backend; do not
-            # re-truncate by row count here, or wrapped continuation rows would
-            # push real source lines off the end of the page (#2453).
-            # The clamp notice is appended after truncation so it cannot be cut.
+            rows: str | list[str] = _pad_blank_rows(content, read_result)
+            if read_result.row_chunk_offsets is not None and len(read_result.row_chunk_offsets) == len(
+                rows if isinstance(rows, list) else rows.split("\n")
+            ):
+                content = format_content_with_line_numbers(
+                    rows,
+                    start_line=read_result.start_line or max(offset, 0) + 1,
+                    row_chunk_offsets=read_result.row_chunk_offsets,
+                )
+            else:
+                content = format_content_with_line_numbers(
+                    rows,
+                    start_line=read_result.start_line or max(offset, 0) + 1,
+                )
             return ToolMessage(
                 content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),
                 name="read_file",
@@ -2005,6 +1967,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             offset: int = DEFAULT_READ_OFFSET,
             limit: int = DEFAULT_READ_LIMIT,
+            cursor: str | None = None,
         ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self.backend
@@ -2024,7 +1987,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            if cursor is not None and not _method_accepts_read_cursor(type(resolved_backend), "read"):
+                read_result = ReadResult(error=READ_CURSOR_UNSUPPORTED_ERROR)
+            elif cursor is not None:
+                read_result = resolved_backend.read(validated_path, offset=offset, limit=limit, cursor=cursor)
+            else:
+                read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
@@ -2032,6 +2000,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             offset: int = DEFAULT_READ_OFFSET,
             limit: int = DEFAULT_READ_LIMIT,
+            cursor: str | None = None,
         ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self.backend
@@ -2051,7 +2020,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            if cursor is not None and not _method_accepts_read_cursor(type(resolved_backend), "aread"):
+                read_result = ReadResult(error=READ_CURSOR_UNSUPPORTED_ERROR)
+            elif cursor is not None:
+                read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit, cursor=cursor)
+            else:
+                read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(

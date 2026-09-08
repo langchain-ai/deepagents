@@ -31,6 +31,7 @@ from deepagents.backends.sandbox import (
     _GREP_PATH_GLOB_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
+    TRUNCATION_MSG,
     BaseSandbox,
     _build_grep_cmd,
     _build_read_cmd,
@@ -1108,6 +1109,7 @@ def test_read_command_template_format() -> None:
         file_type="text",
         offset=0,
         limit=2000,
+        cursor_b64="",
     )
 
     assert "python3 -c" in cmd
@@ -1399,13 +1401,14 @@ def _run_read_cmd(cmd: str) -> dict:
     return json.loads(proc.stdout.strip())
 
 
-def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000) -> dict:
+def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000, cursor: str | None = None) -> dict:
     return _run_read_cmd(
         _READ_COMMAND_TEMPLATE.format(
             path_b64=base64.b64encode(str(target).encode("utf-8")).decode("ascii"),
             file_type=file_type,
             offset=offset,
             limit=limit,
+            cursor_b64=base64.b64encode(cursor.encode("utf-8")).decode("ascii") if cursor is not None else "",
         )
     )
 
@@ -1581,31 +1584,81 @@ def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tm
     assert result["start_line"] == 1
     assert result["end_line"] == 1
     assert result["next_offset"] == 1
+    assert result["continuation_cursor"] is None
 
 
-def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Path) -> None:
-    """A byte-capped page must not advance `next_offset` past lines it dropped.
+def test_read_script_truncation_emits_continuation_cursor(tmp_path: Path) -> None:
+    """A byte-capped page resumes dropped rows via cursor, never `next_offset`.
 
     Regression: counting a partially rendered boundary line toward the resume
     offset made a re-read from `next_offset` skip that line's remaining bytes.
+    Now the page carries a continuation cursor, and resuming with it continues
+    exactly where the rendered rows stopped.
     """
     line = "x" * 100_000
     target = tmp_path / "big.txt"
     target.write_text("\n".join([line] * 8))
 
-    result = _run_read_script(target, offset=0, limit=8)
+    result = _run_read_script(target, offset=0, limit=120)
 
     assert result["total_lines"] == 8
     assert result["start_line"] == 1
-    assert "truncated" in result["content"].lower()
-    assert result["next_offset"] is not None
-    # Resume at the count of fully rendered lines, short of the 8-line window.
-    assert result["end_line"] == result["next_offset"]
-    assert 0 < result["next_offset"] < 8
+    assert result["next_offset"] is None
+    assert result["continuation_cursor"] is not None
+    assert 1 <= result["end_line"] < 8
+
+    # Following the cursor chain to the end reconstructs every character
+    # exactly (no skip, no repeat) and terminates.
+    parts = [result["content"].removesuffix(TRUNCATION_MSG)]
+    cursor = result["continuation_cursor"]
+    for _ in range(20):
+        assert cursor is not None
+        page = _run_read_script(target, cursor=cursor)
+        assert "error" not in page
+        parts.append(page["content"].removesuffix(TRUNCATION_MSG))
+        cursor = page["continuation_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None
+    recovered = "".join(parts).replace("\n", "")
+    assert recovered == "x" * 800_000
+    rows = [row for part in parts for row in part.split("\n")]
+    assert all(set(row) == {"x"} and len(row) <= 5000 for row in rows)
 
 
-def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path) -> None:
-    """A lone line larger than the byte cap still advances `next_offset` (no re-read loop)."""
+def test_read_script_byte_cap_cut_at_multibyte_boundary_resumes_exactly(tmp_path: Path) -> None:
+    """A byte cap that lands inside a multi-byte char still resumes exactly."""
+    target = tmp_path / "mb.txt"
+    target.write_text("é" * 400_000)
+
+    result = _run_read_script(target, offset=0, limit=200)
+
+    assert result["continuation_cursor"] is not None
+    body = result["content"].removesuffix(TRUNCATION_MSG)
+    assert body.endswith("é")
+    cut_char = int(result["continuation_cursor"].split(":")[2])
+    assert body.replace("\n", "") == ("é" * 400_000)[:cut_char]
+
+    total = body
+    cursor = result["continuation_cursor"]
+    for _ in range(10):
+        assert cursor is not None
+        page = _run_read_script(target, cursor=cursor)
+        assert "error" not in page
+        total += page["content"].removesuffix(TRUNCATION_MSG)
+        cursor = page["continuation_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None
+    assert total.replace("\n", "") == "é" * 400_000
+
+
+def test_read_script_single_oversized_line_resumes_via_cursor(tmp_path: Path) -> None:
+    """A lone line larger than the byte cap resumes mid-line via cursor.
+
+    The old fallback advanced `next_offset` past the unreadable line, silently
+    skipping its tail; the cursor instead resumes at the exact character.
+    """
     target = tmp_path / "huge_line.txt"
     target.write_text("small0\n" + ("y" * 600_000) + "\nsmall2")
 
@@ -1613,9 +1666,86 @@ def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path
 
     assert result["total_lines"] == 3
     assert result["start_line"] == 2
-    # The oversized line cannot be paginated within, so resume past it.
     assert result["end_line"] == 2
-    assert result["next_offset"] == 2
+    assert result["next_offset"] is None
+    assert result["continuation_cursor"] is not None
+
+    # Following the cursor chain eventually surfaces the trailing line whole.
+    cursor = result["continuation_cursor"]
+    seen = ""
+    for _ in range(10):
+        assert cursor is not None
+        page = _run_read_script(target, cursor=cursor)
+        assert "error" not in page
+        seen = page["content"]
+        cursor = page["continuation_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None
+    assert "small2" in seen
+
+
+def test_read_script_limit_bounds_displayed_rows_and_emits_cursor(tmp_path: Path) -> None:
+    """`limit` bounds 5,000-char rows; a mid-line page carries a resume cursor."""
+    target = tmp_path / "wrapped.txt"
+    target.write_text("alpha\n" + ("x" * 12000) + "\nomega\nlast")
+
+    result = _run_read_script(target, offset=0, limit=2)
+
+    assert result["content"] == "alpha\n" + "x" * 5000
+    assert result["start_line"] == 1
+    assert result["end_line"] == 2
+    assert result["next_offset"] is None
+    assert result["continuation_cursor"].startswith("v1:1:5000:")
+    assert result["row_chunk_offsets"] == [[0, 0], [1, 0]]
+
+
+def test_read_script_cursor_resume_through_tail_and_next_lines(tmp_path: Path) -> None:
+    """A cursor resume continues at the exact character without repeat/skip."""
+    target = tmp_path / "wrapped.txt"
+    target.write_text("alpha\n" + ("x" * 12000) + "\nomega\nlast")
+
+    first = _run_read_script(target, offset=0, limit=2)
+    resumed = _run_read_script(target, cursor=first["continuation_cursor"])
+
+    assert "error" not in resumed
+    assert resumed["content"].split("\n") == ["x" * 5000, "x" * 2000, "omega", "last"]
+    assert resumed["start_line"] == 2
+    assert resumed["end_line"] == 4
+    assert resumed["continuation_cursor"] is None
+    assert resumed["next_offset"] is None
+    assert resumed["first_row_char_offset"] == 5000
+
+
+def test_read_script_malformed_cursor_returns_structured_error(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo")
+
+    result = _run_read_script(target, cursor="not-a-cursor")
+
+    assert result["error"].startswith("invalid_cursor")
+
+
+def test_read_script_stale_cursor_after_file_change(tmp_path: Path) -> None:
+    target = tmp_path / "wrapped.txt"
+    target.write_text("alpha\n" + ("x" * 12000) + "\nomega")
+
+    first = _run_read_script(target, offset=0, limit=2)
+    target.write_text("rewritten\nfile")
+
+    result = _run_read_script(target, cursor=first["continuation_cursor"])
+
+    assert result["error"].startswith("stale_cursor")
+
+
+def test_read_script_binary_ignores_cursor(tmp_path: Path) -> None:
+    """Binary reads stay unpaginated and never cursor-checked."""
+    target = tmp_path / "bin.png"
+    target.write_bytes(bytes(range(256)) * 4)
+
+    result = _run_read_script(target, file_type="video", cursor="junk")
+
+    assert result["encoding"] == "base64"
 
 
 # -- script-level permission/error tests --------------------------------------

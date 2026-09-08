@@ -177,6 +177,8 @@ class StateBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -184,6 +186,8 @@ class StateBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset`.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -201,7 +205,7 @@ class StateBackend(BackendProtocol):
             # the stored file; timestamps and encoding are carried through.
             return ReadResult(file_data=_copy_file_data_with_content(file_data, file_data_to_string(file_data)))
 
-        return slice_read_response(file_data, offset, limit)
+        return slice_read_response(file_data, offset, limit, cursor=cursor)
 
     def write(
         self,

@@ -5,11 +5,13 @@ you need different storage strategies for different paths (e.g., state for
 temp files, persistent store for memories).
 """
 
+import asyncio
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import cast
 
 from deepagents.backends.protocol import (
+    READ_CURSOR_UNSUPPORTED_ERROR,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -27,6 +29,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     _apply_grep_max_count,
     _method_accepts_max_count,
+    _method_accepts_read_cursor,
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
@@ -393,6 +396,8 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Read file content, routing to appropriate backend.
 
@@ -400,22 +405,36 @@ class CompositeBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            cursor: Opaque continuation cursor from a previous read. Resumes
+                mid-source-line and takes precedence over `offset`. Only passed
+                to the routed backend when it accepts the keyword; otherwise an
+                unsupported-cursor error is returned.
 
         Returns:
             `ReadResult`
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return backend.read(stripped_key, offset=offset, limit=limit)
+        if cursor is None or _method_accepts_read_cursor(type(backend), "read"):
+            return backend.read(stripped_key, offset=offset, limit=limit, cursor=cursor)
+        return ReadResult(error=READ_CURSOR_UNSUPPORTED_ERROR)
 
     async def aread(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        cursor: str | None = None,
     ) -> ReadResult:
         """Async version of read."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return await backend.aread(stripped_key, offset=offset, limit=limit)
+        if cursor is None:
+            return await backend.aread(stripped_key, offset=offset, limit=limit)
+        if _method_accepts_read_cursor(type(backend), "aread"):
+            return await backend.aread(stripped_key, offset=offset, limit=limit, cursor=cursor)
+        if _method_accepts_read_cursor(type(backend), "read"):
+            return await asyncio.to_thread(backend.read, stripped_key, offset, limit, cursor=cursor)
+        return ReadResult(error=READ_CURSOR_UNSUPPORTED_ERROR)
 
     @staticmethod
     def _coerce_grep_result(raw: GrepResult | list[GrepMatch] | str) -> GrepResult:

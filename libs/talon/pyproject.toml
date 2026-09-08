@@ -41,7 +41,11 @@ mongodb = [
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
 ]
 postgres = [
-    "langgraph-checkpoint-postgres>=3.1.2,<4.0.0",
+    # Pinned to one minor rather than the usual <4.0.0: history_postgres.py drives
+    # `store.VECTOR_MIGRATIONS`, `migration.condition`, `migration._replace` and the
+    # `dict_row` cursor factory, none of which are public API. A rename inside 3.x
+    # would not fail loudly - it would leave the migration rewrite a silent no-op.
+    "langgraph-checkpoint-postgres>=3.1.2,<3.2.0",
     "psycopg[binary]>=3.3.5,<4.0.0",
 ]
 media = [

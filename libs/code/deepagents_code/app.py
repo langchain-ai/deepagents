@@ -880,7 +880,6 @@ class _CwdServerReuseResult:
     outcome: Literal["continue", "abort", "restart"]
     refusal_reason: str | None = None
     workspace_snapshot: tuple[str | None, dict[str, dict[str, Any]]] | None = None
-    mcp_server_info: list[MCPServerInfo] | None = None
 
 
 def _format_mcp_server_changes(
@@ -29128,9 +29127,7 @@ class DeepAgentsApp(App):
         workspace_snapshot = remote._snapshot_workspace()
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
-            mcp_info = await remote.aswitch_workspace(
-                config, str(cwd), validate_only=True
-            )
+            await remote.aswitch_workspace(config, str(cwd), validate_only=True)
         except ConflictError as exc:
             body = exc.body
             reason = body.get("detail") if isinstance(body, dict) else None
@@ -29152,11 +29149,10 @@ class DeepAgentsApp(App):
         return _CwdServerReuseResult(
             "continue",
             workspace_snapshot=workspace_snapshot,
-            mcp_server_info=mcp_info,
         )
 
     async def _apply_reused_server_cwd_switch(
-        self, cwd: Path, reuse: _CwdServerReuseResult
+        self, cwd: Path, thread_id: str, reuse: _CwdServerReuseResult
     ) -> None:
         remote = self._remote_agent()
         if remote is None or reuse.workspace_snapshot is None:
@@ -29167,12 +29163,14 @@ class DeepAgentsApp(App):
             self._server_kwargs.get("cwd") if self._server_kwargs is not None else None
         )
         previous_mcp_info = self._mcp_server_info
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
+            mcp_server_info = await remote.aswitch_workspace(config, str(cwd))
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
             if self._server_kwargs is not None:
                 self._server_kwargs["cwd"] = self._cwd
-            self._mcp_server_info = reuse.mcp_server_info
+            self._mcp_server_info = mcp_server_info
             self._mcp_optimistic_original_server_info.clear()
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
@@ -29429,7 +29427,7 @@ class DeepAgentsApp(App):
                 if outcome == "restart":
                     outcome = await self._replace_server_after_cwd_switch(target)
                 elif outcome == "continue":
-                    await self._apply_reused_server_cwd_switch(target, reuse)
+                    await self._apply_reused_server_cwd_switch(target, thread_id, reuse)
                 if outcome == "abort":
                     await self._mount_message(
                         AppMessage(

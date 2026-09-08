@@ -73,6 +73,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _ChatScroll,
+    _CwdServerReuseResult,
     _format_mcp_server_changes,
     _GoalApplication,
     _GoalGradeObservation,
@@ -25936,7 +25937,7 @@ class TestResumeThreadCwdSwitch:
         target.mkdir()
         monkeypatch.chdir(current)
         agent = RemoteAgent("http://test:0")
-        switch_workspace = AsyncMock(return_value=[])
+        switch_workspace = AsyncMock(side_effect=[[], []])
         monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
         app._agent = agent
@@ -25965,13 +25966,51 @@ class TestResumeThreadCwdSwitch:
         assert Path.cwd() == target
         assert app._server_kwargs["cwd"] == str(target)
         assert app._push_screen_wait.await_count == 1
-        switch_workspace.assert_awaited_once_with(
-            {"configurable": {"thread_id": "thread-1"}},
-            str(target),
-            validate_only=True,
-        )
+        assert switch_workspace.await_args_list == [
+            call(
+                {"configurable": {"thread_id": "thread-1"}},
+                str(target),
+                validate_only=True,
+            ),
+            call({"configurable": {"thread_id": "thread-1"}}, str(target)),
+        ]
         replace_server.assert_not_awaited()
         retarget.assert_awaited_once_with(reload_manager=False)
+
+    async def test_accepted_hostable_switch_restores_remote_cache_on_local_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed local switch restores client workspace state after binding."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        agent = RemoteAgent("http://test:0")
+        agent._workspace_cwd = str(current)
+        agent._workspaces["thread-1"] = {"cwd": str(current)}
+        original = agent._snapshot_workspace()
+        switch_workspace = AsyncMock(return_value=[])
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._agent = agent
+        switch_process_cwd = AsyncMock(side_effect=OSError("cannot chdir"))
+        monkeypatch.setattr(app, "_switch_process_cwd", switch_process_cwd)
+        reuse = _CwdServerReuseResult(
+            "continue",
+            workspace_snapshot=original,
+        )
+
+        with pytest.raises(OSError, match="cannot chdir"):
+            await app._apply_reused_server_cwd_switch(target, "thread-1", reuse)
+
+        switch_workspace.assert_awaited_once_with(
+            {"configurable": {"thread_id": "thread-1"}}, str(target)
+        )
+        assert agent._snapshot_workspace() == original
 
     async def test_refused_switch_restarts_only_after_confirmation(
         self,

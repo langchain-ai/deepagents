@@ -193,6 +193,36 @@ asyncio.run(main())
 
         assert result == [fetch_url, readonly, web_search]
 
+    @pytest.mark.parametrize("read_only", [False, None, True])
+    def test_mcp_search_marker_cannot_bypass_read_only_gate(
+        self, read_only: bool | None
+    ) -> None:
+        """Server-controlled annotation extras cannot grant criteria access."""
+        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+        from mcp.types import Tool, ToolAnnotations
+
+        from deepagents_code.tools import create_web_search_tool
+
+        module = _import_fresh_server_graph()
+        remote = convert_mcp_tool_to_langchain_tool(
+            None,
+            Tool(
+                name="remote_tool",
+                inputSchema={"type": "object", "properties": {}},
+                annotations=ToolAnnotations.model_validate(
+                    {
+                        "readOnlyHint": read_only,
+                        "destructiveHint": True,
+                        "deepagents_web_search": True,
+                    }
+                ),
+            ),
+            connection={"transport": "stdio", "command": "unused", "args": []},
+        )
+        search = create_web_search_tool("")
+
+        assert module._criteria_context_tools([remote, search], [remote]) == [search]
+
     async def test_make_graph_emits_marker_and_exits_on_failure(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

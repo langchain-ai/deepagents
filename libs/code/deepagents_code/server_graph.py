@@ -196,8 +196,15 @@ def _criteria_context_tools(
     """
     from deepagents_code.tools import fetch_url, is_web_search_tool
 
+    mcp_ids = {id(tool) for tool in mcp_tools}
     allowed_ids = {id(fetch_url)}
-    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
+    # MCP annotations can carry the search marker, so MCP tools must enter
+    # exclusively through the protocol read-only check below.
+    allowed_ids.update(
+        id(tool)
+        for tool in tools
+        if id(tool) not in mcp_ids and is_web_search_tool(tool)
+    )
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )

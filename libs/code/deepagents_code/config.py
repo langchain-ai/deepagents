@@ -1433,6 +1433,15 @@ def _report_unusable_langsmith_carrier() -> None:
     Goes to stderr as well as the logger, for the reason given in
     `_report_denied_env_key`: the buffering handler installed at import means a
     `logger.warning` alone is visible only under `--debug`.
+
+    That is not enough here, and the gap is known. The only caller runs during
+    the agent build, which happens in the server subprocess, and `launch.server`
+    redirects its stdout and stderr to a temporary file surfaced only under
+    `--debug` too. So in the one process where a carrier exists, both channels
+    are invisible: the user's `execute` commands silently lose their LangSmith
+    auth. Closing this needs a server-to-client notice channel -- the
+    `consume_orphaned_tracing_disabled_notice` pattern is a module global read
+    by `app.py` in the *client*, so it cannot carry this one.
     """
     message = (
         "Could not read your LangSmith settings for approval-gated commands, "

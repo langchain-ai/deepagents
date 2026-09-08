@@ -88,6 +88,10 @@ _HELP_MESSAGE = (
     "Send /stop to cancel."
 )
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
+_HISTORY_RESET_FAILURE_MESSAGE = (
+    "Could not finish clearing history. Some of it may already be deleted. "
+    "Send /reset-all-history to finish clearing."
+)
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
@@ -803,25 +807,52 @@ class TalonHost:
         if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
             await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
             return
+        previous_resets = self._conversation_resets
+        bumped = False
         try:
-            # Persist the counter first: a failure here clears nothing, so the retry the
-            # user is told to send still has an archive to clear. The reverse order can
-            # erase history while leaving the conversation on its old thread id.
+            # Persist the counter before clearing, because the reverse order can erase
+            # history while leaving the conversation on its old thread id. The rollback
+            # below is what makes this order safe: a clear that does not finish must not
+            # leave the chat on a fresh thread while its history is still on disk, which
+            # would read as a completed reset to someone who asked for one.
             next_resets = {
-                **self._conversation_resets,
-                conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+                **previous_resets,
+                conversation_root: previous_resets.get(conversation_root, 0) + 1,
             }
             _save_conversation_resets(self.config.conversation_state_path, next_resets)
             self._conversation_resets = next_resets
+            bumped = True
             await self.agent.clear_history(channel_key, chat)
         except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
             logger.warning("Conversation history reset failed", exc_info=True)
-            message = "Could not finish clearing history. Please try /reset-all-history again."
+            if bumped:
+                self._roll_back_conversation_resets(previous_resets)
+            message = _HISTORY_RESET_FAILURE_MESSAGE
         else:
             message = (
                 "Cleared all conversation history for this chat. Started a fresh conversation."
             )
         await send_with_retry(lambda: channel.send_message(chat, message))
+
+    def _roll_back_conversation_resets(self, previous: dict[str, int]) -> None:
+        """Undo a counter bump whose history clear did not finish.
+
+        The write is atomic, so it either restores the file or leaves the bumped
+        value in place — the same state as not writing at all. Memory is restored
+        either way, so this process keeps the old thread id even when the disk
+        cannot be corrected.
+
+        Args:
+            previous: Reset counters as they stood before the bump.
+        """
+        self._conversation_resets = previous
+        try:
+            _save_conversation_resets(self.config.conversation_state_path, previous)
+        except Exception:
+            logger.exception(
+                "Could not roll back the conversation reset counter; a restart will move "
+                "this chat to a new conversation with its history still stored",
+            )
 
     async def _start_new_conversation(
         self,

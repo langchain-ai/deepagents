@@ -12,8 +12,9 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -21,9 +22,91 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_I
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from deepagents import FsToolName
 
     from deepagents_code.project_utils import ProjectContext
+
+logger = logging.getLogger(__name__)
+
+
+SESSION_WORKSPACE_FIELDS = frozenset(
+    {
+        "allow_fs_tools",
+        "assistant_id",
+        "auto_approve",
+        "enable_ask_user",
+        "enable_interpreter",
+        "enable_memory",
+        "enable_shell",
+        "enable_skills",
+        "interactive",
+        "interpreter_ptc",
+        "interpreter_ptc_acknowledge_unsafe",
+        "interrupt_shell_only",
+        "no_mcp",
+        "recursion_limit",
+        "sandbox_id",
+        "sandbox_snapshot_name",
+        "sandbox_type",
+        "shell_allow_list",
+    }
+)
+"""Policy a managed client may claim for its own command invocation.
+
+These come from the client's own CLI flags, so the client already knows them
+and claiming them proves only that both sides agree. Together with
+`PROJECT_WORKSPACE_FIELDS` this must partition `to_workspace_payload()`
+exactly: a payload field in neither set is never verified against a client
+claim and never checked for project drift.
+`test_workspace_claim_partitions_every_policy_field` pins that.
+"""
+PROJECT_WORKSPACE_FIELDS = frozenset(
+    {
+        "extension_paths",
+        "mcp_config_path",
+        "sandbox_setup",
+        "trust_project_extensions",
+        "trust_project_mcp",
+    }
+)
+"""Policy the server must resolve per project directory, never accept.
+
+Each of these grants code execution scoped to a checkout -- MCP servers,
+sandbox setup commands, Python extensions. A client that could claim them could
+execute one directory's configuration against another directory's trust
+decision.
+"""
+
+
+def _same_workspace_project(first: str | None, second: str) -> bool:
+    """Whether two paths name the same project directory.
+
+    Fails closed: an unset launch root, a missing path, or an undecidable
+    comparison counts as *different*, so the caller drops project policy rather
+    than carrying it across an unverified boundary. `_same_directory` compares
+    by device and inode, so a symlinked or differently cased spelling of one
+    directory still compares equal.
+
+    Returns:
+        `True` only when both paths name the same directory.
+    """
+    if first is None:
+        return False
+    from deepagents_code._paths import DeepAgentsHomeError, _same_directory
+
+    try:
+        return _same_directory(Path(first), Path(second))
+    except DeepAgentsHomeError:
+        logger.warning(
+            "Could not compare project directories %s and %s; treating as "
+            "separate projects, so project-scoped policy will not apply",
+            first,
+            second,
+            exc_info=True,
+        )
+        return False
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -452,19 +535,119 @@ class ServerConfig:
             "extension_paths": list(self.extension_paths),
         }
 
-    def workspace_fingerprint(self) -> str:
-        """Fingerprint the full effective config without persisting its contents.
+    def to_session_workspace_claim(self) -> dict[str, Any]:
+        """Return the command-scoped policy a managed client may claim.
+
+        Returns:
+            The session-scoped subset of the workspace policy.
+        """
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in SESSION_WORKSPACE_FIELDS
+        }
+
+    def to_project_workspace_policy(self) -> dict[str, Any]:
+        """Return policy that must be resolved for each project directory.
+
+        Returns:
+            The project-scoped subset of the workspace policy.
+        """
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in PROJECT_WORKSPACE_FIELDS
+        }
+
+    def session_workspace_fingerprint(self) -> str:
+        """Fingerprint the exact client-claimable session policy.
 
         Returns:
             The canonical SHA-256 fingerprint.
         """
-        import hashlib
+        from deepagents_code.workspace import canonical_fingerprint
 
+        return canonical_fingerprint(self.to_session_workspace_claim())
+
+    def resolve_workspace(
+        self,
+        cwd: str,
+        project_root: str | None,
+    ) -> ServerConfig:
+        """Resolve directory-bound policy for one server workspace.
+
+        Project-scoped policy (`PROJECT_WORKSPACE_FIELDS`) is valid only for
+        the directory it was resolved against: it came from the launch-time CLI
+        and that project's trust decisions. Reusing it for another directory
+        would apply one project's MCP servers, sandbox setup, and extensions to
+        a different, possibly untrusted, checkout.
+
+        So the launch project keeps its policy verbatim, and any other project
+        starts from nothing: MCP and sandbox setup are *dropped* rather than
+        rediscovered, and extension trust is re-read from the trust store for
+        that project. `_same_workspace_project` fails closed, so an
+        unresolvable path also takes the drop branch.
+
+        Args:
+            cwd: Absolute, canonical working directory for the workspace.
+            project_root: Canonical project root, or `None` when the workspace
+                has none. The launch cwd uses the server's explicit root when
+                configured. Otherwise, extension trust is keyed on `cwd` when
+                no root exists.
+
+        Returns:
+            A config whose session policy is unchanged and whose project policy
+            is either the launch project's or empty.
+        """
+        if self.project_root is not None and _same_workspace_project(self.cwd, cwd):
+            project_root = str(Path(self.project_root).expanduser().resolve())
+        launch_root = self.project_root or self.cwd
+        target_root = project_root or cwd
+        if _same_workspace_project(launch_root, target_root):
+            return replace(self, cwd=cwd, project_root=project_root)
+        from deepagents_code.extensions.trust import is_project_extensions_trusted
+
+        return replace(
+            self,
+            cwd=cwd,
+            project_root=project_root,
+            sandbox_setup=None,
+            mcp_config_path=None,
+            trust_project_mcp=None,
+            trust_project_extensions=is_project_extensions_trusted(target_root),
+            extension_paths=(),
+        )
+
+    def preserve_bound_extension_trust(
+        self, bound_policy: Mapping[str, object]
+    ) -> ServerConfig:
+        """Keep an existing thread's extension trust when a new grant appears.
+
+        Args:
+            bound_policy: Server policy persisted when the thread was bound.
+
+        Returns:
+            A config that defers new grants to new threads. Revocations remain
+            visible so binding and runtime validation can reject them.
+        """
+        if bound_policy.get("trust_project_extensions") is False and (
+            self.trust_project_extensions is True
+        ):
+            return replace(self, trust_project_extensions=False)
+        return self
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the resolved runtime config except workspace identity.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
         values = self.to_env()
         values.pop("CWD")
         values.pop("PROJECT_ROOT")
-        serialized = json.dumps(values, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(serialized.encode()).hexdigest()
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(values)
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.

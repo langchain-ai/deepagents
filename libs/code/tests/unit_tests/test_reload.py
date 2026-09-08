@@ -530,7 +530,12 @@ class TestReloadFromEnvironment:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """OSError reading global `.env` should log a warning and continue."""
+        """OSError reading global `.env` warns and skips the project `.env`.
+
+        The global file carries the trusted `startup.read_project_dotenv`
+        opt-out. Loading the project file anyway would discard that decision
+        because the option defaults to true.
+        """
         credentials = Credentials.from_environment(start_path=tmp_path)
 
         broken = MagicMock()
@@ -538,17 +543,20 @@ class TestReloadFromEnvironment:
         broken.is_file.side_effect = OSError(msg)
         monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", broken)
 
-        # Should not raise — project .env still loads
         project_env = tmp_path / ".env"
         project_env.write_text("OPENAI_API_KEY=sk-fallback\n")
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)
 
-        assert any("Could not read global dotenv" in r.message for r in caplog.records)
-        assert os.environ["OPENAI_API_KEY"] == "sk-fallback"
+        assert any(
+            "Could not read the trusted global dotenv" in r.message
+            for r in caplog.records
+        )
+        assert "OPENAI_API_KEY" not in os.environ
 
     def test_global_dotenv_values_raises_oserror(
         self,
@@ -588,13 +596,14 @@ class TestReloadFromEnvironment:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)
 
-        # Asserting a count here would mirror the implementation: memoizing the
-        # global read is a valid optimization that must not fail this test. What
-        # matters is that the unreadable global file was attempted, and that the
-        # project value still applied.
+        # The unreadable global file must be attempted before project loading.
         assert global_calls >= 1
-        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
-        assert any("Could not read global dotenv" in r.message for r in caplog.records)
+        # The failed pre-check fails closed, so the project file is skipped.
+        assert "OPENAI_API_KEY" not in os.environ
+        assert any(
+            "Could not read the trusted global dotenv" in r.message
+            for r in caplog.records
+        )
 
     def test_project_dotenv_denies_environment_hijack_keys(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

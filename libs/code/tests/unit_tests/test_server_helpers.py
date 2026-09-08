@@ -200,38 +200,42 @@ class TestPythonpathRelayRoundTrip:
 
 
 class TestLangSmithCarrierRoundTrip:
-    def test_launch_langsmith_env_round_trips_to_execute_env(self) -> None:
-        """Launch LangSmith settings survive the relay into `execute`.
-
-        Composes the two real halves -- `_build_server_env` encodes, and
-        `restore_user_langsmith_env` decodes -- rather than hand-writing the
-        JSON on either side. A rename or reshape of the envelope would
-        otherwise degrade every user command to the fail-closed "no LangSmith
-        credentials" path, and ship green.
-        """
+    @pytest.mark.parametrize("user_key", ["user-launch-key", None])
+    def test_launch_langsmith_env_round_trips_to_execute_env(
+        self, monkeypatch: pytest.MonkeyPatch, user_key: str | None
+    ) -> None:
+        """The real server handoff restores user settings and removes agent ones."""
         import deepagents_code.config as config_mod
         from deepagents_code.config import restore_user_langsmith_env
 
-        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
-        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
         launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
-        launch["LANGSMITH_API_KEY"] = "user-launch-key"
+        launch["LANGSMITH_API_KEY"] = user_key
         launch["LANGSMITH_PROJECT"] = "user-launch-project"
-        config_mod._bootstrap_state.launch_langsmith_env = dict(launch)
-        config_mod._bootstrap_state.user_langsmith_env = dict(launch)
-        try:
-            server_env = _build_server_env()
-        finally:
-            config_mod._bootstrap_state.launch_langsmith_env = original_launch
-            config_mod._bootstrap_state.user_langsmith_env = original_user
+        user = dict(
+            launch, LANGSMITH_PROFILE="oauth", LANGSMITH_CONFIG_FILE="/tmp/ls.json"
+        )
+        monkeypatch.setattr(config_mod._bootstrap_state, "launch_langsmith_env", launch)
+        monkeypatch.setattr(config_mod._bootstrap_state, "user_langsmith_env", user)
+        server_env = _build_server_env()
 
         # The server hands the agent an environment holding its own key.
         shell_env = dict(server_env)
-        shell_env["LANGSMITH_API_KEY"] = "agent-session-key"
+        shell_env.update(
+            LANGSMITH_API_KEY="agent-session-key",
+            LANGSMITH_TRACING="true",
+            DEEPAGENTS_CODE_LANGSMITH_TRACING="true",
+        )
         restore_user_langsmith_env(shell_env)
 
-        assert shell_env["LANGSMITH_API_KEY"] == "user-launch-key"
+        if user_key is None:
+            assert "LANGSMITH_API_KEY" not in shell_env
+        else:
+            assert shell_env["LANGSMITH_API_KEY"] == user_key
         assert shell_env["LANGSMITH_PROJECT"] == "user-launch-project"
+        assert shell_env["LANGSMITH_PROFILE"] == "oauth"
+        assert shell_env["LANGSMITH_CONFIG_FILE"] == "/tmp/ls.json"
+        assert "LANGSMITH_TRACING" not in shell_env
+        assert "DEEPAGENTS_CODE_LANGSMITH_TRACING" not in shell_env
         assert _USER_LANGSMITH_ENV_CARRIER not in shell_env
 
 

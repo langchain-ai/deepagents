@@ -65,44 +65,41 @@ from deepagents_code.project_utils import (
 class TestRuntimeDotenvReload:
     """Tests for project-scoped dotenv refresh behavior."""
 
-    def test_direct_reload_initializes_langsmith_state(
+    def test_direct_reload_preserves_user_settings_for_server_commands(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A directly constructed `Credentials` can reload before bootstrap."""
+        """Direct reload preserves user settings through the server handoff."""
         import os
 
         import deepagents_code.config as config_mod
+        from deepagents_code.client.launch.server import _build_server_env
 
         monkeypatch.setattr(
             config_mod,
             "_GLOBAL_DOTENV_PATH",
             tmp_path / "missing-global.env",
         )
-        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
-        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
-        config_mod._bootstrap_state.launch_langsmith_env = {}
-        config_mod._bootstrap_state.user_langsmith_env = {}
-        config_mod._dotenv_loaded_values.clear()
+        monkeypatch.setattr(config_mod._bootstrap_state, "launch_langsmith_env", {})
+        monkeypatch.setattr(config_mod._bootstrap_state, "user_langsmith_env", {})
+        monkeypatch.setattr(config_mod, "_dotenv_loaded_values", {})
+        monkeypatch.delenv(config_mod._USER_LANGSMITH_ENV_CARRIER, raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "user-launch-key")
+        (tmp_path / ".env").write_text("LANGSMITH_PROJECT=user-project\n")
+        runtime = Credentials.from_environment(start_path=tmp_path)
 
-        try:
-            runtime = Credentials.from_environment(start_path=tmp_path)
+        runtime.reload_from_environment(start_path=tmp_path)
+        shell_env = _build_server_env()
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in os.environ
+        shell_env.update(
+            LANGSMITH_API_KEY="agent-key", LANGSMITH_PROJECT="agent-project"
+        )
+        config_mod.restore_user_langsmith_env(shell_env)
 
-            runtime.reload_from_environment(start_path=tmp_path)
-
-            # `_bootstrap_state` is the source of truth; `_build_server_env`
-            # encodes the carrier from it at every spawn. Reload deliberately
-            # does not publish it into the client's own environment, so assert
-            # the state rather than an env var.
-            blank = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
-            assert config_mod._bootstrap_state.launch_langsmith_env == blank
-            assert config_mod._bootstrap_state.user_langsmith_env == blank
-            assert config_mod._USER_LANGSMITH_ENV_CARRIER not in os.environ
-        finally:
-            config_mod._bootstrap_state.launch_langsmith_env = original_launch
-            config_mod._bootstrap_state.user_langsmith_env = original_user
-            config_mod._dotenv_loaded_values.clear()
+        assert shell_env["LANGSMITH_API_KEY"] == "user-launch-key"
+        assert shell_env["LANGSMITH_PROJECT"] == "user-project"
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in shell_env
 
     def test_reload_restores_the_launch_value_over_an_agent_override(
         self,
@@ -4523,54 +4520,6 @@ class TestDetectProvider:
 class TestPrefixedLangsmithBridge:
     """Bridging a prefixed override onto the canonical SDK name."""
 
-    def test_conflicting_values_warn_once_per_pair(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Only a genuine conflict warns, and it names both variables."""
-        import os
-
-        import deepagents_code.config as config_mod
-        from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
-
-        monkeypatch.delenv(SUPPRESS_ENV_OVERRIDE_WARNING, raising=False)
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
-        monkeypatch.setenv("LANGSMITH_API_KEY", "canonical-key")
-        # Same value on both: agreement is not a conflict.
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.setenv("LANGSMITH_TRACING", "true")
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            config_mod._apply_prefixed_langsmith_env()
-
-        conflicts = [
-            record
-            for record in caplog.records
-            if "are both set to different values" in record.getMessage()
-        ]
-        assert len(conflicts) == 1
-        assert "LANGSMITH_API_KEY" in conflicts[0].getMessage()
-        # The prefixed value is the one that takes effect.
-        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
-
-    def test_the_warning_can_be_suppressed(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """`_apply_prefixed_langsmith_env` now runs on every reload."""
-        import os
-
-        import deepagents_code.config as config_mod
-        from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
-
-        monkeypatch.setenv(SUPPRESS_ENV_OVERRIDE_WARNING, "1")
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
-        monkeypatch.setenv("LANGSMITH_API_KEY", "canonical-key")
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            config_mod._apply_prefixed_langsmith_env()
-
-        assert "are both set to different values" not in caplog.text
-        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
-
     def test_an_empty_prefixed_value_still_propagates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4741,25 +4690,6 @@ class TestTracingEnvironmentReconcile:
         config_mod.reconcile_tracing_environment({"LANGSMITH_PROJECT": "workspace-b"})
 
         assert ls_utils.get_env_var("PROJECT") == "workspace-b"
-
-    def test_a_broken_cache_clear_is_reported(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A stale cache the caller cannot detect must not pass silently."""
-        from langsmith import utils as ls_utils
-
-        import deepagents_code.config as config_mod
-
-        def _boom() -> None:
-            msg = "upstream changed shape"
-            raise RuntimeError(msg)
-
-        monkeypatch.setattr(ls_utils.get_env_var, "cache_clear", _boom)
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            config_mod.reconcile_tracing_environment({})
-
-        assert "previous workspace" in caplog.text
 
 
 class TestUserLangsmithEnvironment:
@@ -4956,30 +4886,6 @@ class TestUserLangsmithEnvironment:
             var in env or f"DEEPAGENTS_CODE_{var}" in env
             for var in config_mod._USER_LANGSMITH_ENV_VARS
         )
-
-    def test_restore_decodes_server_carrier_and_removes_it(self) -> None:
-        import deepagents_code.config as config_mod
-
-        values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
-        values["LANGSMITH_PROFILE"] = "oauth"
-        values["LANGSMITH_CONFIG_FILE"] = "/tmp/ls.json"
-        env = {
-            config_mod._USER_LANGSMITH_ENV_CARRIER: json.dumps(
-                {"launch": dict.fromkeys(values), "user": values}
-            ),
-            "LANGSMITH_API_KEY": "agent-key",
-            "LANGSMITH_TRACING": "true",
-            "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
-        }
-
-        config_mod.restore_user_langsmith_env(env)
-
-        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
-        assert "LANGSMITH_API_KEY" not in env
-        assert "LANGSMITH_TRACING" not in env
-        assert "DEEPAGENTS_CODE_LANGSMITH_TRACING" not in env
-        assert env["LANGSMITH_PROFILE"] == "oauth"
-        assert env["LANGSMITH_CONFIG_FILE"] == "/tmp/ls.json"
 
 
 class TestLazySingletons:

@@ -445,3 +445,74 @@ def test_update_reports_conflict_when_the_lock_is_held(config_tools, monkeypatch
 
     assert result["status"] == "conflict"
     assert updates == []
+
+
+def test_auto_approve_refuses_a_url_swap_that_reuses_a_stored_secret(tmp_path: Path):
+    """The first guard listed command/args/transport and missed this one."""
+    path = tmp_path / "private" / ".mcp.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "example": {
+                        "url": "https://legit.test/mcp",
+                        "headers": {"Authorization": "Bearer real-secret"},
+                    }
+                }
+            }
+        )
+    )
+    view, update = MCPConfigStore(path, lambda: None, auto_approve=True).tools()
+    stored = view.invoke({})
+
+    result = update.invoke(
+        {
+            "server_name": "example",
+            "server": {
+                "url": "https://attacker.test/",
+                "headers": stored["mcpServers"]["example"]["headers"],
+            },
+            "expected_revision": stored["revision"],
+        }
+    )
+
+    assert result["status"] == "error"
+    saved = json.loads(path.read_text())["mcpServers"]["example"]
+    assert saved["url"] == "https://legit.test/mcp"
+    assert saved["headers"] == {"Authorization": "Bearer real-secret"}
+
+
+def test_auto_approve_allows_a_tool_filter_change_that_reuses_a_stored_secret(tmp_path: Path):
+    """Tool filters cannot redirect a credential, so redacted reuse stays usable."""
+    path = tmp_path / "private" / ".mcp.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "example": {
+                        "url": "https://legit.test/mcp",
+                        "headers": {"Authorization": "Bearer real-secret"},
+                    }
+                }
+            }
+        )
+    )
+    view, update = MCPConfigStore(path, lambda: None, auto_approve=True).tools()
+    stored = view.invoke({})
+    server = stored["mcpServers"]["example"]
+    server["allowedTools"] = ["read_*"]
+
+    result = update.invoke(
+        {
+            "server_name": "example",
+            "server": server,
+            "expected_revision": stored["revision"],
+        }
+    )
+
+    assert result["status"] == "updated"
+    saved = json.loads(path.read_text())["mcpServers"]["example"]
+    assert saved["allowedTools"] == ["read_*"]
+    assert saved["headers"] == {"Authorization": "Bearer real-secret"}

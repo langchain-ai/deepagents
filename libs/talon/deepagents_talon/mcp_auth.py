@@ -234,13 +234,22 @@ class FileTokenStorage:
         tokens: OAuthToken,
         client_info: OAuthClientInformationFull,
     ) -> None:
-        """Atomically persist OAuth tokens and their client registration."""
+        """Atomically persist OAuth tokens and their client registration.
+
+        This records a *fresh* grant, so unlike `set_tokens` it does not carry a
+        stored `refresh_token` forward. RFC 6749 section 6's "keep the one you
+        have" applies to a refresh response; stitching the previous grant's
+        refresh token onto a new access token would leave a credential the
+        authorization server may already have revoked -- which is exactly what an
+        explicit reauthentication invalidates -- instead of correctly recording
+        that this grant is not refreshable.
+        """
         values = {
             "tokens": json.loads(tokens.model_dump_json()),
             "expires_at": _token_expiry(tokens),
             "client_info": json.loads(client_info.model_dump_json(exclude_none=True)),
         }
-        await asyncio.to_thread(self._update_values, values, keep_refresh_token=True)
+        await asyncio.to_thread(self._update_values, values)
         _mark_authorization_complete()
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:

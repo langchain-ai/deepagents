@@ -115,12 +115,6 @@ def _authentication_required(exc: BaseException) -> bool:
     )
 
 
-def _device_authorization_completed(exc: BaseException) -> bool:
-    return any(
-        isinstance(leaf, DeviceAuthorizationCompletedError) for leaf in _exception_leaves(exc)
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class MCPToolInfo:
     """Metadata for one MCP tool."""
@@ -512,10 +506,22 @@ async def login_mcp_server(
         pass
     except ExceptionGroup as group:
         # A completed device flow raises from inside the session's task group,
-        # which wraps it; only a group holding some other failure is an error.
-        if not _device_authorization_completed(group):
+        # which wraps it, and can aggregate with a sibling failure from tearing
+        # down the abandoned code flow. The marker is raised only after the
+        # credentials are persisted, so its presence still means the login
+        # succeeded; report the rest rather than discarding or misreading it.
+        leaves = tuple(_exception_leaves(group))
+        remainder = tuple(
+            leaf for leaf in leaves if not isinstance(leaf, DeviceAuthorizationCompletedError)
+        )
+        if len(remainder) == len(leaves):
             print(f"MCP login failed: {format_login_error(group)}", file=sys.stderr)  # noqa: T201
             return 1
+        for leaf in remainder:
+            logger.warning(
+                "MCP login session failed after credentials were saved: %s",
+                format_login_error(leaf),
+            )
     except (
         HTTPError,
         McpError,

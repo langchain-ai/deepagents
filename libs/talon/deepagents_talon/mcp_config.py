@@ -52,6 +52,8 @@ _ENUMS = {
     "type": {"stdio", "http", "sse", "streamable_http", "streamable-http"},
     "auth": {"oauth"},
 }
+# Everything else in `_FIELDS` decides where a credential is sent or what runs.
+_TOOL_FILTER_FIELDS = frozenset({"allowedTools", "disabledTools"})
 _LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_POLL_SECONDS = 0.05
 
@@ -337,13 +339,21 @@ def _reject_unapproved_execution_change(
     replacement: dict[str, object],
     previous: object,
 ) -> None:
-    """Refuse an unapproved change that runs new code with a secret it never saw.
+    """Refuse an unapproved change that redirects a secret the caller never saw.
 
-    `_restore` fills `<redacted>` path-wise, so a caller can keep a stored `env`
-    secret while replacing `command`/`args` -- or flip the derived transport,
-    which turns a URL into a command line. With the approval interrupt disabled
-    that reaches a real credential unreviewed, so refuse the combination and let
-    the caller resend the settings without reusing redacted values.
+    `_restore` fills `<redacted>` path-wise, so a caller can keep a stored
+    credential while changing where it goes: swapping `command`/`args`, flipping
+    the derived transport to turn a URL into a command line, or pointing `url` at
+    another host so the restored `Authorization` header is sent there. With the
+    approval interrupt disabled any of those reaches a real credential
+    unreviewed.
+
+    The check is deliberately not a list of dangerous fields. The first version
+    enumerated `command`, `args` and the transport, and a review caught that it
+    omitted `url` -- the same attack through an unlisted field. Instead every
+    managed setting must be unchanged apart from the tool filters, which cannot
+    redirect anything, so a field added to `_FIELDS` later is covered by default
+    rather than by remembering to add it here.
 
     Args:
         submitted: Settings as supplied, before redacted values were restored.
@@ -351,20 +361,29 @@ def _reject_unapproved_execution_change(
         previous: Stored settings for this server, if any.
 
     Raises:
-        _UnsafeUpdateError: The update reuses a stored secret and changes what runs.
+        _UnsafeUpdateError: The update reuses a stored secret and changes a
+            setting that could send it somewhere else.
     """
     if not _restores_redacted(submitted):
         return
     old = cast("dict[str, object]", previous) if isinstance(previous, dict) else {}
-    changed = any(replacement.get(field) != old.get(field) for field in ("command", "args"))
-    if not changed and _derived_transport(replacement) == _derived_transport(old):
+    if _redirecting_fields(replacement) == _redirecting_fields(old):
         return
     msg = (
-        "Auto-approved MCP updates cannot change command, args, or transport while "
-        "reusing <redacted> values. Resend the settings with literal ${ENV_VAR} "
-        "references instead, or ask the operator to re-enable update approval."
+        "Auto-approved MCP updates that reuse <redacted> values cannot change any "
+        "other setting; only allowedTools and disabledTools may differ. Resend the "
+        "settings with ${ENV_VAR} references instead of redacted values, or ask the "
+        "operator to re-enable update approval."
     )
     raise _UnsafeUpdateError(msg)
+
+
+def _redirecting_fields(server: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in server.items()
+        if key in _FIELDS and key not in _TOOL_FILTER_FIELDS
+    }
 
 
 def _restores_redacted(value: object) -> bool:

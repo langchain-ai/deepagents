@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -13,6 +14,7 @@ from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
+from deepagents_talon.background import HIDDEN_ASYNC_TOOLS
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -301,7 +303,7 @@ async def test_runtime_resolves_supplied_subagents() -> None:
         memory=(),
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == subagents
 
@@ -334,12 +336,9 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
     await runtime.start()
 
     assert captured["subagents"][0] == async_subagent
-    assert captured["interrupt_on"] == {
-        "custom_tool": True,
-        "start_async_task": False,
-        "update_async_task": True,
-        "cancel_async_task": True,
-    }
+    assert captured["interrupt_on"] == {"custom_tool": True, "start_async_task": False}
+    # The other async task tools never reach the model, so gating them could not fire.
+    assert HIDDEN_ASYNC_TOOLS.isdisjoint(captured["interrupt_on"])
 
 
 async def test_runtime_merges_local_and_async_subagents(
@@ -367,7 +366,7 @@ async def test_runtime_merges_local_and_async_subagents(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -405,7 +404,7 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -443,7 +442,7 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -474,7 +473,7 @@ async def test_runtime_uses_user_defined_general_purpose_subagent(
         memory=(),
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -1384,3 +1383,61 @@ async def test_stop_releases_the_checkpointer_when_workers_refuse_to_stop(
 
     assert closed == ["closed"]
     assert runtime._graph is None
+
+
+async def test_missing_tool_node_is_reported_instead_of_silently_disabling_task_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.runtime"):
+        await runtime.start()
+
+    assert "exposes no tool node" in caplog.text
+    assert runtime._attachments[0] == {"name": "main", "mode": "conversation", "tools": None}
+
+
+async def test_agent_tools_inspection_does_not_block_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+    ticks = 0
+
+    def slow_resolve() -> list[Any]:
+        time.sleep(0.2)
+        return []
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    monkeypatch.setattr(runtime, "_resolve_subagents", slow_resolve)
+    beat = asyncio.create_task(ticker())
+    try:
+        await runtime._attachment_tool([]).ainvoke({})
+    finally:
+        beat.cancel()
+        await asyncio.gather(beat, return_exceptions=True)
+        await runtime.stop()
+
+    assert ticks > 1

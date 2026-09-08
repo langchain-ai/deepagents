@@ -83,13 +83,9 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
-_ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
-    {
-        "start_async_task",
-        "update_async_task",
-        "cancel_async_task",
-    }
-)
+# Every other async task tool is stripped from the model's tools by
+# `BackgroundSubagents.awrap_model_call`, so gating them would never fire.
+_ASYNC_SUBAGENT_TOOL_NAMES = frozenset({"start_async_task"})
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -346,7 +342,7 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents(strict=True)
+        self._resolved_subagents = self._resolve_subagents()
         self._graph = self._create_graph()
 
     def _create_graph(
@@ -383,7 +379,7 @@ class DeepAgentRuntime:
             web_tools["web_search"] = create_web_search_tool(tavily_key)
         for spec in local_subagents:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
-        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
+        resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
         task_tools = TaskTools(
@@ -415,11 +411,19 @@ class DeepAgentRuntime:
             checkpointer=self.checkpointer,
         )
         node = getattr(getattr(graph, "nodes", {}).get("tools"), "bound", None)
-        if isinstance(node, ToolNode) and "task" in node.tools_by_name:
+        if not isinstance(node, ToolNode):
+            logger.error(
+                "Deep Agents graph exposes no tool node (%s); per-task tool selection is "
+                "disabled and get_agent_tools cannot report the main agent's tools",
+                type(node).__name__,
+            )
+        elif "task" in node.tools_by_name:
             selectable = task_tools.bind(node.tools_by_name)
             for attachment in attachments:
                 if attachment["name"] in {spec["name"] for spec in local_subagents}:
                     attachment["selectable_tools"] = selectable
+        else:
+            logger.warning("Delegation is unavailable; per-task tool selection is disabled")
         attachments.insert(
             0,
             {
@@ -576,24 +580,29 @@ class DeepAgentRuntime:
     async def reload_subagent_configuration(self) -> None:
         """Activate validated definitions for subsequent turns, preserving active graphs."""
         async with self._tools_lock:
-            replacement = self._resolve_subagents(strict=True)
+            replacement = self._resolve_subagents()
             graph = self._create_graph(subagents=replacement)
             self._resolved_subagents = replacement
             self._graph = graph
 
     def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
         @tool
-        def get_agent_tools() -> dict[str, object]:
+        async def get_agent_tools() -> dict[str, object]:
             """Inspect active tool attachments without credentials or prompt contents.
 
+            Each agent's `tools` are what its configuration attached; only the names in
+            its `selectable_tools` can be passed to task(tools=[...]). The two lists come
+            from different catalogs, so a name in one may be absent from the other.
             Null tools mean an opaque compiled/remote agent has not been inspected.
             Saved edits require reload. Running turns and tasks retain old capabilities;
             use list_subagents and cancel_subagent before claiming revocation is complete.
             """
             try:
-                changed = self._resolve_subagents(strict=True) != self._resolved_subagents
+                resolved = await asyncio.to_thread(self._resolve_subagents)
             except Exception:  # noqa: BLE001  # never return configuration contents
                 changed = True
+            else:
+                changed = resolved != self._resolved_subagents
             return {
                 "agents": attachments,
                 "latest_agents": self._attachments,
@@ -828,12 +837,10 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
-    def _resolve_subagents(
-        self, *, strict: bool = False
-    ) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
         resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         if self.assistant_dir is not None:
-            resolved.extend(_load_local_subagents(self.assistant_dir, strict=strict))
+            resolved.extend(_load_local_subagents(self.assistant_dir))
         if self.subagents is not None:
             resolved.extend(self.subagents)
         if self.load_subagents is not None:
@@ -1262,7 +1269,7 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
     return paths
 
 
-def _load_local_subagents(assistant_dir: Path, *, strict: bool = False) -> list[SubAgent]:
+def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
     agents_dir = _local_subagents_dir(assistant_dir)
     if not agents_dir.is_dir():
         return []
@@ -1272,11 +1279,10 @@ def _load_local_subagents(assistant_dir: Path, *, strict: bool = False) -> list[
         if not directory.is_dir() or not path.is_file():
             continue
         subagent = _parse_local_subagent(path, fallback_name=directory.name)
-        if strict and (subagent is None or subagent["name"] in subagents):
+        if subagent is None or subagent["name"] in subagents:
             msg = "Invalid or duplicate local subagent definition"
             raise ValueError(msg)
-        if subagent is not None:
-            subagents[subagent["name"]] = subagent
+        subagents[subagent["name"]] = subagent
     return list(subagents.values())
 
 
@@ -1337,6 +1343,12 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
         msg = "Local subagent tools must be unique, nonempty exact names"
         raise ValueError(msg)
     spec["tool_names"] = cast("list[str]", names)
+    web = frontmatter.get("web", False)
+    if not isinstance(web, bool):
+        msg = "Local subagent web must be true or false"
+        raise ValueError(msg)  # noqa: TRY004  # invalid frontmatter is one ValueError contract
+    if web:
+        spec["web"] = True
 
 
 def _resolve_local_tools(
@@ -1344,15 +1356,18 @@ def _resolve_local_tools(
     catalog: Mapping[str, BaseTool],
     web_tools: Mapping[str, BaseTool],
 ) -> None:
-    external = spec["name"] == "external-research"
-    available = {**catalog, **web_tools} if external else catalog
+    web = bool(spec.pop("web", False))
+    available = {**catalog, **web_tools} if web else catalog
     if "tool_names" in spec:
         names = spec.pop("tool_names")
         if any(name not in available for name in names):
-            msg = "Subagent attachment is unavailable; previous configuration retained"
+            msg = (
+                "Subagent attachment is unavailable in the configuration catalog; "
+                "previous configuration retained"
+            )
             raise ValueError(msg)
         spec["tools"] = [available[name] for name in names]
-    if external:
+    if web:
         spec["tools"] = list({**_tool_map(spec.get("tools", [])), **web_tools}.values())
 
 

@@ -4302,6 +4302,9 @@ class DeepAgentsApp(App):
         self._transcript_generation = 0
         """Invalidates hydration/pruning work when the transcript is cleared."""
 
+        self._transcript_mutation_lock = asyncio.Lock()
+        """Serializes message-store and transcript DOM reconciliation."""
+
         self._hydration_requests: set[Literal["above", "below"]] = set()
         """Coalesced transcript hydration directions awaiting one UI slice."""
 
@@ -9390,9 +9393,19 @@ class DeepAgentsApp(App):
     ) -> int:
         """Hydrate one contiguous batch at a mounted-window edge.
 
-        Args:
-            direction: Edge receiving stored messages.
-            count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
+        Returns:
+            Number of messages mounted.
+        """
+        async with self._transcript_mutation_lock:
+            return await self._hydrate_messages_unlocked(direction, count=count)
+
+    async def _hydrate_messages_unlocked(
+        self,
+        direction: Literal["above", "below"],
+        *,
+        count: int | None = None,
+    ) -> int:
+        """Hydrate one batch while transcript mutation is already serialized.
 
         Returns:
             Number of messages mounted.
@@ -19985,6 +19998,22 @@ class DeepAgentsApp(App):
         | ToolCallMessage
         | SkillMessage,
     ) -> bool:
+        """Mount one message while transcript mutation is serialized.
+
+        Returns:
+            Whether the widget reached the screen.
+        """
+        async with self._transcript_mutation_lock:
+            return await self._mount_message_unlocked(widget)
+
+    async def _mount_message_unlocked(
+        self,
+        widget: Static
+        | AssistantMessage
+        | ReasoningMessage
+        | ToolCallMessage
+        | SkillMessage,
+    ) -> bool:
         """Mount a message widget to the messages area.
 
         This method also stores the message data and handles pruning
@@ -20118,13 +20147,18 @@ class DeepAgentsApp(App):
         if tail is None:
             while self._message_store.has_messages_below:
                 before = self._message_store.get_visible_range()[1]
-                await self._hydrate_messages("below")
+                await self._hydrate_messages_unlocked("below")
                 if self._message_store.get_visible_range()[1] == before:
                     return False
             return True
 
         generation = self._transcript_generation
-        mounted_ids = {data.id for data in self._message_store.get_visible_messages()}
+        mounted_ids = {
+            child.id
+            for child in messages_container.children
+            if child.id is not None
+            and self._message_store.get_message(child.id) is not None
+        }
         tail_ids = {data.id for data in tail}
         entries = [
             self._build_hydration_entry(data)
@@ -20163,6 +20197,9 @@ class DeepAgentsApp(App):
             ]
             await messages_container.remove_children(hydrated_nodes)
             return False
+        for child in obsolete:
+            if isinstance(child, ToolGroupSummary):
+                child._release_all_collapsible()
         await messages_container.remove_children(obsolete)
         self._schedule_message_height_measurements([data.id for data in moved])
         self._sync_transcript_spacers(messages_container)
@@ -20176,12 +20213,24 @@ class DeepAgentsApp(App):
         *,
         count: int | None = None,
     ) -> int:
-        """Prune a bounded batch from one mounted-window edge.
+        """Prune one mounted-window edge while mutation is serialized.
 
-        Args:
-            direction: Edge to remove messages from.
-            messages_container: Cached transcript container, when available.
-            count: Maximum messages to remove; defaults to the soft-limit excess.
+        Returns:
+            Number of messages removed.
+        """
+        async with self._transcript_mutation_lock:
+            return await self._prune_messages_unlocked(
+                direction, messages_container, count=count
+            )
+
+    async def _prune_messages_unlocked(
+        self,
+        direction: Literal["above", "below"],
+        messages_container: Container | None = None,
+        *,
+        count: int | None = None,
+    ) -> int:
+        """Prune a bounded batch while transcript mutation is serialized.
 
         Returns:
             Number of messages removed.
@@ -20535,6 +20584,11 @@ class DeepAgentsApp(App):
             self._schedule_message_height_measurements([event.widget.id])
 
     async def _clear_messages(self) -> None:
+        """Clear the transcript while mutation is serialized."""
+        async with self._transcript_mutation_lock:
+            await self._clear_messages_unlocked()
+
+    async def _clear_messages_unlocked(self) -> None:
         """Clear the messages area and message store."""
         self._transcript_generation += 1
         # Drop buffered `!` shell output so it never leaks across a thread

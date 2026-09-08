@@ -334,23 +334,28 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     assert user_path in result["memory_contents"]
 
 
-def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
-    """Test that before_agent doesn't reload if already in state."""
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+def test_checkpointed_thread_reloads_memory_each_turn(tmp_path: Path) -> None:
+    """A persisted thread sees memory file changes on its next turn."""
+    memory_path = tmp_path / "memory" / "AGENTS.md"
+    memory_path.parent.mkdir()
+    memory_path.write_text("alpha memory\n", encoding="utf-8")
 
-    user_path = str(tmp_path / "user" / "AGENTS.md")
-    user_content = make_memory_content("User Preferences", "- Some content")
-    backend.upload_files([(user_path, user_content.encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="first"), AIMessage(content="second")]))
+    agent = create_deep_agent(
+        model=model,
+        backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
+        memory=["/memory/AGENTS.md"],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "memory-reload"}}
 
-    sources: list[str] = [user_path]
-    middleware = MemoryMiddleware(backend=backend, sources=sources)
+    agent.invoke({"messages": [HumanMessage(content="first")]}, config)
+    memory_path.write_text("beta memory\n", encoding="utf-8")
+    agent.invoke({"messages": [HumanMessage(content="second")]}, config)
 
-    # Pre-populate state
-    state = {"memory_contents": {user_path: "Already loaded content"}}
-    result = middleware.before_agent(state, None, {})  # type: ignore[arg-type]
-
-    # Should return None (no update needed)
-    assert result is None
+    second_system = next(message for message in model.call_history[1]["messages"] if isinstance(message, SystemMessage))
+    assert "beta memory" in second_system.text
+    assert "alpha memory" not in second_system.text
 
 
 def test_load_memory_with_empty_sources(tmp_path: Path) -> None:
@@ -578,7 +583,7 @@ def test_agent_with_memory_middleware_empty_sources(tmp_path: Path) -> None:
 
 
 async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
-    """Test that memory middleware works with async agent invocation."""
+    """Async persisted threads reload memory on each invocation."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     memory_path = str(tmp_path / "user" / "AGENTS.md")
@@ -587,33 +592,24 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     responses = backend.upload_files([(memory_path, memory_content.encode("utf-8"))])
     assert responses[0].error is None
 
-    # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Async invocation successful.")]))
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="First invocation."), AIMessage(content="Second invocation.")]))
 
-    # Create middleware
     sources: list[str] = [memory_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
+    agent = create_agent(model=fake_model, middleware=[middleware], checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "async-memory-reload"}}
 
-    # Create agent
-    agent = create_agent(model=fake_model, middleware=[middleware])
-
-    # Invoke asynchronously
-    result = await agent.ainvoke({"messages": [HumanMessage(content="Hello")]})
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Hello")]}, config)
+    updated_content = make_memory_content("Async Test", "- Updated async memory")
+    backend.upload_files([(memory_path, updated_content.encode("utf-8"))])
+    await agent.ainvoke({"messages": [HumanMessage(content="Hello again")]}, config)
 
     assert "messages" in result
     assert len(result["messages"]) > 0
-
-    # Verify memory_contents is NOT in final state (it's private)
     assert "memory_contents" not in result
-
-    # Verify memory was injected in system prompt with new format
-    first_call = fake_model.call_history[0]
-    system_message = first_call["messages"][0]
-    content = system_message.text
-
-    assert "<agent_memory>" in content
-    assert memory_path in content
-    assert "Test async loading" in content
+    second_system = fake_model.call_history[1]["messages"][0].text
+    assert "Updated async memory" in second_system
+    assert "Test async loading" not in second_system
 
 
 def test_memory_middleware_with_state_backend() -> None:

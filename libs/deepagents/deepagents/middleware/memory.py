@@ -280,7 +280,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
 
         Args:
             state: Current agent state.
@@ -290,10 +289,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             State update with memory_contents populated.
         """
-        # Skip if already loaded
-        if "memory_contents" in state:
-            return None
-
         backend = self._backend
         contents: dict[str, str] = {}
 
@@ -314,7 +309,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
 
         Args:
             state: Current agent state.
@@ -324,10 +318,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             State update with memory_contents populated.
         """
-        # Skip if already loaded
-        if "memory_contents" in state:
-            return None
-
         backend = self._backend
         contents: dict[str, str] = {}
 

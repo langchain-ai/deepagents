@@ -18,8 +18,9 @@ import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
+from operator import itemgetter
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -5783,39 +5784,62 @@ class DeepAgentsApp(App):
             A short user-facing provenance and rationale sentence.
         """
         if source == "managed config":
-            owner = "Your administrator set this cutoff through managed config"
+            owner = "Your administrator set this policy through managed config"
         elif source == "config.toml":
-            owner = "This cutoff was set in your config.toml"
+            owner = "This policy was set in your config.toml"
         else:
-            owner = "This cutoff was set by active configuration"
+            owner = "This policy was set by active configuration"
         return (
             f"{owner} to keep older threads from restoring stale context after "
             "model or policy changes."
         )
 
     @staticmethod
-    async def _thread_resume_block(thread_id: str) -> str | None:
-        """Return why configured policy blocks resuming a thread, if applicable."""
+    def _resume_cutoff() -> tuple[datetime, str, bool] | None:
+        """Resolve the strictest configured thread-resume cutoff.
+
+        Returns:
+            The cutoff, its source, and whether it is rolling, or `None`.
+        """
         from deepagents_code.config_manifest import (
             _emit_ranked_diagnostics,
             _ranked_source,
             get_option,
-            normalize_iso_datetime,
+            parse_duration_seconds,
         )
         from deepagents_code.configuration.resolver import get_config_resolver
+
+        resolver = get_config_resolver()
+        cutoffs: list[tuple[datetime, str, bool]] = []
+        for key in ("threads.resume_after", "threads.max_resume_age"):
+            option = get_option(key)
+            if option is None:
+                continue
+            resolved = resolver.get(option)
+            _emit_ranked_diagnostics(option, resolved)
+            value = resolved.value
+            if key.endswith("resume_after") and isinstance(value, str):
+                cutoffs.append(
+                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
+                )
+            elif key.endswith("max_resume_age") and isinstance(value, str):
+                seconds = parse_duration_seconds(value)
+                if seconds is not None:
+                    cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
+                    cutoffs.append((cutoff, _ranked_source(resolved), True))
+        return max(cutoffs, default=None, key=itemgetter(0))
+
+    @staticmethod
+    async def _thread_resume_block(thread_id: str) -> str | None:
+        """Return why configured policy blocks resuming a thread, if applicable."""
+        from deepagents_code.config_manifest import normalize_iso_datetime
         from deepagents_code.sessions import get_thread_updated_at
 
-        option = get_option("threads.resume_after")
-        if option is None:
+        policy = DeepAgentsApp._resume_cutoff()
+        if policy is None:
             return None
-        resolved = get_config_resolver().get(option)
-        _emit_ranked_diagnostics(option, resolved)
-        cutoff_value = resolved.value
-        if not isinstance(cutoff_value, str):
-            return None
-        source = _ranked_source(resolved)
+        cutoff, source, rolling = policy
         explanation = DeepAgentsApp._resume_cutoff_explanation(source)
-
         updated_value = await get_thread_updated_at(thread_id)
         normalized = normalize_iso_datetime(updated_value)
         if normalized is None:
@@ -5828,12 +5852,16 @@ class DeepAgentsApp(App):
                 f"Thread {thread_id} cannot be resumed because its last-updated "
                 f"time could not be verified.\n\n{explanation}"
             )
-        if datetime.fromisoformat(normalized) < datetime.fromisoformat(cutoff_value):
-            return (
-                f"Thread {thread_id} cannot be resumed because it was last updated "
-                f"before {cutoff_value}.\n\n{explanation}"
-            )
-        return None
+        if datetime.fromisoformat(normalized) >= cutoff:
+            return None
+        reason = (
+            "it is older than the configured maximum age"
+            if rolling
+            else f"it was last updated before {cutoff.isoformat()}"
+        )
+        return (
+            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
+        )
 
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.

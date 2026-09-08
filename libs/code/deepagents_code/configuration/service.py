@@ -224,6 +224,7 @@ ENFORCED_MANAGED_KEYS = (
     "models.allowed",
     "models.auto_classifier",
     "runtime.recursion_limit",
+    "threads.max_resume_age",
     "threads.resume_after",
     "sandboxes.default",
     "shell.allow_list",

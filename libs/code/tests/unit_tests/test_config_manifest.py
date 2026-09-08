@@ -116,6 +116,37 @@ _SILENT_RESOLVER_READERS = frozenset(
 _EXPECTED_LITERAL_CALL_SITES = 7
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("7d", "7d"), ("2w", "2w"), (" 12H ", "12h")],
+)
+def test_max_resume_age_parses_duration(value, expected) -> None:
+    """A rolling resume age is normalized during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={"threads": {"max_resume_age": value}},
+    ) == (expected, "config.toml")
+
+
+@pytest.mark.parametrize(
+    "value", ["0d", "7", "1.5d", "-1d", "forever", f"{'9' * 5000}d"]
+)
+def test_max_resume_age_rejects_invalid_duration(value, caplog) -> None:
+    """An invalid rolling resume age is rejected during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert _resolve_manifest_option(
+            option,
+            toml_data={"threads": {"max_resume_age": value}},
+        ) == (None, "default")
+    assert "max_resume_age" in caplog.text
+
+
 def test_resume_after_normalizes_managed_cutoff() -> None:
     """Managed resume policy wins and normalizes its cutoff to UTC."""
     option = get_option("threads.resume_after")

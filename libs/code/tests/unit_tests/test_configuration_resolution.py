@@ -88,6 +88,8 @@ def _invalid_toml_value(option: ConfigOption[object]) -> object:
         return "   "
     if kind is OptionKind.ISO_DATETIME:
         return "not-a-datetime"
+    if kind is OptionKind.DURATION_SECONDS:
+        return "not-a-duration"
     if kind is OptionKind.MODEL_LIST_DELEGATE:
         return "not-a-list-of-model-specs"
     if kind in {OptionKind.SHELL_LIST_DELEGATE, OptionKind.SKILLS_DIRS_DELEGATE}:

@@ -36,8 +36,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import (
@@ -186,6 +187,47 @@ def normalize_iso_datetime(value: object) -> str | None:
     return parsed.astimezone(UTC).isoformat()
 
 
+_DURATION_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "w": 7 * 24 * 60 * 60,
+}
+_MAX_DURATION_SECONDS = int(timedelta.max.total_seconds())
+
+
+def normalize_duration(value: object) -> str | None:
+    """Normalize a positive integer duration such as `7d`.
+
+    Returns:
+        The normalized duration, or `None` when invalid.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)([smhdw])", value.strip().lower())
+    if match is None:
+        return None
+    digits, unit = match.groups()
+    if len(digits) > len(str(_MAX_DURATION_SECONDS)):
+        return None
+    count = int(digits)
+    seconds = count * _DURATION_UNITS[unit]
+    return f"{count}{unit}" if seconds <= _MAX_DURATION_SECONDS else None
+
+
+def parse_duration_seconds(value: object) -> int | None:
+    """Parse a positive integer duration such as `7d` into seconds.
+
+    Returns:
+        The duration in seconds, or `None` when invalid.
+    """
+    normalized = normalize_duration(value)
+    if normalized is None:
+        return None
+    return int(normalized[:-1]) * _DURATION_UNITS[normalized[-1]]
+
+
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
@@ -231,6 +273,9 @@ class OptionKind(Enum):
 
     ISO_DATETIME = "iso_datetime"
     """An ISO 8601 date or timezone-aware datetime normalized to UTC."""
+
+    DURATION_SECONDS = "duration_seconds"
+    """A positive integer duration with an `s`, `m`, `h`, `d`, or `w` suffix."""
 
     MODEL_LIST_DELEGATE = "model_list"
     """Validates a list of `provider:model` specs and `provider:*` wildcards."""
@@ -281,6 +326,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
     OptionKind.ISO_DATETIME: "ISO 8601 date or timezone-aware datetime",
+    OptionKind.DURATION_SECONDS: "duration (for example, 7d)",
     OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
@@ -413,6 +459,7 @@ type _StrKind = Literal[
     OptionKind.STR,
     OptionKind.NON_EMPTY_STR,
     OptionKind.ISO_DATETIME,
+    OptionKind.DURATION_SECONDS,
     OptionKind.CURSOR_STYLE_DELEGATE,
     OptionKind.EXTENSION_TRUST_DELEGATE,
     OptionKind.STARTUP_MODE_DELEGATE,
@@ -2701,6 +2748,15 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
+        key="threads.max_resume_age",
+        group="Threads",
+        summary=(
+            "Block resuming threads older than this duration (for example, '7d')."
+        ),
+        kind=OptionKind.DURATION_SECONDS,
+        toml_keys=("threads", "max_resume_age"),
     ),
     ConfigOption(
         key="threads.resume_after",

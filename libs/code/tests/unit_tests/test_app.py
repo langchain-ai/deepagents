@@ -17926,6 +17926,72 @@ class TestResolveResumeThread:
             assert "could not be verified" in unknown
             assert "stale context" in unknown
 
+    async def test_max_resume_age_moves_with_current_time(self) -> None:
+        """A rolling age blocks old threads without a hardcoded calendar date."""
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.declaring_nothing("managed config"),
+            user=TomlSnapshot.from_table(
+                "config.toml",
+                {"threads": {"max_resume_age": "7d"}},
+            ),
+        )
+        now = datetime.now(UTC)
+        with (
+            patch(
+                "deepagents_code.configuration.resolver.get_config_resolver",
+                return_value=resolver,
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_updated_at",
+                AsyncMock(
+                    side_effect=[
+                        (now - timedelta(days=6)).isoformat(),
+                        (now - timedelta(days=8)).isoformat(),
+                    ]
+                ),
+            ),
+        ):
+            assert await DeepAgentsApp._thread_resume_block("recent") is None
+            blocked = await DeepAgentsApp._thread_resume_block("old") or ""
+
+        assert "older than the configured maximum age" in blocked
+        assert "your config.toml" in blocked
+
+    async def test_stricter_resume_policy_wins(self) -> None:
+        """When both forms are configured, the newer effective cutoff wins."""
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        now = datetime.now(UTC)
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.declaring_nothing("managed config"),
+            user=TomlSnapshot.from_table(
+                "config.toml",
+                {
+                    "threads": {
+                        "max_resume_age": "30d",
+                        "resume_after": (now - timedelta(days=7)).isoformat(),
+                    }
+                },
+            ),
+        )
+        with (
+            patch(
+                "deepagents_code.configuration.resolver.get_config_resolver",
+                return_value=resolver,
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_updated_at",
+                AsyncMock(return_value=(now - timedelta(days=8)).isoformat()),
+            ),
+        ):
+            blocked = await DeepAgentsApp._thread_resume_block("old") or ""
+
+        assert "last updated before" in blocked
+
     async def test_user_resume_cutoff_names_config_source(self) -> None:
         """A user cutoff explains its origin and rationale."""
         from deepagents_code.configuration.resolver import resolver_from_snapshots

@@ -11271,6 +11271,87 @@ class TestMessageTimestampFooters:
                 with pytest.raises(NoMatches):
                     app.query_one(f"#{message_id}", UserMessage)
 
+    async def test_mount_message_waits_for_inflight_hydration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Concurrent hydration and append keep one mounted row per store entry."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+        monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            history = [
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"m{index}",
+                    id=f"race-{index}",
+                )
+                for index in range(6)
+            ]
+            app._message_store.bulk_load(history)
+            messages = app.query_one("#messages", Container)
+            tail_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                tail_entries,
+                generation=app._transcript_generation,
+            )
+            await messages.remove_children(
+                [
+                    child
+                    for child in messages.children
+                    if child.id
+                    and any(
+                        child.id.startswith(f"race-{index}") for index in range(3, 6)
+                    )
+                ]
+            )
+            app._message_store._visible_start = 0
+            app._message_store._visible_end = 2
+            head_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                head_entries,
+                generation=app._transcript_generation,
+            )
+
+            hydration_started = asyncio.Event()
+            release_hydration = asyncio.Event()
+            mount_batch = app._mount_hydration_batch
+
+            async def pause_first_batch(*args: Any, **kwargs: Any) -> bool:
+                if not hydration_started.is_set():
+                    hydration_started.set()
+                    await release_hydration.wait()
+                return await mount_batch(*args, **kwargs)
+
+            monkeypatch.setattr(app, "_mount_hydration_batch", pause_first_batch)
+            hydrate = asyncio.create_task(app._hydrate_messages("below", count=3))
+            await hydration_started.wait()
+            append = asyncio.create_task(
+                app._mount_message(UserMessage("new", id="race-new"))
+            )
+            await asyncio.sleep(0)
+            assert not append.done()
+
+            release_hydration.set()
+            assert await hydrate == 3
+            assert await append is True
+            await pilot.pause()
+
+            assert app._message_store.get_visible_range() == (3, 7)
+            for message_id in ["race-3", "race-4", "race-5", "race-new"]:
+                assert len(app.query(f"#{message_id}")) == 1
+
     async def test_mount_message_hydrates_tail_blocked_by_protected_row(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

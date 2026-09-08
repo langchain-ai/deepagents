@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
+from deepagents_code._constants import (
+    FIREWORKS_PROVIDER_ID_PREFIX,
+    LANGSMITH_API_KEY_ENV_VARS as _TRACING_API_KEY_ENV_VARS,
+)
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
     AUTO_CLASSIFIER_TIMEOUT,
@@ -882,9 +885,6 @@ def _load_dotenv(
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
-
-_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
-"""Env vars that hold the LangSmith API key used for trace ingestion."""
 
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.

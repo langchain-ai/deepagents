@@ -197,6 +197,46 @@ async def test_close_abandons_a_wedged_indexing_batch(tmp_path, monkeypatch, cap
     assert any("abandoning the active batch" in item.message for item in caplog.records)
 
 
+async def test_close_waits_for_a_batch_registered_after_it_started(monkeypatch):
+    monkeypatch.setattr("deepagents_talon.history_vectors._CLOSE_TIMEOUT_SECONDS", 0.3)
+    state = {"started": False, "cancelled": False}
+
+    class WedgedStore(InMemoryStore):
+        async def abatch(self, ops):
+            operations = list(ops)
+            if any(isinstance(op, PutOp) and op.value is not None for op in operations):
+                state["started"] = True
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    state["cancelled"] = True
+                    raise
+            return await super().abatch(operations)
+
+    store = WedgedStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("late",), vector_store=store)
+    await archive.setup()
+    closing = None
+    try:
+        async with archive.vectors.lock:
+            for _ in range(3):
+                # The worker parks acquiring this lock, already past its `stopping` check.
+                await asyncio.sleep(0)
+            await append(archive, "car")
+            closing = asyncio.create_task(archive.aclose())
+            for _ in range(3):
+                await asyncio.sleep(0)
+        # Releasing lets the worker register a Store task after close() began, so a
+        # single snapshot of `_pending` no longer describes what is in flight.
+        await asyncio.wait_for(closing, 5)
+    finally:
+        if closing is not None and not closing.done():
+            closing.cancel()
+    assert state["started"]
+    # close() must not return while a shielded write is still touching the Store.
+    assert state["cancelled"]
+
+
 async def test_indexing_batches_never_overlap_so_they_need_no_permit():
     active, peak = 0, 0
 

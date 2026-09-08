@@ -44,7 +44,42 @@ class TestCwdSwitchPromptScreen:
         )
 
         assert "project-specific config" not in unchanged._body_text()
-        assert "project-specific config" in changed._body_text()
+        assert "will also reload project-specific config" in changed._body_text()
+
+    def test_owned_server_refusal_explains_restart(self) -> None:
+        """The restart prompt shows the refusal and all restart costs."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="restart",
+            refusal_reason="a sandbox belongs to another workspace",
+        )
+
+        body = screen._body_text()
+        assert "a sandbox belongs to another workspace" in body
+        assert "stops and starts the agent server" in body
+        assert "MCP servers reconnect" in body
+        assert "In-flight work is lost" in body
+        assert screen._help_text().startswith("Enter: restart")
+
+    def test_unowned_server_refusal_has_no_restart(self) -> None:
+        """A client without server ownership only offers staying."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="unavailable",
+            refusal_reason=None,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+
+        body = screen._body_text()
+        assert "The server did not provide a reason." in body
+        assert "does not own the agent server" in body
+        assert "start a client that owns a server" in body
+        assert "restart" not in screen._help_text().lower()
+        screen.action_switch()
+        dismiss.assert_called_once_with("stay")
 
     def test_modal_binds_resume_and_quit_shortcuts(self) -> None:
         """The modal handles resume keys and delegates quit shortcuts."""

@@ -39,6 +39,9 @@ is never mistaken for an outcome token in a log, test, or debugger.
 `test_abort_mode_tokens_disjoint_from_choice` enforces it.
 """
 
+CwdSwitchServerRefusal = Literal["restart", "unavailable"]
+"""How the client can respond to the server's workspace refusal."""
+
 
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     """Modal asking whether to switch cwd when resuming or switching to a thread."""
@@ -102,6 +105,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         thread_cwd: str,
         project_settings_change_detected: bool = False,
         abort: CwdSwitchAbortMode | None = None,
+        server_refusal: CwdSwitchServerRefusal | None = None,
+        refusal_reason: str | None = None,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
@@ -109,6 +114,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
         self._abort: CwdSwitchAbortMode | None = abort
+        self._server_refusal = server_refusal
+        self._refusal_reason = refusal_reason
 
     def _title_text(self) -> str:
         """Return the title, phrased for the flow that opened the prompt.
@@ -119,6 +126,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         mode fails statically here rather than silently inheriting the resume
         wording.
         """
+        if self._server_refusal == "restart":
+            return "Restart the agent server to switch directories?"
+        if self._server_refusal == "unavailable":
+            return "This thread cannot be opened from its original directory"
         if self._abort is None or self._abort == "resume":
             return "Resume from the thread's original directory?"
         if self._abort == "thread_switch":
@@ -129,8 +140,33 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """Return the prompt body text."""
         current = format_path(self._current_cwd)
         target = format_path(self._thread_cwd)
+        if self._server_refusal is not None:
+            reason = self._refusal_reason or "The server did not provide a reason."
+            if self._server_refusal == "restart":
+                action = (
+                    "A restart stops and starts the agent server. MCP servers "
+                    "reconnect. In-flight work is lost. Restart to switch "
+                    "directories. Stay to keep the current thread and directory."
+                )
+            elif self._server_refusal == "unavailable":
+                action = (
+                    "This client does not own the agent server, so it cannot restart "
+                    "it. Stay on the current thread. To open this thread here, start "
+                    "a client that owns a server which can host the directory."
+                )
+            else:
+                assert_never(self._server_refusal)
+            return (
+                "This thread was last used from:\n"
+                f"  {target}\n\n"
+                "You're currently in:\n"
+                f"  {current}\n\n"
+                "The agent server cannot host the thread's directory:\n"
+                f"  {reason}\n\n"
+                f"{action}"
+            )
         settings_note = (
-            "\n\nSwitching may also reload project-specific config like .env, "
+            "\n\nSwitching will also reload project-specific config like .env, "
             "MCP, skills, and AGENTS.md."
             if self._project_settings_change_detected
             else ""
@@ -154,6 +190,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
+        if self._server_refusal == "restart":
+            return f"Enter: restart {get_glyphs().separator} Esc: stay"
+        if self._server_refusal == "unavailable":
+            return "Enter or Esc: stay on current thread"
         help_text = f"Enter: switch {get_glyphs().separator} Esc: stay in cwd"
         if self._abort is None:
             return help_text
@@ -218,7 +258,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         return True
 
     def action_switch(self) -> None:
-        """Dismiss with `switch`."""
+        """Dismiss with `switch`, or stay when no switch is available."""
+        if self._server_refusal == "unavailable":
+            self.action_stay()
+            return
         self.dismiss("switch")
 
     def action_stay(self) -> None:

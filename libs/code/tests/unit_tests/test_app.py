@@ -25651,11 +25651,174 @@ class TestResumeThreadCwdSwitch:
         assert outcome == "continue"
         assert Path.cwd() == target
         assert app._server_kwargs["cwd"] == str(target)
+        assert app._push_screen_wait.await_count == 1
         switch_workspace.assert_awaited_once_with(
-            {"configurable": {"thread_id": "thread-1"}}, str(target)
+            {"configurable": {"thread_id": "thread-1"}},
+            str(target),
+            validate_only=True,
         )
         replace_server.assert_not_awaited()
         retarget.assert_awaited_once_with(reload_manager=False)
+
+    async def test_refused_switch_restarts_only_after_confirmation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An owned server refusal prompts with its reason before restart."""
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        agent = RemoteAgent("http://test:0")
+        request = httpx.Request("POST", "http://test:0/workspace")
+        response = httpx.Response(409, request=request)
+        reason = "a runtime for another workspace already exists"
+        switch_workspace = AsyncMock(
+            side_effect=ConflictError(
+                reason,
+                response=response,
+                body={"detail": reason},
+            )
+        )
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._agent = agent
+        app._server_kwargs = {"cwd": str(current)}
+        app._server_proc = MagicMock()
+        push_wait = AsyncMock(return_value="switch")
+        monkeypatch.setattr(app, "_push_screen_wait", push_wait)
+        replace_server = AsyncMock(return_value="continue")
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace_server)
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "continue"
+        replace_server.assert_awaited_once_with(target)
+        retarget.assert_awaited_once_with(reload_manager=False)
+        screen = push_wait.call_args.args[0]
+        assert screen._server_refusal == "restart"
+        assert reason in screen._body_text()
+
+    async def test_declining_refused_switch_keeps_current_state(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Declining a required restart keeps the current thread and cwd."""
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        agent = RemoteAgent("http://test:0")
+        request = httpx.Request("POST", "http://test:0/workspace")
+        response = httpx.Response(409, request=request)
+        monkeypatch.setattr(
+            agent,
+            "aswitch_workspace",
+            AsyncMock(
+                side_effect=ConflictError(
+                    "not hostable",
+                    response=response,
+                    body={"detail": "not hostable"},
+                )
+            ),
+        )
+        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        app._agent = agent
+        app._lc_thread_id = "old-thread"
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        app._server_kwargs = {"cwd": str(current)}
+        app._server_proc = MagicMock()
+        monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="stay"))
+        replace_server = AsyncMock()
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace_server)
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "new-thread", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        assert app._lc_thread_id == "old-thread"
+        assert app._session_state.thread_id == "old-thread"
+        replace_server.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("body", "expected_reason"),
+        [
+            ({"detail": "the project policy differs"}, "the project policy differs"),
+            (None, "The server did not provide a reason."),
+            ({"detail": "   "}, "The server did not provide a reason."),
+        ],
+    )
+    async def test_refused_unowned_server_does_not_offer_restart(
+        self,
+        body: object,
+        expected_reason: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A refusal is shown honestly and an unowned server is not restarted."""
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        agent = RemoteAgent("http://test:0")
+        request = httpx.Request("POST", "http://test:0/workspace")
+        response = httpx.Response(409, request=request)
+        monkeypatch.setattr(
+            agent,
+            "aswitch_workspace",
+            AsyncMock(
+                side_effect=ConflictError(
+                    "409 Conflict",
+                    response=response,
+                    body=body,
+                )
+            ),
+        )
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._agent = agent
+        push_wait = AsyncMock(return_value="stay")
+        monkeypatch.setattr(app, "_push_screen_wait", push_wait)
+        replace_server = AsyncMock()
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace_server)
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        replace_server.assert_not_awaited()
+        screen = push_wait.call_args.args[0]
+        assert screen._server_refusal == "unavailable"
+        assert expected_reason in screen._body_text()
+        assert "restart" not in screen._help_text().lower()
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -26618,6 +26781,32 @@ class TestResumeThreadCwdSwitch:
         await app._restore_cwd_after_failed_thread_switch(Path(app._cwd))
 
         replace.assert_not_awaited()
+
+    async def test_restore_after_failed_switch_restarts_without_prompt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Rollback uses the internal restart path without a user prompt."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(thread_id="t", cwd=target)
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        replace = AsyncMock(return_value="continue")
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace)
+        prompt = AsyncMock()
+        monkeypatch.setattr(app, "_push_screen_wait", prompt)
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
+
+        await app._restore_cwd_after_failed_thread_switch(current)
+
+        replace.assert_awaited_once_with(current)
+        prompt.assert_not_awaited()
+        reload_hooks.assert_awaited_once_with()
 
     async def test_restore_after_failed_switch_without_owned_server_switches_back(
         self,

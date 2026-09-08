@@ -170,8 +170,10 @@ class FileTokenStorage:
         These files hold live bearer and refresh tokens in cleartext, so the
         directory is restricted to the owner and a location inside the agent
         workspace is warned about. Against Talon's default shell backend that is
-        hardening, not a boundary: the agent can still read any absolute path it
-        is given.
+        hardening, not a boundary, and it cannot become one here: the agent can
+        read any absolute path it is given, and filesystem deny rules cannot be
+        applied to a backend that executes commands. See
+        `mcp_config.warn_agent_workspace_path`.
 
         Args:
             server_name: Configured MCP server name.

@@ -82,7 +82,7 @@ def warn_agent_workspace_path(path: Path, agent_root: Path | None, *, subject: s
     commands with `virtual_mode=False`, so a path outside the workspace is still
     readable by absolute path; keeping it out of the workspace only removes the
     relative-path route and keeps it out of the model's working tree. Because it
-    buys no present protection, a bad placement is not worth failing a start over
+    buys no protection at all, a bad placement is not worth failing a start over
     -- with no workspace configured the root is the working directory, so Talon
     launched from `$HOME` puts both default paths inside it.
 
@@ -96,8 +96,15 @@ def warn_agent_workspace_path(path: Path, agent_root: Path | None, *, subject: s
     """
     resolved = path.parent.resolve() / path.name
     root = agent_workspace_root() if agent_root is None else agent_root
-    # Round 2: raise here instead, once the runtime deny rules for the token
-    # directory and the configuration path make the placement worth enforcing.
+    # This stays a warning, because no filesystem deny rule can promote it to an
+    # error. FilesystemMiddleware refuses to load permissions at all alongside an
+    # execution-capable backend (deepagents/middleware/filesystem.py:1741-1748,
+    # "Tool-level permissions for the execute tool are not implemented"), and
+    # every _check_fs_permission call site in that file guards a read or write
+    # tool -- none guards execute -- so even routing the paths through a
+    # CompositeBackend would not stop `cat`. Keeping these files away from the
+    # agent needs an OS keyring, or a directory the agent process cannot read at
+    # all: a separate uid, or a sandboxed backend.
     if resolved.is_relative_to(root):
         logger.warning(
             "%s %s is inside the agent workspace %s; move it elsewhere, or point %s "
@@ -119,8 +126,9 @@ class MCPConfigStore:
     `O_NOFOLLOW` open, and the `update_mcp_server` approval interrupt alike. So
     `update_mcp_server` mediates change; it cannot keep a configured secret from
     the model. Only `${ENV_VAR}` references, which are never expanded here, do
-    that. Enforcing placement, denying the path to the agent's filesystem tools,
-    and moving credentials out of a readable file are tracked separately.
+    that, and no filesystem deny rule can change it -- see
+    `warn_agent_workspace_path` for why that approach is closed off. Moving
+    credentials somewhere the agent process cannot read is tracked separately.
 
     Args:
         path: Operator-selected configuration path, ideally outside the agent

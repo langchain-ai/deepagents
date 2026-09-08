@@ -180,6 +180,10 @@ class TestRuntimeDotenvReload:
 
             assert os.environ["LANGSMITH_API_KEY"] == "in-process-key"
             assert any("could not be read" in change for change in changes)
+            # The refusal must not be laundered: republishing here would encode
+            # the in-process agent key into a well-formed carrier that every
+            # later restore accepts without warning.
+            assert os.environ[config_mod._USER_LANGSMITH_ENV_CARRIER] == "{not json"
         finally:
             config_mod._bootstrap_state.launch_langsmith_env = original_launch
             config_mod._bootstrap_state.user_langsmith_env = original_user

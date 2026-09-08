@@ -170,8 +170,10 @@ class FileTokenStorage:
         These files hold live bearer and refresh tokens in cleartext, so the
         directory is restricted to the owner and a location inside the agent
         workspace is warned about. Against Talon's default shell backend that is
-        hardening, not a boundary: the agent can still read any absolute path it
-        is given.
+        hardening, not a boundary, and it cannot become one here: the agent can
+        read any absolute path it is given, and filesystem deny rules cannot be
+        applied to a backend that executes commands. See
+        `mcp_config.warn_agent_workspace_path`.
 
         Args:
             server_name: Configured MCP server name.
@@ -232,13 +234,22 @@ class FileTokenStorage:
         tokens: OAuthToken,
         client_info: OAuthClientInformationFull,
     ) -> None:
-        """Atomically persist OAuth tokens and their client registration."""
+        """Atomically persist OAuth tokens and their client registration.
+
+        This records a *fresh* grant, so unlike `set_tokens` it does not carry a
+        stored `refresh_token` forward. RFC 6749 section 6's "keep the one you
+        have" applies to a refresh response; stitching the previous grant's
+        refresh token onto a new access token would leave a credential the
+        authorization server may already have revoked -- which is exactly what an
+        explicit reauthentication invalidates -- instead of correctly recording
+        that this grant is not refreshable.
+        """
         values = {
             "tokens": json.loads(tokens.model_dump_json()),
             "expires_at": _token_expiry(tokens),
             "client_info": json.loads(client_info.model_dump_json(exclude_none=True)),
         }
-        await asyncio.to_thread(self._update_values, values, keep_refresh_token=True)
+        await asyncio.to_thread(self._update_values, values)
         _mark_authorization_complete()
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:

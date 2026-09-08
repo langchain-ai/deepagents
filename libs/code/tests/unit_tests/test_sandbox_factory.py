@@ -14,6 +14,7 @@ from deepagents_code.integrations.sandbox_factory import (
     _VERCEL_SANDBOX_TIMEOUT,
     _AgentCoreProvider,
     _get_provider,
+    _ModalProvider,
     _VercelProvider,
     create_sandbox,
     get_default_working_dir,
@@ -855,6 +856,48 @@ def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
         _AgentCoreProvider()
 
     mock_boto3.Session.assert_not_called()
+
+
+def test_modal_rejects_a_half_set_token_pair() -> None:
+    """A `None` client resolves the server's Modal identity, not the workspace's."""
+    mock_modal = MagicMock()
+
+    with (
+        _bind_environment({"MODAL_TOKEN_ID": "only-the-id"}),
+        patch.dict(sys.modules, {"modal": mock_modal}),
+        pytest.raises(ValueError, match="MODAL_TOKEN_SECRET is not set"),
+    ):
+        _ModalProvider()
+
+    mock_modal.App.lookup.assert_not_called()
+    mock_modal.Client.from_credentials.assert_not_called()
+
+
+def test_modal_rejects_a_half_set_token_pair_missing_the_id() -> None:
+    """The mirrored arm must name the other variable."""
+    mock_modal = MagicMock()
+
+    with (
+        _bind_environment({"MODAL_TOKEN_SECRET": "only-the-secret"}),
+        patch.dict(sys.modules, {"modal": mock_modal}),
+        pytest.raises(ValueError, match="MODAL_TOKEN_ID is not set"),
+    ):
+        _ModalProvider()
+
+    mock_modal.App.lookup.assert_not_called()
+
+
+def test_modal_delegates_when_no_token_resolves() -> None:
+    """No workspace Modal credentials at all still uses default auth."""
+    mock_modal = MagicMock()
+
+    with (
+        _bind_environment({}),
+        patch.dict(sys.modules, {"modal": mock_modal}),
+    ):
+        _ModalProvider()
+
+    assert "client" not in mock_modal.App.lookup.call_args.kwargs
 
 
 def test_agentcore_honors_a_prefixed_aws_credential_override() -> None:

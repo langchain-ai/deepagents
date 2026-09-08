@@ -543,6 +543,14 @@ class _ModalProvider(SandboxProvider):
     """Modal sandbox provider — lifecycle management for Modal sandboxes."""
 
     def __init__(self) -> None:
+        """Initialize the Modal provider.
+
+        Raises:
+            ValueError: If the resolved Modal credentials are invalid, or if
+                only one half of the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
+                pair resolves. Delegating to default Modal authentication
+                there would be a silent privilege substitution.
+        """
         self._modal = _import_provider_module(
             "modal",
             provider="modal",
@@ -567,12 +575,18 @@ class _ModalProvider(SandboxProvider):
                 )
                 raise ValueError(msg) from exc
         elif token_id or token_secret:
-            logger.warning(
-                "Only one of MODAL_TOKEN_ID / MODAL_TOKEN_SECRET is set; "
-                "both are required for explicit credential auth. "
-                "Falling back to default Modal authentication.",
+            # Fail closed rather than warn and delegate: a `None` client makes
+            # `App.lookup` resolve credentials from the server process, so a
+            # workspace that pinned a restricted token would silently run its
+            # sandbox under the server's broader Modal identity.
+            missing = "MODAL_TOKEN_SECRET" if token_id else "MODAL_TOKEN_ID"
+            msg = (
+                "The workspace Modal configuration is incomplete: "
+                f"{missing} is not set. Set MODAL_TOKEN_ID and "
+                "MODAL_TOKEN_SECRET together, or unset both to fall back to "
+                "default Modal authentication."
             )
-            self._client = None
+            raise ValueError(msg)
         else:
             self._client = None
 

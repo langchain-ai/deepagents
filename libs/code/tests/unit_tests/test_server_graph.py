@@ -258,14 +258,38 @@ asyncio.run(main())
             "deepagents_code.tools.create_web_search_tool",
             return_value=bound_tool,
         ) as create:
-            tools, _, _, _ = await module._build_tools(
+            tools, _, _, read_only_builtins = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
                 tavily_api_key="workspace-key",
             )
 
         assert bound_tool in tools
+        # The read-only allowlist is a security control, and the
+        # `_criteria_context_tools` tests are handed it as an argument, so this
+        # is the only place its contents are actually checked.
+        from deepagents_code.tools import fetch_url, get_current_thread_id
+
+        assert read_only_builtins == [fetch_url, bound_tool]
+        assert get_current_thread_id not in read_only_builtins
         create.assert_called_once_with("workspace-key")
+
+    async def test_build_tools_read_only_allowlist_without_web_search(self) -> None:
+        """With no Tavily key the allowlist holds `fetch_url` alone."""
+        module = _import_fresh_server_graph()
+        from deepagents_code.tools import fetch_url, get_current_thread_id
+
+        _, _, _, read_only_builtins = await module._build_tools(
+            ServerConfig(no_mcp=True),
+            None,
+            workspace_credentials=SimpleNamespace(
+                has_tavily=False,
+                tavily_api_key=None,
+            ),
+        )
+
+        assert read_only_builtins == [fetch_url]
+        assert get_current_thread_id not in read_only_builtins
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
         """`no_mcp=True` should not call the MCP resolver at all."""
@@ -776,6 +800,59 @@ class TestWorkspaceRuntime:
             await module._workspace_runtime(binding)
 
         make.assert_awaited_once()
+
+    async def test_second_project_runtime_is_built_without_launch_grants(
+        self, tmp_path
+    ) -> None:
+        """The strip has to reach the config the runtime is built from.
+
+        `resolve_workspace` is tested in isolation and the drift check is
+        tested, but nothing asserted that `_make_graphs` receives the scrubbed
+        policy -- so returning the unresolved config here, or losing one of the
+        five strips, would leave every test green while the second workspace
+        executed the launch project's trusted extensions and MCP servers.
+        """
+        module = _import_fresh_server_graph()
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        launch_config = ServerConfig(
+            cwd=str(launch),
+            project_root=str(launch),
+            mcp_config_path="/launch/.mcp.json",
+            sandbox_setup="/launch/setup.sh",
+            trust_project_mcp=True,
+            extension_paths=("/launch/ext.py",),
+            no_mcp=True,
+            auto_approve=True,
+        )
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
+
+        with patch(trust, return_value=False):
+            binding = _bind(launch_config, other)
+
+        with (
+            patch(trust, return_value=False),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        call = make.await_args
+        assert call is not None
+        built = call.kwargs["config_override"]
+        assert built.mcp_config_path is None
+        assert built.sandbox_setup is None
+        assert built.trust_project_mcp is None
+        assert built.extension_paths == ()
+        assert built.trust_project_extensions is False
+        # Session policy belongs to the command, not the project, and survives.
+        assert built.no_mcp is True
+        assert built.auto_approve is True
+        assert built.cwd == binding.cwd
 
     async def test_launch_binding_uses_the_explicit_server_project_root(
         self, tmp_path

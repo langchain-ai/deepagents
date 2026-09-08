@@ -94,7 +94,17 @@ class TestWorkspaceRoute:
             path_params={"thread_id": "thread-1"},
             json=AsyncMock(return_value={"cwd": str(tmp_path)}),
         )
-        server_config = ServerConfig(auto_approve=True)
+        launch = tmp_path / "launch"
+        launch.mkdir()
+        server_config = ServerConfig(
+            auto_approve=True,
+            cwd=str(launch),
+            project_root=str(launch),
+            mcp_config_path="/launch/.mcp.json",
+            sandbox_setup="/launch/setup.sh",
+            trust_project_mcp=True,
+            extension_paths=("/launch/ext.py",),
+        )
         binding = SimpleNamespace(
             cwd=str(tmp_path),
             workspace_id="workspace-1",
@@ -121,13 +131,19 @@ class TestWorkspaceRoute:
             response = await offload_api.workspace(cast("Any", request))
 
         assert response.status_code == 200
-        resolved = server_config.resolve_workspace(str(tmp_path), None)
-        bind.assert_awaited_once_with(
-            "thread-1",
-            str(tmp_path),
-            resolved.to_workspace_payload(),
-            config_fingerprint=resolved.workspace_fingerprint(),
-        )
+        # Assert the literal policy, not `resolve_workspace(...)` re-run here:
+        # comparing against the method under test passes even if it stops
+        # stripping anything.
+        bind.assert_awaited_once()
+        bind_call = bind.await_args
+        assert bind_call is not None
+        bound_policy = bind_call.args[2]
+        assert bound_policy["mcp_config_path"] is None
+        assert bound_policy["sandbox_setup"] is None
+        assert bound_policy["trust_project_mcp"] is None
+        assert bound_policy["extension_paths"] == []
+        # Session policy is the client's own and survives.
+        assert bound_policy["auto_approve"] is True
         runtime.assert_awaited_once_with(binding)
 
     async def test_runtime_conflict_returns_409_before_thread_creation(

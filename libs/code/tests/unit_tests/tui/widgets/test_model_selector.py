@@ -1184,13 +1184,6 @@ class TestAvailabilityOrdering:
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 
-    def test_gpt_6_astra_is_recommended(self) -> None:
-        from deepagents_code.tui.widgets import model_selector
-
-        assert model_selector._RECOMMENDED_MODELS["openai:gpt-6-astra"] == (
-            "GPT-6 Astra"
-        )
-
     def test_curated_initial_selection_starts_at_top(self) -> None:
         """Onboarding should highlight the first model, not the current one."""
         screen = ModelSelectorScreen(

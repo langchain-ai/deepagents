@@ -80,11 +80,11 @@ async def test_profile_override_controls_persisted_restoration() -> None:
 
 
 async def test_restore_effort_override_applies_persisted_model_choice() -> None:
-    model_config.save_effort_for_model("openai:gpt-6-astra", "max")
+    model_config.save_effort_for_model("openai:gpt-5.6-luna", "max")
     app = DeepAgentsApp()
     app._model_params_override = {"temperature": 0.2}
 
-    await app._restore_effort_override("openai:gpt-6-astra")
+    await app._restore_effort_override("openai:gpt-5.6-luna")
 
     assert app._model_params_override == {
         "temperature": 0.2,

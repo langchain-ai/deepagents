@@ -4279,29 +4279,6 @@ class TestLoadMcpServerTrustLists:
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
-    def test_gpt_6_astra_fallback_profile(self) -> None:
-        profile = model_config.get_model_profiles()["openai:gpt-6-astra"]["profile"]
-
-        assert profile["name"] == "GPT-6 Astra"
-        assert profile["max_input_tokens"] == 1_050_000
-        assert profile["max_output_tokens"] == 128_000
-        assert profile["reasoning_effort_levels"] == [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-        ]
-        assert profile["tool_calling"] is True
-
-    def test_gpt_6_astra_fallback_is_discoverable_without_codex_alias(self) -> None:
-        available = model_config.get_available_models()
-        profiles = model_config.get_model_profiles()
-
-        assert "gpt-6-astra" in available["openai"]
-        assert "gpt-6-astra" not in available.get(model_config.CODEX_PROVIDER, [])
-        assert "openai_codex:gpt-6-astra" not in profiles
-
 
 class TestCodexProviderMirror:
     """`openai_codex` mirrors the curated `CODEX_MODELS` subset of `openai`.

@@ -987,38 +987,6 @@ source, model class, and request endpoint all differ. See
 `deepagents_code.integrations.openai_codex` for the OAuth flow.
 """
 
-_OPENAI_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
-    "gpt-6-astra": {
-        "name": "GPT-6 Astra",
-        "release_date": "2026-09-04",
-        "last_updated": "2026-09-04",
-        "open_weights": False,
-        "max_input_tokens": 1_050_000,
-        "max_output_tokens": 128_000,
-        "text_inputs": True,
-        "image_inputs": True,
-        "audio_inputs": False,
-        "pdf_inputs": True,
-        "video_inputs": False,
-        "text_outputs": True,
-        "image_outputs": False,
-        "audio_outputs": False,
-        "video_outputs": False,
-        "reasoning_output": True,
-        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
-        "tool_calling": True,
-        "structured_output": True,
-        "attachment": True,
-        "temperature": False,
-        "image_url_inputs": True,
-        "pdf_tool_message": True,
-        "image_tool_message": True,
-        "tool_choice": True,
-        "tool_call_streaming": True,
-    }
-}
-"""Official OpenAI profiles not yet present in the minimum integration version."""
-
 CODEX_MODELS: frozenset[str] = frozenset(
     {
         "gpt-5.6-luna",
@@ -1563,13 +1531,6 @@ def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]
         if models:
             available[provider] = models
 
-    if config.is_provider_enabled("openai"):
-        openai_models = available.setdefault("openai", [])
-        for model_name in _OPENAI_PROFILE_FALLBACKS:
-            if model_name not in openai_models:
-                openai_models.append(model_name)
-        openai_models.sort()
-
     # Merge in models from config file (custom providers like ollama, fireworks)
     for provider_name, provider_config in config.providers.items():
         # Respect enabled = false (hide provider entirely).
@@ -1812,13 +1773,8 @@ def get_model_profiles(
         for model_name, upstream_profile in profiles.items():
             spec = f"{provider}:{model_name}"
             seen_specs.add(spec)
-            base_profile = (
-                {**_OPENAI_PROFILE_FALLBACKS.get(model_name, {}), **upstream_profile}
-                if provider == "openai"
-                else upstream_profile
-            )
             overrides = config.get_profile_overrides(provider, model_name=model_name)
-            result[spec] = _build_entry(base_profile, overrides, cli_override)
+            result[spec] = _build_entry(upstream_profile, overrides, cli_override)
             # Mirror the curated `CODEX_MODELS` subset of openai profiles under
             # the `openai_codex` provider so `/model openai_codex:<model>`
             # resolves to the same upstream profile without duplicating data.
@@ -1836,15 +1792,6 @@ def get_model_profiles(
                 result[codex_spec] = _build_entry(
                     upstream_profile, codex_overrides, cli_override
                 )
-
-    if config.is_provider_enabled("openai"):
-        for model_name, fallback_profile in _OPENAI_PROFILE_FALLBACKS.items():
-            spec = f"openai:{model_name}"
-            if spec in seen_specs:
-                continue
-            seen_specs.add(spec)
-            overrides = config.get_profile_overrides("openai", model_name=model_name)
-            result[spec] = _build_entry(fallback_profile, overrides, cli_override)
 
     # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():

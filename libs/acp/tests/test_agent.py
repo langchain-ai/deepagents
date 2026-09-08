@@ -1311,6 +1311,39 @@ async def test_set_session_mode_resets_agent_with_new_mode() -> None:
     assert len(created_agents) == 2
 
 
+async def test_set_session_mode_rejects_unavailable_mode() -> None:
+    created_modes: list[str] = []
+
+    def agent_factory(context: AgentSessionContext) -> CompiledStateGraph:
+        created_modes.append(context.mode)
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="OK")]), stream_delimiter=None
+        )
+        return create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    modes = SessionModeState(
+        current_mode_id="mode_a",
+        available_modes=[SessionMode(id="mode_a", name="Mode A")],
+    )
+    agent_server = AgentServerACP(agent=agent_factory, modes=modes)
+    agent_server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    session = await agent_server.new_session(cwd="/tmp", mcp_servers=[])
+    session_id = session.session_id
+    await agent_server.prompt(
+        [TextContentBlock(type="text", text="Test in mode A")], session_id=session_id
+    )
+
+    assert created_modes == ["mode_a"]
+
+    with pytest.raises(RequestError) as exc_info:
+        await agent_server.set_session_mode(mode_id="unavailable", session_id=session_id)
+
+    assert exc_info.value.code == -32602
+    assert agent_server._session_modes[session_id] == "mode_a"
+    assert agent_server._session_mode_states[session_id].current_mode_id == "mode_a"
+    assert created_modes == ["mode_a"]
+
+
 async def test_reset_agent_with_compiled_state_graph() -> None:
     """Test that _reset_agent works correctly when agent_factory is a CompiledStateGraph."""
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello")]), stream_delimiter=None)

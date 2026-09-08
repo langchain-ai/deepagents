@@ -436,6 +436,9 @@ class AgentServerACP(ACPAgent):
         """Switch the session to a different mode, resetting the agent."""
         if self._modes is not None and session_id in self._session_mode_states:
             state = self._session_mode_states[session_id]
+            if not any(mode.id == mode_id for mode in state.available_modes):
+                msg = f"Invalid mode: {mode_id}"
+                raise RequestError(-32602, msg)
             self._session_modes[session_id] = mode_id
             self._session_mode_states[session_id] = SessionModeState(
                 available_modes=state.available_modes,

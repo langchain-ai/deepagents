@@ -7,13 +7,25 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePath
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
-_SCHEMA_VERSION = 2
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+_SCHEMA_VERSION = 3
+"""Binding schema generation.
+
+Version 3 resolves project policy per workspace. Version 2 used the launch
+config's fingerprint for every directory, so its project policy values may
+differ from the newly resolved ones. After checking workspace identity and
+session policy, `_bind` migrates old rows instead of rejecting that mismatch
+as configuration drift.
+"""
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
 
@@ -117,7 +129,7 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
         msg = "workspace_config must be an object"
         raise TypeError(msg)
     try:
-        serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        serialized = _canonical_json(value)
     except (TypeError, ValueError) as exc:
         msg = "workspace configuration must be JSON serializable"
         raise ValueError(msg) from exc
@@ -127,9 +139,18 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
     return serialized, hashlib.sha256(serialized.encode()).hexdigest()
 
 
-def _fingerprint(value: object) -> str:
-    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
+def _canonical_json(value: object) -> str:
+    """Return JSON with consistent key ordering and spacing for fingerprinting."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def canonical_fingerprint(value: object) -> str:
+    """Fingerprint `value` with the canonical workspace serialization.
+
+    Returns:
+        The SHA-256 hex digest of the canonical JSON encoding.
+    """
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
 def resolve_workspace(
@@ -138,7 +159,11 @@ def resolve_workspace(
     *,
     config_fingerprint: str | None = None,
 ) -> WorkspaceBinding:
-    """Resolve and validate a client workspace claim.
+    """Resolve a client-supplied cwd into a canonical workspace binding.
+
+    `cwd` is untrusted and is validated here. `workspace_config` is not: every
+    caller passes server-resolved policy. A client claim is verified against
+    server policy in `offload_api.workspace` and never reaches this function.
 
     Returns:
         A canonical, fingerprinted binding including the resource policy.
@@ -151,13 +176,13 @@ def resolve_workspace(
     project_root = find_project_root(canonical_cwd)
     if project_root is not None:
         project_root = _canonical_directory(str(project_root), field="project_root")
-    workspace_id = _fingerprint(
+    workspace_id = canonical_fingerprint(
         {
             "cwd": str(canonical_cwd),
             "project_root": str(project_root) if project_root else None,
         }
     )
-    resource_key = _fingerprint(
+    resource_key = canonical_fingerprint(
         {"workspace_id": workspace_id, "config_fingerprint": config_fingerprint}
     )
     return WorkspaceBinding(
@@ -218,15 +243,90 @@ def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
     )
 
 
+def _is_migratable(existing: WorkspaceBinding) -> bool:
+    """Whether a row's recorded policy predates the current schema.
+
+    Older rows may contain launch-project policy instead of workspace policy.
+    `_binding_differs` checks workspace identity and recorded session policy
+    before allowing migration.
+
+    Returns:
+        `True` when the row has no fingerprint yet, or an older schema.
+    """
+    return not existing.config_fingerprint or existing.schema_version < _SCHEMA_VERSION
+
+
 def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> bool:
-    return existing.workspace_id != proposed.workspace_id or (
-        bool(existing.config_fingerprint)
-        and existing.config_fingerprint != proposed.config_fingerprint
+    if existing.workspace_id != proposed.workspace_id:
+        return True
+    if not _is_migratable(existing):
+        return existing.config_fingerprint != proposed.config_fingerprint
+    if not existing.config_fingerprint:
+        # Pre-fingerprint rows have no recorded policy to preserve.
+        return False
+    from deepagents_code._server_config import SESSION_WORKSPACE_FIELDS
+
+    bound_policy = existing.workspace_config()
+    proposed_policy = proposed.workspace_config()
+    return any(
+        bound_policy.get(key) != proposed_policy.get(key)
+        for key in SESSION_WORKSPACE_FIELDS
     )
 
 
+PROJECT_POLICY_DRIFT_REASON = (
+    "the project's resolved policy differs from the policy recorded "
+    "when this workspace was bound"
+)
+SERVER_CONFIG_DRIFT_REASON = (
+    "the server configuration changed after this workspace was bound"
+)
+
+
+def drifted_project_fields(
+    bound_config: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+) -> list[str]:
+    """Name the project-scoped fields that drifted from their binding.
+
+    The refusal these feed is safe either way, but it is not diagnosable
+    without the field names: the resolution reads the extension trust store on
+    every call, so a transient read failure reports as a policy change. These
+    values are paths and booleans, never secrets, so naming them is safe.
+
+    Returns:
+        The drifted field names, sorted; empty when the policy is unchanged.
+    """
+    from deepagents_code._server_config import PROJECT_WORKSPACE_FIELDS
+
+    return sorted(
+        key
+        for key in PROJECT_WORKSPACE_FIELDS
+        if bound_config.get(key) != current_config.get(key)
+    )
+
+
+def _binding_conflict(
+    thread_id: str,
+    existing: WorkspaceBinding,
+    proposed: WorkspaceBinding,
+) -> WorkspaceConflictError:
+    if existing.workspace_id != proposed.workspace_id:
+        return WorkspaceConflictError(
+            f"thread {thread_id} is already bound to a different workspace"
+        )
+    if _is_migratable(existing):
+        return WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
+    drifted = drifted_project_fields(
+        existing.workspace_config(),
+        proposed.workspace_config(),
+    )
+    reason = PROJECT_POLICY_DRIFT_REASON if drifted else SERVER_CONFIG_DRIFT_REASON
+    return WorkspaceConflictError.from_reason(reason)
+
+
 def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
-    with sqlite3.connect(_database_path(), timeout=5) as conn:
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         _initialize(conn)
@@ -258,15 +358,16 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
             raise RuntimeError(msg)
         existing = _row_binding(row)
         if _binding_differs(existing, proposed):
-            msg = f"thread {thread_id} is already bound to a different workspace"
-            raise WorkspaceConflictError(msg)
-        if not existing.config_fingerprint:
+            raise _binding_conflict(thread_id, existing, proposed)
+        if _is_migratable(existing):
+            # Guard on the fingerprint this transaction actually read, so a
+            # concurrent migration cannot be overwritten after the fact.
             conn.execute(
                 """
                 UPDATE dcode_thread_workspaces
                 SET schema_version = ?, resource_key = ?, config_fingerprint = ?,
                     workspace_config_json = ?
-                WHERE thread_id = ? AND config_fingerprint = ''
+                WHERE thread_id = ? AND config_fingerprint = ?
                 """,
                 (
                     proposed.schema_version,
@@ -274,6 +375,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
                     proposed.config_fingerprint,
                     proposed.workspace_config_json,
                     thread_id,
+                    existing.config_fingerprint,
                 ),
             )
             return proposed
@@ -281,7 +383,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
 
 
 def _read(thread_id: str) -> WorkspaceBinding | None:
-    with sqlite3.connect(_database_path(), timeout=5) as conn:
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         _initialize(conn)
@@ -355,7 +457,7 @@ async def require_thread_workspace(
         _, claimed_fingerprint = canonical_workspace_config(workspace_config)
 
     def _require() -> WorkspaceBinding:
-        with sqlite3.connect(_database_path(), timeout=5) as conn:
+        with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
             _initialize(conn)

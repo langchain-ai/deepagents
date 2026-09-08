@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e2e6137950e32a7bdb5b4ea574b476846a16c9bccf6844e0ed274dfb0839704c",
+  "pageVersion": "sha256:3432ad7227342fe9acd5c3c62cb0a5c2956effbfe4f4a005d2fb143766f44163",
   "claims": [
     {
       "id": "claim_57467a4a05b54e5ea875422c516c790b",
@@ -199,10 +199,108 @@
           "version": "repo-lines-v1:sha256:57285b0c0eb03018bb502c4112cf3ecd82dd0353af6d0c14399f67e2080e66f6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5ZmZkNWEyZWRkODc4YzNkNjljNzc2NjE3ZDc1ZDVmOWY4MDQyMDY1NWVkZDhkMTA3MzliMmJkY2RlY2VhZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MjFmNmJmY2ViYmIyZWQ5NjQwZjIwMjgxNzg2NDU0OGIyMDMzZmJmYzU1OGVlMmUzZDQ0ODE1NTM4ZGUwMzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwYmJlMzlhNWFiY2ViMzUyNGIzNjU1YmFmMzhjMWNlZmViMmNmZjFhY2UxZGYxZmIxYWY4YTVkNDllYTlkOWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_eea432775bda4fd0a714be7de5eed15f",
+      "statement": "Model inspection reads model_name or model for an identifier and obtains a provider from _get_ls_params().ls_provider; unavailable or malformed provider metadata is logged and treated as unavailable, while model_matches_spec supports identifier-only matching when provider inspection is unavailable.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_models.py#L146-L180",
+          "version": "repo-lines-v1:sha256:fbaf855479a21b436eb94bf7faecdc44e8f4e4cf35972682ea9e9055785541e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhZDJiNzczMDRmNjdiNGY3OGUwNmYwMzFmOTFjN2JmYjdiMjhmMTFmNTlkMzYzMGQ5MWZmY2NiMTJiYzhmMDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4NTg2MDJkY2Q3NmUxZWE2ZGIxZDIyNDRiMTNlN2Q2Yjc2YmM0OWRjMjIzNWIwYTNjYzI1NWJmNTMxNWIwZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmYzY2ODU0NTMyOGRlMTVlNjI5NTZiMGZiMWM4NWQ4YzBjYTkyM2Y1N2NkZTNiNjk3OTQyNGYwOWUwMWJkOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4NzM3MmJjN2ViNmNmMjBjYmY3MjRlZGNiMWVjMGJlMjRhYzNlOWM5NzZlZTIzNTBkZDc3MWNmOTM3YzU0YTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/_models.py#L60-L119",
+          "version": "repo-lines-v1:sha256:6688e97d3967e0aacdf39d6f338444eaf15a85652eccd797a2c4fb51538215e2:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NjA3ZGQ4MmVkZmMwYTdjODZjYjJmZmU1NWY5NzQzYzE5MmM4YTdkNGJmMWU1NTgxNDEwZTAxOTA5NzlkZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NjcwMTI5ZmQ1ODg4YWVkMGQyYWJkOTE1ZTJmNmRlMmQ1NTViMzRjNmE5MjI5ZmNjN2MzMWEwZTA0NjVkYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlOTIwYjgwODIzZjJlNzM0MzcxMDdiZjAwMjAxNzkxNzExMDY3YTZlMWU4MmRjNzM0OTRlMmY1NTY3OTMzYzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c2e4e072c3e44faa5de1d38c327ba63",
+      "statement": "HarnessProfileConfig refuses to export a HarnessProfile containing runtime extra_middleware, preventing declarative serialization from silently dropping middleware behavior.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L461-L479",
+          "version": "repo-lines-v1:sha256:5237a6b17d95561e70748ddd1c245192a0ae9405a886256aa55ddd54f69ae316:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkZjQzNTlhYjlmOTQ4MzkxNmRlYzJhNmRjZTdmODk3MzI3ZGFjM2ViYjA2NjZjNjM5ODczMzE2MmY0M2E0YWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4YWY0ZWFjYTA3MjkwYTI0NTRhN2ZhMGU0NzI1ZjIxYzQ4YmRlMTAzMmVkMGM2ZjA5ZTdlM2YxNzU1ZDcwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4e05a1e74d5d4452b46c4bd1576d8528",
+      "statement": "Harness-profile extra_middleware is applied to main, general-purpose, and declarative synchronous subagent stacks but not precompiled or remote asynchronous subagents, whose middleware is already owned elsewhere.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L690-L708",
+          "version": "repo-lines-v1:sha256:61536d622b8824a2622bc9d044122a9f8b6210321ef4dbc62ac8af2d04c6f3f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxZjIyYzRkM2QwZGI1ZGNhMDM4YzU3NmZkZWYyNjc3MWNlYTYyZjFlNzk2ZDQ3ZTFmMjZmNjAxY2QzNmFiMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxOTBkOTBkNjQzZGNhMWI2NzhmOTVmZjY4YWY5NWY0Y2I1ZjlhODVkODFiNWVjOTA2YjI3NDU0YWY0MGZjOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyMjEyNzZmOGNkNWMxOWRmZWJmMDRmZWRjMWRiNjA2OGJhYWY5ZmM4Y2IwN2MyOTNlNmY5YThjNmNiYTg4YmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjOWJiN2M4YjRhODY2ZmUwMDI4ZWQwMmVmOTg4NDQyNzEyMmZmOTI5ZWZmMjM4OTgxYzZkODk2NzVmOGQ0ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cbd81df303694c03be6a8a2e695ffd03",
+      "statement": "dcode converts arbitrary provider-profile hook or factory failures into ModelConfigError with installation/update and explicit-kwargs guidance, preserving a user-facing configuration error boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6097-L6116",
+          "version": "repo-lines-v1:sha256:7f177e9b0bd672a8f94a08e90e9f57260f4bf27fd6ffd493ae604c01b143dbe6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MmMzYmE3YzM4NDczNjQ1NjM0ODNjMTNjZDE5ZDM4ZmVkZmJkNWE0YTBkZjJlMTg4ODEyOGNjMjdiOWEwNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljNGI5NjEzNGRiYmMxNmMzNzc5NGE3NWM5YzhlYmM0YWVjMmI5ZWMyMGFjMDUyZGYxYzRhN2UyOGRjNzliMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4OGY5YWEzOTNiNWFjMjk4YTNlN2Y0Zjc1M2UxMDBiMzE0ZWE5ZDFjMGI5NTdiNGYzZDU4ZTBiOTNlOTA2ZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzY2Q2N2VlNmNhMjZiZTMxYTA4Yjc5N2RhOWFkZmE4ZDYwZjZiZmQwNjg3NjgzNzE0MjM5ZjJkYmNkM2ZmMjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_87c36f2feded4ab38c6ceb7c2ff833fd",
+      "statement": "The retry classifier imports httpx lazily; when httpx is unavailable, only its transport-error classification is disabled and a debug trace is emitted, avoiding a mandatory startup dependency.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L380-L421",
+          "version": "repo-lines-v1:sha256:d78cdb7facd9bfb912442c99f22cb95ad0477a793e3df5da924c03d1e2b43309:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwOTNiMmM3MGNiOGNhZjc5YmY5NzkwZDVlYWFjMWVjZDRkOWEwNGI0YTVjOWUyYmU2YTNjYzI4MDkzYmU3ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUyZGMxNjJlMjk2Y2I1ODYzOGRhZDA5ZjhiMzk0MDQ2MjE4MGQ0ZWY5YjEyMWJhMmU1NWZjMjY5ZmYyZGYwZjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2101283dae614943af150275baa1e5f6",
+      "statement": "ConfigurableModelMiddleware emits its private checkpoint only after the downstream handler succeeds, and its persist_model_state option disables parent-thread resume persistence for subagent middleware instances.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/configurable_model.py#L892-L931",
+          "version": "repo-lines-v1:sha256:9aa6ad79ab1f85a29765875069ed770d0a30e2c8d0649289fcc1d1ed42785c31:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNzFhMGExMzM4YjZlODZjZGFiNjVjNjliODU0NzgxNzIxNWJkYjA0M2MxMDY3ZGM0MTU4MmUwMjE1ZWVmZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjMTZkYzJhMWVjNmYwZjY0ZDk4NmM5MjQ0ZTU0NmQ5NTZlMTQwMWYyOTk1Y2I2ZjBmNThkODIyZDViMjczNDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzYWE3MTI4OTM5MWIwZWRmMThjNjY5NDQ3NmQ1NmYxZmQ1Yzg1ZGMwYjQ5ZjdhM2VjODQ5ZWNkMGFhZDdjMGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyMzc1NjhmMzcxYzY2NGZhNzM5ZmU2ZGYzNzAyZTc2MjUzZTA3NDMyOGQwMjU2YTRhYWQzZGVkOTlkN2Y4YTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configurable_model.py#L933-L980",
+          "version": "repo-lines-v1:sha256:cb2b7d69e6e547502d6628fe1e290f00a64a00752e51bacf1d39643e1699f68f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmMGU3NjliN2Q5ODVjMTZkZjcyN2U3OWFlY2Y0ODY1NTBhMWQxMzMxNTE0MTRjNzE3NTg5ZGVjZmUxMGE1MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjMTZkYzJhMWVjNmYwZjY0ZDk4NmM5MjQ0ZTU0NmQ5NTZlMTQwMWYyOTk1Y2I2ZjBmNThkODIyZDViMjczNDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhYTY0ZjBmYWQ3YmJjMTEzZTA5NWRhZmEzODY1ZWQzNDc4ZjFjN2JjODNkYTQzMTYzMmU4YTFkMjExNzVkODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1aaec6188aa149898b4edc7fb48720e6",
+      "statement": "dcode constructs OAuth-backed Codex models through a dedicated builder rather than init_chat_model so the on-disk token provider is wired before requests, and it uses a configured class_path when a provider supplies one.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6186-L6230",
+          "version": "repo-lines-v1:sha256:3cdb2fab393b2d46f05a2cb8450193c3f8970b13fcc88860492f8e26c75a288b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhOTY0MzNiMTY2MGQzMTlmNjg5NWE4NWZlMzgwZTc5NWYwNmYzMmY5MWI5NWI1OWIxZDc2MTEzMTk0OWRlMTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMWNhMWIxNTAxOTFiNzM0MjMzZjU2ZWI2MmJjYTZmNDk1M2E3OThlNWY5MWQyYjQ4MGNjYTRmMWJlM2RiNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzNGYzMDA0YTcxNWRiMTdmOTcyNDIzYTNjOTQ2Y2Q1NWY3ZTFiMmU1YzQ0YWUyMjg4MmEwM2QzNzdkNDZlZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3YjIwNDZhMTMxZmIyOGNlMTIyYWQyNjQyZDE4YTRmYmYyM2JlMzhjMzNiOWNiMzE0M2M5ZDhjOGJhODJmODcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_80e47c994c2f42a7bb60226e03d28ea9",
+      "statement": "dcode applies config and CLI profile overrides to the resolved chat model's capability profile after construction; these overrides are distinct from SDK HarnessProfile runtime configuration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6237-L6258",
+          "version": "repo-lines-v1:sha256:46c8fc81c85a30e58d523a04278b511bc5870857d97d9803f4d0ee2b48ef262a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkM2Y2ZTdhMzJkNDY4NGM3MGIzNDM2NDQ5MThkZjNmMDMxZDMyNGNhMTczYTU3YWI5MTZiYmJjMzU1MDI5NjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5ZjRlYjc0ZmMyYzA4MThmZmFiZDk3YWUxMDYxYjQyZTcxNGJhNDJmNGZmNDBkM2I2MGQzYzgyYTRkYjU2N2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0MDk2MThjZDBkYzY5MWZjMzBiNDIzODg2Y2JhMGI1ZGViODRjOWY1YjUzNjM1MmZmMzI4NTBhNTEyOTZmNmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_69ee4f97936e4fcb907bb557205566a1",
+      "statement": "Retryability treats a direct ModelError verdict as authoritative, recognizes only selected HTTP status and transport/provider signals, and traverses exception groups plus cause/context chains when no direct verdict is available.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L424-L508",
+          "version": "repo-lines-v1:sha256:2650e68068066d6efc9ec46eaf637322ead71e03901201e94b2481c12966fa6f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMmE3NTgxYjFkODY4NDJhYjg2OTM5MDM1N2U0MjMyYzJiOWZkZDE4YjIxODJjMTllMDY5YTJjZjM1YjI0MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1YmM0NzExZWNjYTA0NTBhZmM4MzI3NzlhODg2NzZhN2M2OTYwZmEzZGE1YWY0MTBlZTAyZDFlMDE1MTU5MWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkNzhmMjZkZWExNDhlNDE0ZTVkYTFhNTYyZTAyMzM0MDQwZGI0OGU5ZTkxMjg5MjA4NTkzNjFkMDNjOTI0ZTYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

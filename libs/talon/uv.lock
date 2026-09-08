@@ -1071,7 +1071,7 @@ requires-dist = [
     { name = "deepagents-code", extras = ["media"], marker = "extra == 'media'", editable = "../code" },
     { name = "discord-py", specifier = ">=2.4.0,<3.0.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.2,<1.0.0" },
-    { name = "langchain-openai", marker = "extra == 'history-openai'", specifier = ">=1.1.14,<2.0.0" },
+    { name = "langchain-openai", marker = "extra == 'history-openai'", specifier = ">=1.6.0,<2.0.0" },
     { name = "langchain-voyageai", marker = "extra == 'history-voyage'", specifier = ">=0.4.1,<0.5.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=3.1.2,<4.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },

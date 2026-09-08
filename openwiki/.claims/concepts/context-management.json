@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:61e0629492fbc0e08684dbd00669a16cb8dcd4e029fc8649e3b2f4c1db877936",
+  "pageVersion": "sha256:72288252eea06b4e3e5b3ee28a9fde8b6340850fe0521c5437fd870a7b1dad55",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -243,10 +243,82 @@
           "version": "repo-lines-v1:sha256:9944e1598b5e004b7f2b9dc6c3c1114c3e456e60da0d9357a6a6b0b19c5e6fee:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNjQ0NGE2YzBkNDJiZmVmZTUzZjcyMmMxMThjMWFiNzlmNWVkN2VhNmNjNDkwMzFkYWZjZmYxMDI1YzJiNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZTJhNDY1MDA5NWZhOTVkMGUyYmI0MWIyZGIyOTA5NGQzNDA0ZDI4Y2UxMjMzOWVjODhiYjRiNWM1YmU4ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0NzYxMTdiMjc4YzhkMjZjN2ZkODYwMzIyMjE3YTQwM2E3NjMyZDY5N2I4NmMyNGMwZGVhOGEzNThiYzJhZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_37dcb84f21c547149c6fa2838de044ff",
+      "statement": "LocalContextMiddleware caches a backend-side environment detection snapshot in private state for system-prompt injection, then after a summarization cutoff appends a changed, fingerprinted local-context HumanMessage instead of changing the cached prompt prefix on every request.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L674-L707",
+          "version": "repo-lines-v1:sha256:fbab196f04e665303fa27bc117b9c82cf12759d67abdc94fce383f16791cc6dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkMzY1YzU3ZjQwZDNkODM1MDkwMzQ5NDhlNzU5MTcxMjBjMTJkYmVjMzkxNDQ5ODk4NzY2MDdjOWYzNThjZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwM2VmODMxYzU1NzI3NjcyYTNhY2U1MjhlODc5N2IzMjVjZDhiZGM2NDFiZGJkMzhiMmM1M2ExZjZkYzRhZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4MjY3NmM4ODhjMWE0ZDlmYTc3MmZjZGMzMDJmNzczYmM3MjkwZWViZmY5ZGEzNmEzOWY0NGMzMjExOTgzODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAzNzgyMGQwMjc3MDU0ODUzZmM1YTgxZDdhMmJlNmYwZDhmYWY1NmJjZjZjMDAxMzZjZWY2ZGM4NWI4MGUwOTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L805-L903",
+          "version": "repo-lines-v1:sha256:7df47b98d9d3b2df608ef3aa65a96d065692410edddbe460ff85f211d6eef71c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0Y2I2YTVjYTY5MWY3N2JkMDgxYjc3OGZjYWU5YWM0NmFiN2JjMDFhZTA4N2I3ODJkOWMyMTg2NGM0NzdkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MGFiZmI4YjEwNjcxZTE5OGZjNTFmZTc3MDg5MjZkMGVkYTk2ZjY0OTYwMWQzMDYwODQyM2YyYmZlOTBiZDIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L975-L1032",
+          "version": "repo-lines-v1:sha256:df4291d2d187e1fe8862db3bc4b71685966db39837397fdce2f5300b3d44fb8d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjZGNlMzFmZjRjZGVlZmMxMzY0ODYxYTFjMTA0M2JmMWQ2NjdlODEyZWMzMWQyMTUzNGFlNjkzNGE4ZmM5ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwYTZiNmJhMGYwMDE1OTI1NmZhZjNiN2MyMzIwYjM1N2RiMzdkZmU1YTRiZjQyNmEzNjE5NDE3NGE0NTdkNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNWNhOTIwOWU1MDY2ODNiNjZhYTRlMmIzZDk2N2E4MGI1MzBlODRmMjQ2YzBhZTBkY2ExMjhmYmRmZGQxNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwYzMxMzI5NjBlNWEwNDNmYzkzMTU1YWE0MTE0MjU1ZTQ2OWFlYTgxM2NiNDk2ZDlkZTI1NjUyYzNmMmU0YTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bc770990c4064144a92fdec39b286548",
+      "statement": "Local context detection runs a bounded shell script through the configured backend, allowing the same project and environment inspection to run in a local shell or remote sandbox; failed or empty detection omits the context rather than failing the request.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L1-L7",
+          "version": "repo-lines-v1:sha256:225786356f2ee729a5c646d488fe6e831277a1292013f8babc8b458462592140:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmExMzM5Zjk5NjNjMjMzMmVhOTE4YWJhYzQ4YWQzMTE5YmYxMWZlMWExNGY1YjJmNWQ1MDhmNTc3OWEyNGQzYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L740-L803",
+          "version": "repo-lines-v1:sha256:6f90e44e33f289ff982f42442b821e81fc40b11f5c7c50f96040ad1981c8a6c9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjYzVhNWEzZmI3NjcyMmU5MDMwMTJkNGUxMDRmMTUyNzgyOTMwOWM4ZmQ1M2Q2MzIzNWRhOGQ0OTZjOGExMWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZTE4Zjc4Y2UwOTcwYWYwMDllMWFmOTA1ZDNhYzRjMThjMzI5MjYyN2I3NzAyM2VlYzM2NTAxYjdjYzY0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1MWJmMTkwZWVhYjE0ZDFlMTNlNjRmMmI5ZjQwNDNlOTc0ZDc5NGUyODc0MjNiZjBiOWM1ZDExZjBjZWM1ZTcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L905-L973",
+          "version": "repo-lines-v1:sha256:115ba7fb9245af0a0dd9c41b80f914aab83d3e883894818a7c016b5394a14359:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1OWQ3NThhOGQxZWJhZjJjMGUyNGIzYzRmMzdhYTQzNWNhNjcyMDU0ZTE1NWMyZjBlZGU4MGY3YjEwMDMxNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNWNhOTIwOWU1MDY2ODNiNjZhYTRlMmIzZDk2N2E4MGI1MzBlODRmMjQ2YzBhZTBkY2ExMjhmYmRmZGQxNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4MTlmNDcwZTI4OGRmYTEwYWZjNWM2NzgwNmU5OTA3NTU3NjgyZTY1N2VkYTM5ZDgxYTgyOWU1Njc5MzcxZDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bda6229ed686435ea01fcfc47aa62de4",
+      "statement": "The `/context-doctor` command estimates fresh-session injected context from base prompt, AGENTS.md memory, skills, built-in tool schemas, and MCP schemas, and separately reconciles available conversation and provider usage; its estimates use four characters per token and label unavailable custom or remote components.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L13240-L13355",
+          "version": "repo-lines-v1:sha256:26716901d8f9c2eb9ab9cc0e122fc1e943046636ffc20b7706ccf4a3f4d11fcf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNGU2Mzg1Y2JkZTA5ZjAzNDJiZGQyNmE3ZDdlZGI0NTM5Mjg3NWNlNzc4OTM1MGUyNzI2ODkzNDIwZTY2ODkyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlZWE3OWQ0MWQwNDFjMzVjMDE3ZGFiNWM5NjUyZDI5MjRmOWU0NmJjYjA5YjI0OGQxNzdlYWFlYWVmODU4ZmMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkMjI2ZTk1MDk0MWVlNDk5OTk4Yjk1ZjEyOWE2MmE2ZWQ5MGFlODQ0Y2FjMTdjNmQ3OGZjZjFiOGNhYzlmMDNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNGM4MzE4NDU3YjdkMWJhZGY2YTRlMDA3MWUzNWRjYzJlNWEwN2NhZTBlMmRhY2Q3ZjQ4ODJhMGIwNjk2YTlmIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L177-L238",
+          "version": "repo-lines-v1:sha256:cb3c77a8701af4f60b022a4473c03dfae5b883aa11cbc700e4132963d0b5dc2d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYjAwMWQyOTRiNzljYzJlNzg5ZjBhMjlhMTQ3NWNkNDY3MzZjZTY1MzVlMzViODEzYjgyZDE0YzJjMjQ4ZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMzY2ZjgyN2MwMDcyYTQ4ZWNlMGM1ZjY0ZmMxM2MzNjBlOTI5YzQ0M2I0OWMzNzE5YTRmODgwMjgyODllNmIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L241-L275",
+          "version": "repo-lines-v1:sha256:3d53350aabbcb2e8147297a58486b2823b18a2c313f22d53ccaa96a416c13593:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOGY0ZTEwMjVlZGUyNjg3OTZiZjUwZWMwN2E1MzQxMmI2NmQwNGRkZTIxZTY0ZGRjOTc3MTA3ZmE1NDBhOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYWU4YTBjYTc2Zjk4ZjdiN2RjNzk4NDk1MWQ2M2U1N2RiM2M2NDU1NzljYTUxYmFkNmE1MzlkNjE0ZWRiYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhOTcxZmI4NTNiNzkyNGNlZDhlMmY3ZDdjN2NhOGRkYjBmNTM1OGM1ZGViYWMxZmY5N2YxYjM2MTExOTBmN2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L41-L55",
+          "version": "repo-lines-v1:sha256:c34cdaae1906030c447ab4d876fe360c68ca46a3901ea0f0e3a8c15fc69d9fd6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NGYzOGRhMzI0OWQwN2RhMzcyYjY4YzQ1YTYxNzE0NDk3NjA1ZDE3MTJhMTlmYmZhYjg3YWU3NmYwMDMxODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiY2E0ZTk5YjVlOWNhNWNlZWUxNWMxYmQ4ZGI0NWE5Yzc3NDgxMWVjYTdhMDYzNTRkYzFlMTExMTllM2EzY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1YzAzM2I1YmU5NmE5MDZhNThjY2MzOWZhODlhYTZjMjUzMWYxYThkZDhhMDVhZTIxMjY5OGU4MWE3YTIzZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5N2MxM2EwN2ZjMmNiYjQzNjI4OWM3Nzk1ZTA4MDU0NWY4ZDdjNzk0OGEzNzgyNmJiNWE2ODMyZGUwMDY1NGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5b14873c8ef34c7f9fda1d254b544d75",
+      "statement": "Server-side offload integration coverage verifies that forced compaction advances the summarization cutoff without replacing checkpointed messages and that the resulting conversation archive is readable through the agent's own `read_file` tool; concurrent-run coverage asserts a turn started during compaction remains in final state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_offload_server_side.py#L169-L329",
+          "version": "repo-lines-v1:sha256:b754ed1f2e58e1ac7cd403b20e48fac20216032414cf45cc4fbd7419f773d77d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MjE4MTZiMzdiNTgwZTQxYTZiYzlkOWMzMzlkODJjNTgzZDIzZWQ0MTViMjRmY2I5ZDgxODU1ZjAwMWJiZDc5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMzA3NjVkZGQwNmQxMmY2MjVhYzVjMmY2Mjg3YjliMjUxMjMzZGVkNWE3OThiNWM2YWY2MTZlODE2YjhlNjZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NzdjOGEzZGVlM2NiMTUzMmVmZmNjYmMxOGM3ODQ1OWI3MmMyZjExMDdiMDZlYzljOGFkNzQzMTEwYzYzZmFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MjY0Zjk1NzBjNGJkNjljYWRkNTdlYzk4MzM0ODFmOTUxNTllZmI1YTU3OWE3ODI5ZmI1YmQ3MjA1OTE5OTMxIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_offload_server_side.py#L370-L509",
+          "version": "repo-lines-v1:sha256:746a95d12066fbed4f7eada80e0ce20aff4bc30959ab514a73568626a6c9e696:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MjE4MTZiMzdiNTgwZTQxYTZiYzlkOWMzMzlkODJjNTgzZDIzZWQ0MTViMjRmY2I5ZDgxODU1ZjAwMWJiZDc5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTNiY2NjZGZmMzQwMzlkOTkzNzZiM2E3NzI5MTIwNjM5MWYyYmMzZjE3OWRlYzg4YTNhYjY2YTQ2MjA3YmRhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkZWE3OTc5MzBhMWQ0YmZhNmUwNGU2MDIyYmFiNWJkMjExZjIyODVhZmFmY2JhNGRkYzlmZGM2ZTJiZTVmYzg3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NmRjYjk3MTUyYjMyMDMzMWZiOTM2ZWEyNmE2YmRhZTNmY2FlMzdhZmNjNTlmYzU0NDA4YjFlYjNkZGUxYjNiIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

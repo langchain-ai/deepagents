@@ -1,120 +1,145 @@
 ---
-type: security runbook
-title: Security Boundaries & Runbook
-description: Operational trust boundaries and safeguards for Deep Agents, dcode, and Talon, including backends, workspace bindings, extensions, MCP credentials, and channel exposure. It distinguishes implemented controls from deployer responsibilities and absent isolation.
-tags: [security, operations, sandbox, permissions, mcp, talon]
+type: security architecture
+title: Security and Trust Boundaries
+description: Operational trust model and concrete protection boundaries for the Deep Agents SDK, dcode, and Talon. Covers approvals, workspace trust, repository inspection, MCP configuration and credentials, secret handling, and the limits of local and sandboxed execution.
+tags: [security, operations, trust-boundaries, permissions, sandbox, mcp, talon]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-07T08:06:36.835Z
+    at: 2026-09-08T08:05:55.853Z
 sources:
+  - id: openwiki-source-3e5d1f5822b632090a155a7e
+    resource: repo://libs/code/deepagents_code/_repository_bounds.py
+  - id: openwiki-source-0793010c72a4d07e67bc5b35
+    resource: repo://libs/code/deepagents_code/hooks/trust.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
     resource: repo://libs/code/deepagents_code/mcp_auth.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
     resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-88fb8e5a1d032ebc6b6d11b3
     resource: repo://libs/code/EXTENSIONS.md
+  - id: openwiki-source-60fae2a118c0764100e2bdc5
+    resource: repo://libs/code/tests/unit_tests/test_repository_bounds.py
   - id: openwiki-source-877b53371bf970f1b38a1809
     resource: repo://libs/code/tests/unit_tests/test_workspace.py
   - id: openwiki-source-a99872ed083b44d85f6922d9
     resource: repo://libs/code/THREAT_MODEL.md
   - id: openwiki-source-f1280171b9d75cd28add0ec3
     resource: repo://libs/deepagents/THREAT_MODEL.md
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-111101dcd1462ff54277b1fc
+    resource: repo://libs/talon/deepagents_talon/mcp_config.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-07T08:06:36.835Z" }
+  - id: openwiki-source-e2be45e59936bfba43c18816
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
 ---
 
-# Security Boundaries & Runbook
+# Security and Trust Boundaries
 
-Deep Agents follows a **trust-the-LLM** model: an agent can do what its tools and backend allow. Neither the SDK nor dcode attempts to make model output, jailbreaks, or tool intent safe. Put enforcement at the tool-approval and execution/backend boundaries, and treat untrusted content returned by tools as capable of influencing later model decisions. The repository threat models are generated, experimental guidance—not an authoritative security assessment—and must be validated for a deployment.
+Deep Agents uses a **trust-the-LLM, enforce-at-the-tool-and-execution-boundary** model. Model behavior, jailbreak resistance, and the safety of LLM-generated intent are explicitly outside the SDK and dcode threat-model scope. Tool output—including web pages, MCP responses, and shell output—also returns to model context without prompt-injection scanning. Therefore, treat model input and tool results as untrusted instructions, and put authority limits in approvals, backend selection, OS/deployment controls, and trust decisions for executable project configuration.
 
-Related: [backends](../concepts/backends.md), [permissions & HITL](../concepts/permissions-hitl.md), [MCP](../integrations/mcp.md), [sandbox partners](../integrations/sandbox-partners.md), and [Talon](../integrations/talon.md).
+The repository threat models are generated, experimental guidance rather than authoritative security assessments. Validate their conclusions against the version and deployment being operated.
+
+Related: [configuration layering](../concepts/config-layering.md), [permissions and HITL](../concepts/permissions-hitl.md), [GitHub Action](../integrations/github-action.md), [MCP](../integrations/mcp.md), and [sandbox partners](../integrations/sandbox-partners.md).
 
 ```mermaid
 flowchart TD
-    Input["User, channel, file, or tool-result input"] --> Model["LLM decision"]
-    Model --> Gate{"Configured approval gate"}
-    Gate -->|approved or allowed| Tools["Tool dispatch"]
-    Gate -->|rejected| Stop["No tool side effect"]
-    Tools --> Backend["Selected backend"]
-    Backend --> State["StateBackend"]
-    Backend --> Host["Host filesystem or shell"]
+    Input["User, channel, project, or tool-result input"] --> Model["LLM decision"]
+    Model --> Gate{"Approval and policy"}
+    Gate -->|approved or allowed| Tool["Tool dispatch"]
+    Gate -->|denied| Stop["No tool side effect"]
+    Tool --> Backend["Configured backend"]
+    Backend --> State["LangGraph state"]
+    Backend --> Host["Local host"]
     Backend --> Sandbox["External sandbox"]
-    Tools --> Context["Results return to model context"]
+    Tool --> Context["Result enters model context"]
 ```
 
-This is the control placement: approval can prevent a tool invocation, while the selected backend determines whether an approved invocation reaches state, the host, or a sandbox. It does **not** imply that all runtimes configure approval by default.
+This diagram locates authority: an approval can stop an invocation, but the selected backend determines where an allowed operation executes. It does not make tool results safe to follow or imply that every runtime enables approvals by default.
 
-## Operational baseline
+## Operating posture
 
-1. **Choose containment before enabling tools.** The SDK provides no OS-level isolation. `StateBackend` is the default and is ephemeral LangGraph state; it is not a shell execution environment. For untrusted work, supply a `BaseSandbox` implementation or use container/VM isolation. Treat sandbox providers as trusted third parties and verify their own identity, tenancy, network, retention, and egress controls. In dcode, sandbox operation requires `--sandbox`.
-2. **Do not mistake virtual paths for shell containment.** `FilesystemBackend(virtual_mode=True)` constrains its file-operation paths. `LocalShellBackend` executes with `shell=True` and can reach the host regardless of `virtual_mode`. The SDK’s `FilesystemBackend` default is currently unrestricted when `virtual_mode` is omitted; explicitly set it when file-tool path confinement is intended.
-3. **Keep approvals meaningful.** In dcode, do not use `auto_approve` or a permissive non-interactive shell allow-list for untrusted input. The approval gate protects model-initiated side effects, not prompt content or data returned from tools. Review URLs and Unicode warnings, and assume allow-listed interpreters/wrappers can expand the effective command capability.
-4. **Protect local process and profile boundaries.** dcode’s local server is loopback-only but unauthenticated. Restrict same-host access and avoid running unrelated untrusted processes under the same account while it runs. Protect the selected `DEEPAGENTS_HOME` and any administrator-managed configuration with operating-system ownership and permissions.
-5. **Treat extensions, project configuration, and MCP servers as executable trust grants.** Trust a checkout only after review; use explicit one-run flags in CI rather than durable trust where possible. An extension author and an MCP server own code, network, and storage behavior after loading.
-6. **Minimize secrets and persisted data.** Provider credentials and MCP tokens are process/profile secrets. Do not place secrets in prompts, `AGENTS.md`, project `.env`, or tool output; set retention and access controls for checkpoints, logs, sandbox archives, and provider accounts.
+1. **Select containment before enabling execution.** The SDK provides no OS-level process isolation. Use a `BaseSandbox` implementation or container/VM isolation for untrusted workloads; external sandbox providers are trusted third parties whose tenancy, network, retention, and identity controls must be evaluated separately. dcode sandbox mode is an explicit `--sandbox` opt-in.
+2. **Do not equate virtual paths with shell isolation.** `FilesystemBackend(virtual_mode=True)` constrains filesystem-tool paths, but `LocalShellBackend` executes commands with `shell=True` and has host access regardless of `virtual_mode`. `StateBackend`, the default, stores ephemeral LangGraph state rather than providing a host shell.
+3. **Keep approval meaningful.** Avoid `auto_approve` and broad non-interactive shell allow-lists with untrusted content. Approval covers invocation, not model reasoning, the correctness of approved arguments, or the later interpretation of tool output.
+4. **Treat checkout-controlled configuration as code.** Project MCP definitions, project hooks, `.env` values, memory and skill files, and project extensions need review and a deliberately scoped trust grant before they influence a privileged local process.
+5. **Protect local boundaries and persisted secrets.** dcode's local server is loopback-only, not authenticated. Run it under a dedicated account without unrelated same-host adversaries, restrict profile/config ownership, and rotate credentials after a suspected compromise.
 
-## SDK: deployment and filesystem boundary
+## SDK boundary: deployment, tools, and backends
 
-`create_deep_agent` returns a LangGraph `CompiledStateGraph`; the SDK does not host a server. The deployer owns authentication, TLS, network reachability, process identity, checkpointer/store protection, and the isolation of user-supplied tools and backends.
+`create_deep_agent` compiles a LangGraph `CompiledStateGraph`; it does not host a server. The application deployer owns authentication, TLS, network exposure, process identity, checkpoint/store protection, and the safety of application-supplied tools and backends.
 
-At the framework/agent-code boundary, tool calls are dispatched from LLM output. Subagent middleware validates the requested `subagent_type`, but task descriptions and other tool arguments remain LLM-generated. Memory, skill, checkpoint, remote-subagent, shell, web, and MCP results likewise enter agent context without prompt-injection scanning. HITL can constrain the resulting tool call only when the application configures it.
+LLM-generated calls re-enter framework execution at the framework/agent-code boundary. `SubAgentMiddleware` and `AsyncSubAgentMiddleware` validate `subagent_type`, but a task `description` and other tool arguments remain model-generated. Similarly, memory, skill, remote-subagent, shell, web, and MCP results are not content-scanned before they are available to the model. Configure HITL or an equivalent policy in the application when tool calls need review.
 
-Credentials are read from the environment rather than written or logged by framework code. This is not a secret-isolation guarantee: `LocalShellBackend(inherit_env=True)` exposes the environment to shell commands. Keep `inherit_env` disabled unless that exposure is intended, and use a dedicated low-privilege runtime identity.
+Provider credentials are sourced from the process environment and not written to disk or logged by framework code. This is not containment: `LocalShellBackend(inherit_env=True)` makes environment values available to shell commands. Prefer a low-privilege identity and leave inheritance disabled unless required.
 
-## dcode: local execution controls
+### Filesystem permissions are an application policy layer
 
-### Tool gate and local server
+`FilesystemMiddleware` can apply ordered `FilesystemPermission` rules to read and write operations. A rule is `allow`, `deny`, or `interrupt`; `interrupt` delegates review to `HumanInTheLoopMiddleware`. Permission patterns must be absolute and cannot contain `..` or `~`. For a recursive delete, the middleware conservatively blocks a deletion if a deny-write rule could cover the target or a descendant, rather than relying on a permissive rule for only the top-level path. This layer limits filesystem-tool operations; it does not constrain shell commands.
 
-dcode places HITL interrupts around side-effecting tools, including `execute`, file writes/edits, web tools, task and compaction/async-subagent operations. Interactive users approve or reject actions. Non-interactive mode uses a shell allow-list; `auto_approve` bypasses prompts, although Unicode/URL warnings are still shown. Approval is a mitigation against unwanted invocation—not validation of model reasoning, approved arguments, or downstream tool behavior.
+## dcode boundaries
 
-Both the TUI and non-interactive client use an ephemeral local `langgraph dev` subprocess and `RemoteAgent` over HTTP+SSE. It binds to `127.0.0.1` with `LANGGRAPH_AUTH_TYPE=noop`; any local process that discovers the port can access it. Loopback is the containment boundary, not authentication.
+### HITL, Unicode, and local server exposure
 
-### Project trust, configuration, and extensions
+ dcode places HITL interrupts around side-effecting tools including `execute`, `write_file`, `edit_file`, web tools, `task`, and compaction/async-subagent operations. Interactive users approve or reject actions; non-interactive execution applies a shell allow-list. `auto_approve` bypasses prompts, although Unicode/URL warnings are still displayed.
 
-Project MCP configurations and project hooks require workspace trust or explicit opt-in before they may spawn a subprocess or connect to a network. This protects the transition from a checkout-controlled file to execution; it does not constrain an approved server or hook. A stdio MCP definition can pass arbitrary environment entries to its child process.
+The warning helpers identify bidirectional and invisible Unicode controls and inspect URL hostnames for punycode, mixed-script, and confusable patterns. They are display/approval aids, not a general sanitizer or a tool-result prompt-injection defense.
 
-`class_path` model configuration imports Python before checking that the resulting class is a `BaseChatModel`, so its module top-level code is already executable. Dotenv loading blocks known shell/linker startup-hook variables, including `BASH_ENV` and `ENV`, but the denylist is not a general isolation boundary.
+Both TUI and non-interactive runs use an ephemeral local `langgraph dev` subprocess over HTTP+SSE. It binds `127.0.0.1` with `LANGGRAPH_AUTH_TYPE=noop`: any local process that discovers its port can submit requests, read thread state, or inject messages. Loopback and host-process isolation are the boundary, not server authentication.
 
-Extensions are experimental and require `DEEPAGENTS_CODE_EXPERIMENTAL=1`. Project extensions run arbitrary Python with the dcode process’s privileges and are scanned only after project trust; use `--trust-project-extensions` only for controlled code in headless runs. Plugin manifest paths are checked against traversal, absolute paths, symlink escapes, missing files, and non-Python entries. Extension setup is transactional, but a successfully loaded extension may replace a built-in tool and is not automatically added to dcode’s approval map. It must implement its own policy for sensitive work.
+### Project trust, hooks, and extensions
 
-Sandboxed dcode agents reject direct `FilesystemBackend` and `LocalShellBackend` extension routes, including subclasses, because those routes would expose host storage. This is deliberately shallow: composite/custom wrappers are not recursively inspected, so their authors own the isolation contract. Shell `execute` remains attached to the default local or sandbox backend and cannot access a virtual extension route.
+Project MCP servers and project hooks cross from checkout data to subprocess/network execution only after workspace trust or an explicit opt-in. For hooks, persistent trust records are keyed by a canonical workspace root. Session grants also bind the hash of the project hooks file, so an edited hooks file loses its session grant. The trust policy is resolved again when the working directory changes; it does not carry a trusted project grant into another workspace. Headless runs ignore persistent hook trust and require an explicit grant.
 
-### Managed configuration and workspace binding
+The hook trust store serializes updates across threads and processes, writes via a restrictive temporary file and atomic replacement, and refuses to overwrite an unreadable or structurally invalid store. A failed trust persistence operation is not an implicit grant.
 
-A fixed administrator-deployed `managed_config.toml` has highest precedence. Enforced unusable settings and corrupt/unreadable managed configuration fail closed for normal commands; OS ownership, permission mode, and privileged deployment of that file remain administrator responsibilities. `DEEPAGENTS_HOME` is captured before dotenv loading and denied from dotenv layers so checkout-controlled dotenv content cannot relocate the user trust root.
+Extensions require `DEEPAGENTS_CODE_EXPERIMENTAL=1`. Project extensions execute arbitrary Python only after project trust or `--trust-project-extensions`; a loaded extension can replace a built-in tool and is not automatically covered by dcode's approval map. For sandboxed agents, direct `FilesystemBackend` and `LocalShellBackend` extension routes, including subclasses, are rejected. Arbitrary composite/custom wrappers are not recursively inspected, so their authors own their isolation contract.
 
-For server-hosted threads, dcode resolves a workspace claim only from an existing absolute directory, resolves symlinks, rejects traversal, and fingerprints canonical workspace policy. It persists the binding in SQLite under a transaction: a thread cannot silently switch workspace or privileged policy, including in a concurrent first-bind race. Runtime context must exactly match the stored binding; the server’s workspace endpoint rejects client policy that differs from server policy. The persisted workspace policy is deliberately non-secret: tests verify it excludes model credentials and system prompt material.
+### Managed and executable configuration
 
-## MCP credentials and secrets
+A fixed administrator-managed `managed_config.toml` has highest precedence and fails closed for enforced settings. Its deployment path, ownership, and mode remain an OS-administrator responsibility. `DEEPAGENTS_HOME` is captured before dotenv processing and denied from all dotenv layers, preventing project-controlled dotenv files from relocating the profile/trust root.
 
-For OAuth MCP servers, dcode stores tokens under the selected profile’s `mcp-tokens` directory. Server names are restricted to a safe basename pattern; remote-server token filenames include a hash of the URL. Writes create a `0600` temporary file and replace the destination atomically, while a per-file lock serializes updates and a separate lock file serializes cross-process refresh. The directory is tightened to `0700` and the final file to `0600` where supported. A permission-tightening failure is logged as a warning: on shared hosts, treat that warning as a secret-exposure incident and repair the filesystem access control. Never log `OAuthToken` objects or exceptions that render them, because their representation contains access and refresh tokens.
+A model `class_path` imports Python before the resulting object is checked as a `BaseChatModel`; module top-level code can already have run. Dotenv loading denies known shell/linker startup-hook keys such as `BASH_ENV` and `ENV`, but a denylist cannot be treated as complete execution isolation.
 
-Provider credentials are not written to disk or logged by framework code, but subprocess inheritance matters. dcode copies most parent environment values to its local agent server after stripping selected cloud-auth variables. The server should therefore be treated as trusted with the invoking user’s provider credentials. Conversely, Talon’s default shell backend uses a fixed safe `PATH`, `inherit_env=False`, and a filtered child environment that removes secret-marked, tracing, and known environment-hijack keys; this reduces accidental shell disclosure but is not a sandbox.
+### Bounded repository inspection
 
-## Talon: channel exposure is operator access
+The goal/rubric repository-inspection path uses `RepositoryBounds` to keep the LLM sub-agent read-only. It permits only `ls`, `read_file`, `glob`, and `grep`, rejects paths outside an absolute root as well as lexical traversal and home shorthand, and applies canonical containment checks where the backend supports them. In particular, a local symlink escaping the repository is rejected; containment-check failures fail closed as unavailable paths.
 
-Talon is an alpha experimental local runtime, not intended for production or enterprise use. It does not provide complete HITL policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Treat anyone allowed to send a channel message as having direct access to the operator’s agent, model credentials, MCP tools, and local host resources. These are documented absent controls, not mitigations.
+The same component limits a run to 25 repository calls, clamps `read_file` to 120 lines and `grep` to 100 matches, rejects files above 256,000 bytes and oversized directory listings, and caps rendered tool results at 12,000 characters. These are context and availability limits for the inspection agent, not authorization for other dcode filesystem tools.
 
-Talon’s `DeepAgentRuntime` defaults to `LocalShellBackend` rooted at the current working directory unless `DEEPAGENTS_TALON_WORKSPACE` is set, with `virtual_mode=False`. The filtered child environment is useful hygiene, but commands still execute locally; deploy containment outside Talon when it handles untrusted channel traffic.
+### Workspace binding and MCP credentials
 
-WhatsApp defaults to `self` exposure, allowing only the paired account. Use `allowlist` with narrowly scoped chat/mention configuration when delegation is needed. `open` allows arbitrary senders and requires both `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open` and `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders`; do not enable it for a host with valuable credentials or local data.
+For server-hosted threads, dcode canonicalizes an existing absolute workspace directory and persists its workspace and policy fingerprint transactionally. A conflicting workspace or policy is refused, including in concurrent first-bind cases, and runtime context must match the stored binding. The persisted policy intentionally excludes model credentials and system-prompt material.
 
-`DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` additively marks named local or MCP tools for channel approval. This does not turn Talon into a complete policy engine. Approval can be unavailable for a channel or scheduled run, in which case Talon skips a gated tool call rather than executing it. MCP configuration changes require approval by default; `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` opts out.
+OAuth MCP tokens are stored below the selected profile's `mcp-tokens` directory. `FileTokenStorage` restricts server-name path components, uses a URL-hashed filename for remote servers, serializes refreshes with a sibling lock, writes a `0600` temporary file, then atomically replaces the final token file. It attempts to lock the directory to `0700` and file to `0600` and logs warnings when that hardening fails. Treat such warnings on a shared host as secret-exposure events.
 
-## Verification and incident checks
+Provider credentials still propagate to dcode's local agent server because it copies most of the parent environment after removing selected cloud-auth variables. Do not place secrets in prompts, `AGENTS.md`, project `.env` files, or tool output; tool history/checkpoints can persist that content.
 
-- Exercise the intended backend under a dedicated test account: verify that file tools cannot leave the intended root, and verify separately that no shell tool is exposed unless a sandbox or controlled local execution is intended.
-- Validate dcode trust prompts/flags in a disposable checkout containing a project MCP file, hooks, and extension. Confirm that extension tools requiring sensitive action have explicit approval middleware.
-- Run the focused workspace tests at `libs/code/tests/unit_tests/test_workspace.py`; they cover idempotence, conflicting/concurrent binds, stale runtime context, policy changes, and non-secret persistence.
-- Run MCP OAuth token-storage tests at `libs/code/tests/unit_tests/test_mcp_auth.py`, then inspect profile permissions and logs without printing token objects.
-- For Talon, test each configured channel exposure with a non-operator sender and test the approval handler for every named sensitive tool. Review activity logs carefully: redaction/truncation does not guarantee that application data is safe to expose.
-- On suspected local-server, token, extension, or channel compromise: stop the runtime; revoke and rotate provider/MCP/channel credentials; revoke project/plugin trust as appropriate; inspect checkpoint, profile, sandbox, and log access; then redeploy under a clean low-privilege identity with containment and approvals revalidated.
+## Talon: local operator authority
 
-## Source material
+Talon is an experimental alpha runtime, not a production or enterprise security boundary. It does not implement production-grade complete HITL policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Channel access is equivalent to direct access to the operator's agent, model credentials, MCP tools, and local host resources.
 
-- `libs/code/THREAT_MODEL.md` and `libs/deepagents/THREAT_MODEL.md` provide generated boundary analysis; validate their findings against the deployed version.
-- `libs/code/EXTENSIONS.md` defines extension lifecycle and trust behavior.
-- `libs/code/deepagents_code/mcp_auth.py`, `libs/code/deepagents_code/workspace.py`, and `libs/talon/deepagents_talon/runtime.py` contain the enforcement points summarized here.
+Its default runtime uses a local `LocalShellBackend` with `virtual_mode=False`. It sets `inherit_env=False` and builds a filtered child environment with a fixed safe `PATH`, excluding secret-marked, tracing, and known environment-hijack keys. This reduces accidental environment disclosure, but commands still execute locally and are not isolated.
+
+Talon configuration validates a constrained assistant identifier and places each assistant under a namespaced home. `ensure_home()` creates that home and state subdirectories with mode `0700`; default files are staged with mode `0600`. State-path resolution verifies that checkpoint, conversation, and history-vector files remain inside the assistant home. These are local file-hygiene controls, not a multi-user security model.
+
+WhatsApp defaults to `self` exposure for the paired account. `open` exposure permits arbitrary senders only when both `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open` and `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders` are set. Use a narrow allowlist when delegation is necessary.
+
+### Talon MCP configuration: redacted capability
+
+`MCPConfigStore` exposes an operator-selected MCP configuration through `get_mcp_configuration` and `update_mcp_server`, instead of general filesystem tools. Reads require a regular, non-symlink file and redact stored strings; transport/auth enums and exact `${ENV_VAR}` references remain visible without expansion. An update supplies the view's process-keyed HMAC revision, so a stale view conflicts rather than overwriting a concurrent change. The store accepts only supported settings, validates fields and environment-reference syntax, atomically writes the replacement, and schedules reload only after success.
+
+MCP configuration changes can execute commands or send credentials to URLs. They require approval by default; `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` opts out. A channel-triggered approval absence or rejection, and scheduled (`cron`) invocations, skip the gated call rather than writing. A successful edit becomes available only after reload; running tasks retain their previous capabilities.
+
+## Verification and incident response
+
+- Exercise the selected backend as a low-privilege test user. Test filesystem path rules and separately prove that no local `execute` route is exposed without intended sandboxing or local authority.
+- In a disposable checkout, verify that project MCP, hooks, and extensions do not execute before their explicit trust path. Change a trusted hook file and confirm its session grant no longer applies.
+- Run `libs/code/tests/unit_tests/test_repository_bounds.py` to cover unsafe roots/paths and symlink containment. Run `libs/talon/tests/unit_tests/test_mcp_config.py` to cover redaction, revisions, symlink rejection, atomic-write failures, concurrency, and runtime approval behavior.
+- Inspect token/profile directory ownership and logs after OAuth login without rendering token objects. Treat permission-hardening warnings as incidents.
+- For Talon, send test traffic as a non-operator on every configured channel, test every sensitive tool's approval behavior, and do not expose an operator workstation to arbitrary senders.
+- On suspected local-server, token, extension, MCP, or channel compromise: stop the runtime; revoke and rotate provider, MCP, and channel credentials; remove/review trust grants; inspect checkpoints, profile files, logs, and sandbox archives; redeploy under a clean, low-privilege identity with containment and approvals retested.

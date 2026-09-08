@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:21e45f16a20f38583e09e425ff992d4885b76ca5d721a26c3c674d843d23aff3",
+  "pageVersion": "sha256:e6c4304f01bd37b083890aa537e1216bbbe714d6c216d6c84ccba53838d7ef78",
   "claims": [
     {
       "id": "claim_ba483a6bfba643e7bb12e38c42644451",
@@ -219,10 +219,48 @@
           "version": "repo-lines-v1:sha256:cd11f3cd1da009cddb53fb4d2f4c030b45b56ea9e16c7f931f5b03a5a8a06f1b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzMGQ3ZmY0NzQ5Nzc2OTZkM2UyYzAzZDk0Njg5ODAwNGE0OTVlMTc4MzYzNDEzOTVkZjdjMWY2NGMwNGNhNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTFhNTM5NTJiYmYxMzJmYjlkMjJkNGU5MDllOWUwYThlMTdjMzMwYmFhNGIwYWY5Mjc5ODFkM2FiMDc0ZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzNTJkMTYyNTE0MTMxYjkwZDE0OWI2YjNmMTRiNWQ0NmVkNDk0OGI2ZmE2ZTI0OTg2MDg4YWJiNjcwNGU5YjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyN2JhNGQwNDU2ZGU0OWYxM2I5NGRjZWM1ZDEwM2RmZjM2YWE3NDZkMzU1MjllOTgyZWRmNTRmMzdmNTU5ZDQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1cc59f82e52f42d8bb7f0ba0dd0240b4",
+      "statement": "The reusable unit-test workflow permits a pull-request-only `bypass-warnings-check` label to pass `-W default`, but it reads the label live and fails closed on lookup failure; push and merge-group runs always enforce the package warning policy.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L300-L363",
+          "version": "repo-lines-v1:sha256:9db75c64e0ff4422d2ebbd44f683cb0f973d0c351b03c69eadc6d53d2047920f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2YTIxYmI0ZjE3MzkyYjVjZTM1Nzg5MDgyZTRmMmI5ODIxZjFmN2I2ODg0YjRlMjgwYWVhMDAwM2M2NWM5YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1Njg4OGJjZDQ1YTY3M2FlYzZmMjA3NTRjOTEwYTZhY2U2NTRiOGFhY2ExYjQ5NjUwNzQ4YmQ2NzcyNWI0NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MWU3MTdmNWE0MWI4NTBiZmIwZGI0NDI1ZmFlN2FjNjYyNzUwNTI3Njk5YTc2MDZhNzMxMjZhMjAwYjk5ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNGNlY2QyNTk0NDkxMTM5ZThkMzk4YzgzOGJjMGM5MDI0OGQ0ZDk2OGJjMjdkYzJlZGFiOWY4NzhmZTRiYWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cb6767cb18124414883ad8730c9771eb",
+      "statement": "CI path filters include editable SDK consumers so an SDK change runs Deep Agents, dcode, Talon, evals, ACP, and partner package jobs; dcode changes also run Talon, while pull requests run matching package jobs and pushes to `main` run the full set.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L140-L232",
+          "version": "repo-lines-v1:sha256:4706ddb897b03d3de225f16df06f1706469cba6d524eddc3791c363aba4e0762:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyYmZlYWUyYWFjMWMzY2VmNjYyNzQ0MTQzZmNmMmZjZDQ1MmI5ZWQxMzhlMTIxM2I4MGVjOTY2NTRiNTM0MTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZGRkNjAzMWI5NTFlZWFiMDEwZjgzMWEwYjllZjM5YTc4Yjk1NjQwMGFlZjJlNzFhZDc5MDc4YTNhYTc3NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNiMWI3YThmZGU0ZjE4OGZiMDA3YzE5NGUyMTFmNTdlNWNjZWIzNmVhMmEzMDMzNjNkNmVkOTc2NGFjMjJkNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjZTU4N2MzMjAxYWQyMWE4MmRjNGE2YzFmMDQxYzAyZmYwOGJkMmZkMmJhNmU0Y2VhYmI1YTg0OGM2MDJhMDYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L3-L8",
+          "version": "repo-lines-v1:sha256:526b2d2e7ed16de7872f0c819b4789245b45576d42df1f6e8bc4cd2de401675a:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGNjYTlkNWM2YTFjMDRhN2MxMjFmNDlhMjJiOTY5ZmI5YzMzMjQyYmYzZjRmOWE0M2JlOWIwMGE1NjhiZGE5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzMwOTE5ODM5MThmNWQxMDllOTE4OTYwNmYxYWNiYjBhNmIxNzhlMGViNjU0ZDBhOTg2NzkzZjk4YTNhMjRiMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmYzZTI5NWFkYTllNDgyYTc0NzgzMmQyMjEzMTJkNzAxNWM3MjdhZWQ1MzIxOGU5MzQ2MDkxNmEwNzkyYTE1NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTI4MjgyYWNmZGY5YTI3MTM1NmEwNTA3YWMyNTAxY2IzYmVmMzI3NjUzZDMwYWMzYjc2MDMwNjdmMzg2MDAyOSJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L324-L414",
+          "version": "repo-lines-v1:sha256:85ad3cffd291ae822d647d4b7edac3878fb19867758eba955fa947dc8b1312d1:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NGJiYjQ3YTZjOTNlMzg1ZGIzY2Y2MGM4YjAxMzc1MzIxMzUwMjRlZGE5NmUzMDE1MDBiMmZmODU5NThiNGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5Y2EzMzZhMTQ2OGI2MTNkY2I4ZTVhZTc5YWM3ZWU1ODhjYmM5YTgxNjM3NDFmYjA3Y2Q1ZjE3YmM1NzU4OTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkNWRmYjczNzQ3MjhlYzYxMDQyNWQ4Yjc1N2JiNmYxMDk4MDA4ZjdhNzQ4Mjc0ZWJkOWM4YjE5NzZmZmQ3YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyZTRjN2ZhZWM3NDg4NDYwOWEzMGRjZmVhMDI1MTEzNmEwYTFmZjkzYTJiZThiNGVkYTlhZjkwNGRiZGVhMTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_babb3b63fb3549fbb2f36ac759585e5b",
+      "statement": "Release-sensitive dcode changes that require new SDK functionality must update the exact `deepagents==` pin in `libs/code/pyproject.toml` in the same PR.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L41-L50",
+          "version": "repo-lines-v1:sha256:4009f78dd0f443d449e4fc18785d5476596863450d34bd4fce94f7c63f995778:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwZDJjOTk1MmIzYThhMjAyMzY0NGNlOGNhMGFiNDczNWRiZTgzYzUxYzg2NWJhZmE3MjU5YzE4YTg0YTQ2NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5YTBhOGEwMmVjMDE0NjFhMzJiMDFjODE0YTg0ODkxNDI2OGI3MGM3NWMyYzM0NmU2YjY2MTM5YmJiYzdhZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4OTg0MjU0NjdiNjFmMTU4NDA4ZTM3NTAwZWUyZTUwMmVjMmNhMTY0ZDc5NTA3ZWUzOThlZTQ1N2U3N2Y0YTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5OTQyNjI2Y2UwZWIwZjAxOWUyYWQ0MTJmZWEzODA5OTg5N2U4NTAzMWY4MDQyMDQ2OGNlNDQwMDJjZTNlNDMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

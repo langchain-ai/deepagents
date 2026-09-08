@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c21e5b9eb38ad4c0a89ecac6bb369304c161cf28a9367c33184f9f9ec0a8fa4c",
+  "pageVersion": "sha256:c2a4c89047de18b3b0a6bcc3291d2c49bd15908080771a4edd392715a32e6c00",
   "claims": [
     {
       "id": "claim_ac9d07f5c6064ef7a2a64d3bca27ae9e",
@@ -345,10 +345,32 @@
           "version": "repo-lines-v1:sha256:21546da3537f5fc4f96c0a3ad9b44ab2ccc0f5938758bf13a2e262bc2b51aea7:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGU0MWFiMzZhNjAwZTQwYTM4ZTUxMjgzMzljYjcwN2YwZTA3ZGVlZjc2OTE2OThmODUwY2UxYjVkNmNjYzYxNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzJmMzkwZGIxYjUwY2VlN2Y1NjE0NTlmODU5MmUwYzIwMzk1YWQwNWI0MmE1Zjg5ZjMwMjRjMjZmOGUyOWYyMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTg1NmMyOWM1Y2VkZTA2MjlmODU1OGIyY2U1MzdiNjMxOWZlNzBlYjBhZjhhNTNmZWJiNGQ1ZjA2Nzc5YTBjZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmZhMDc0MTdjYTk2NGY5YjY4OGY0YWMyOTU3NjY1OGI4YzYwYjE2NTdmMDEyMzM0MjhmNjJkOGFjMDgxYjVkOSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_626f98ad4fb3452793762daa35802cbc",
+      "statement": "The Daytona, Modal, Runloop, and Vercel integration suites exercise the shared SandboxIntegrationTests contract against a real provider environment and clean that environment up through a class-scoped fixture; Modal and Runloop explicitly reject runs without their required credentials.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/daytona/tests/integration_tests/test_integration.py#L17-L26",
+          "version": "repo-lines-v1:sha256:df5fc656602f58082f67f2bff141262c3d86e22ef993d28eb42d0176c11cd776:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYmYwZTcyNzhiOWNiY2NkMzQwOGQ3YWQ1MDNmOGRmODkzYWJlYjA2ZWI4YTZiMjRmZmIwYzk3Nzk2NmQyMGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhN2YxN2YzNGQzYjcyNGQ4YzNjNTRkYmUxMmI4OGQ5MzIzNDg5ZGM0OGE2NGM4MDYxNjQyMjliYWM0OWVhNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyOWJjM2ViMDdmOTQ1NmNkZGNiM2VlYTNjNWM2OTkwZjkwYmRkNDFmNmNjZjZmYWNmNzhhMGI0OWEwOGVlMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/partners/modal/tests/integration_tests/test_integration.py#L18-L43",
+          "version": "repo-lines-v1:sha256:1354d8a2fcee497aa1d50bec76d7f4a6c03570288edc1d41e0b5249017fd9c67:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3OGQ2NjJlZTZjMTBhMzFkMjVkMDAxMjVjMzVmZjQ1ODM1MTJkZThmOGI5NDg0NzUzZTQxYTYyN2NlM2M2ZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMDRmM2JiMDlmOTcxOTQzY2Y2MzhiNDc3ZmMxZmJkYzU0MmNkMTQ1ZmE4NDBjOTVkYjkxYjMwNmM3ODMyNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5ODNlYjVhY2RmNGJmOGU4NjVkMTgxYmIxODEzYjA5NTc4ZjQ4YmE1ZjU1Y2I2N2M3YmU0YWJjZTUwOWMzZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2ZWViNWU2NzFmNGE0NjNiNWFhNGI0YTY2OTRjODJkYzM0ZDFkYzAwNmE3MjU1ZmI4ZDk3ZGMwOGUzNjMwMDgifQ"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/tests/integration_tests/test_integration.py#L22-L42",
+          "version": "repo-lines-v1:sha256:1b6f8fed313d1fc7f6b075b692134c92227e350e624be5de7e5a52848d4a44cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmODk0OGY2NTk3N2NkNmIxMGU3Y2MzM2EzYzE2MjNjZDQ2MWE4OTk4ZDNkMjI3NWI5OTJhMjBjOGQ0Yzk5NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiNTYxZjljMjYzZDI3ODZkOTIxYWRmM2YwYTdjNzQwNzFkMmY1ZDZlOGY3YzhkNmZjZTExMWI0NzdkYWI1N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwYjAzNDc4YmYzMGU3ZjMyZGQxOWYwN2Y1OWI5NWRiMDUyMzJiNjIzZTMxYTQ2YTQ2YTBhMDUzOTBiMjhkZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/tests/integration_tests/test_integration.py#L19-L30",
+          "version": "repo-lines-v1:sha256:a616250b171b4bc6d5cf00b185d7176b207274cba8aed8f33def4b495ac7f501:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZjBiY2RhMWFlYjc3NTg5MWQ2ZThhZDA5NDAwNDdiYWRmNmQ1OGJiNzA3MDg1OWZjYzJkMzM5ZjY5ODYxYzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyNjE5OGI3NzUzYjIwYWVjMDg5NDgyNDUwZmYxZmFlNjcwOTJiN2Q0MTUyYjhiOTg0NjUxYzUxOGZmZGRhYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyOWJjM2ViMDdmOTQ1NmNkZGNiM2VlYTNjNWM2OTkwZjkwYmRkNDFmNmNjZjZmYWNmNzhhMGI0OWEwOGVlMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

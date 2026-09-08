@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:56cd28da11f218dafc2f4f40849447607b39287a9a4ad944e6de022c1fb21808",
+  "pageVersion": "sha256:cc010f15bf29791b058e3274d8b0ec778a9b8d5fb5541d0f1fb577f174f08384",
   "claims": [
     {
       "id": "claim_d463e7db72ac47529b1cd7e9f1097352",
@@ -321,10 +321,30 @@
           "version": "repo-lines-v1:sha256:4dc94fde01ad8ab5f3d53fd9cd17e2e4447f1ef60e4a182690ab10080bb37e2d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1MWUyNWQwMzI5MWFjMjZlY2U3ZjNmNTE5MTBkNWE1YjQ3ZmFhNjBkMmFjNzUyYjVmMjAxNjY5MzQyYzZkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTQ1NGM3NWZkMGQ5ODY2MjA0NmZlODFiMTg5ZDY1NjczNDUzY2YwM2IxZjk0NjZkNTYzZDA1MmNkM2QyNmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3YWU5MjBkYzdkMWU2NmFhM2ZiNjRjYTIzMmVkNTEyYWNkODUwYWNjMzhiM2M2ZTc3MWRkNDI4OWY1NTc2MzgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_a5d4fd9ec33049f6b1aecc29b7602879",
+      "statement": "The generated `langgraph.json` adds dcode's offload HTTP app with custom-route auth only for the built-in `deepagents_code.server_graph:make_graph` reference; custom graph references do not support `/offload`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py#L196-L250",
+          "version": "repo-lines-v1:sha256:95413b4726c7a0238e08f2ea164fab96d5304416f8a0393aa77168057546a073:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMmRiNzQ5ZDI2ZWI1NGM2YTAxZjlhZWE1M2JkZjNjMGUzOTRmN2I2MWU5ZTU2YTVmMmZlNTAzMDM4ZjJkYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmNDY5ZDU3NDkwZDAxM2ZlODg3MjcxNzBmMzAyMmM1NDRmYmE3M2U3MjQ0MjNiOGFhZTE3Yzk5Mjg2ZDc5MDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhYzM5ZDU1YjFjNDA5YWVlN2MzMThhZThmZWU0ZjEyOWVlODM1OWViMjczNjU3NWJlYmI4MDcxN2E1Mzk2OWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_33fdda91e4b64e35abbfaa115be9792e",
+      "statement": "The ACP integration smoke test launches `deepagents --acp --no-mcp`, initializes the ACP protocol, creates a session using the current cwd, and asserts that the session has an ID.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_acp_mode.py#L62-L102",
+          "version": "repo-lines-v1:sha256:d408a9810c31bd6acad8632eb9e1c223ea0d507fd116a4bc5cb03dedadf7d6cf:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ZDk5NWQxY2E5Njg5MzhmYzY4OWU2ZDA3NjdkYTY1ZmQzMjZiMzA1ZmFkY2IyZjgyODc3YjVhODIwYWUxN2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0MDQ5MjA2ZDJlNTUzN2ExNWU3Y2FhZDZiZmVmYTQzNDc3ZjhlYzkzODY0ZDc4Nzg3ZTNhN2FmM2Y1YWMwN2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwYjVhMDMxYzJiNjYyNWQwMzhiZGQyZDIwZWE4YzdmNTZkMGUyZDE4NGU4NWE2M2Q5ODI1YWMwMGQwYjE3MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhiMzZmNDk5NzQ1ODU1MjExZjdiYTA4N2EzY2ZhNjczNjU1NDNjNDBlNTk3N2VjNGYxYTJjMjJjYWRhOGM4NDgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-07T08:06:36.835Z"
+    "at": "2026-09-08T08:05:55.853Z"
   }
 }

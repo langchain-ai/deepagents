@@ -2480,12 +2480,14 @@ def _resolve_configured(
     provider: str,
     env_var: str,
     fallback_env_vars: tuple[str, ...] = (),
+    *,
+    allow_stored: bool = True,
 ) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
     Stored credentials beat env vars (matches `resolve_provider_credential`),
-    except where `stored_key_reaches_runtime` says a prefixed override has
-    already displaced the store.
+    unless the service caller disables stored credentials because a prefixed
+    override prevents them from reaching the runtime.
 
     Args:
         provider: Provider name (e.g., `"anthropic"`).
@@ -2493,13 +2495,12 @@ def _resolve_configured(
             exists. Recorded on the returned status either way.
         fallback_env_vars: Canonical env vars read, in order, when `env_var`
             is unset. The one that resolves is recorded on the status.
+        allow_stored: Whether a stored credential can reach the runtime.
 
     Returns:
         A `CONFIGURED` status, or `None` when no source is set.
     """
-    # Reporting STORED when a prefixed override stands in the way would promise
-    # a credential the app never reads.
-    if stored_key_reaches_runtime(env_var) and _has_stored_credential(provider):
+    if allow_stored and _has_stored_credential(provider):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=provider,
@@ -2843,7 +2844,8 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
 
     Checks a stored key, then `SERVICE_API_KEY_ENV[service]`, then each entry in
     `SERVICE_API_KEY_FALLBACK_ENV_VARS[service]` in order. Mirrors
-    `get_provider_auth_status`, so a stored key beats the env vars and the
+    `get_provider_auth_status`, except a prefixed override suppresses the stored
+    service key. Otherwise a stored key beats the env vars, and the
     `/auth` manager can render the same `[stored]` / `[env: ...]` / `[missing]`
     badges. Recorded env var names stay canonical; callers resolve the
     `DEEPAGENTS_CODE_` spelling at display time.
@@ -2857,7 +2859,9 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
     """
     env_var = SERVICE_API_KEY_ENV[service]
     fallbacks = SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
-    configured = _resolve_configured(service, env_var, fallbacks)
+    configured = _resolve_configured(
+        service, env_var, fallbacks, allow_stored=stored_key_reaches_runtime(env_var)
+    )
     if configured:
         return configured
     accepted = " or ".join((env_var, *fallbacks))

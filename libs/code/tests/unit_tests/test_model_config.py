@@ -490,15 +490,19 @@ class TestStoredCredentials:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         assert resolve_provider_credential("totally-unknown") is None
 
+    @pytest.mark.parametrize("override", [None, "", "from-prefix"])
     def test_status_reports_stored_credential(
         self,
         fake_state_dir: Path,  # noqa: ARG002
         monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
     ) -> None:
         """A stored key flips status to CONFIGURED with a stored detail."""
         from deepagents_code import auth_store
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        if override is not None:
+            monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", override)
         auth_store.set_stored_key("anthropic", "from-store")
 
         status = get_provider_auth_status("anthropic")

@@ -922,6 +922,48 @@ class TestServiceCredentials:
         assert status.source is ProviderAuthSource.ENV
         assert status.env_var == "LANGSMITH_API_KEY"
 
+    def test_service_status_env_var_stays_canonical(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Status carries canonical names; display resolves the prefix.
+
+        `get_provider_auth_status` records canonical names too, so keeping the
+        service path identical stops the two surfaces drifting apart. Every
+        caller renders the label through `resolved_env_var_name`, so the
+        prefixed spelling still reaches the user.
+        """
+        from deepagents_code.model_config import (
+            get_service_auth_status,
+            resolved_env_var_name,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "from-prefix")
+        status = get_service_auth_status("langsmith")
+        assert status.env_var == "LANGSMITH_API_KEY"
+        assert (
+            resolved_env_var_name(status.env_var) == "DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_service_fallback_status_env_var_stays_canonical(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefixed fallback also records its canonical spelling."""
+        from deepagents_code.model_config import (
+            get_service_auth_status,
+            resolved_env_var_name,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
+        status = get_service_auth_status("langsmith")
+        assert status.env_var == "LANGCHAIN_API_KEY"
+        assert (
+            resolved_env_var_name(status.env_var) == "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
+
     def test_status_configured_from_store(
         self,
         fake_state_dir: Path,  # noqa: ARG002

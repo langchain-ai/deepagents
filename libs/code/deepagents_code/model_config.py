@@ -2823,7 +2823,7 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=service,
-            env_var=resolved_env_var_name(env_var),
+            env_var=env_var,
             source=ProviderAuthSource.ENV,
             detail="credentials set",
         )
@@ -2832,7 +2832,7 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
             return ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider=service,
-                env_var=resolved_env_var_name(fallback_env_var),
+                env_var=fallback_env_var,
                 source=ProviderAuthSource.ENV,
                 detail="credentials set",
             )

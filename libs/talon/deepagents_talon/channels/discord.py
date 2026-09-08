@@ -166,8 +166,20 @@ class _DiscordInboundReaction:
     emoji: str
 
 
+@dataclass(frozen=True, slots=True)
+class _DiscordConnectionState:
+    """Provider-neutral view of a Gateway connection lifecycle event."""
+
+    connected: bool
+    detail: str
+
+
 InboundMessageCallback = Callable[[_DiscordInboundMessage], Awaitable[None]]
 InboundReactionCallback = Callable[[_DiscordInboundReaction], Awaitable[None]]
+InboundConnectionCallback = Callable[[_DiscordConnectionState], Awaitable[None]]
+
+_CONNECTED_STATE = _DiscordConnectionState(connected=True, detail="connected")
+_RECONNECTING_STATE = _DiscordConnectionState(connected=True, detail="reconnecting")
 
 
 class _DiscordGateway(Protocol):
@@ -186,8 +198,9 @@ class _DiscordGateway(Protocol):
         *,
         handle_message: InboundMessageCallback,
         handle_reaction: InboundReactionCallback,
+        handle_connection: InboundConnectionCallback,
     ) -> None:
-        """Connect to the Gateway and begin dispatching inbound events."""
+        """Connect to the Gateway and begin dispatching inbound and connection events."""
 
     async def stop(self) -> None:
         """Disconnect from the Gateway and release resources."""
@@ -219,6 +232,7 @@ class _DiscordPyGateway:
         self._connect_timeout_seconds = connect_timeout_seconds
         self._client: discord.Client | None = None
         self._task: asyncio.Task[None] | None = None
+        self._watch: asyncio.Task[None] | None = None
 
     @property
     def bot_id(self) -> str | None:
@@ -231,21 +245,17 @@ class _DiscordPyGateway:
         *,
         handle_message: InboundMessageCallback,
         handle_reaction: InboundReactionCallback,
+        handle_connection: InboundConnectionCallback,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         client = discord.Client(intents=intents)
-
-        @client.event
-        async def on_message(message: discord.Message) -> None:
-            await handle_message(_convert_message(message, bot_id=self.bot_id))
-
-        @client.event
-        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-            reaction = _convert_reaction(payload)
-            if reaction is not None:
-                await handle_reaction(reaction)
-
+        self._register_events(
+            client,
+            handle_message=handle_message,
+            handle_reaction=handle_reaction,
+            handle_connection=handle_connection,
+        )
         self._client = client
         task = asyncio.create_task(
             client.start(self._token, reconnect=True),
@@ -260,7 +270,11 @@ class _DiscordPyGateway:
         )
         if ready_task in done:
             if task in pending:
-                # Gateway connected; leave it running for the adapter's lifetime.
+                # Gateway connected; watch the task so a later failure is not silent.
+                self._watch = asyncio.create_task(
+                    self._watch_gateway(task, handle_connection),
+                    name="talon:discord:gateway-watch",
+                )
                 return
             await task
             return
@@ -273,13 +287,91 @@ class _DiscordPyGateway:
         msg = "Timed out connecting to the Discord Gateway"
         raise TimeoutError(msg)
 
+    def _register_events(
+        self,
+        client: discord.Client,
+        *,
+        handle_message: InboundMessageCallback,
+        handle_reaction: InboundReactionCallback,
+        handle_connection: InboundConnectionCallback,
+    ) -> None:
+        """Register the Gateway event handlers `DiscordChannel` depends on.
+
+        `discord.py` keys handlers off the callback name, so each function must keep
+        the name of the event it serves.
+
+        Args:
+            client: Client whose Gateway events are being subscribed to.
+            handle_message: Callback invoked for each inbound message.
+            handle_reaction: Callback invoked for each inbound reaction.
+            handle_connection: Callback invoked when the connection state changes.
+        """
+
+        @client.event
+        async def on_message(message: discord.Message) -> None:
+            await handle_message(_convert_message(message, bot_id=self.bot_id))
+
+        @client.event
+        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+            reaction = _convert_reaction(payload)
+            if reaction is not None:
+                await handle_reaction(reaction)
+
+        @client.event
+        async def on_ready() -> None:
+            await handle_connection(_CONNECTED_STATE)
+
+        @client.event
+        async def on_resumed() -> None:
+            await handle_connection(_CONNECTED_STATE)
+
+        @client.event
+        async def on_disconnect() -> None:
+            # `discord.py` reconnects on its own for every disconnect that reaches
+            # here, so this is a detail-only transition; `connected` stays true
+            # until the gateway task itself terminates.
+            await handle_connection(_RECONNECTING_STATE)
+
+    async def _watch_gateway(
+        self,
+        task: asyncio.Task[None],
+        handle_connection: InboundConnectionCallback,
+    ) -> None:
+        """Report the gateway task's terminal outcome instead of discarding it.
+
+        Awaiting the task retrieves its exception, so an unrecoverable Gateway
+        failure -- a revoked token closing with 4004, or 4014 once privileged
+        intents are withdrawn -- is logged and reflected in the channel status
+        rather than silently ending inbound delivery.
+
+        Args:
+            task: The running `client.start` task.
+            handle_connection: Callback invoked with the terminal state.
+        """
+        try:
+            await task
+        except asyncio.CancelledError:
+            raise
+        # A narrower catch would restore the silent-death bug this watcher exists
+        # to fix: any type that escaped here would end inbound delivery unreported.
+        except Exception as error:
+            logger.exception("Discord Gateway connection ended unexpectedly")
+            detail = f"gateway stopped: {type(error).__name__}"
+        else:
+            detail = "gateway stopped"
+        await handle_connection(_DiscordConnectionState(connected=False, detail=detail))
+
     async def stop(self) -> None:
         if self._client is not None:
             await self._client.close()
+        if self._watch is not None:
+            self._watch.cancel()
+            await asyncio.gather(self._watch, return_exceptions=True)
         if self._task is not None:
             await asyncio.gather(self._task, return_exceptions=True)
         self._client = None
         self._task = None
+        self._watch = None
 
     async def send_message(self, channel_id: str, text: str) -> str:
         channel = await self._resolve_channel(channel_id)
@@ -350,6 +442,7 @@ class DiscordChannel:
         self._reaction_handler: ReactionHandler | None = None
         self._exposure = config.exposure
         self._status = ChannelStatus(provider="discord", connected=False, detail="disconnected")
+        self._stopping = False
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Register the host callback for inbound messages.
@@ -378,9 +471,11 @@ class DiscordChannel:
         if self.config.inbound_media_dir is not None:
             self.config.inbound_media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.config.inbound_media_dir.chmod(0o700)
+        self._stopping = False
         await self._gateway.start(
             handle_message=self._process_message,
             handle_reaction=self._process_reaction,
+            handle_connection=self._process_connection,
         )
         self._status = ChannelStatus(provider="discord", connected=True, detail="connected")
         log_debug_event(logger, "discord.channel.started", connected=True)
@@ -388,6 +483,7 @@ class DiscordChannel:
     async def stop(self) -> None:
         """Disconnect from the Discord Gateway and release resources."""
         log_debug_event(logger, "discord.channel.stopping")
+        self._stopping = True
         await self._gateway.stop()
         self._status = ChannelStatus(provider="discord", connected=False, detail="disconnected")
         log_debug_event(logger, "discord.channel.stopped")
@@ -545,6 +641,25 @@ class DiscordChannel:
         log_debug_event(logger, "discord.inbound.reaction.dispatching")
         await self._reaction_handler(reaction)
         log_debug_event(logger, "discord.inbound.reaction.dispatched")
+
+    async def _process_connection(self, state: _DiscordConnectionState) -> None:
+        if self._stopping:
+            # `discord.py` dispatches `on_disconnect` as its own task while the
+            # client closes, so a late event must not overwrite the final status.
+            return
+        previous = self._status
+        self._status = ChannelStatus(
+            provider="discord",
+            connected=state.connected,
+            detail=state.detail,
+        )
+        if self._status != previous:
+            log_debug_event(
+                logger,
+                "discord.connection.changed",
+                connected=state.connected,
+                detail=state.detail,
+            )
 
     async def _prepare_inbound_media(
         self,

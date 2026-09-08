@@ -99,6 +99,30 @@ async def test_scheduler_suppresses_silent_result(tmp_path) -> None:
     assert store.list_jobs()[0].last_status == "ok"
 
 
+async def test_scheduler_suppresses_trailing_silent_result(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="quiet heartbeat",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    delivered: list[str] = []
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=lambda _: _return("nothing changed [SILENT]"),
+        deliver_result=lambda _, text: _append(delivered, text),
+        now=lambda: now + timedelta(minutes=1),
+    )
+
+    await scheduler.tick_once()
+
+    assert delivered == []
+    assert store.list_jobs()[0].last_status == "ok"
+
+
 async def test_scheduler_records_error_after_claiming_job(tmp_path) -> None:
     now = datetime(2026, 1, 1, 12, tzinfo=UTC)
     store = _store(tmp_path)

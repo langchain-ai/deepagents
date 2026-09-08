@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
@@ -29,9 +30,10 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
-from deepagents_code.tools import fetch_url, web_search
+from deepagents_code.tools import create_web_search_tool, fetch_url
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.authorization import (
@@ -54,6 +56,13 @@ from deepagents_talon.observability import (
     agent_activity_logging_enabled,
     log_event,
     stable_log_ref,
+)
+from deepagents_talon.subagents import (
+    Attachment,
+    LocalSubAgent,
+    TaskTools,
+    _tool_map,
+    prepare_subagents,
 )
 
 if TYPE_CHECKING:
@@ -254,7 +263,7 @@ class DeepAgentRuntime:
             assistant-local memory file.
         checkpointer: Optional LangGraph checkpointer. Defaults to in-memory
             checkpointing so turns in the same conversation share chat history.
-        include_web_tools: Whether to include fetch/search/request tools.
+        include_web_tools: Whether to attach built-in web tools to external research.
         recursion_limit: Per-invocation graph recursion limit.
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
@@ -323,6 +332,8 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self._graph: object | None = None
+        self._attachments: list[Attachment] = []
+        self._mcp_reload_failed = False
         self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
             "talon_invocation_graph",
             default=None,
@@ -335,7 +346,7 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents()
+        self._resolved_subagents = self._resolve_subagents(strict=True)
         self._graph = self._create_graph()
 
     def _create_graph(
@@ -344,19 +355,54 @@ class DeepAgentRuntime:
         *,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     ) -> object:
-        resolved = self._resolved_subagents if subagents is None else subagents
+        resolved = [
+            spec.copy() for spec in (self._resolved_subagents if subagents is None else subagents)
+        ]
         tools = self._build_tools(runtime_tools)
         interrupt_on = _interrupt_on_with_mcp_config(self.interrupt_on, self.env, tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
+        for spec in resolved:
+            if (
+                "runnable" not in spec
+                and "graph_id" not in spec
+                and isinstance(spec.get("model"), str)
+            ):
+                local = cast("LocalSubAgent", spec)
+                local["model"] = _resolve_model_from_env(
+                    cast("str", local["model"]), self.env, context_size=context_size
+                )
+        local_subagents = [
+            spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
+        ]
+        attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        catalog = _tool_map(attachments_tools)
+        web_tools = _tool_map([fetch_url]) if self.include_web_tools else {}
+        tavily_key = self.env.get("TAVILY_API_KEY", "").strip()
+        if self.include_web_tools and tavily_key:
+            web_tools["web_search"] = create_web_search_tool(tavily_key)
+        for spec in local_subagents:
+            _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
+        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
+        tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
+        task_tools = TaskTools(
+            model,
+            interrupt_on,
+            subagents=local_subagents,
+            prepared=[
+                cast("CompiledSubAgent", spec) for spec in resolved if "graph_id" not in spec
+            ],
+            backend=self.backend,
+        )
+        middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
         interrupt_on = _interrupt_on_with_async_subagents(
             interrupt_on, has_async_subagents=_has_async_subagents(resolved)
         )
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
-        return create_deep_agent(
+        graph = create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
@@ -368,6 +414,22 @@ class DeepAgentRuntime:
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
+        node = getattr(getattr(graph, "nodes", {}).get("tools"), "bound", None)
+        if isinstance(node, ToolNode) and "task" in node.tools_by_name:
+            selectable = task_tools.bind(node.tools_by_name)
+            for attachment in attachments:
+                if attachment["name"] in {spec["name"] for spec in local_subagents}:
+                    attachment["selectable_tools"] = selectable
+        attachments.insert(
+            0,
+            {
+                "name": "main",
+                "mode": "conversation",
+                "tools": sorted(node.tools_by_name) if isinstance(node, ToolNode) else None,
+            },
+        )
+        self._attachments = attachments
+        return graph
 
     async def stop(self) -> None:
         """Release runtime resources."""
@@ -472,9 +534,13 @@ class DeepAgentRuntime:
         if self.refresh_tools is None:
             return
         async with self._tools_lock:
-            refreshed = await self.refresh_tools()
-            if refreshed is not None:
-                self._replace_runtime_tools(refreshed)
+            try:
+                refreshed = await self.refresh_tools()
+                if refreshed is not None:
+                    self._replace_runtime_tools(refreshed)
+            except Exception:  # noqa: BLE001  # keep the previous graph usable after an invalid edit
+                self._mcp_reload_failed = True
+                logger.warning("MCP reload failed; saved changes are inactive")
 
     async def reload_mcp_configuration(self) -> None:
         """Reload MCP tools without restarting the Talon runtime."""
@@ -482,7 +548,11 @@ class DeepAgentRuntime:
             msg = "MCP configuration reload is unavailable"
             raise RuntimeError(msg)
         async with self._tools_lock:
-            self._replace_runtime_tools(await self.reload_tools())
+            try:
+                self._replace_runtime_tools(await self.reload_tools())
+            except Exception:
+                self._mcp_reload_failed = True
+                raise
 
     def _replace_runtime_tools(
         self,
@@ -492,16 +562,38 @@ class DeepAgentRuntime:
         graph = self._create_graph(replacement)
         self.tools = replacement
         self._graph = graph
+        self._mcp_reload_failed = False
 
     async def reload_subagent_configuration(self) -> None:
         """Activate validated definitions for subsequent turns, preserving active graphs."""
         async with self._tools_lock:
             replacement = self._resolve_subagents(strict=True)
-            if replacement == self._resolved_subagents:
-                return
             graph = self._create_graph(subagents=replacement)
             self._resolved_subagents = replacement
             self._graph = graph
+
+    def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
+        @tool
+        def get_agent_tools() -> dict[str, object]:
+            """Inspect active tool attachments without credentials or prompt contents.
+
+            Null tools mean an opaque compiled/remote agent has not been inspected.
+            Saved edits require reload. Running turns and tasks retain old capabilities;
+            use list_subagents and cancel_subagent before claiming revocation is complete.
+            """
+            try:
+                changed = self._resolve_subagents(strict=True) != self._resolved_subagents
+            except Exception:  # noqa: BLE001  # never return configuration contents
+                changed = True
+            return {
+                "agents": attachments,
+                "latest_agents": self._attachments,
+                "saved_changes_inactive": changed or self._mcp_reload_failed,
+                "current_turn_uses_previous_graph": attachments is not self._attachments,
+                "running_tasks": "Running turns and tasks retain their original capabilities.",
+            }
+
+        return get_agent_tools
 
     def _subagent_reload_tool(self) -> BaseTool:
         @tool(
@@ -519,7 +611,7 @@ class DeepAgentRuntime:
             except Exception:  # noqa: BLE001  # report reload failure without leaking config values
                 return {
                     "status": "failed",
-                    "message": "Invalid configuration; previous agents retained",
+                    "message": "Saved changes are inactive; previous agents retained",
                 }
             return {"status": "reloaded", "available": "next_turn"}
 
@@ -539,8 +631,6 @@ class DeepAgentRuntime:
             tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
-        if self.include_web_tools:
-            tools.extend([fetch_url, web_search])
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
@@ -1218,11 +1308,43 @@ def _subagent_from_frontmatter(
         "name": name,
         "description": description,
         "system_prompt": prompt.strip(),
-        "mode": "fork",
     }
     if model:
         subagent["model"] = model
+    _local_subagent_options(cast("LocalSubAgent", subagent), cast("dict[str, object]", frontmatter))
     return subagent
+
+
+def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object]) -> None:
+    if frontmatter.get("mode", "fresh") != "fresh":
+        msg = "Talon subagents use fresh context; remove the mode setting"
+        raise ValueError(msg)
+    names = frontmatter.get("tools", [])
+    if (
+        not isinstance(names, list)
+        or any(not isinstance(name, str) or not name.strip() for name in names)
+        or len(names) != len(set(names))
+    ):
+        msg = "Local subagent tools must be unique, nonempty exact names"
+        raise ValueError(msg)
+    spec["tool_names"] = cast("list[str]", names)
+
+
+def _resolve_local_tools(
+    spec: LocalSubAgent,
+    catalog: Mapping[str, BaseTool],
+    web_tools: Mapping[str, BaseTool],
+) -> None:
+    external = spec["name"] == "external-research"
+    available = {**catalog, **web_tools} if external else catalog
+    if "tool_names" in spec:
+        names = spec.pop("tool_names")
+        if any(name not in available for name in names):
+            msg = "Subagent attachment is unavailable; previous configuration retained"
+            raise ValueError(msg)
+        spec["tools"] = [available[name] for name in names]
+    if external:
+        spec["tools"] = list({**_tool_map(spec.get("tools", [])), **web_tools}.values())
 
 
 def _normalize_subagent_metadata(

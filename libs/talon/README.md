@@ -49,6 +49,139 @@ add conversation history, and existing checkpoints are not backfilled.
 The echo runtime and unwrapped custom checkpointers do not support history tools or
 reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
 
+Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
+`postgresql://user:password@host/database` and install the `mongodb` or `postgres`
+extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
+is the default. This alpha requires fresh history storage. Checkpoints stay local.
+Default SQLite uses the same store factory and assistant namespace as configured
+backends, with its own connection to the checkpoint database.
+
+For a separate SQLite database, set the URI to `sqlite:///absolute/path/history.sqlite`
+or a SQLite `file:` URI, including connection options such as `?mode=rwc`.
+Paths containing spaces must be percent-encoded. All archives are
+namespaced by assistant ID, so assistants can share a database.
+
+Additional backends can be installed as Python packages without changing Talon.
+Register the URI scheme in the package's `pyproject.toml`:
+
+```toml
+[project.entry-points."deepagents_talon.history_backends"]
+mysql = "my_history_backend:open_store"
+```
+
+The entry point is a trusted operator-installed callable that accepts the unchanged
+URI and returns an async context manager yielding an initialized LangGraph
+`BaseStore`. It owns connection setup and cleanup, including cancellation, and
+validates its backend-specific URI requirements. Talon wraps the store in its shared
+archive and verifies write access before startup completes. Built-in schemes take
+precedence; unknown or duplicate plugin schemes fail startup. The plugin API is
+experimental and may change with Talon.
+
+Archives require one writer per assistant. Retrieval scans at most 500
+records and raises an error if it cannot complete the page within that budget.
+
+Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` to add semantic matches to keyword
+search. Select an embedding adapter independently of the history database:
+
+| Adapter | Install extra | Credentials | Inference |
+| --- | --- | --- | --- |
+| `local` (default) | `history-local` | None | Local CPU, lazy Qwen loading |
+| `voyage` | `history-voyage` | `VOYAGE_API_KEY` | Voyage API |
+| `openai-compatible` | `history-openai` | `OPENAI_API_KEY` or `OPENROUTER_API_KEY` | HTTPS embedding API |
+| `atlas` | `mongodb` | Configure the model in Atlas | Atlas Automated Embedding |
+
+Remote adapters do not require torch or sentence-transformers. The former `history`
+extra is now `history-local`. Provider packages supply the maintained API integrations;
+`langchain-voyageai` and `langchain-openai` are MIT-licensed LangChain packages.
+
+For Voyage, install `uv sync --extra history-voyage` and configure:
+
+```sh
+DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1
+DEEPAGENTS_TALON_HISTORY_EMBED_ADAPTER=voyage
+DEEPAGENTS_TALON_HISTORY_EMBED_MODEL=voyage-4-large
+DEEPAGENTS_TALON_HISTORY_EMBED_DIMS=1024
+DEEPAGENTS_TALON_HISTORY_EMBED_MAX_INPUT_TOKENS=32000
+```
+
+Supply `VOYAGE_API_KEY` through the environment. For OpenRouter, install
+`history-openai`, select `openai-compatible`, set `BASE_URL` below to
+`https://openrouter.ai/api/v1`, and supply `OPENROUTER_API_KEY`. For example,
+`qwen/qwen3-embedding-8b` supports 4096 dimensions and a 32768-token context.
+Verify the selected model's limits in the [Voyage documentation](https://docs.voyageai.com/docs/embeddings)
+or [OpenRouter catalog](https://openrouter.ai/models?output_modalities=embeddings).
+
+Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
+
+| Suffix | Meaning |
+| --- | --- |
+| `ADAPTER` | `local`, `voyage`, `openai-compatible`, or `atlas` |
+| `MODEL` | Required for remote adapters; local defaults to `Qwen/Qwen3-Embedding-0.6B` |
+| `DIMS` | Output width; required for remote client adapters |
+| `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
+| `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
+| `CONCURRENCY` | Indexing requests in flight; local uses 1, remote defaults to 4 (maximum 16) |
+| `BYTES_PER_TOKEN` | UTF-8 bytes budgeted per token, 1-4; defaults to the worst case of 1 |
+| `QUERY_PROMPT` | Optional query instruction; Qwen3-Embedding models default to Qwen's prefix |
+| `SEND_DIMENSIONS` | Send the OpenAI `dimensions` parameter; set `0` for models that reject it |
+| `BASE_URL` | Optional HTTPS endpoint, routable host, without credentials, query, or fragments |
+| `API_KEY` | Optional environment override for the adapter's standard API key |
+| `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
+
+Queries retain each provider's query/document semantics on all three databases,
+and the instruction prefix follows the model rather than the adapter, so a
+Qwen3-Embedding model reached through OpenRouter is prompted like a local one.
+
+Inputs use UTF-8 byte counts as a conservative token bound, reserving 128 tokens
+for provider instructions. `BYTES_PER_TOKEN` converts the token limit into that
+byte measure and defaults to 1, which assumes every byte can become its own token.
+Natural non-ASCII text is far cheaper than that -- a CJK character is roughly three
+bytes but about one token -- so the default splits transcripts a model could embed
+whole. Raising it trades safety margin for fewer splits; the value is part of the
+embedding fingerprint, so a change rebuilds the index.
+
+Oversized documents are split without losing text and their vectors are combined
+with a length-weighted mean, which is logged once per run because pooled documents
+are compared against unpooled queries. Transcript pagination stays unchanged.
+Oversized queries fall back to keyword search. Atlas requires a budget
+large enough for a complete archive chunk because embedding happens server-side.
+A search holds a slot of its own at both the store and the provider, so it never
+queues behind indexing and may add one request above `CONCURRENCY`.
+
+`BASE_URL` must name a routable host: address literals in loopback, private,
+link-local, or reserved ranges are refused, as is `localhost`, because the
+configured endpoint receives the provider API key. Abbreviated IPv4 spellings
+that the C resolver still accepts, such as `127.1` and `2130706433`, are
+refused as the addresses they reach. A public name that resolves
+to a private address still connects, which needs resolution-time control the
+embedding clients do not expose.
+
+Remote indexing uses bounded batches and concurrency; errors retain pending work
+for retry. Selecting a remote adapter sends archived text and queries to that
+provider and may incur charges.
+
+Vector data uses fingerprint-specific SQLite files, PostgreSQL schemas, or MongoDB
+collections, keeping incompatible dimensions separate. PostgreSQL uses exact vector
+search above 2000 dimensions. Metadata and vectors always use separate Store instances.
+Changing a model, endpoint, dimensions, prompt, or input budget fails startup when
+an existing index is incompatible. Set `DEEPAGENTS_TALON_HISTORY_REINDEX=1` explicitly
+to remove the old vectors and rebuild from retained transcripts; this can incur
+embedding charges. Deletion progress survives interruption. Remove the flag afterward;
+it does not rebuild an already matching index. Empty old vector files/schemas/collections
+remain for operator cleanup. Missing fingerprints on older indexes also require reindexing.
+Reset deletes vectors even after semantic search has been disabled.
+
+Backend plugins can optionally register `deepagents_talon.history_vector_backends`
+under the same URI scheme. The vector factory receives `(uri, *, index, generation)`
+and yields a separate initialized `BaseStore`; `index=None` means deletion-only mode.
+It must isolate generations, own cleanup, and apply backend-specific index options.
+The existing metadata factory remains unchanged. Atlas mode requires MongoDB.
+
+`search_conversations` returns results, indexing coverage, and an opaque
+`next_after` token. Continue with the same query and chat; expired tokens require
+a new search. Semantic errors and timeouts fall back to keyword matches. Unknown
+or pending indexing coverage means an empty page does not prove history is absent.
+
 ## Interrupt and Continue
 
 A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.
@@ -242,15 +375,46 @@ imports into `~/.deepagents/crowbar/`. Pass `--assistant-id <id>` to select a
 different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
-The importer writes Fleet prompts, skills, and subagent prompts. Talon loads local
-subagents from `agents/<name>/AGENTS.md` using dcode's YAML frontmatter format:
+Talon loads local subagents from `agents/<name>/AGENTS.md` using YAML frontmatter:
 `description` is required, `name` defaults to the directory name, and `model` is
-optional. Local subagents use fork mode so they inherit the current conversation and
-runtime policy; Talon also provides the standard `general-purpose` subagent unless the
-assistant defines one. Fleet `tools.json` and `config.json` are ignored and are not
-copied into the Talon agent directory. Talon does not support the old Fleet direct-run
-startup path or its environment variables; import the zip first, then run Talon against
-the materialized local assistant.
+optional.
+
+## Research defaults
+
+Talon also installs the `configuration-hardening` skill and its reference under the
+assistant home's `skills/` directory, preserving existing files. Ask it to review
+tool separation or minimize tools; the default main instructions also trigger a
+placement review when tools or subagents change. The skill proposes scoped changes,
+uses existing confirmation controls, and verifies active attachments after reload.
+Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
+Existing customized main instructions need a reviewed update to add this trigger.
+
+On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
+`external-research`, with defensive prompts. External research owns `fetch_url` and
+Tavily-backed `web_search`, attached at construction by default. Search is added
+only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
+startup and reload still work and `fetch_url` remains available.
+Main and internal research are constructed without them; disabling web tools leaves
+external research usable without built-in web access. Internal research starts
+with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as
+applicable GitHub, Notion, email, and calendar reads internally. No integrations are
+connected automatically. Set persistent tools with standard `tools` frontmatter;
+launch-time additions apply only to that task. Main retains filesystem, action tools, and existing
+approval controls, chooses placement from the workflow, and mediates minimal
+internal-to-external context.
+
+Existing files are unchanged; missing research definitions are installed automatically.
+Review the packaged `deepagents_talon/defaults/` files,
+back up affected instructions, and merge the selected changes without replacing custom
+content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
+by restoring those files and reloading. Include restored capabilities in the rollback
+review. Running tasks retain their original graphs until finished or canceled.
+
+Prompts are not a sandbox: main filesystem/shell access, injected results, classification
+mistakes, shared runtime/credentials, and retrieval of private destinations remain
+operator-managed risks. The benign fixtures in `tests/unit_tests/fixtures/research_injections.json`
+exercise missing capabilities and approval gates with scripted calls, not model refusal
+or guaranteed public-only retrieval. Evaluate prompt behavior separately with your model.
 
 ## Background Subagents
 
@@ -260,6 +424,15 @@ definitions, the main agent can call `reload_subagent_configuration` to apply th
 changes on subsequent turns. Ordinary turns reuse the loaded definitions. Invalid
 edits retain the last valid configuration; running subagents keep their original
 configuration.
+
+Subagents use fresh task context; fork is unsupported. Attach local tools with
+`tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
+There is no automatic general-purpose agent; delegate to a research role or another
+configured agent. Pass a `tools` list to `task` on each launch
+to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill
+instructions in `description` or select
+`read_file` to load them. `get_agent_tools` shows available attachments and inactive
+edits; `list_subagents` shows launch-time additions.
 
 `task` launches local subagents and `start_async_task` launches remote subagents.
 Both return immediately. The user can continue chatting while the main agent uses

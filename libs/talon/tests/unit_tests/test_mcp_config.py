@@ -55,7 +55,7 @@ def test_redacted_round_trip_preserves_secrets_and_other_settings(config_tools, 
     response = update.invoke(
         {"server_name": "example", "server": server, "expected_revision": result["revision"]}
     )
-    assert response == {"status": "updated", "available": "next_turn"}
+    assert response == {"status": "updated", "available": "after_successful_reload"}
     original["mcpServers"]["example"]["allowedTools"] = ["read_*"]
     assert json.loads(path.read_text()) == original
     assert path.stat().st_mode & 0o777 == 0o600

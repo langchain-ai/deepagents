@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from langchain_core._api import LangChainBetaWarning
+from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
@@ -17,10 +17,17 @@ class ToolModel(FakeMessagesListChatModel):
         return self
 
 
-async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["researcher", "prepared"])
+async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name):
     path = tmp_path / "agents" / "researcher" / "AGENTS.md"
     path.parent.mkdir(parents=True)
-    path.write_text("---\ndescription: Research\nmodel: test:child\n---\nResearch carefully.")
+    path.write_text(
+        "---\ndescription: Research\nmodel: test:child\n"
+        "tools: [sensitive_effect]\n---\nResearch carefully."
+    )
+    prepared = tmp_path / "agents" / "prepared" / "AGENTS.md"
+    prepared.parent.mkdir(parents=True)
+    prepared.write_text("---\ndescription: Prepared task\n---\nComplete the task.")
     effects = []
 
     @tool
@@ -38,8 +45,9 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
                         "name": "task",
                         "id": "launch",
                         "args": {
-                            "subagent_type": "researcher",
+                            "subagent_type": name,
                             "description": "work",
+                            **({"tools": ["sensitive_effect"]} if name == "prepared" else {}),
                         },
                     }
                 ],
@@ -62,6 +70,10 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "deepagents.graph.resolve_model", lambda model: child if model == "test:child" else model
     )
+    monkeypatch.setattr(
+        "deepagents_talon.subagents.create_agent",
+        lambda **kwargs: create_agent(**{**kwargs, "model": child}),
+    )
     runtime = DeepAgentRuntime(
         model="test:parent",
         assistant_dir=tmp_path,
@@ -77,8 +89,7 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
         approvals.extend(item["name"] for item in request.action_requests)
         return "approve"
 
-    with pytest.warns(LangChainBetaWarning, match="forked subagents"):
-        await runtime.start()
+    await runtime.start()
     try:
         result = await runtime.invoke(AgentRequest("chat", "delegate", approval_handler=approve))
         assert result.text == "Started background work"

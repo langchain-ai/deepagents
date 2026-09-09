@@ -45,6 +45,26 @@ class TestLoadHooks:
 
         assert result == []
 
+    def test_unicode_decode_error(self, tmp_path):
+        """Returns empty list when the hooks file is not valid UTF-8.
+
+        Reading with an explicit `encoding="utf-8"` is what makes this
+        reachable: a hooks file saved in the host's ANSI code page now raises
+        `UnicodeDecodeError`, which is neither `json.JSONDecodeError` nor
+        `OSError`, so it has to be caught for the documented "never
+        interrupted" behavior to hold.
+        """
+        (tmp_path / "hooks.json").write_text("{}")
+        invalid_utf8 = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        with (
+            patch("deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path),
+            patch("pathlib.Path.read_text", side_effect=invalid_utf8),
+        ):
+            result = hooks_mod._load_hooks()
+
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # dispatch_hook

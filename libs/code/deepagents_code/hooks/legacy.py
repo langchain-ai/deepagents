@@ -146,7 +146,7 @@ def _load_hooks() -> list[dict[str, Any]]:
         return _hooks_config
 
     try:
-        data = json.loads(hooks_path.read_text())
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             logger.warning(
                 "Hooks config at %s must be a JSON object, got %s",
@@ -165,7 +165,7 @@ def _load_hooks() -> list[dict[str, Any]]:
             _hooks_config = []
             return _hooks_config
         _hooks_config = hooks
-    except (json.JSONDecodeError, OSError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to load hooks config from %s: %s", hooks_path, exc)
         _hooks_config = []
 

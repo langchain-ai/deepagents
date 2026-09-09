@@ -156,7 +156,7 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
         if not gate_dir:
             return
         gate = Path(gate_dir)
-        (gate / "entered").write_text("1")
+        (gate / "entered").write_text("1", encoding="utf-8")
         deadline = time.monotonic() + 120
         while not (gate / "release").exists():
             if time.monotonic() > deadline:

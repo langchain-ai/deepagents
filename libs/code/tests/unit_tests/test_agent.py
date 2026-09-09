@@ -1195,6 +1195,36 @@ class TestWorkspacePromptCredentials:
         assert "When you use the web_search tool" in with_tavily
 
 
+class TestSystemPromptEncoding:
+    """The packaged prompt template decodes independently of the host locale."""
+
+    def test_template_is_read_as_utf8(self) -> None:
+        """`system_prompt.md` is read with an explicit encoding.
+
+        The template holds em dashes, arrows and a not-equal sign. Without an
+        explicit encoding `Path.read_text` uses `locale.getpreferredencoding`,
+        which is the ANSI code page on Windows: cp936/cp932/cp949/cp950/cp874
+        raise, and cp1252/cp1251/cp1250/cp1253 decode to mojibake. It round-trips
+        either way on a UTF-8 host, so this asserts the encoding reaches the call.
+        """
+        recorded: list[dict[str, Any]] = []
+        real_read_text = Path.read_text
+
+        def _record(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self.name == "system_prompt.md":
+                recorded.append(kwargs)
+            return real_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", _record):
+            prompt = get_system_prompt("test-agent")
+
+        assert recorded, "system_prompt.md was not read"
+        assert all(kwargs.get("encoding") == "utf-8" for kwargs in recorded)
+        # Guard the guard: a template that turned pure ASCII would make the
+        # assertion above vacuous.
+        assert any(ord(char) > 127 for char in prompt)
+
+
 class TestBuildModelIdentitySection:
     """Direct tests for build_model_identity_section."""
 

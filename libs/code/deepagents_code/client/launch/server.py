@@ -248,7 +248,7 @@ def generate_langgraph_json(
         config["checkpointer"] = {"path": checkpointer_path}
 
     output_path = Path(output_dir) / "langgraph.json"
-    output_path.write_text(json.dumps(config, indent=2))
+    output_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return output_path
 
 

@@ -20,7 +20,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
     ExecuteResponse,
@@ -32,6 +32,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
+    bound_tool_call_id_for_filename,
     create_file_data,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
@@ -40,9 +41,11 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 from deepagents.middleware._message_eviction import (
+    _aoffload_tool_message_content,
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
+    _offload_tool_message_content,
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
@@ -2077,6 +2080,36 @@ class TestFilesystemMiddleware:
         assert sanitize_tool_call_id("call/123") == "call_123"
         assert sanitize_tool_call_id("test.id") == "test_id"
 
+    def test_bound_tool_call_id_for_filename_short_id_unchanged(self):
+        """Short ids (the common case) pass through exactly like `sanitize_tool_call_id`."""
+        assert bound_tool_call_id_for_filename("call_123") == "call_123"
+        assert bound_tool_call_id_for_filename("call/123") == "call_123"
+        assert bound_tool_call_id_for_filename("test.id") == "test_id"
+
+    def test_bound_tool_call_id_for_filename_bounds_long_id(self):
+        """A LiteLLM-Gemini-shaped id (~1.5KB thought signature) is bounded, not embedded verbatim.
+
+        Regression test for https://github.com/langchain-ai/deepagents/issues/5560:
+        embedding the raw id in a filename can exceed the ~255-byte OS path-component
+        limit, silently failing the offload write.
+        """
+        gemini_id = "call_2945190__thought__" + "A" * 1400
+        bounded = bound_tool_call_id_for_filename(gemini_id)
+        assert len(bounded) < 255
+        assert bounded.startswith("call_2945190__thought__")
+
+    def test_bound_tool_call_id_for_filename_avoids_prefix_collision(self):
+        """Two long ids sharing a common prefix must not collide on the same filename.
+
+        Naive truncation (e.g. `id[:40]`) would map both of these to the same
+        stem since they share their first 40+ characters; the hash suffix
+        must disambiguate them.
+        """
+        prefix = "call_shared_prefix__thought__"
+        id_a = prefix + "A" * 1400
+        id_b = prefix + "B" * 1400
+        assert bound_tool_call_id_for_filename(id_a) != bound_tool_call_id_for_filename(id_b)
+
     def test_intercept_sanitizes_tool_call_id(self):
         """Test that tool_call_id with dangerous characters is sanitized in file path."""
         backend, mem_store = _make_backend()
@@ -3382,6 +3415,88 @@ class TestBuildEvictedContent:
         assert result[0] == {"type": "text", "text": "replacement"}
         assert result[1] == img1
         assert result[2] == img2
+
+
+class TestOffloadToolMessageContentLongToolCallId:
+    """Regression tests for https://github.com/langchain-ai/deepagents/issues/5560.
+
+    LiteLLM's Gemini provider embeds a ~1-1.5KB "thought signature" inside the
+    tool_call_id (`call_<uuid>__thought__<base64>`). Before the fix, building
+    the offload filename directly from that id could exceed the OS
+    path-component length limit, silently failing the `backend.write` and
+    causing `_offload_tool_message_content` to return `None` -- the caller
+    then kept the original oversized message and the eviction never happened.
+    """
+
+    @staticmethod
+    def _gemini_style_tool_call_id() -> str:
+        # Mirrors the shape LiteLLM emits for Gemini tool calls: a normal
+        # prefix followed by ~1.4KB of embedded thought-signature bytes.
+        return "call_2945190__thought__" + "A" * 1400
+
+    def test_long_tool_call_id_offloads_successfully(self, tmp_path):
+        """A tool_call_id long enough to previously exceed OS filename limits still offloads."""
+        backend = FilesystemBackend(root_dir=str(tmp_path))
+        gemini_id = self._gemini_style_tool_call_id()
+        original_content = "result line\n" * 30000
+
+        message = ToolMessage(content=original_content, tool_call_id=gemini_id)
+        result = _offload_tool_message_content(message, original_content, backend, "/large_tool_results")
+
+        assert result is not None, "offload must not silently fail for a long tool_call_id"
+        assert isinstance(result, ToolMessage)
+        # The replacement is a small preview/notice, not the original bulk content.
+        assert len(str(result.content)) < len(original_content)
+        assert "Tool result too large" in str(result.content)
+
+        # A file was actually written to the backend under the offload prefix,
+        # at the bounded path (not the raw, over-length id).
+        expected_path = f"/large_tool_results/{bound_tool_call_id_for_filename(gemini_id)}"
+        read_result = backend.read(expected_path, limit=30000)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        assert read_result.file_data["content"] == original_content
+
+    def test_long_tool_call_id_offload_path_is_bounded(self, tmp_path):
+        """The offload path embedded in the notice never depends on the raw id length."""
+        backend = FilesystemBackend(root_dir=str(tmp_path))
+        gemini_id = self._gemini_style_tool_call_id()
+        original_content = "result line\n" * 30000
+
+        message = ToolMessage(content=original_content, tool_call_id=gemini_id)
+        result = _offload_tool_message_content(message, original_content, backend, "/large_tool_results")
+
+        assert result is not None
+        # Extract the file_path line from the notice and confirm its filename
+        # component is well within filesystem limits.
+        content_str = str(result.content)
+        assert "/large_tool_results/" in content_str
+        file_path_segment = content_str.split("/large_tool_results/", maxsplit=1)[1].split(maxsplit=1)[0]
+        assert len(file_path_segment) < 255
+
+    @pytest.mark.asyncio
+    async def test_long_tool_call_id_offloads_successfully_async(self, tmp_path):
+        """Async variant: `_aoffload_tool_message_content` also bounds the filename."""
+        backend = FilesystemBackend(root_dir=str(tmp_path))
+        gemini_id = self._gemini_style_tool_call_id()
+        original_content = "result line\n" * 30000
+
+        message = ToolMessage(content=original_content, tool_call_id=gemini_id)
+        result = await _aoffload_tool_message_content(message, original_content, backend, "/large_tool_results")
+
+        assert result is not None, "async offload must not silently fail for a long tool_call_id"
+        assert len(str(result.content)) < len(original_content)
+
+    def test_short_tool_call_id_filename_unchanged(self, tmp_path):
+        """Short ids keep today's exact filename (no hash suffix) for backward compatibility."""
+        backend = FilesystemBackend(root_dir=str(tmp_path))
+        original_content = "result line\n" * 30000
+        message = ToolMessage(content=original_content, tool_call_id="call_123")
+
+        result = _offload_tool_message_content(message, original_content, backend, "/large_tool_results")
+
+        assert result is not None
+        assert "/large_tool_results/call_123" in str(result.content)
 
 
 class TestPatchToolCallsMiddleware:

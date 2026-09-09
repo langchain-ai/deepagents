@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 from langchain_core.messages import BaseMessage, ToolMessage
 
-from deepagents.backends.utils import format_content_with_line_numbers, sanitize_tool_call_id
+from deepagents.backends.utils import bound_tool_call_id_for_filename, format_content_with_line_numbers
 
 if TYPE_CHECKING:
     from langchain_core.messages.content import ContentBlock
@@ -129,8 +129,8 @@ def _offload_tool_message_content(
     by tool_call_id. Returns `None` if the backend write fails — caller should
     keep the original message in that case.
     """
-    sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else "unknown"
-    file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    bounded_id = bound_tool_call_id_for_filename(message.tool_call_id) if message.tool_call_id else "unknown"
+    file_path = f"{large_tool_results_prefix}/{bounded_id}"
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
@@ -149,8 +149,8 @@ async def _aoffload_tool_message_content(
     large_tool_results_prefix: str,
 ) -> ToolMessage | None:
     """Async variant of `_offload_tool_message_content` using `backend.awrite`."""
-    sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else "unknown"
-    file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    bounded_id = bound_tool_call_id_for_filename(message.tool_call_id) if message.tool_call_id else "unknown"
+    file_path = f"{large_tool_results_prefix}/{bounded_id}"
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None

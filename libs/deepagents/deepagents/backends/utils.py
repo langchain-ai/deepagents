@@ -6,6 +6,7 @@ enable composition without fragile string parsing.
 """
 
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -204,6 +205,56 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
     Replaces dangerous characters (., /, \) with underscores.
     """
     return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
+
+
+_BOUNDED_ID_PREFIX_LENGTH = 40
+_BOUNDED_ID_HASH_LENGTH = 16
+# Comfortably under the ~255-byte path-component limit of common filesystems,
+# even once combined with a directory prefix (e.g. `/large_tool_results/`).
+# Ordinary provider ids (OpenAI, Anthropic, short synthetic test ids, ...) sit
+# far below this, so `bound_tool_call_id_for_filename` is a no-op for them --
+# only ids that could actually overflow a filename get rewritten.
+_MAX_SAFE_SANITIZED_ID_LENGTH = 200
+
+
+def bound_tool_call_id_for_filename(tool_call_id: str) -> str:
+    """Derive a filename-safe stem from a `tool_call_id`, bounding its length.
+
+    Provider tool_call_ids are not bounded in length: LiteLLM's Gemini
+    provider, for example, embeds a ~1-1.5KB "thought signature" inside the
+    id (`call_<uuid>__thought__<base64>`), which the id must carry verbatim
+    since Vertex validates it on replay. Building a filename directly from
+    `sanitize_tool_call_id(tool_call_id)` embeds that raw length in the
+    filename, which can exceed the ~255-byte path-component limit of common
+    filesystems and cause the write to silently fail.
+
+    For ids short enough to be filename-safe as-is, this returns
+    `sanitize_tool_call_id(tool_call_id)` unchanged, preserving today's
+    filenames (and the associated `read_file` guidance the model sees) for
+    the common case. Only ids whose sanitized form exceeds
+    `_MAX_SAFE_SANITIZED_ID_LENGTH` are rewritten to a bounded
+    `{prefix}-{hash}` form.
+
+    Naive truncation (e.g. `tool_call_id[:40]`) is not a safe fix on its own:
+    two different long ids that happen to share the same first 40 characters
+    (as Gemini ids do -- they share the same `call_<uuid>__thought__` prefix
+    shape) would collide on the same filename. Appending a hash of the full,
+    untruncated id makes the result collision-resistant regardless of shared
+    prefixes, while staying short enough to fit within filesystem limits and
+    to be reliably copied by a model into a follow-up `read_file` call.
+
+    Args:
+        tool_call_id: The raw tool_call_id (unsanitized, of any length).
+
+    Returns:
+        A filename-safe string: the sanitized id unchanged when short enough,
+            otherwise `{sanitized_prefix}-{hash}`.
+    """
+    sanitized = sanitize_tool_call_id(tool_call_id)
+    if len(sanitized) <= _MAX_SAFE_SANITIZED_ID_LENGTH:
+        return sanitized
+    digest = hashlib.sha256(tool_call_id.encode("utf-8")).hexdigest()[:_BOUNDED_ID_HASH_LENGTH]
+    return f"{sanitized[:_BOUNDED_ID_PREFIX_LENGTH]}-{digest}"
 
 
 def format_content_with_line_numbers(

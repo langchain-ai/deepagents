@@ -71,6 +71,7 @@ from deepagents.backends.utils import (
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
+    bound_tool_call_id_for_filename,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -2827,7 +2828,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if not self._tool_token_limit_before_evict or not tool_call_id:
             return None
-        capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
+        capture_path = f"{self._large_tool_results_prefix}/{bound_tool_call_id_for_filename(tool_call_id)}"
         if isinstance(resolved_backend, CompositeBackend):
             default = resolved_backend.default
             if not isinstance(default, BaseSandbox):

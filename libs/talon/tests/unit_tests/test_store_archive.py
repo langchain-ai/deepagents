@@ -57,6 +57,76 @@ async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
     assert (await archive.entries(SCOPE, limit=1))[0]["text"] == "still writable"
 
 
+async def test_hybrid_search_ranks_partial_candidates_beyond_the_scan_budget():
+    metadata = CountingStore()
+    vectors = InMemoryStore(index={"dims": 2, "embed": StaticEmbeddings(), "fields": ["text"]})
+    async with StoreConversationArchive(
+        metadata, namespace=("budget-search",), vector_store=vectors
+    ).open() as archive:
+        # Only the oldest record is a semantic match, and no record matches the query
+        # literally, so the keyword leg walks the whole chain past its scan budget.
+        await archive.append(
+            SCOPE,
+            "session",
+            "time",
+            [
+                HumanMessage("car" if index == 0 else f"note {index}", id=str(index))
+                for index in range(501)
+            ],
+        )
+        async with asyncio.timeout(5):
+            while True:
+                if not await archive.vectors.archive.pending(SCOPE):
+                    break
+                await asyncio.sleep(0)
+        async with archive.vectors.lock:
+            pass
+        page = await archive.search_page(SCOPE, query="automobile")
+        assert page["semantic_status"] == "completed"
+        assert page["results"][0]["text"] == "car"
+        # A page that claims completeness still refuses to truncate silently.
+        with pytest.raises(RuntimeError, match="scan limit exceeded"):
+            await archive.entries(SCOPE, query="automobile")
+
+
+async def test_completed_deletion_markers_leave_the_outstanding_deletion_chain():
+    class ScopedFailure(InMemoryStore):
+        blocked = ()
+
+        async def abatch(self, ops):
+            operations = list(ops)
+            if any(
+                isinstance(op, PutOp) and op.value is None and op.namespace == self.blocked
+                for op in operations
+            ):
+                msg = "vector deletion failed"
+                raise OSError(msg)
+            return await super().abatch(operations)
+
+    metadata = CountingStore()
+    vectors = ScopedFailure(index={"dims": 2, "embed": StaticEmbeddings(), "fields": ["text"]})
+    async with StoreConversationArchive(
+        metadata, namespace=("markers",), vector_store=vectors
+    ).open() as archive:
+        vectors.blocked = archive.vectors.namespace(
+            OTHER["talon_history_channel"], OTHER["talon_history_chat"]
+        )
+        await archive.append(OTHER, "stuck", "time", [HumanMessage("stuck")])
+        with pytest.raises(OSError, match="vector deletion failed"):
+            await archive.delete_session("stuck")
+        for index in range(20):
+            await archive.append(SCOPE, f"session-{index}", "time", [HumanMessage("erase")])
+            await archive.delete_session(f"session-{index}")
+        # One deletion is still outstanding, so every poll re-reads the marker chain.
+        metadata.reads = 0
+        assert await archive.vectors.archive.rows("", indexing=True, limit=4)
+        assert metadata.reads <= 10  # Journal, root, the one live marker and its session.
+        vectors.blocked = ()
+        await archive.delete_session("stuck")
+        root = await archive.records.root()
+        assert (root["deletions"], root["deleting"]) == (0, 0)
+
+
 @asynccontextmanager
 async def stores(backend, tmp_path):
     index = {"dims": 2, "embed": StaticEmbeddings(), "fields": ["text"]}

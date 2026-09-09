@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
+import inspect
 import logging
 import math
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -16,9 +17,10 @@ from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
 from deepagents_talon.config import TalonConfigError
+from deepagents_talon.history_drivers import load_driver
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine
+    from collections.abc import AsyncIterator, Callable, Coroutine
     from types import ModuleType
 
     from deepagents_talon.config import TalonConfig
@@ -30,6 +32,10 @@ EMBEDDING_CACHE: ContextVar[dict[tuple[bool, str], list[float]] | None] = Contex
     "talon_history_embeddings", default=None
 )
 _REQUEST_TIMEOUT = 30
+# A Store worker thread must never wait on the event loop indefinitely, so the
+# bridge polls for a loop that has stopped and enforces an overall deadline.
+_BRIDGE_TIMEOUT_SECONDS = 300
+_BRIDGE_POLL_SECONDS = 1
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +55,33 @@ async def open_profile(config: TalonConfig) -> AsyncIterator[EmbeddingProfile | 
         except Exception:  # noqa: BLE001  # Provider validation can include API keys.
             msg = "Could not initialize history embeddings; check the selected adapter and settings"
             raise TalonConfigError(msg) from None
+        # Registered here rather than per adapter: `atlas` and `voyage` previously
+        # had no cleanup at all, and a reindex reopens the archive, so a client that
+        # keeps its pool past close leaks sockets on every cycle.
+        _register_close(stack, embed)
         if profile.client_side:
             embed = BoundedEmbeddings(embed, profile)
         yield replace(profile, embed=embed)
 
 
+async def _close_client(closer: Callable[[], object]) -> None:
+    # A synchronous close tears down sockets, so it runs off the event loop; an
+    # async one only builds its coroutine there and is awaited here.
+    result = await asyncio.to_thread(closer)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _register_close(stack: AsyncExitStack, embed: object) -> None:
+    for name in ("aclose", "close"):
+        closer = getattr(embed, name, None)
+        if callable(closer):
+            stack.push_async_callback(_close_client, closer)
+            return
+
+
 def _driver(module: str, extra: str) -> ModuleType:
-    try:
-        return importlib.import_module(module)
-    except ImportError:
-        msg = f"History embeddings require deepagents-talon[{extra}]: uv sync --extra {extra}"
-        raise ImportError(msg) from None
+    return load_driver(module, extra, "History embeddings require")
 
 
 async def _adapter(
@@ -69,14 +91,12 @@ async def _adapter(
         _driver("sentence_transformers", "history-local")
         from deepagents_talon.history_embeddings import HistoryEmbeddings  # noqa: PLC0415
 
-        embed = HistoryEmbeddings(
+        return HistoryEmbeddings(
             model=profile.model,
             max_input_tokens=profile.max_input_tokens,
             batch_size=profile.batch_size,
             query_prompt="",
         )
-        stack.push_async_callback(embed.aclose)
-        return embed
     if profile.adapter == "atlas":
         driver = _driver("langchain_mongodb.embeddings", "mongodb")
         return driver.AutoEmbeddings(model=profile.model)
@@ -87,7 +107,11 @@ async def _adapter(
         return HistoryVoyageEmbeddings(
             model=profile.model,
             api_key=_key(config, "VOYAGE_API_KEY"),
-            output_dimension=cast("Literal[256, 512, 1024, 2048]", profile.dims),
+            # Omitting the width leaves the model's native output, which is what
+            # SEND_DIMENSIONS=0 asks for when a model cannot resize.
+            output_dimension=cast("Literal[256, 512, 1024, 2048] | None", profile.dims)
+            if profile.send_dimensions
+            else None,
             batch_size=profile.batch_size,
             truncation=False,
             base_url=profile.base_url or "https://api.voyageai.com/v1",
@@ -151,7 +175,22 @@ class BoundedEmbeddings(Embeddings):
             operation.close()
             msg = "Use async history embeddings on the event loop"
             raise RuntimeError(msg)
-        return asyncio.run_coroutine_threadsafe(operation, self.loop).result()
+        future = asyncio.run_coroutine_threadsafe(operation, self.loop)
+        deadline = time.monotonic() + _BRIDGE_TIMEOUT_SECONDS
+        while True:
+            try:
+                return future.result(timeout=_BRIDGE_POLL_SECONDS)
+            except TimeoutError:
+                # A loop that has stopped will never run the coroutine, and waiting on
+                # it holds the Store's worker thread open through its own shutdown.
+                if self.loop.is_closed() or not self.loop.is_running():
+                    future.cancel()
+                    msg = "History embeddings stopped; the event loop is no longer running"
+                    raise RuntimeError(msg) from None
+                if time.monotonic() >= deadline:
+                    future.cancel()
+                    msg = "History embedding exceeded its deadline waiting for the event loop"
+                    raise RuntimeError(msg) from None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Bridge Store worker threads to the owned async client."""

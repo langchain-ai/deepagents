@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import stat
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -17,12 +19,17 @@ from typing import TYPE_CHECKING, cast
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from langchain_core.tools import BaseTool
 
+logger = logging.getLogger(__name__)
+
 MCP_CONFIG_AUTO_APPROVE_ENV = "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE"
 MCP_CONFIG_UPDATE_TOOL = "update_mcp_server"
+# Duplicated from runtime._WORKSPACE_ENV: importing it would pull the runtime, and the
+# public alias lives in channels, whose package imports every channel driver eagerly.
+WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _REDACTED = "<redacted>"
 _REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -45,21 +52,109 @@ _ENUMS = {
     "type": {"stdio", "http", "sse", "streamable_http", "streamable-http"},
     "auth": {"oauth"},
 }
+# Everything else in `_FIELDS` decides where a credential is sent or what runs.
+_TOOL_FILTER_FIELDS = frozenset({"allowedTools", "disabledTools"})
+_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_POLL_SECONDS = 0.05
+
+
+class _UnsafeUpdateError(ValueError):
+    """An auto-approved update would run new code while reusing stored secrets."""
+
+
+def agent_workspace_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the directory the agent's shell backend reaches with relative paths.
+
+    Args:
+        env: Runtime environment to read. Falls back to the process environment,
+            which is what the default backend itself reads.
+
+    Returns:
+        The configured workspace root, or the current working directory, where
+        `LocalShellBackend(root_dir=None)` runs agent commands.
+    """
+    configured = (env or {}).get(WORKSPACE_ENV) or os.environ.get(WORKSPACE_ENV)
+    return Path(configured).expanduser().resolve() if configured else Path.cwd().resolve()
+
+
+def warn_agent_workspace_path(path: Path, agent_root: Path | None, *, subject: str) -> Path:
+    """Return `path` resolved, warning when it sits inside the agent workspace.
+
+    This reports placement, not secrecy. Talon's default backend runs real shell
+    commands with `virtual_mode=False`, so a path outside the workspace is still
+    readable by absolute path; keeping it out of the workspace only removes the
+    relative-path route and keeps it out of the model's working tree. Because it
+    buys no protection at all, a bad placement is not worth failing a start over
+    -- with no workspace configured the root is the working directory, so Talon
+    launched from `$HOME` puts both default paths inside it.
+
+    Args:
+        path: Operator-selected path to check.
+        agent_root: Workspace root. Falls back to `agent_workspace_root()`.
+        subject: Name of the file, used in the warning.
+
+    Returns:
+        The resolved path, with the final component left unresolved.
+    """
+    resolved = path.parent.resolve() / path.name
+    root = agent_workspace_root() if agent_root is None else agent_root
+    # This stays a warning, because no filesystem deny rule can promote it to an
+    # error. FilesystemMiddleware refuses to load permissions at all alongside an
+    # execution-capable backend (deepagents/middleware/filesystem.py:1741-1748,
+    # "Tool-level permissions for the execute tool are not implemented"), and
+    # every _check_fs_permission call site in that file guards a read or write
+    # tool -- none guards execute -- so even routing the paths through a
+    # CompositeBackend would not stop `cat`. Keeping these files away from the
+    # agent needs an OS keyring, or a directory the agent process cannot read at
+    # all: a separate uid, or a sandboxed backend.
+    if resolved.is_relative_to(root):
+        logger.warning(
+            "%s %s is inside the agent workspace %s; move it elsewhere, or point %s "
+            "at a directory that does not contain it",
+            subject,
+            resolved,
+            root,
+            WORKSPACE_ENV,
+        )
+    return resolved
 
 
 class MCPConfigStore:
     """Manage one fixed file without exposing stored credentials to tools.
 
+    Nothing here is a confidentiality boundary. Placement is checked and warned
+    about, not enforced, and against Talon's default shell backend `cat` and
+    `echo >` on the absolute path bypass redaction, the revision CAS, the
+    `O_NOFOLLOW` open, and the `update_mcp_server` approval interrupt alike. So
+    `update_mcp_server` mediates change; it cannot keep a configured secret from
+    the model. Only `${ENV_VAR}` references, which are never expanded here, do
+    that, and no filesystem deny rule can change it -- see
+    `warn_agent_workspace_path` for why that approach is closed off. Moving
+    credentials somewhere the agent process cannot read is tracked separately.
+
     Args:
-        path: Operator-selected configuration path, outside the agent workspace.
+        path: Operator-selected configuration path, ideally outside the agent
+            workspace; a path inside it is warned about, not rejected.
         on_update: Schedule a reload after a successful write.
+        agent_root: Agent workspace root. Defaults to the process workspace.
+        auto_approve: Whether updates skip the approval interrupt. Defaults to
+            the process environment; pass the runtime's own value so this and
+            the interrupt cannot disagree.
     """
 
-    def __init__(self, path: Path, on_update: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        on_update: Callable[[], None],
+        *,
+        agent_root: Path | None = None,
+        auto_approve: bool | None = None,
+    ) -> None:
         """Capture the operator path and a process-local revision key."""
-        self._path = path.parent.resolve() / path.name
+        self._path = warn_agent_workspace_path(path, agent_root, subject="MCP configuration")
         self._on_update = on_update
         self._revision_key = secrets.token_bytes(32)
+        self._auto_approve = auto_approve_enabled() if auto_approve is None else auto_approve
 
     def tools(self) -> tuple[BaseTool, BaseTool]:
         """Return the read and single-server update capabilities."""
@@ -70,7 +165,9 @@ class MCPConfigStore:
 
             Stored strings are <redacted>, except transport/auth enums and exact
             ${ENV_VAR} references. Values are never expanded. Use this revision
-            with update_mcp_server; do not use filesystem tools for MCP settings.
+            with update_mcp_server. This tool and update_mcp_server are the
+            supported way to read and change MCP settings; do not read or edit
+            the configuration file with filesystem or shell tools.
             """
             return self._view()
 
@@ -84,8 +181,9 @@ class MCPConfigStore:
                 server_name: Server name from mcpServers, or a new name.
                 server: Complete replacement settings, or null to remove. Copy
                     <redacted> at the same field to preserve its stored value.
-                    Omitted fields are removed. Use ${ENV_VAR} references for
-                    credentials; never request or include literal secrets.
+                    Omitted fields are removed, except settings Talon does not
+                    manage, which are preserved and never shown. Use ${ENV_VAR}
+                    references for credentials; never include literal secrets.
                 expected_revision: Revision returned by get_mcp_configuration.
 
             Changes can execute commands or send credentials to configured URLs.
@@ -133,12 +231,16 @@ class MCPConfigStore:
         try:
             if not _NAME.fullmatch(name):
                 return {"status": "error", "message": "Invalid server name."}
-            with self._locked():
+            with locked_path(self._path):
                 raw, document = self._read()
                 if not hmac.compare_digest(self._revision(raw), revision):
                     return {"status": "conflict", "message": "Read the configuration again."}
                 self._replace_server(document, name, server)
                 _atomic_write(self._path, document)
+        except TimeoutError:
+            return {"status": "conflict", "message": "Configuration is busy; try again."}
+        except _UnsafeUpdateError as exc:
+            return {"status": "error", "message": str(exc)}
         except (OSError, ValueError, TypeError, RecursionError):
             return {
                 "status": "error",
@@ -147,24 +249,6 @@ class MCPConfigStore:
         self._on_update()
         return {"status": "updated", "available": "after_successful_reload"}
 
-    @contextmanager
-    def _locked(self) -> Iterator[None]:
-        _require_posix()
-        import fcntl  # noqa: PLC0415  # Keep Talon importable on non-POSIX hosts.
-
-        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(
-            self._path.with_name(self._path.name + ".lock"),
-            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(descriptor, "rb") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-
     def _replace_server(
         self, document: dict[str, object], name: str, server: dict[str, object] | None
     ) -> None:
@@ -172,9 +256,146 @@ class MCPConfigStore:
         if server is None:
             servers.pop(name, None)
             return
-        replacement = cast("dict[str, object]", _restore(server, servers.get(name)))
+        previous = servers.get(name)
+        replacement = cast("dict[str, object]", _restore(server, previous))
         _validate_server(replacement)
-        servers[name] = replacement
+        if self._auto_approve:
+            _reject_unapproved_execution_change(server, replacement, previous)
+        # Settings Talon does not manage are invisible to the model, so an edit
+        # must put them back rather than drop them.
+        servers[name] = replacement | _unmanaged_fields(previous)
+
+
+@contextmanager
+def locked_path(path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    """Hold an exclusive lock for `path` while the block runs.
+
+    The lock is a sidecar `.lock` file beside `path`, so readers that only open
+    the target are unaffected. Acquisition is non-blocking with a bounded retry:
+    a stale holder surfaces as a timeout the caller can report, rather than
+    wedging a tool call or a worker thread with nothing shown to anyone.
+
+    Args:
+        path: File the lock protects.
+        timeout: Seconds to keep retrying before giving up. Defaults to
+            `_LOCK_TIMEOUT_SECONDS`, read at call time.
+
+    Yields:
+        None, with the lock held.
+
+    Raises:
+        TimeoutError: Another holder still had the lock when `timeout` elapsed.
+    """
+    _require_posix()
+    import fcntl  # noqa: PLC0415  # Keep Talon importable on non-POSIX hosts.
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(
+        path.with_name(path.name + ".lock"),
+        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(descriptor, "rb") as lock:
+        deadline = time.monotonic() + (_LOCK_TIMEOUT_SECONDS if timeout is None else timeout)
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    msg = f"Timed out waiting for the lock on {path}"
+                    raise TimeoutError(msg) from None
+                time.sleep(_LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def auto_approve_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether MCP configuration updates skip the approval interrupt.
+
+    Args:
+        env: Runtime environment to read. Falls back to the process environment.
+
+    Returns:
+        Whether the operator opted out of approving each update.
+    """
+    value = (env or {}).get(MCP_CONFIG_AUTO_APPROVE_ENV) or os.environ.get(
+        MCP_CONFIG_AUTO_APPROVE_ENV, ""
+    )
+    return value.strip().lower() == "true"
+
+
+def _unmanaged_fields(previous: object) -> dict[str, object]:
+    if not isinstance(previous, dict):
+        return {}
+    stored = cast("dict[str, object]", previous)
+    return {key: value for key, value in stored.items() if key not in _FIELDS}
+
+
+def _reject_unapproved_execution_change(
+    submitted: dict[str, object],
+    replacement: dict[str, object],
+    previous: object,
+) -> None:
+    """Refuse an unapproved change that redirects a secret the caller never saw.
+
+    `_restore` fills `<redacted>` path-wise, so a caller can keep a stored
+    credential while changing where it goes: swapping `command`/`args`, flipping
+    the derived transport to turn a URL into a command line, or pointing `url` at
+    another host so the restored `Authorization` header is sent there. With the
+    approval interrupt disabled any of those reaches a real credential
+    unreviewed.
+
+    The check is deliberately not a list of dangerous fields. The first version
+    enumerated `command`, `args` and the transport, and a review caught that it
+    omitted `url` -- the same attack through an unlisted field. Instead every
+    managed setting must be unchanged apart from the tool filters, which cannot
+    redirect anything, so a field added to `_FIELDS` later is covered by default
+    rather than by remembering to add it here.
+
+    Args:
+        submitted: Settings as supplied, before redacted values were restored.
+        replacement: Settings after restoring them.
+        previous: Stored settings for this server, if any.
+
+    Raises:
+        _UnsafeUpdateError: The update reuses a stored secret and changes a
+            setting that could send it somewhere else.
+    """
+    if not _restores_redacted(submitted):
+        return
+    old = cast("dict[str, object]", previous) if isinstance(previous, dict) else {}
+    if _redirecting_fields(replacement) == _redirecting_fields(old):
+        return
+    msg = (
+        "Auto-approved MCP updates that reuse <redacted> values cannot change any "
+        "other setting; only allowedTools and disabledTools may differ. Resend the "
+        "settings with ${ENV_VAR} references instead of redacted values, or ask the "
+        "operator to re-enable update approval."
+    )
+    raise _UnsafeUpdateError(msg)
+
+
+def _redirecting_fields(server: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in server.items()
+        if key in _FIELDS and key not in _TOOL_FILTER_FIELDS
+    }
+
+
+def _restores_redacted(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_restores_redacted(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_restores_redacted(item) for item in value)
+    return value == _REDACTED
+
+
+def _derived_transport(server: dict[str, object]) -> object:
+    return server.get("transport", server.get("type", "stdio" if "command" in server else "http"))
 
 
 def _require_posix() -> None:
@@ -189,6 +410,7 @@ def _redact_server(server: object) -> object:
     return {
         key: value if isinstance(value, str) and value in _ENUMS.get(key, set()) else _redact(value)
         for key, value in server.items()
+        if key in _FIELDS
     }
 
 
@@ -229,9 +451,7 @@ def _validate_server(server: dict[str, object]) -> None:
         raise ValueError(msg)
     _validate_fields(server)
     _validate_references(server)
-    transport = server.get(
-        "transport", server.get("type", "stdio" if "command" in server else "http")
-    )
+    transport = _derived_transport(server)
     for field, choices in _ENUMS.items():
         if field in server and server[field] not in choices:
             msg = "Invalid MCP transport or authentication"

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from deepagents_talon.store_archive import number, scope_key
+from deepagents_talon.history_index import VectorArchive
+from deepagents_talon.store_records import number, scope_key
 
 if TYPE_CHECKING:
     from deepagents_talon.archive import ArchiveEntry, ArchiveScope
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from deepagents_talon.store_records import Record
 
 
-class StoreVectorArchive:
+class StoreVectorArchive(VectorArchive):
     """Reconcile immutable archive entries instead of maintaining a SQL queue."""
 
     def __init__(self, archive: StoreConversationArchive) -> None:
@@ -139,13 +140,19 @@ class StoreVectorArchive:
             return False
 
     async def lexical(self, scope: ArchiveScope, query: str, limit: int) -> list[str]:
-        """Find literal keyword candidates without backend-specific full-text operators."""
-        entries = await self.archive._text_entries(  # noqa: SLF001  # Storage adapter shares archive retrieval.
+        """Find literal keyword candidates without backend-specific full-text operators.
+
+        Stops at the archive's scan budget rather than raising: these candidates are
+        fused with the semantic ranking, so a short list degrades recall while a
+        raised error would fail a search the semantic leg had already answered.
+        """
+        entries = await self.archive.text_entries(
             scope,
             query=query,
             session_id="",
             after=0,
             limit=limit,
+            partial=True,
         )
         return [str(entry["cursor"]) for entry in entries]
 

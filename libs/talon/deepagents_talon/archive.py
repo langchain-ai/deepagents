@@ -60,7 +60,7 @@ class SearchPage(TypedDict):
     pagination_status: Literal["ok", "expired"]
 
 
-def _search_page(
+def build_search_page(
     hits: list[ArchiveEntry],
     limit: int,
     status: SemanticStatus,
@@ -68,22 +68,38 @@ def _search_page(
     pending: bool = False,
     expired: bool = False,
 ) -> SearchPage:
+    """Build one page of results with its retrieval coverage, for any archive backend.
+
+    Args:
+        hits: Ranked entries, one more than `limit` when a further page exists.
+        limit: Maximum entries to return.
+        status: Whether semantic retrieval ran, degraded, or was not requested.
+        pending: Whether source records are still awaiting indexing.
+        expired: Whether the caller's continuation token no longer resolves.
+    """
     results = hits[:limit]
     has_more = len(hits) > limit
     return SearchPage(
         results=results,
         semantic_status=status,
         indexing_pending=pending,
-        indexing_status=_indexing_status(status, pending=pending, visibility="unknown"),
+        indexing_status=indexing_status(status, pending=pending, visibility="unknown"),
         has_more=has_more,
         next_after=str(results[-1]["cursor"]) if has_more else None,
         pagination_status="expired" if expired else "ok",
     )
 
 
-def _indexing_status(
+def indexing_status(
     status: SemanticStatus, *, pending: bool, visibility: SearchVisibility
 ) -> IndexingStatus:
+    """Report whether the index behind a search is known to be current.
+
+    Args:
+        status: Whether semantic retrieval ran, degraded, or was not requested.
+        pending: Whether source records are still awaiting indexing.
+        visibility: Whether acknowledged writes are immediately searchable.
+    """
     if status in {"disabled", "not_requested"}:
         return "not_requested"
     if pending:

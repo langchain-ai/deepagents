@@ -91,6 +91,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
+    "fireworks:accounts/fireworks/models/glm-5p3-flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
@@ -99,6 +100,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
     "ollama:glm-5.2:cloud": "GLM 5.2",
+    "ollama:glm-5.3-flash:cloud": "GLM 5.3 Flash",
     "ollama:minimax-m3:cloud": "MiniMax-M3",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai:gpt-5.6-sol": "GPT-5.6 Sol",
@@ -120,6 +122,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
+    "openrouter:z-ai/glm-5.3-flash": "GLM 5.3 Flash",
     "xai:grok-4.5": "Grok 4.5",
 }
 """Hand-curated frontier-tier models promoted across the UI, mapped to a

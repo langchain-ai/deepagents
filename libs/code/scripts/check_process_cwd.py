@@ -100,7 +100,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "client/non_interactive.py", "run_non_interactive", "Path.cwd", "164dbd9d", 2
     ): "The headless entrypoint evaluates client-side hook trust.",
     CallSite(
-        "client/non_interactive.py", "run_non_interactive", "Path.cwd", "0f2377b6"
+        "client/non_interactive.py", "run_non_interactive", "Path.cwd", "e516aaa6"
     ): "The headless client sends its directory in run context.",
     CallSite(
         "config.py", "_dotenv_environment", "Path.cwd", "55cd4e5f"

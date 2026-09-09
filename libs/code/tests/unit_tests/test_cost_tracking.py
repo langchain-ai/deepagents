@@ -930,22 +930,22 @@ class TestCostLimitEnforcement:
 
     def test_constructor_rejects_invalid_exit_behavior(self) -> None:
         with pytest.raises(ValueError, match="exit_behavior"):
-            CostTrackingMiddleware(hard_limit_usd=1.0, exit_behavior="loop")  # type: ignore[arg-type]
+            CostTrackingMiddleware(hard_limit_usd=1.0, exit_behavior="loop")  # ty: ignore[invalid-argument-type]
 
     def test_no_limit_configured_is_always_a_noop(self) -> None:
         middleware = CostTrackingMiddleware()
-        state: CostState = {"_session_cost_usd": 10_000.0}
+        state: CostState = {"messages": [], "_session_cost_usd": 10_000.0}
         assert middleware.before_model(state, _runtime()) is None
 
     def test_under_limit_is_a_noop(self) -> None:
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0)
-        state: CostState = {"_session_cost_usd": 4.99}
+        state: CostState = {"messages": [], "_session_cost_usd": 4.99}
         assert middleware.before_model(state, _runtime()) is None
 
     def test_at_limit_halts_with_jump_to_end(self) -> None:
         """The check is `>=`, not `>` -- a total equal to the cap still halts."""
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0)
-        state: CostState = {"_session_cost_usd": 5.0}
+        state: CostState = {"messages": [], "_session_cost_usd": 5.0}
 
         result = middleware.before_model(state, _runtime())
 
@@ -958,7 +958,7 @@ class TestCostLimitEnforcement:
 
     def test_over_limit_halts_with_jump_to_end(self) -> None:
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0)
-        state: CostState = {"_session_cost_usd": 12.34}
+        state: CostState = {"messages": [], "_session_cost_usd": 12.34}
 
         result = middleware.before_model(state, _runtime())
 
@@ -968,7 +968,7 @@ class TestCostLimitEnforcement:
 
     def test_error_exit_behavior_raises_instead_of_halting(self) -> None:
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0, exit_behavior="error")
-        state: CostState = {"_session_cost_usd": 5.01}
+        state: CostState = {"messages": [], "_session_cost_usd": 5.01}
 
         with pytest.raises(CostLimitExceededError) as exc_info:
             middleware.before_model(state, _runtime())
@@ -978,7 +978,7 @@ class TestCostLimitEnforcement:
 
     def test_error_exit_behavior_does_not_raise_under_limit(self) -> None:
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0, exit_behavior="error")
-        state: CostState = {"_session_cost_usd": 1.0}
+        state: CostState = {"messages": [], "_session_cost_usd": 1.0}
         assert middleware.before_model(state, _runtime()) is None
 
     def test_nested_instance_never_enforces_the_limit(self) -> None:
@@ -987,7 +987,7 @@ class TestCostLimitEnforcement:
         Not the cumulative session total the limit is meant to bound.
         """
         middleware = CostTrackingMiddleware(nested=True, hard_limit_usd=1.0)
-        state: CostState = {"_session_cost_usd": 999.0}
+        state: CostState = {"messages": [], "_session_cost_usd": 999.0}
         assert middleware.before_model(state, _runtime()) is None
 
     @pytest.mark.parametrize("bad_total", [None, "not a number", True, float("nan")])
@@ -1001,7 +1001,7 @@ class TestCostLimitEnforcement:
 
     async def test_abefore_model_matches_the_sync_result(self) -> None:
         middleware = CostTrackingMiddleware(hard_limit_usd=5.0)
-        state: CostState = {"_session_cost_usd": 6.0}
+        state: CostState = {"messages": [], "_session_cost_usd": 6.0}
 
         result = await middleware.abefore_model(state, _runtime())
 

@@ -350,7 +350,19 @@ class VirtualTableMiddleware(AgentMiddleware[VirtualTableState, Any, Any]):
                 raise ValueError(msg)
             return json.dumps({"rows": result, "count": len(result)}, ensure_ascii=False)
 
-        def enrich_sync(**_kwargs: object) -> str:
+        def enrich_sync(
+            name: str,
+            enrichment_name: str,
+            worker_prompt: str,
+            output_schema: dict[str, Any],
+            worker_model: str | None,
+            input_columns: list[str],
+            row_ids: list[int] | None,
+            concurrency: int,
+            overwrite: bool,
+            runtime: ToolRuntime,
+        ) -> str:
+            del name, enrichment_name, worker_prompt, output_schema, worker_model, input_columns, row_ids, concurrency, overwrite, runtime
             return "virtual_table_enrich requires asynchronous agent invocation; use agent.ainvoke()."
 
         async def enrich_table(

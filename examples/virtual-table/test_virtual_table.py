@@ -113,6 +113,8 @@ async def test_enrich_defines_a_temporary_row_worker(monkeypatch: pytest.MonkeyP
     state = {"messages": [], "_virtual_tables": middleware._initial_tables}
     enrich = _tool(middleware, "virtual_table_enrich")
 
+    assert enrich._injected_args_keys == frozenset({"runtime"})
+    assert "runtime" not in enrich.get_input_schema().model_json_schema()["properties"]
     assert enrich.coroutine is not None
     result = await enrich.coroutine(
         name="docs",

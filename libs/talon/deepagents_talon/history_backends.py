@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from functools import partial
 from importlib.metadata import EntryPoint, entry_points
@@ -14,6 +13,7 @@ import aiosqlite
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
 from deepagents_talon.config import TalonConfigError
+from deepagents_talon.history_drivers import load_driver
 from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_records import finish
 
@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from deepagents_talon.history_profiles import EmbeddingProfile
 
 _STARTUP_TIMEOUT = 15
+# Atlas index creation legitimately outlasts connection setup, so it is budgeted
+# separately rather than squeezed into the shared startup deadline.
+_AUTO_INDEX_TIMEOUT = 60
 _MAX_HNSW_DIMS = 2000
 type StoreFactory = Callable[[str], AbstractAsyncContextManager[BaseStore]]
 
@@ -144,11 +147,7 @@ async def _sqlite_store(uri: str) -> AsyncIterator[BaseStore]:
 
 
 def _driver(module: str, extra: str) -> ModuleType:
-    try:
-        return importlib.import_module(module)
-    except ImportError:
-        msg = f"History backend requires deepagents-talon[{extra}]: uv sync --extra {extra}"
-        raise ImportError(msg) from None
+    return load_driver(module, extra, "History backend requires")
 
 
 @asynccontextmanager
@@ -198,37 +197,44 @@ async def _mongodb_store(
     pymongo = _driver("pymongo", "mongodb")
     async with AsyncExitStack() as stack:
         try:
-            client = pymongo.MongoClient(
-                uri,
-                connect=False,
-                serverSelectionTimeoutMS=10000,
-                connectTimeoutMS=10000,
-                socketTimeoutMS=10000,
-                readPreference="primary",
-                w="majority",
-            )
-            stack.push_async_callback(asyncio.to_thread, client.close)
-            target = client.get_default_database()[collection]
-            config = (
-                driver.create_vector_index_config(
-                    embed=index["embed"],
-                    dims=-1 if profile and not profile.client_side else index["dims"],
-                    fields=["text"],
-                    relevance_score_fn=None if profile and not profile.client_side else "cosine",
-                    embedding_key="embedding",
+            # `finish()` deliberately runs to completion, so this deadline bounds
+            # connection setup and teardown around the store build rather than
+            # interrupting it; `auto_index_timeout` is what bounds the build itself.
+            async with asyncio.timeout(_STARTUP_TIMEOUT + _AUTO_INDEX_TIMEOUT):
+                client = pymongo.MongoClient(
+                    uri,
+                    connect=False,
+                    serverSelectionTimeoutMS=10000,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=10000,
+                    readPreference="primary",
+                    w="majority",
                 )
-                if index is not None
-                else None
-            )
-            store = await finish(
-                asyncio.to_thread(
-                    driver.MongoDBStore,
-                    target,
-                    index_config=config,
-                    auto_index_timeout=60,
-                    query_model=profile.query_model or None if profile else None,
+                stack.push_async_callback(asyncio.to_thread, client.close)
+                target = client.get_default_database()[collection]
+                config = (
+                    driver.create_vector_index_config(
+                        embed=index["embed"],
+                        dims=-1 if profile and not profile.client_side else index["dims"],
+                        fields=["text"],
+                        relevance_score_fn=None
+                        if profile and not profile.client_side
+                        else "cosine",
+                        embedding_key="embedding",
+                    )
+                    if index is not None
+                    else None
                 )
-            )
+                store = await finish(
+                    asyncio.to_thread(
+                        driver.MongoDBStore,
+                        target,
+                        index_config=config,
+                        auto_index_timeout=_AUTO_INDEX_TIMEOUT,
+                        query_model=profile.query_model or None if profile else None,
+                    )
+                )
+                stack.push_async_callback(_stop_dispatcher, store)
         except Exception:  # noqa: BLE001  # Driver startup errors may contain URI credentials.
             msg = "Could not initialize MongoDB history; check the URI, server, and permissions"
             raise TalonConfigError(msg) from None

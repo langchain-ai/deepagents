@@ -1430,11 +1430,13 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["aws_session_token"] == "test-session-token"
         assert all(name not in os.environ for name in aws_environment)
 
+    @pytest.mark.parametrize("override", [None, "", "from-prefix"])
     @patch("langchain.chat_models.init_chat_model")
     def test_stored_key_and_endpoint_do_not_mutate_process_environment(
         self,
         mock_init_chat_model: Mock,
         monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
     ) -> None:
         """Scoped model creation passes stored auth explicitly."""
         import os
@@ -1457,7 +1459,10 @@ class TestWorkspaceStoredCredentials:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-        with use_environment({}):
+        environment = (
+            {} if override is None else {"DEEPAGENTS_CODE_OPENAI_API_KEY": override}
+        )
+        with use_environment(environment):
             create_model("openai:gpt-5.5")
 
         kwargs = mock_init_chat_model.call_args.kwargs

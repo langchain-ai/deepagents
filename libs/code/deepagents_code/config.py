@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
+from deepagents_code._constants import (
+    FIREWORKS_PROVIDER_ID_PREFIX,
+    LANGSMITH_API_KEY_ENV_VARS as _TRACING_API_KEY_ENV_VARS,
+)
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
     AUTO_CLASSIFIER_TIMEOUT,
@@ -882,9 +885,6 @@ def _load_dotenv(
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
-
-_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
-"""Env vars that hold the LangSmith API key used for trace ingestion."""
 
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
@@ -3345,12 +3345,12 @@ def _parse_extra_skills_dirs(
     in user-specified locations without being rejected by the path
     containment check.
 
-    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, colon-separated) takes
-    precedence: when set, `config.toml` values are ignored.
+    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, separated by
+    `os.pathsep`) takes precedence: when set, `config.toml` values are ignored.
 
     Args:
-        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (colon-separated), or
-            `None` if unset.
+        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (separated by
+            `os.pathsep`), or `None` if unset.
         config_toml_dirs: List of path strings from
             `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
@@ -3361,7 +3361,7 @@ def _parse_extra_skills_dirs(
     if env_raw:
         dirs = [
             _resolve_extra_skills_path(p.strip())
-            for p in env_raw.split(":")
+            for p in env_raw.split(os.pathsep)
             if p.strip()
         ]
         return dirs or None

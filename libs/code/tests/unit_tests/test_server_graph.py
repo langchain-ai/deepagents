@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import importlib
 import os
 import subprocess
 import sys
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from blockbuster import blockbuster_ctx
+from blockbuster import BlockBuster, blockbuster_ctx
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code.integrations import sandbox_factory
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -433,6 +437,159 @@ asyncio.run(main())
             "enable_interpreter": True,
             "auto_classifier_model": "openai:gpt-5.6-luna",
         }
+
+    async def test_sandbox_creation_does_not_trip_blockbuster_guard(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Sandbox creation must not run sync blocking I/O on the event loop.
+
+        `langgraph dev` arms the blockbuster guard
+        (`langgraph_runtime_inmem/queue.py` -> `_enable_blockbuster`), which
+        raises `BlockingError` when a patched blocking call runs on the
+        asyncio loop. `_make_graphs` creates the sandbox synchronously, so
+        `dcode --sandbox <provider>` fails the server readiness check with
+        "Blocking call to socket.socket.connect" (reproduced on langsmith,
+        agentcore, and daytona). This test pins the desired behavior: the
+        provider's sync `get_or_create` must not run directly on the loop.
+        """
+        graph_obj = object()
+        model_obj = object()
+
+        def create_cli_agent_side_effect(**_kwargs: object) -> tuple[object, object]:
+            return graph_obj, _backend_with_offload(object())
+
+        # The sync sandbox SDKs (langsmith `SandboxClient`, daytona, ...) do
+        # real blocking I/O such as socket connects. Model that with a sleep:
+        # blockbuster flags it identically on the event loop, and it stays
+        # deterministic under pytest-socket's `--disable-socket`.
+        def blocking_get_or_create(**_kwargs: object) -> object:
+            time.sleep(0.001)
+            return MagicMock()
+
+        provider = MagicMock()
+        provider.get_or_create.side_effect = blocking_get_or_create
+        registry = MagicMock()
+        registry.get_metadata.return_value = None
+        registry.get_params.return_value = {}
+
+        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None)
+        environment = dict(os.environ)
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            Credentials=SimpleNamespace(
+                snapshot_from_environment=MagicMock(return_value=settings_obj)
+            ),
+            _ensure_bootstrap=MagicMock(),
+            _preview_dotenv_environ=MagicMock(return_value=environment),
+            active_environment=MagicMock(return_value=environment),
+            use_environment=__import__("contextlib").nullcontext,
+            _tracing_environment_values=MagicMock(return_value={}),
+            is_langsmith_redaction_enabled=MagicMock(return_value=True),
+            configure_langsmith_secret_redaction=MagicMock(),
+            reconcile_tracing_environment=MagicMock(),
+            create_model=MagicMock(
+                return_value=SimpleNamespace(
+                    model=model_obj,
+                    provider="openai",
+                    apply_to_runtime_state=MagicMock(),
+                    model_retries=5,
+                    cli_max_retries=None,
+                ),
+            ),
+            is_memory_auto_save_enabled=MagicMock(return_value=False),
+            resolve_auto_classifier_model_for_provider=MagicMock(return_value=None),
+            credentials=settings_obj,
+        )
+        agent_module = _module_with_attrs(
+            "deepagents_code.agent",
+            create_cli_agent=MagicMock(side_effect=create_cli_agent_side_effect),
+            load_async_subagents=MagicMock(return_value=None),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            create_web_search_tool=Mock(),
+            fetch_url=object(),
+            get_current_thread_id=object(),
+            web_search=object(),
+        )
+        config = ServerConfig(no_mcp=True, sandbox_type="langsmith")
+        env_overrides = {
+            f"{SERVER_ENV_PREFIX}{suffix}": value
+            for suffix, value in config.to_env().items()
+            if value is not None
+        }
+
+        with (
+            patch.dict(os.environ, env_overrides, clear=False),
+            patch.dict(
+                sys.modules,
+                {
+                    "deepagents_code.agent": agent_module,
+                    "deepagents_code.config": config_module,
+                    "deepagents_code.tools": tools_module,
+                },
+            ),
+            patch(
+                "deepagents_code.project_utils.get_server_project_context",
+                return_value=None,
+            ),
+            patch.object(
+                sandbox_factory,
+                "_get_provider",
+                return_value=provider,
+            ),
+            patch.object(
+                sandbox_factory,
+                "_get_registry",
+                return_value=registry,
+            ),
+        ):
+            module = _import_fresh_server_graph()
+            bb = BlockBuster()
+            bb.activate()
+            try:
+                try:
+                    result = await module.make_graph()
+                except SystemExit as exc:
+                    captured = capsys.readouterr()
+                    pytest.fail(
+                        "sandbox creation tripped the blockbuster "
+                        f"blocking-I/O guard: SystemExit({exc.code}) -- "
+                        f"startup error: {captured.err}"
+                    )
+            finally:
+                # Explicit activate/deactivate rather than `blockbuster_ctx`:
+                # blockbuster <1.5.27 lacks the try/finally in that helper, so
+                # the guard leaks into later tests when the body raises.
+                bb.deactivate()
+
+        assert result is graph_obj
+
+    async def test_cancelled_sandbox_creation_cleans_up_after_entry(self) -> None:
+        module = _import_fresh_server_graph()
+        entered = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        backend = object()
+
+        class Context:
+            def __enter__(self) -> object:
+                entered.set()
+                release.wait()
+                return backend
+
+            def __exit__(self, *_args: object) -> None:
+                closed.set()
+
+        task = asyncio.create_task(module._open_sandbox(Context))
+        await asyncio.to_thread(entered.wait)
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert closed.is_set()
 
 
 class TestWorkspaceEnvironmentBinding:

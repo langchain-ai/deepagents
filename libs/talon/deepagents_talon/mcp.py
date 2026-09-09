@@ -43,10 +43,14 @@ from deepagents_talon.mcp_auth import (
     format_login_error,
     prepare_oauth_login,
 )
-from deepagents_talon.mcp_config import MCPConfigStore
+from deepagents_talon.mcp_config import (
+    MCPConfigStore,
+    agent_workspace_root,
+    auto_approve_enabled,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -84,12 +88,31 @@ class _MCPLoginRequiredError(MCPConfigError):
     """An MCP server requires OAuth login before loading tools."""
 
 
+def _exception_leaves(exc: BaseException) -> Iterator[BaseException]:
+    """Yield `exc`, or every leaf of it when it is a possibly nested group.
+
+    Anyio task groups wrap even a single exception, so any failure raised inside
+    an MCP `ClientSession` reaches callers as a group and must be matched on its
+    leaves rather than on the group type.
+
+    Args:
+        exc: Exception to flatten.
+
+    Yields:
+        Each non-group exception, in the order the group holds them.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        for nested in exc.exceptions:
+            yield from _exception_leaves(nested)
+    else:
+        yield exc
+
+
 def _authentication_required(exc: BaseException) -> bool:
-    if isinstance(exc, (_MCPLoginRequiredError, MCPAuthorizationError)):
-        return True
-    if isinstance(exc, ExceptionGroup):
-        return any(_authentication_required(nested) for nested in exc.exceptions)
-    return False
+    return any(
+        isinstance(leaf, (_MCPLoginRequiredError, MCPAuthorizationError))
+        for leaf in _exception_leaves(exc)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +187,12 @@ class MCPToolProvider:
         self._refresh_revision = 0
         self._applied_revision = 0
         self._lock = asyncio.Lock()
-        self._config_store = MCPConfigStore(mcp_config_path(config), self.request_refresh)
+        self._config_store = MCPConfigStore(
+            mcp_config_path(config),
+            self.request_refresh,
+            agent_root=agent_workspace_root(config.env),
+            auto_approve=auto_approve_enabled(config.env),
+        )
 
     async def load(self) -> MCPTools:
         """Load tools and include the narrow proactive authorization capability."""
@@ -313,6 +341,7 @@ class MCPToolProvider:
                 self._refresh_revision += 1
             raise
         except (
+            ExceptionGroup,
             HTTPError,
             McpError,
             OAuthFlowError,
@@ -475,6 +504,24 @@ async def login_mcp_server(
         await _open_mcp_session(client, server_name)
     except DeviceAuthorizationCompletedError:
         pass
+    except ExceptionGroup as group:
+        # A completed device flow raises from inside the session's task group,
+        # which wraps it, and can aggregate with a sibling failure from tearing
+        # down the abandoned code flow. The marker is raised only after the
+        # credentials are persisted, so its presence still means the login
+        # succeeded; report the rest rather than discarding or misreading it.
+        leaves = tuple(_exception_leaves(group))
+        remainder = tuple(
+            leaf for leaf in leaves if not isinstance(leaf, DeviceAuthorizationCompletedError)
+        )
+        if len(remainder) == len(leaves):
+            print(f"MCP login failed: {format_login_error(group)}", file=sys.stderr)  # noqa: T201
+            return 1
+        for leaf in remainder:
+            logger.warning(
+                "MCP login session failed after credentials were saved: %s",
+                format_login_error(leaf),
+            )
     except (
         HTTPError,
         McpError,
@@ -622,9 +669,10 @@ async def _finish_authorization(
 
 
 def _authorization_failure_reason(exc: Exception) -> AuthorizationFailureReason:
-    if isinstance(exc, TimeoutError):
+    leaves = tuple(_exception_leaves(exc))
+    if any(isinstance(leaf, TimeoutError) for leaf in leaves):
         return "expired"
-    if isinstance(exc, MCPAuthorizationError):
+    if any(isinstance(leaf, MCPAuthorizationError) for leaf in leaves):
         return "invalid_callback"
     return "error"
 

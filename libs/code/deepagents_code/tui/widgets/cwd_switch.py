@@ -106,7 +106,6 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         project_settings_change_detected: bool = False,
         abort: CwdSwitchAbortMode | None = None,
         server_refusal: CwdSwitchServerRefusal | None = None,
-        refusal_reason: str | None = None,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
@@ -115,7 +114,6 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self._project_settings_change_detected = project_settings_change_detected
         self._abort: CwdSwitchAbortMode | None = abort
         self._server_refusal = server_refusal
-        self._refusal_reason = refusal_reason
 
     def _title_text(self) -> str:
         """Return the title, phrased for the flow that opened the prompt.
@@ -127,9 +125,9 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         wording.
         """
         if self._server_refusal == "restart":
-            return "Restart the agent server to switch directories?"
+            return "Restart required to switch directories"
         if self._server_refusal == "unavailable":
-            return "This thread cannot be opened from its original directory"
+            return "Cannot switch directories from this client"
         if self._abort is None or self._abort == "resume":
             return "Resume from the thread's original directory?"
         if self._abort == "thread_switch":
@@ -140,30 +138,15 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """Return the prompt body text."""
         current = format_path(self._current_cwd)
         target = format_path(self._thread_cwd)
-        if self._server_refusal is not None:
-            reason = self._refusal_reason or "The server did not provide a reason."
-            if self._server_refusal == "restart":
-                action = (
-                    "A restart stops and starts the agent server. MCP servers "
-                    "reconnect. In-flight work is lost. Restart to switch "
-                    "directories. Stay to keep the current thread and directory."
-                )
-            elif self._server_refusal == "unavailable":
-                action = (
-                    "This client does not own the agent server, so it cannot restart "
-                    "it. Stay on the current thread. To open this thread here, start "
-                    "a client that owns a server which can host the directory."
-                )
-            else:
-                assert_never(self._server_refusal)
+        if self._server_refusal == "restart":
             return (
-                "This thread was last used from:\n"
-                f"  {target}\n\n"
-                "You're currently in:\n"
-                f"  {current}\n\n"
-                "The agent server cannot host the thread's directory:\n"
-                f"  {reason}\n\n"
-                f"{action}"
+                f"To use {target}, restart the agent server. "
+                "Any running work will stop."
+            )
+        if self._server_refusal == "unavailable":
+            return (
+                f"This client cannot switch to {target}. Open this thread in a "
+                "client that can use that directory."
             )
         settings_note = (
             "\n\nSwitching will also reload project-specific config like .env, "
@@ -191,9 +174,9 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
         if self._server_refusal == "restart":
-            return f"Enter: restart {get_glyphs().separator} Esc: stay"
+            return f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
         if self._server_refusal == "unavailable":
-            return "Enter or Esc: stay on current thread"
+            return "Enter or Esc: stay here"
         help_text = f"Enter: switch {get_glyphs().separator} Esc: stay in cwd"
         if self._abort is None:
             return help_text

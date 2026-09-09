@@ -26058,7 +26058,7 @@ class TestResumeThreadCwdSwitch:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """An owned server refusal prompts with its reason before restart."""
+        """An owned server refusal prompts before restarting."""
         import httpx
         from langgraph_sdk.errors import ConflictError
 
@@ -26101,7 +26101,7 @@ class TestResumeThreadCwdSwitch:
         retarget.assert_awaited_once_with(reload_manager=False)
         screen = push_wait.call_args.args[0]
         assert screen._server_refusal == "restart"
-        assert reason in screen._body_text()
+        assert screen._title_text() == "Restart required to switch directories"
 
     async def test_declining_refused_switch_keeps_current_state(
         self,
@@ -26155,18 +26155,8 @@ class TestResumeThreadCwdSwitch:
         assert app._session_state.thread_id == "old-thread"
         replace_server.assert_not_awaited()
 
-    @pytest.mark.parametrize(
-        ("body", "expected_reason"),
-        [
-            ({"detail": "the project policy differs"}, "the project policy differs"),
-            (None, "The server did not provide a reason."),
-            ({"detail": "   "}, "The server did not provide a reason."),
-        ],
-    )
     async def test_refused_unowned_server_does_not_offer_restart(
         self,
-        body: object,
-        expected_reason: str,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -26190,7 +26180,7 @@ class TestResumeThreadCwdSwitch:
                 side_effect=ConflictError(
                     "409 Conflict",
                     response=response,
-                    body=body,
+                    body={"detail": "the project policy differs"},
                 )
             ),
         )
@@ -26210,8 +26200,8 @@ class TestResumeThreadCwdSwitch:
         replace_server.assert_not_awaited()
         screen = push_wait.call_args.args[0]
         assert screen._server_refusal == "unavailable"
-        assert expected_reason in screen._body_text()
-        assert "restart" not in screen._help_text().lower()
+        assert "project policy" not in screen._body_text()
+        assert screen._help_text() == "Enter or Esc: stay here"
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,

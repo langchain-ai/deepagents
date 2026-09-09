@@ -878,7 +878,6 @@ class _CwdServerReuseResult:
     """Server decision for a destination workspace."""
 
     outcome: Literal["continue", "abort", "restart"]
-    refusal_reason: str | None = None
     workspace_snapshot: tuple[str | None, dict[str, dict[str, Any]]] | None = None
 
 
@@ -29128,14 +29127,8 @@ class DeepAgentsApp(App):
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
             await remote.aswitch_workspace(config, str(cwd), validate_only=True)
-        except ConflictError as exc:
-            body = exc.body
-            reason = body.get("detail") if isinstance(body, dict) else None
-            if not isinstance(reason, str) or not reason.strip():
-                reason = None
-            else:
-                reason = reason.strip()
-            return _CwdServerReuseResult("restart", reason)
+        except ConflictError:
+            return _CwdServerReuseResult("restart")
         except Exception as exc:
             logger.exception("Server could not validate the destination workspace")
             self.notify(
@@ -29408,7 +29401,6 @@ class DeepAgentsApp(App):
                 project_settings_change_detected=project_settings_change_detected,
                 abort=abort,
                 server_refusal=server_refusal,
-                refusal_reason=reuse.refusal_reason if reuse is not None else None,
             )
         )
         if server_refusal == "unavailable":

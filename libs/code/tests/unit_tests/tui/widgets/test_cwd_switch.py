@@ -47,20 +47,20 @@ class TestCwdSwitchPromptScreen:
         assert "will also reload project-specific config" in changed._body_text()
 
     def test_owned_server_refusal_explains_restart(self) -> None:
-        """The restart prompt shows the refusal and all restart costs."""
+        """The restart prompt concisely explains the choice and its cost."""
         screen = CwdSwitchPromptScreen(
             current_cwd="/a/current",
             thread_cwd="/b/target",
             server_refusal="restart",
-            refusal_reason="a sandbox belongs to another workspace",
         )
 
-        body = screen._body_text()
-        assert "a sandbox belongs to another workspace" in body
-        assert "stops and starts the agent server" in body
-        assert "MCP servers reconnect" in body
-        assert "In-flight work is lost" in body
-        assert screen._help_text().startswith("Enter: restart")
+        assert screen._title_text() == "Restart required to switch directories"
+        assert screen._body_text() == (
+            "To use /b/target, restart the agent server. Any running work will stop."
+        )
+        assert screen._help_text() == (
+            f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
+        )
 
     def test_unowned_server_refusal_has_no_restart(self) -> None:
         """A client without server ownership only offers staying."""
@@ -68,16 +68,16 @@ class TestCwdSwitchPromptScreen:
             current_cwd="/a/current",
             thread_cwd="/b/target",
             server_refusal="unavailable",
-            refusal_reason=None,
         )
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
 
-        body = screen._body_text()
-        assert "The server did not provide a reason." in body
-        assert "does not own the agent server" in body
-        assert "start a client that owns a server" in body
-        assert "restart" not in screen._help_text().lower()
+        assert screen._title_text() == "Cannot switch directories from this client"
+        assert screen._body_text() == (
+            "This client cannot switch to /b/target. Open this thread in a client "
+            "that can use that directory."
+        )
+        assert screen._help_text() == "Enter or Esc: stay here"
         screen.action_switch()
         dismiss.assert_called_once_with("stay")
 

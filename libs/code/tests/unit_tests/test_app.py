@@ -28618,8 +28618,9 @@ class TestColdCacheWarningFlow:
             ("google_genai:gemini-3", None),
         ],
     )
+    @pytest.mark.parametrize("nested_config", [False, True])
     async def test_reasoning_effort_cache_identity(
-        self, model_spec: str, expected_reason: str | None
+        self, model_spec: str, expected_reason: str | None, nested_config: bool
     ) -> None:
         """An `/effort` change warns only where effort moves the prefix.
 
@@ -28628,6 +28629,8 @@ class TestColdCacheWarningFlow:
         the prompt, so an effort change invalidates the cached prefix for
         both. Google documents no such link, so no warning may fire there.
         """
+        from deepagents_code.model_config import ModelConfig
+
         app = DeepAgentsApp()
         app._model_override = model_spec
         app._model_params_override = {"reasoning_effort": "high"}
@@ -28636,8 +28639,18 @@ class TestColdCacheWarningFlow:
         app._last_model_request_at = datetime.now(UTC).isoformat()
         app._context_tokens = 50_000
         app._cold_cache_warning_threshold_usd = 0.10
-        config = MagicMock()
-        config.get_effective_kwargs.return_value = {"reasoning_effort": "high"}
+        provider, _, model_name = model_spec.partition(":")
+        config = ModelConfig(
+            providers={
+                provider: {
+                    "params": {
+                        model_name: {"reasoning": {"effort": "medium"}}
+                        if nested_config
+                        else {}
+                    }
+                }
+            }
+        )
 
         def estimate(usage: dict[str, Any], _model: str, _provider: str) -> float:
             details = usage.get("input_token_details", {})
@@ -28656,6 +28669,12 @@ class TestColdCacheWarningFlow:
         ):
             warning = await app._cold_cache_warning_for(
                 QueuedMessage("continue", "normal")
+            )
+
+            app._last_cache_model_params = {"reasoning_effort": "high"}
+            assert (
+                await app._cold_cache_warning_for(QueuedMessage("continue", "normal"))
+                is None
             )
 
         assert getattr(warning, "reason", None) == expected_reason

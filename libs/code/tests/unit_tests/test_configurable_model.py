@@ -332,6 +332,38 @@ def test_checkpoint_records_reasoning_effort_for_cache_identity(
     assert update["_model_params"] == {"reasoning_effort": "high"}
 
 
+@pytest.mark.parametrize("effort", ["high", "low"])
+def test_checkpoint_composes_configured_reasoning_effort(effort: str) -> None:
+    """Runtime effort overrides nested config in the saved cache identity."""
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={
+            "openai": {
+                "params": {
+                    "gpt-5.6": {"reasoning": {"effort": "medium", "summary": "auto"}}
+                }
+            }
+        }
+    )
+    request = _make_request(
+        _make_model("gpt-5.6"),
+        context=CLIContext(model_params={"reasoning_effort": effort}),
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        result = ConfigurableModelMiddleware().wrap_model_call(
+            request, lambda _r: _make_response()
+        )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": effort}
+    assert update["_model_params"] == {"reasoning_effort": effort}
+    assert config.get_kwargs("openai", model_name="gpt-5.6")["reasoning"] == {
+        "effort": "medium",
+        "summary": "auto",
+    }
+
+
 def test_checkpoint_records_nested_openai_reasoning_effort() -> None:
     """The nested `reasoning: {"effort": ...}` shape must not slip through.
 

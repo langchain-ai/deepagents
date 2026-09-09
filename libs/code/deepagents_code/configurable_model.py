@@ -724,6 +724,7 @@ def _effective_cache_params(
     if not model_spec or ":" not in model_spec:
         overrides = dict(runtime_overrides) if runtime_overrides else None
         return cache_identity_params(overrides, model_spec=model_spec) or None
+    from deepagents_code.config import _compose_openai_reasoning_effort
     from deepagents_code.model_config import ModelConfig
 
     _, _, model_name = model_spec.partition(":")
@@ -748,6 +749,11 @@ def _effective_cache_params(
     if not isinstance(kwargs, dict):
         overrides = dict(runtime_overrides) if runtime_overrides else None
         return cache_identity_params(overrides, model_spec=model_spec) or None
+    # Match constructor precedence when config uses native nested reasoning.
+    overrides = runtime_overrides or {}
+    kwargs = _compose_openai_reasoning_effort(
+        provider, kwargs, overrides.get("reasoning_effort"), overrides.get("reasoning")
+    )
     # `base_url` is tracked separately as the endpoint identity; keeping it out
     # of the params avoids a double-counted identity change.
     result = cache_identity_params(

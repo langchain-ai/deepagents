@@ -40,8 +40,9 @@
 #   `pull_request` workflows, so the required checks would never run.
 # - Idempotent per run identity: if a PR is already open for the selected
 #   package and dependency set, the workflow refreshes its generated changes and
-#   description instead of creating a duplicate. A cron `all` run, a manual broad run, and
-#   narrowed runs over different dependency sets each use their own branch.
+#   description instead of creating a duplicate. A cron `all` run, a manual
+#   broad run, and narrowed runs over different dependency sets each use their
+#   own branch.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -290,6 +291,7 @@ jobs:
           done
 
           git restore --worktree -- "${files[@]}"
+          base_commit=$(git rev-parse HEAD)
           git fetch --depth=1 origin "$BRANCH"
           tip_email=$(git log -1 --format='%ce' FETCH_HEAD)
           if [ "$tip_email" != "$BOT_EMAIL" ]; then
@@ -297,6 +299,7 @@ jobs:
             exit 1
           fi
           git checkout -B "$BRANCH" FETCH_HEAD
+          git read-tree --reset -u "$base_commit"
           for file in "${files[@]}"; do
             cp "$generated/$file" "$file"
           done

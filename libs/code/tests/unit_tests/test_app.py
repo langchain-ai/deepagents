@@ -28613,12 +28613,21 @@ class TestColdCacheWarningFlow:
         ("model_spec", "expected_reason"),
         [
             ("openai:gpt-6-astra", "identity_changed"),
-            ("openai:gpt-5.6", None),
+            ("openai:gpt-5.6", "identity_changed"),
+            ("anthropic:claude-opus-5", "identity_changed"),
+            ("google_genai:gemini-3", None),
         ],
     )
     async def test_reasoning_effort_cache_identity(
         self, model_spec: str, expected_reason: str | None
     ) -> None:
+        """An `/effort` change warns only where effort moves the prefix.
+
+        OpenAI documents that changing `reasoning.effort` can rewrite
+        model-side instructions, and Anthropic renders thinking config into
+        the prompt, so an effort change invalidates the cached prefix for
+        both. Google documents no such link, so no warning may fire there.
+        """
         app = DeepAgentsApp()
         app._model_override = model_spec
         app._model_params_override = {"reasoning_effort": "high"}

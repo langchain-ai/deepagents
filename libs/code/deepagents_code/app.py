@@ -12040,9 +12040,11 @@ class DeepAgentsApp(App):
                 age_seconds = max(elapsed or 0.0, 0.0)
                 if (
                     model_spec != last_spec
-                    # Only cache-participating params are compared. Astra's
-                    # request-level `/effort` value participates because OpenAI
-                    # may rewrite its model-side instruction prefix.
+                    # Only cache-participating params are compared. OpenAI and
+                    # Anthropic reasoning-effort settings participate because
+                    # both providers render effort into the prefix: OpenAI may
+                    # rewrite model-side instructions, Anthropic always renders
+                    # the thinking config into the prompt.
                     or cache_identity_params(current_params, model_spec=model_spec)
                     != cache_identity_params(last_params, model_spec=last_spec)
                     # `None` means no endpoint was ever recorded -- e.g. a

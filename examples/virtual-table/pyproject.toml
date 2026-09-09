@@ -27,14 +27,17 @@ docstring-code-format = true
 select = ["ALL"]
 ignore = [
     "ANN401",
+    "C901",
     "COM812",
     "ISC001",
     "BLE001",
     "FBT001",
     "N999",
     "PLR0913",
+    "PLR0915",
     "S608",
     "TC002",
+    "TC003",
     "TRY301",
 ]
 

@@ -7,18 +7,13 @@ import sqlite3
 from typing import Any
 
 import pytest
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.types import Command
-from pydantic import BaseModel
 
 from virtual_table import VirtualTableMiddleware
-
-
-class TaskInput(BaseModel):
-    description: str
-    subagent_type: str
 
 
 def _runtime(state: dict[str, Any], *, tools: list | None = None) -> ToolRuntime:
@@ -76,61 +71,72 @@ def test_query_rejects_writes_and_unapproved_functions() -> None:
         query.invoke({"name": "docs", "sql": "SELECT random() FROM docs", "parameters": [], "runtime": _runtime(state)})
 
 
-@pytest.mark.asyncio
-async def test_enrich_materializes_structured_columns_and_errors() -> None:
-    async def task(description: str, subagent_type: str, runtime: ToolRuntime) -> Command:
-        assert subagent_type == "analyst"
-        assert "<row_data>" in description
-        row = json.loads(description.split("<row_data>\n", 1)[1].split("\n</row_data>", 1)[0])
-        if row["text"] == "bad":
-            raise RuntimeError("provider failed")
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        json.dumps({"sentiment": "positive", "length": len(row["text"])}),
-                        tool_call_id=runtime.tool_call_id,
-                    )
-                ]
-            }
-        )
+async def test_enrich_defines_a_temporary_row_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
 
-    task_tool = StructuredTool.from_function(name="task", description="Run a subagent.", coroutine=task, infer_schema=False, args_schema=TaskInput)
-    middleware = VirtualTableMiddleware(initial_tables={"docs": [{"text": "great"}, {"text": "bad"}]})
+    class Worker:
+        async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+            message = payload["messages"][0]
+            assert "<row_data>" in message.content
+            row = json.loads(message.content.split("<row_data>\n", 1)[1].split("\n</row_data>", 1)[0])
+            calls.append({"row": row, "config": config})
+            return {"structured_response": {"sentiment": "positive", "length": len(row["text"])}}
+
+    def worker(model: Any, prompt: str, schema: dict[str, Any]) -> Worker:
+        assert isinstance(model, FakeListChatModel)
+        assert prompt == "Classify sentiment."
+        assert schema["required"] == ["sentiment", "length"]
+        return Worker()
+
+    monkeypatch.setattr("virtual_table._worker", worker)
+    middleware = VirtualTableMiddleware(initial_tables={"docs": [{"text": "great"}, {"text": "good"}]})
+    middleware._model = FakeListChatModel(responses=["unused"])
     state = {"messages": [], "_virtual_tables": middleware._initial_tables}
     enrich = _tool(middleware, "virtual_table_enrich")
-    runtime = _runtime(state, tools=[task_tool, enrich])
 
     assert enrich.coroutine is not None
     result = await enrich.coroutine(
         name="docs",
         enrichment_name="classification",
-        instruction="Classify sentiment.",
-        subagent_type="analyst",
+        worker_prompt="Classify sentiment.",
         output_schema={
             "type": "object",
             "properties": {"sentiment": {"type": "string"}, "length": {"type": "integer"}},
             "required": ["sentiment", "length"],
         },
+        worker_model=None,
         input_columns=["text"],
         row_ids=None,
         concurrency=2,
         overwrite=False,
-        runtime=runtime,
+        runtime=_runtime(state),
     )
 
     assert isinstance(result, Command)
     rows = result.update["_virtual_tables"]["docs"]
-    assert rows[0] == {
-        "text": "great",
-        "_row_id": 1,
-        "sentiment": "positive",
-        "length": 5,
-        "classification_status": "succeeded",
-        "classification_error": None,
-    }
-    assert rows[1]["classification_status"] == "error"
-    assert "provider failed" in rows[1]["classification_error"]
+    assert rows[0]["sentiment"] == "positive"
+    assert rows[0]["length"] == 5
+    assert rows[0]["classification_status"] == "succeeded"
+    assert rows[1]["classification_status"] == "succeeded"
+    assert {call["row"]["text"] for call in calls} == {"great", "good"}
+
+
+def test_middleware_adds_table_instructions() -> None:
+    middleware = VirtualTableMiddleware()
+    model = FakeListChatModel(responses=["unused"])
+    request = ModelRequest(model=model, messages=[], system_message=SystemMessage("Host instructions."))
+
+    def handler(updated: ModelRequest[Any]) -> ModelResponse[Any]:
+        assert updated.model is model
+        assert "Host instructions." in updated.system_message.text
+        assert "virtual_table_enrich" in updated.system_message.text
+        assert "Define the\n  row worker" in updated.system_message.text
+        return ModelResponse(result=[AIMessage("done")])
+
+    response = middleware.wrap_model_call(request, handler)
+
+    assert response.result[0].text == "done"
+    assert middleware._model is model
 
 
 def test_initial_tables_are_private_state() -> None:

@@ -16431,6 +16431,7 @@ class DeepAgentsApp(App):
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
+                "  @@query         Search recent conversations by title or ID\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
                 "  !!command       Run shell commands without adding "

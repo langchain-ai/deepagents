@@ -15,12 +15,14 @@ from deepagents_code.tui.widgets.autocomplete import (
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
+    ThreadCompletionController,
     _fuzzy_score,
     _fuzzy_search,
     _get_git_executable,
     _get_project_files,
     _run_git_ls_files,
     _scope_files_to_cwd,
+    _thread_token,
 )
 
 
@@ -101,6 +103,85 @@ class TestFuzzyFileControllerCanHandle:
         assert controller.can_handle("@file", 0) is False
         assert controller.can_handle("@file", -1) is False
         assert controller.can_handle("@file", 100) is False
+
+
+class TestThreadCompletionController:
+    """Tests for durable `@@` thread references."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view: MagicMock) -> ThreadCompletionController:
+        controller = ThreadCompletionController(mock_view)
+        controller.update_threads(
+            [
+                {
+                    "thread_id": "11111111-2222-3333-4444-555555555555",
+                    "agent_name": "coder",
+                    "updated_at": "2026-04-14T12:00:00Z",
+                    "initial_prompt": "Fix the parser",
+                    "git_branch": "feature/parser",
+                    "cwd": "/workspace/project",
+                },
+                {
+                    "thread_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "agent_name": "researcher",
+                    "updated_at": "2026-04-13T12:00:00Z",
+                    "initial_prompt": "Research caching",
+                    "git_branch": "main",
+                    "cwd": "/workspace/docs",
+                },
+            ]
+        )
+        return controller
+
+    def test_handles_double_at_but_file_controller_does_not(
+        self,
+        controller: ThreadCompletionController,
+        mock_view: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        assert controller.can_handle("see @@pars", 10)
+        assert controller.can_handle("(@@pars", 7)
+        assert not controller.can_handle("email@@pars", 11)
+        assert not FuzzyFileController(mock_view, cwd=tmp_path).can_handle("@@pars", 6)
+
+    def test_searches_thread_metadata_and_inserts_token(
+        self, controller: ThreadCompletionController, mock_view: MagicMock
+    ) -> None:
+        controller.on_text_changed("compare @@feature", 17)
+        suggestions = mock_view.render_completion_suggestions.call_args.args[0]
+        assert suggestions[0][0] == "Fix the parser"
+        assert suggestions[0][1].endswith(" · 11111111")
+
+        assert controller.apply_selection(0, "compare @@feature", 17)
+        mock_view.replace_completion_range.assert_called_once_with(
+            8,
+            17,
+            "@@[Fix the parser](thread:11111111-2222-3333-4444-555555555555)",
+        )
+
+    def test_multiword_query_matches_title(
+        self, controller: ThreadCompletionController, mock_view: MagicMock
+    ) -> None:
+        controller.on_text_changed("compare @@fix parser", 20)
+        suggestions = mock_view.render_completion_suggestions.call_args.args[0]
+        assert suggestions[0][0] == "Fix the parser"
+
+    def test_token_collapses_and_sanitizes_untrusted_title(self) -> None:
+        token = _thread_token(
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": None,
+                "updated_at": None,
+                "initial_prompt": "Review [unsafe]\n(title)",
+            }
+        )
+        assert token == (
+            "@@[Review unsafe title](thread:11111111-2222-3333-4444-555555555555)"
+        )
 
 
 class TestMultiCompletionManager:

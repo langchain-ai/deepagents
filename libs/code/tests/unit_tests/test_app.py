@@ -25977,12 +25977,12 @@ class TestResumeThreadCwdSwitch:
         replace_server.assert_not_awaited()
         retarget.assert_awaited_once_with(reload_manager=False)
 
-    async def test_accepted_hostable_switch_restores_remote_cache_on_local_failure(
+    async def test_accepted_hostable_switch_does_not_bind_on_local_failure(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A failed local switch restores client workspace state after binding."""
+        """A failed local switch does not commit the server binding."""
         from deepagents_code.client.remote_client import RemoteAgent
 
         current = tmp_path / "current"
@@ -26007,9 +26007,50 @@ class TestResumeThreadCwdSwitch:
         with pytest.raises(OSError, match="cannot chdir"):
             await app._apply_reused_server_cwd_switch(target, "thread-1", reuse)
 
+        switch_workspace.assert_not_awaited()
+        assert agent._snapshot_workspace() == original
+
+    async def test_accepted_hostable_switch_restores_local_state_on_bind_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed server binding restores the already-switched local cwd."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        agent = RemoteAgent("http://test:0")
+        agent._workspace_cwd = str(current)
+        agent._workspaces["thread-1"] = {"cwd": str(current)}
+        original = agent._snapshot_workspace()
+        switch_workspace = AsyncMock(side_effect=RuntimeError("cannot bind"))
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._agent = agent
+        app._server_kwargs = {"cwd": str(current)}
+        monkeypatch.setattr(
+            app,
+            "_refresh_project_context_for_cwd_switch",
+            AsyncMock(),
+        )
+        reuse = _CwdServerReuseResult(
+            "continue",
+            workspace_snapshot=original,
+        )
+
+        with pytest.raises(RuntimeError, match="cannot bind"):
+            await app._apply_reused_server_cwd_switch(target, "thread-1", reuse)
+
         switch_workspace.assert_awaited_once_with(
             {"configurable": {"thread_id": "thread-1"}}, str(target)
         )
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
 
     async def test_refused_switch_restarts_only_after_confirmation(

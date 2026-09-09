@@ -29165,18 +29165,11 @@ class DeepAgentsApp(App):
         previous_mcp_info = self._mcp_server_info
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
-            mcp_server_info = await remote.aswitch_workspace(config, str(cwd))
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
             if self._server_kwargs is not None:
                 self._server_kwargs["cwd"] = self._cwd
-            self._mcp_server_info = mcp_server_info
-            self._mcp_optimistic_original_server_info.clear()
-            self._pending_mcp_login_reconnect = False
-            self._pending_mcp_disable_reconnect_servers.clear()
-            self._mcp_viewer_disable_toggled = False
-            self._sync_pending_mcp_reconnect()
-            self._refresh_mcp_client_state()
+            mcp_server_info = await remote.aswitch_workspace(config, str(cwd))
         except BaseException:
             remote._restore_workspace(reuse.workspace_snapshot)
             self._mcp_server_info = previous_mcp_info
@@ -29188,6 +29181,16 @@ class DeepAgentsApp(App):
                 await self._switch_process_cwd(previous_cwd)
             self._refresh_mcp_client_state()
             raise
+        self._mcp_server_info = mcp_server_info
+        self._mcp_optimistic_original_server_info.clear()
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._mcp_viewer_disable_toggled = False
+        self._sync_pending_mcp_reconnect()
+        try:
+            self._refresh_mcp_client_state()
+        except Exception:
+            logger.exception("Failed to refresh MCP state after cwd switch")
 
     @staticmethod
     async def _preview_project_settings_change(cwd: Path) -> bool:

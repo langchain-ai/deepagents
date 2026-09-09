@@ -122,6 +122,9 @@ _singleton_lock = threading.Lock()
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
 
+_dotenv_provenance: dict[str, Path] = {}
+"""Dotenv file that supplied each value injected into the process environment."""
+
 _reconciled_tracing_values: dict[str, tuple[str | None, str | None]] = {}
 """Original and published tracing values, kept out of later workspace baselines."""
 
@@ -633,6 +636,7 @@ def _dotenv_environment(
     include_global: bool = True,
     unreadable: list[Path] | None = None,
     project_layer: dict[str, str] | None = None,
+    provenance: dict[str, Path] | None = None,
 ) -> dict[str, str]:
     """Apply the project/global dotenv stack to an explicit environment mapping.
 
@@ -649,6 +653,7 @@ def _dotenv_environment(
             `.env` contributes, i.e. what `include_global=False` would return.
             Lets a caller that needs both layers get them from one pass instead
             of re-walking and re-parsing the whole stack.
+        provenance: Filled with the dotenv path that supplied each applied key.
 
     Returns:
         A new effective environment mapping.
@@ -696,6 +701,8 @@ def _dotenv_environment(
             if key in env:
                 continue
             env[key] = value
+            if provenance is not None:
+                provenance[key] = dotenv_path
 
     discovery_root = start_path or Path.cwd()
     try:
@@ -864,6 +871,7 @@ def _load_dotenv(
     if refresh_loaded:
         _strip_dotenv_loaded_values(os.environ)
         _dotenv_loaded_values.clear()
+        _dotenv_provenance.clear()
 
     baseline = dict(os.environ)
     # The project layer alone, because the global profile `.env` configures the
@@ -874,13 +882,18 @@ def _load_dotenv(
     project: dict[str, str] | None = {} if capture_user_langsmith else None
     if capture_user_langsmith:
         _initialize_launch_langsmith_env(baseline)
+    provenance: dict[str, Path] = {}
     effective = _dotenv_environment(
-        start_path=start_path, environ=baseline, project_layer=project
+        start_path=start_path,
+        environ=baseline,
+        project_layer=project,
+        provenance=provenance,
     )
     for key, value in effective.items():
         if key not in baseline:
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
+            _dotenv_provenance[key] = provenance[key]
     if project is not None:
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())

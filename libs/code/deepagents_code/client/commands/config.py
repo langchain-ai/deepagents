@@ -353,6 +353,27 @@ def _resolve(
     return source != "default", source, resolved.value
 
 
+def _resolve_for_display(
+    option: ConfigOption[object],
+    toml_data: dict[str, Any],
+    *,
+    stored: _StoredCredentialView | None = None,
+    managed_toml_data: dict[str, Any],
+) -> tuple[bool, str, object]:
+    """Resolve an option and add display-only dotenv source attribution.
+
+    Returns:
+        The effective set state, attributed source, and value.
+    """
+    is_set, source, value = _resolve(
+        option,
+        toml_data,
+        stored=stored,
+        managed_toml_data=managed_toml_data,
+    )
+    return is_set, _attribute_env_source(source), value
+
+
 def _has_prefixed_env_override(option: ConfigOption[object]) -> bool:
     """Return whether an option's `DEEPAGENTS_CODE_` env var is present."""
     if option.env_var is None:
@@ -416,6 +437,36 @@ def _source_label(source: str, *, option: ConfigOption[object] | None = None) ->
         if env is not None and env.startswith("DEEPAGENTS_CODE_"):
             return f"{source}; session override"
     return source
+
+
+def _attribute_env_source(source: str) -> str:
+    """Append the dotenv path for an environment value loaded by dcode.
+
+    Returns:
+        The attributed source, or `source` when it was not dotenv-injected.
+    """
+    from deepagents_code.config import (
+        _dotenv_loaded_values,
+        _dotenv_provenance,
+        _environment_key,
+        active_environment,
+    )
+
+    if active_environment() is not os.environ:
+        return source
+    suffix = "; invalid"
+    core = source.removesuffix(suffix)
+    name = _env_source_name(core)
+    if name is None:
+        return source
+    key = _environment_key(name)
+    if os.environ.get(key) != _dotenv_loaded_values.get(key):
+        return source
+    path = _dotenv_provenance.get(key)
+    if path is None:
+        return source
+    attributed = f"{core[:-1]}, {path})"
+    return f"{attributed}{suffix}" if source.endswith(suffix) else attributed
 
 
 def _env_source_name(source: str) -> str | None:
@@ -645,7 +696,7 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     resolved = [
         ResolvedOption(
             opt,
-            *_resolve(
+            *_resolve_for_display(
                 opt,
                 toml_data,
                 stored=stored,
@@ -965,7 +1016,7 @@ def _run_get_section(
     resolved = [
         ResolvedOption(
             opt,
-            *_resolve(
+            *_resolve_for_display(
                 opt,
                 toml_data,
                 stored=stored,
@@ -1041,7 +1092,7 @@ def _run_get(
     # Only credential options consult the store, so skip the read (and its
     # warning) for everything else.
     stored = _load_stored_credentials() if option.group == "Credentials" else None
-    is_set, source, value = _resolve(
+    is_set, source, value = _resolve_for_display(
         option,
         toml_data,
         stored=stored,

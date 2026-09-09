@@ -5,7 +5,7 @@ description: How deepagents and dcode control model-visible context through resu
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-09T08:05:37.706Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -21,15 +21,19 @@ sources:
     resource: repo://libs/code/deepagents_code/offload_middleware.py
   - id: openwiki-source-9b6cab59e92c8914079f0f53
     resource: repo://libs/code/deepagents_code/offload.py
+  - id: openwiki-source-6e002fd7a8a5dcb5186cae05
+    resource: repo://libs/code/tests/integration_tests/test_compact_resume.py
   - id: openwiki-source-71b99fa3b7baf6ea6b10c6fc
     resource: repo://libs/code/tests/integration_tests/test_offload_server_side.py
+  - id: openwiki-source-6a586415ef68cbe7c7967a41
+    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
   - id: openwiki-source-9841bc6daf811e4615c54a88
     resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
   - id: openwiki-source-64b92f60456305edc143f48a
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 ---
 
 # Context Management and Offload
@@ -83,6 +87,8 @@ Only after overflow-triggered compaction, `_clip_overflow_tail` examines a **tra
 
 Forced compaction is a server operation, not a client checkpoint mutation. `OffloadOperation` plans summary state from hydrated checkpoint messages and dispatches a synthetic forced `compact_conversation` through `PreCompact` and `PreToolUse`. A hook interrupt returns to the client without a state write; resume invokes the operation again from the beginning with accumulated responses. The forced call id is derived from the attempt checkpoint namespace, stable across resume rounds but different across attempts. Missing hook outcome data fails closed.
 
+The HTTP request carries a non-empty `operation_id`, runtime context, and accumulated hook responses; the thread id is taken from the URL. The route validates consumed context fields, but treats model selection as server-owned: it removes client model, parameter, and summarization-model choices and restores the model specification and parameters checkpointed by a successful agent turn. Transport, proxy, client, and header parameters are also stripped at the boundary. This prevents a request from redirecting a credentialed summary call to a client-selected endpoint; a thread without checkpointed model settings falls back to the server launch configuration.
+
 ```mermaid
 flowchart TD
     Start["POST offload for thread"] --> Idle{"Thread idle and no pending work"}
@@ -104,11 +110,13 @@ Caption: The server-owned compaction/offload path reserves allowed state before 
 
 ### Commit, conflicts, and cancellation
 
-The HTTP boundary locks an idle thread, rejects active, interrupted, or pending graph work, then verifies idleness and checkpoint identity again after planning. If the checkpoint advanced during compaction, it reports that no state was committed, although summary work and cost may have occurred. The update allowlist contains only `_summarization_event`, `_summarization_session_id`, and `_session_cost_usd`, never `messages`; this prevents an offload from overwriting concurrent conversation writes.
+The HTTP boundary locks an idle or error-status thread, rejects active, interrupted, or pending graph work, then verifies idleness and checkpoint identity again after planning. (`error` is eligible so a failed turn can still be recovered when it left no pending node.) If the checkpoint advanced during compaction, it reports that no state was committed, although summary work and cost may have occurred. The update allowlist contains only `_summarization_event`, `_summarization_session_id`, and `_session_cost_usd`, never `messages`; this prevents an offload from overwriting concurrent conversation writes.
+
+The route distinguishes an empty thread, a no-op cutoff, hook denial, planning failure, conflict, unavailable runtime, and an indeterminate commit in its typed result or HTTP response. A per-thread lock serializes the operation locally; an `(thread_id, operation_id)` registry rejects duplicate active or terminal attempts. The companion cancel endpoint cancels the registered operation and waits for it to become terminal, returning whether cancellation won or the operation had already finished.
 
 For an archive-bearing plan, `_PendingArchive` is appended only after summary state is reserved. It snapshots existing content first. If the subsequent archive-path link is confirmed absent, `_ArchiveAppend.rollback` restores that snapshot or removes a new file. An unreadable link is indeterminate rather than reported as successful. The HTTP handler joins its deferred commit task even if cancelled, then re-raises the original cancellation after settlement.
 
-The agent publishes `OffloadOperation` on its `CompositeBackend`; attachment rejects a compaction summarizer associated with a different backend. This keeps the forced operation, archive, and `read_file` route on the same backend. Integration coverage constructs a production-style server agent, runs `/offload`, verifies unchanged checkpoint message identities and an advancing cutoff, and reads the resulting archive through the agent's own `read_file` tool. A race test similarly asserts that a concurrent user turn survives whether offload commits or conflicts.
+The agent publishes `OffloadOperation` on its `CompositeBackend`; attachment rejects a compaction summarizer associated with a different backend. This keeps the forced operation, archive, and `read_file` route on the same backend. Integration coverage constructs a production-style server agent, runs `/offload`, verifies unchanged checkpoint message identities and an advancing cutoff, and reads the resulting archive through the agent's own `read_file` tool. A race test similarly asserts that a concurrent user turn survives whether offload commits or conflicts. Restart/resume coverage additionally seeds a persisted remote thread, restarts the server, invokes `/offload` through a production-style client with no client-owned backend, and verifies the resulting archive remains readable through a later server instance.
 
 ## Local context and diagnostics
 

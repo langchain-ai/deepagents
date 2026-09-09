@@ -1,7 +1,7 @@
 ---
 type: integration
-title: MCP Integration and Credential Lifecycle
-description: How dcode and Talon discover, validate, authorize, expose, refresh, and safely manage Model Context Protocol servers. Explains the distinct configuration, trust, credential, and runtime-lifetime boundaries of the two integrations.
+title: MCP Integration
+description: How dcode and Talon discover, validate, authorize, expose, refresh, and manage Model Context Protocol servers. Explains their distinct configuration, trust, credential, and runtime-lifetime boundaries.
 tags: [mcp, tools, oauth, configuration, trust, talon, dcode]
 sources:
   - id: openwiki-source-18abc7e59899514f067032b2
@@ -24,8 +24,6 @@ sources:
     resource: repo://libs/code/deepagents_code/tool_catalog.py
   - id: openwiki-source-26017a12b2a7ce9851b888a4
     resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
-  - id: openwiki-source-1ce25590f75ba42bdd04fce2
-    resource: repo://libs/code/tests/unit_tests/test_mcp_tools.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-111101dcd1462ff54277b1fc
@@ -36,20 +34,20 @@ sources:
     resource: repo://libs/talon/tests/test_mcp.py
   - id: openwiki-source-e2be45e59936bfba43c18816
     resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+    at: 2026-09-09T08:05:37.706Z
 ---
 
-# MCP Integration and Credential Lifecycle
+# MCP Integration
 
 Model Context Protocol (MCP) contributes tools from local processes and remote
 services. dcode and Talon accept comparable MCP documents, but are separate
 integrations: dcode composes layered sources with project trust and plugins,
-whereas Talon loads one operator-selected file and offers a deliberately narrow
-agent-facing management surface. Configuration approval, credential files, and
-runtime sessions are not shared between them.
+whereas Talon loads one operator-selected file and exposes management tools for
+that fixed path. Configuration approval, credential files, and runtime sessions
+are not shared between them.
 
 ## Configuration contract
 
@@ -228,15 +226,22 @@ a new request is made. Reload and configuration tools explicitly describe their
 availability as `after_successful_reload`: running work retains its original
 capabilities, and `get_agent_tools` can verify the later activation.
 
-## Talon agent-facing configuration is narrow and safe
+## Talon configuration management: mediated, not confidential
 
-`MCPConfigStore` is bound to the operator-selected configuration path outside
-the agent workspace; agents must use its tools rather than filesystem tools.
+`MCPConfigStore` is bound to the operator-selected configuration path and warns
+when that path is inside the agent workspace. Its tools are the supported
+management interface, but the placement check is not enforcement and neither
+redaction nor the store is a confidentiality boundary: Talon's execution-capable
+default shell backend can read an absolute path. Put literal credentials where
+the Talon process cannot read them, or prefer environment references rather than
+literal secrets.
+
 `get_mcp_configuration` returns an HMAC-derived, process-local revision and a
 redacted view. Stored strings are redacted except recognized transport/auth enum
-values and exact `${ENV_VAR}` references; references are not expanded. This keeps
-literal URLs, commands, headers, arguments, and secrets out of model-facing
-reads.
+values and exact `${ENV_VAR}` references; references are not expanded. This
+prevents literal URLs, commands, headers, arguments, and secrets from appearing
+through this management tool, but does not prevent access through another
+filesystem or shell capability.
 
 `update_mcp_server` adds, replaces, or removes one complete server definition.
 It requires the expected revision, validates the narrow supported schema without
@@ -245,13 +250,14 @@ literal by placing `<redacted>` in the same field. It takes a POSIX lock, reject
 symlink and non-regular reads, atomically replaces the file, and schedules a
 refresh only after a successful write. A stale revision returns a conflict, and
 validation, I/O, and malformed-file errors return generic messages that do not
-leak stored strings. Configuration writes are approval-sensitive in the Talon
-runtime unless a valid auto-approve setting applies to a channel trigger; cron
-triggers are not approved this way.
+leak stored strings. With `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true`, an
+update that restores a redacted literal may change only tool filters; changing
+any other managed setting is rejected so a hidden value cannot be redirected.
+Otherwise configuration writes are approval-sensitive in the Talon runtime;
+cron triggers are not approved this way.
 
-Even with these protections, approving a configuration update is security
-sensitive: it can authorize a command launch or credentials sent to a remote URL.
-Use environment references for credentials rather than supplying literal secrets.
+Approving a configuration update remains security sensitive: it can authorize a
+command launch or credentials sent to a remote URL.
 
 ## Focused verification
 

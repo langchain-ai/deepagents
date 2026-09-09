@@ -2466,6 +2466,29 @@ class TestToolCallMessageFileOutput:
 
         assert ToolCallMessage._compact_line_gutter(output) == "@@ lines abc @@\n1  one"
 
+    def test_legacy_gutter_containing_a_header_line_still_compacts(self) -> None:
+        r"""Gutter output whose source mentions a header still gets compacted.
+
+        Dispatching on the substring alone would hand this to the header
+        renderer, which rejects it, and the gutter would then render unchanged.
+        """
+        output = "     9\tnine\n    10\t@@ lines 1-2 of 5 @@"
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  nine\n10  @@ lines 1-2 of 5 @@"
+
+    def test_read_status_header_ignored_deep_in_source(self) -> None:
+        """A header-shaped line past the notice window is source, not a header.
+
+        `read_file` places at most two explanation lines above the header, so a
+        match further down belongs to the file and must not be treated as the
+        start of the content region.
+        """
+        output = "alpha\nbeta\ngamma\ndelta\n@@ lines 1-2 of 5 @@\nepsilon"
+
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
         output = "plain text\nno line numbers here"

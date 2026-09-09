@@ -1706,6 +1706,28 @@ class TestFilesystemMiddleware:
 
         assert result.content == "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
 
+    @pytest.mark.parametrize(("offset", "expected"), [(0, "1-3"), (5, "6-8"), (-1, "1-3")])
+    def test_read_file_without_window_metadata_still_states_a_range(self, offset: int, expected: str):
+        """A backend may return numberable text with no window metadata.
+
+        The header always states a range, so one is derived from the requested
+        offset. Emitting a fieldless `@@  @@` would match neither the TUI
+        parser nor the continuation middleware, leaving the model and the user
+        looking at bare protocol scaffolding.
+        """
+        backend, _ = _make_backend()
+        read_result = ReadResult(file_data=FileData(content="alpha\nbeta\ngamma", encoding="utf-8"))
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/x.txt", "offset": offset, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        header = next(line for line in result.content.splitlines() if line.startswith("@@ "))
+        assert header.startswith(f"@@ lines {expected}")
+        assert result.content.endswith("alpha\nbeta\ngamma")
+
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
         read_result = ReadResult(

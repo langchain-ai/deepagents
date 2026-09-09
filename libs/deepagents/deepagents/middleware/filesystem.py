@@ -11,7 +11,7 @@ import threading
 import uuid
 from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
@@ -828,6 +828,38 @@ def _window_fields(read_result: ReadResult) -> list[str]:
     if next_offset is not None and (total_lines is None or end_line < total_lines):
         fields.append(f"next offset {next_offset}")
     return fields
+
+
+def _prepare_read_window(read_result: ReadResult, content: str, offset: int) -> tuple[ReadResult, str]:
+    """Normalize a read window into a header range and a verbatim source body.
+
+    `ReadResult` permits `start_line`/`end_line` to be unset, and a custom
+    backend can return numberable text that way. The status header always
+    states a range, so one is derived from the requested offset and the rows on
+    hand rather than emitting a header with no fields.
+
+    Args:
+        read_result: Backend read result, possibly without window metadata.
+        content: Serialized content for the read window.
+        offset: Offset as requested by the caller, before clamping.
+
+    Returns:
+        The read result (carrying a derived range when the backend gave none)
+            and the verbatim source body.
+    """
+    rows: str | list[str] = content
+    if read_result.start_line is not None and read_result.end_line is not None:
+        rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
+    body = _format_source_block(rows)
+    if read_result.start_line is not None and read_result.end_line is not None:
+        return read_result, body
+
+    # `max(offset, 0)` keeps the fallback range 1-indexed: a backend that
+    # returns numberable text without `start_line` would otherwise report a
+    # zero or negative first line, which the parsers downstream assume never
+    # happens.
+    start_line = max(offset, 0) + 1
+    return replace(read_result, start_line=start_line, end_line=start_line + body.count("\n")), body
 
 
 def _read_header(fields: Sequence[str]) -> str:
@@ -2035,9 +2067,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            rows: str | list[str] = content
-            if read_result.start_line is not None and read_result.end_line is not None:
-                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
+            read_result, body = _prepare_read_window(read_result, content, offset)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or real source lines would be
             # pushed off the end of the page (#2453).
@@ -2045,7 +2075,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             clamp_notice = _clamped_offset_notice(offset).strip()
             return ToolMessage(
                 content=_truncate_paginated_read(
-                    _format_source_block(rows),
+                    body,
                     validated_path,
                     read_result,
                     token_limit,

@@ -324,6 +324,15 @@ sync with the separator emitted by deepagents' `format_content_with_line_numbers
 """
 
 
+_MAX_READ_NOTICE_LINES = 2
+"""Most explanation lines `read_file` can place above its status header.
+
+A truncation disclosure and an offset-clamp disclosure, one line each. Bounding
+the search keeps a header-shaped line deeper in the file's own source from
+being mistaken for the header.
+"""
+
+
 _READ_STATUS_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+)(?: of \d+)?(?: \| .*)? @@$")
 """Match the status header line of a `read_file` result, capturing its range.
 
@@ -3287,10 +3296,13 @@ class ToolCallMessage(Vertical):
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
-        if "@@ lines " in output:
-            rendered = ToolCallMessage._render_read_status_header(output)
+        # Only a real status header takes this path; anything else — including
+        # legacy gutter output whose source happens to contain a header-shaped
+        # line — falls through to the gutter compaction below.
+        rendered = ToolCallMessage._render_read_status_header(output)
+        if rendered is not None:
             # Comment out this line to display the raw status header instead.
-            output = output if rendered is None else rendered
+            output = rendered
             return output  # noqa: RET504  # Assignment kept so the line above toggles
 
         lines = output.split("\n")
@@ -3335,7 +3347,7 @@ class ToolCallMessage(Vertical):
             The rendered gutter, or `None` when line 1 is not a status header.
         """
         lines = output.split("\n")
-        for index, line in enumerate(lines):
+        for index, line in enumerate(lines[: _MAX_READ_NOTICE_LINES + 1]):
             header = _READ_STATUS_HEADER_RE.match(line)
             if header is not None:
                 notices, source = lines[:index], lines[index + 1 :]

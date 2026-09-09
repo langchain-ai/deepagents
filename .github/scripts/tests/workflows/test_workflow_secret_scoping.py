@@ -129,8 +129,10 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     auto_merge = _find_step(workflow, job="update", name="Enable auto-merge")
     token = "${{ secrets.OPENWIKI_PR_TOKEN }}"
 
-    assert checkout["with"]["token"] == token
+    assert "token" not in checkout["with"]
+    assert checkout["with"]["persist-credentials"] is False
     assert create_pr["env"]["GH_TOKEN"] == token
+    assert "gh auth setup-git" in create_pr["run"]
     assert auto_merge["env"]["GH_TOKEN"] == token
     assert auto_merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
     assert '[[ "$PR_NUMBER" =~ ^[0-9]+$ ]]' in auto_merge["run"]

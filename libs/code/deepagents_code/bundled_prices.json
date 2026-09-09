@@ -26,5 +26,13 @@
       { "id": "thinkingmachines/inkling", "match": { "equals": "inkling" }, "price_comments": "Bare alias omitted from pydantic/genai-prices#660", "prices": { "input_mtok": 1.0, "cache_read_mtok": 0.17, "output_mtok": 4.05 } },
       { "id": "thinkingmachines/inkling-small", "match": { "equals": "inkling-small" }, "price_comments": "Bare alias omitted from pydantic/genai-prices#660", "prices": { "input_mtok": 0.5, "cache_read_mtok": 0.1, "output_mtok": 1.2 } }
     ]
+  },
+  {
+    "id": "fireworks",
+    "name": "Fireworks",
+    "api_pattern": "https://api\\.fireworks\\.ai",
+    "models": [
+      { "id": "glm-5p3", "match": { "equals": "accounts/fireworks/models/glm-5p3" }, "price_comments": "Fireworks deployment omitted from pydantic/genai-prices#617", "prices": { "input_mtok": 1.4, "cache_read_mtok": 0.26, "output_mtok": 4.4 } }
+    ]
   }
 ]

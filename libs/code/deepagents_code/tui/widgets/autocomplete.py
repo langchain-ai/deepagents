@@ -13,6 +13,7 @@ import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
 import subprocess  # noqa: S404
+from datetime import datetime
 from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
@@ -37,6 +38,64 @@ if TYPE_CHECKING:
     from textual import events
 
     from deepagents_code.command_registry import CommandEntry
+    from deepagents_code.sessions import ThreadInfo
+
+
+_THREAD_TITLE_LIMIT = 80
+"""Maximum title length embedded in a durable thread token."""
+
+_THREAD_TRIGGER = "@@"
+"""Trigger reserved for recent-thread completion."""
+
+_THREAD_MAX_AGE_DAYS = 365
+"""Threshold for displaying thread update age in years."""
+
+
+def _thread_title(thread: ThreadInfo) -> str:
+    """Return a safe single-line title for a thread mention."""
+    title = sanitize_control_chars(thread.get("initial_prompt") or "")
+    title = title.translate(str.maketrans({"[": " ", "]": " ", "(": " ", ")": " "}))
+    title = " ".join(title.split())
+    if not title:
+        return thread["thread_id"][:8]
+    if len(title) > _THREAD_TITLE_LIMIT:
+        return f"{title[: _THREAD_TITLE_LIMIT - 3].rstrip()}..."
+    return title
+
+
+def _thread_updated_at(thread: ThreadInfo) -> str:
+    """Return a compact relative timestamp for a completion row."""
+    raw = thread.get("updated_at")
+    if not raw:
+        return ""
+    try:
+        updated_at = datetime.fromisoformat(raw).astimezone()
+    except (TypeError, ValueError):
+        return ""
+    seconds = max(
+        0, int((datetime.now(tz=updated_at.tzinfo) - updated_at).total_seconds())
+    )
+    if seconds < 60:  # noqa: PLR2004
+        return "now"
+    minutes = seconds // 60
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:  # noqa: PLR2004
+        return f"{hours}h"
+    days = hours // 24
+    if days < _THREAD_MAX_AGE_DAYS:
+        return f"{days}d"
+    return f"{days // _THREAD_MAX_AGE_DAYS}y"
+
+
+def _thread_token(thread: ThreadInfo) -> str:
+    """Build the durable plain-text token inserted into the chat input.
+
+    Returns:
+        Thread title and full ID encoded as a durable token.
+    """
+    return f"{_THREAD_TRIGGER}[{_thread_title(thread)}](thread:{thread['thread_id']})"
 
 
 class CompletionResult(StrEnum):
@@ -95,6 +154,10 @@ class CompletionController(Protocol):
 
     def reset(self) -> None:
         """Reset/clear the completion state."""
+        ...
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked completion row."""
         ...
 
 
@@ -332,6 +395,17 @@ class SlashCommandController:
         self.reset()
         return True
 
+    def apply_selection(self, index: int, _text: str, cursor_index: int) -> bool:
+        """Apply a clicked slash-command completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        self._selected_index = index
+        return self._apply_selected_completion(cursor_index)
+
     def apply_name_prefix_completion(
         self, match: CommandEntry, cursor_index: int
     ) -> None:
@@ -343,6 +417,180 @@ class SlashCommandController:
         """
         self._view.replace_completion_range(0, cursor_index, match.name)
         self.reset()
+
+
+# ============================================================================
+# Thread Completion
+# ============================================================================
+
+
+class ThreadCompletionController:
+    """Controller for `@@` thread completion from local session metadata."""
+
+    def __init__(self, view: CompletionView) -> None:
+        """Initialize with an empty thread cache."""
+        self._view = view
+        self._threads: list[ThreadInfo] = []
+        self._matches: list[ThreadInfo] = []
+        self._suggestions: list[tuple[str, str]] = []
+        self._selected_index = 0
+
+    def update_threads(self, threads: list[ThreadInfo]) -> None:
+        """Replace cached threads and refresh active suggestions."""
+        self._threads = list(threads)
+
+    @staticmethod
+    def _trigger_is_standalone(text: str, start: int) -> bool:
+        """Return whether `@@` starts a standalone thread query."""
+        if start == 0 or text[start - 1].isspace():
+            return True
+        return text[start - 1] in "([{"
+
+    @staticmethod
+    def _mention_start(text: str, cursor_index: int) -> int | None:
+        """Return the active `@@` index when the cursor is in a mention."""
+        if cursor_index < len(_THREAD_TRIGGER) or cursor_index > len(text):
+            return None
+        start = text[:cursor_index].rfind(_THREAD_TRIGGER)
+        if start < 0 or not ThreadCompletionController._trigger_is_standalone(
+            text, start
+        ):
+            return None
+        fragment = text[start:cursor_index]
+        if fragment.startswith(f"{_THREAD_TRIGGER}[") or "\n" in fragment:
+            return None
+        return start
+
+    @classmethod
+    def can_handle(cls, text: str, cursor_index: int) -> bool:
+        """Return whether the cursor is inside an `@@` thread query."""
+        return cls._mention_start(text, cursor_index) is not None
+
+    @staticmethod
+    def _search_text(thread: ThreadInfo) -> str:
+        """Build normalized searchable thread metadata.
+
+        Returns:
+            Lowercase thread metadata joined for matching.
+        """
+        values = (
+            thread["thread_id"],
+            thread.get("initial_prompt"),
+            thread.get("agent_name"),
+            thread.get("git_branch"),
+            thread.get("cwd"),
+        )
+        return " ".join(value for value in values if value).lower()
+
+    def reset(self) -> None:
+        """Clear suggestions."""
+        if self._suggestions:
+            self._matches.clear()
+            self._suggestions.clear()
+            self._selected_index = 0
+            self._view.clear_completion_suggestions()
+
+    def on_text_changed(self, text: str, cursor_index: int) -> None:
+        """Search cached threads and render suggestions."""
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            self.reset()
+            return
+        query = text[start + len(_THREAD_TRIGGER) : cursor_index].lower()
+        query_terms = query.split()
+        indexed_threads = [
+            (thread, self._search_text(thread)) for thread in self._threads
+        ]
+        matches = [
+            thread
+            for thread, search_text in indexed_threads
+            if all(term in search_text for term in query_terms)
+        ][:MAX_SUGGESTIONS]
+        if not matches:
+            self.reset()
+            return
+        self._matches = matches
+        self._suggestions = [
+            (
+                _thread_title(thread),
+                " · ".join(
+                    filter(
+                        None,
+                        (
+                            "thread",
+                            thread.get("agent_name"),
+                            _thread_updated_at(thread),
+                            thread["thread_id"][:8],
+                        ),
+                    )
+                ),
+            )
+            for thread in matches
+        ]
+        self._selected_index = 0
+        self._view.render_completion_suggestions(self._suggestions, 0)
+
+    def on_key(
+        self, event: events.Key, text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Handle thread completion navigation and selection.
+
+        Returns:
+            Whether the key was handled by thread completion.
+        """
+        if not self._suggestions:
+            return CompletionResult.IGNORED
+        match event.key:
+            case "tab" | "enter":
+                return (
+                    CompletionResult.HANDLED
+                    if self._apply_selected_completion(text, cursor_index)
+                    else CompletionResult.IGNORED
+                )
+            case "down":
+                self._move_selection(1)
+                return CompletionResult.HANDLED
+            case "up":
+                self._move_selection(-1)
+                return CompletionResult.HANDLED
+            case "escape":
+                self.reset()
+                return CompletionResult.HANDLED
+            case _:
+                return CompletionResult.IGNORED
+
+    def _move_selection(self, delta: int) -> None:
+        """Move the selected thread row."""
+        self._selected_index = (self._selected_index + delta) % len(self._suggestions)
+        self._view.render_completion_suggestions(
+            self._suggestions, self._selected_index
+        )
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked thread completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        self._selected_index = index
+        return self._apply_selected_completion(text, cursor_index)
+
+    def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
+        """Replace the active query with the selected durable thread token.
+
+        Returns:
+            Whether a valid active query was replaced.
+        """
+        start = self._mention_start(text, cursor_index)
+        if start is None or not self._matches:
+            return False
+        self._view.replace_completion_range(
+            start, cursor_index, _thread_token(self._matches[self._selected_index])
+        )
+        self.reset()
+        return True
 
 
 # ============================================================================
@@ -721,6 +969,11 @@ class FuzzyFileController:
         if cursor_index <= at_index:
             return False
 
+        # `@@` is reserved for thread completion. `rfind` points at the second
+        # trigger character, so also inspect the character immediately before it.
+        if at_index > 0 and before_cursor[at_index - 1 : at_index + 1] == "@@":
+            return False
+
         # Fragment from @ to cursor must not contain spaces
         fragment = before_cursor[at_index:cursor_index]
         return bool(fragment) and " " not in fragment
@@ -813,6 +1066,17 @@ class FuzzyFileController:
             self._suggestions, self._selected_index
         )
 
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked file completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        self._selected_index = index
+        return self._apply_selected_completion(text, cursor_index)
+
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
         """Apply the currently selected completion.
 
@@ -880,6 +1144,16 @@ class MultiCompletionManager:
 
         # Let the active controller process the change
         candidate.on_text_changed(text, cursor_index)
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked completion through the active controller.
+
+        Returns:
+            Whether the active controller applied the row.
+        """
+        if self._active is None:
+            return False
+        return self._active.apply_selection(index, text, cursor_index)
 
     def on_key(
         self, event: events.Key, text: str, cursor_index: int

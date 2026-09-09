@@ -143,6 +143,10 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     assert token_step["with"]["permission-pull-requests"] == "write"
     assert create_pr["env"]["GH_TOKEN"] == token
     assert "gh auth setup-git" in create_pr["run"]
+    assert '-f head="${GITHUB_REPOSITORY_OWNER}:${BRANCH}"' in create_pr["run"]
+    assert ".head.repo.full_name == $repository" in create_pr["run"]
+    assert 'gh pr close "$pr_number" --delete-branch' in create_pr["run"]
+    assert 'gh pr close "$BRANCH"' not in create_pr["run"]
     assert auto_merge["env"]["GH_TOKEN"] == token
     assert auto_merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
     assert '[[ "$PR_NUMBER" =~ ^[0-9]+$ ]]' in auto_merge["run"]

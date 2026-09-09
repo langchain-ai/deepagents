@@ -37,7 +37,7 @@ def create_agent(model: str) -> CompiledStateGraph:
     return create_deep_agent(
         model=model,
         backend=backend,
-        middleware=[VirtualTableMiddleware(backend=backend, initial_tables={"feedback": FEEDBACK})],
+        middleware=[VirtualTableMiddleware(backend=backend)],
     )
 
 
@@ -50,10 +50,10 @@ async def main() -> None:
 
     agent = create_agent(args.model)
     files = {path: {"content": content, "encoding": "utf-8"} for path, content in FILES.items()}
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}], "files": files})
+    result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}], "files": files, "virtual_tables": {"feedback": FEEDBACK}})
     print(result["messages"][-1].text)
     print("\nMaterialized feedback table:")
-    print(json.dumps(result["_virtual_tables"]["feedback"], indent=2))
+    print(json.dumps(result["virtual_tables"]["feedback"], indent=2))
 
 
 if __name__ == "__main__":

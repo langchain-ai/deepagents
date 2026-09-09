@@ -19,16 +19,17 @@ filesystem or a per-thread sandbox; the table stores the path rather than the bl
 The existing REPL can already map `task()` across an array and aggregate in
 JavaScript. This prototype tests whether a table-shaped control plane is more
 reliable by owning stable row IDs, structured column materialization, bounded
-concurrency, per-row errors, private cross-turn state, and SQL semantics. Raw
+concurrency, per-row errors, cross-turn state, and SQL semantics. Raw
 code remains the better escape hatch for adaptive workflows.
 
 The middleware adds its own tool-usage and table-lifecycle instructions to the
-parent model's system message, including that `initial_tables` already exist and
-other tables require `virtual_table_create`. The host agent does not need a virtual-table-specific system prompt or a
-predeclared subagent. Each `virtual_table_enrich` call defines a temporary,
-read-only row worker with `worker_prompt` and `output_schema`; it inherits the
-parent model unless `worker_model` is set. Each worker gets only its row's file
-path and selected metadata, then uses paginated `read_file` calls as needed. The
+parent model's system message, including that tables supplied in invocation state
+already exist and other tables require `virtual_table_create`. The host agent does
+not need a virtual-table-specific system prompt or a predeclared subagent. Each
+`virtual_table_enrich` call defines a temporary normal Deep Agent with `worker_prompt`
+and `output_schema`; it inherits the parent model unless `worker_model` is set. Each
+worker gets its row's file path and selected metadata, and can use the shared
+filesystem and standard Deep Agent tools to gather the context it needs. The
 parent should inspect table metadata first and avoid eagerly reading every source
 file; sampling one or two files is enough when needed to design the enrichment.
 The workers do not route through `js_eval`.
@@ -60,26 +61,24 @@ caller to async invocation.
   `{"file": "/docs/a.txt", ...metadata}` with stable `_row_id` values.
 - `virtual_table_enrich`: define a row worker from a prompt and strict output
   schema, then add its structured fields plus `<name>_status` and `<name>_error`
-  columns. Each worker can read only that row's file and can page through large
-  documents instead of receiving the entire document in its initial context.
+  columns. Each worker is a normal Deep Agent that can inspect the shared filesystem
+  instead of receiving the entire document in its initial context.
 - `virtual_table_query`: inspect rows/columns and execute one read-only `SELECT`
   or `WITH` query using parameter binding, an SQLite authorizer, a time limit,
   and a row limit.
 
-Tables live in the middleware-owned `_virtual_tables` state field, while document
-blobs stay in the configured filesystem backend. The field is omitted from the
-input schema so callers cannot seed it directly, but included in invocation output
-so applications can consume the materialized rows as structured state. Enrichment
-passes each worker only its validated file path and selected metadata; the worker's
-read-only filesystem tool pages through the source as needed. With a checkpointer,
-both virtual files and table pointers persist across turns without copying large
-blobs into every table row. The included script
-uses one `StateBackend` for both `create_deep_agent` and `VirtualTableMiddleware`.
+Tables are passed under `virtual_tables` in invocation state alongside `files`, so
+the document rows and the files they reference enter the run together. The middleware
+normalizes paths and row IDs before the model runs, and returns materialized rows in
+the same structured state field. Document blobs stay in the configured filesystem
+backend. With a checkpointer, both virtual files and table pointers persist across
+turns without copying large blobs into every table row. The included script uses one
+`StateBackend` for both `create_deep_agent` and `VirtualTableMiddleware`.
 
 ## Current prototype limits
 
 - At most 500 rows and 2 MB of paths/metadata per materialized table by default.
-- Row workers have only `read_file` access to their own document and must page through large text files.
+- Row workers are normal Deep Agents with shared filesystem access; their run is bounded by the enrichment timeout.
 - At most 10 concurrent row workers; five by default.
 - One SQLite table per query call.
 - Query results are capped at 100 rows and 100 KB.

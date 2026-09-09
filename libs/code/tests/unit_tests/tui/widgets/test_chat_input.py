@@ -492,6 +492,40 @@ class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
 
 
+class TestThreadCompletionIntegration:
+    """Tests for `@@` completion inside the mounted chat input."""
+
+    async def test_thread_completion_click_inserts_durable_token(self) -> None:
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            assert chat._thread_controller is not None
+            chat._thread_controller.update_threads(
+                [
+                    {
+                        "thread_id": "11111111-2222-3333-4444-555555555555",
+                        "agent_name": "coder",
+                        "updated_at": None,
+                        "initial_prompt": "Fix the parser",
+                    }
+                ]
+            )
+            chat._text_area.insert("compare @@parser")
+            await pilot.pause()
+
+            assert chat._current_suggestions[0][0] == "Fix the parser"
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat._text_area.text == (
+                "compare @@[Fix the parser]"
+                "(thread:11111111-2222-3333-4444-555555555555) "
+            )
+
+
 class TestDismissCompletion:
     """Test ChatInput.dismiss_completion edge cases."""
 

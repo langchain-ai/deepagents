@@ -13,6 +13,14 @@ from deepagents_code.input import (
 )
 
 
+def test_parse_file_mentions_ignores_thread_tokens() -> None:
+    """Durable thread references must never be interpreted as file mentions."""
+    text = "Compare @@[Parser work](thread:11111111-2222-3333-4444-555555555555)"
+    parsed, files = parse_file_mentions(text)
+    assert parsed == text
+    assert files == []
+
+
 def test_parse_file_mentions_with_escaped_spaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

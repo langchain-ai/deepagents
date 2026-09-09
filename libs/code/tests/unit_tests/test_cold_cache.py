@@ -13,6 +13,7 @@ from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
     PromptCachePolicy,
+    cache_identity_params,
     endpoint_cache_identity,
     estimate_rewarm_cost,
     load_trusted_cache_endpoints,
@@ -97,6 +98,23 @@ def _policy(
         minimum_tokens=minimum_tokens,
         write_bucket=write_bucket,
     )
+
+
+def test_gpt_5_6_and_newer_ignore_legacy_retention() -> None:
+    for model_spec in ("openai:gpt-5.6", "openai:gpt-6-astra"):
+        assert resolve_prompt_cache_policy(
+            model_spec, {"prompt_cache_retention": "24h"}
+        ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
+
+
+def test_astra_reasoning_effort_participates_in_cache_identity() -> None:
+    params = {"reasoning_effort": "high", "temperature": 0.2}
+
+    assert cache_identity_params(params, model_spec="openai:gpt-6-astra") == {
+        "reasoning_effort": "high"
+    }
+    assert cache_identity_params(params, model_spec="openai:gpt-5.6") == {}
+    assert cache_identity_params(params, model_spec="anthropic:gpt-6-astra") == {}
 
 
 def test_trusted_endpoints_enable_policies_on_alternate_hosts() -> None:
@@ -527,6 +545,25 @@ def test_prefixed_same_format_route_can_be_priced(endpoint: str) -> None:
         assert estimate is not None
         assert estimate.incremental_cost_usd > 0
         assert estimate == estimate_rewarm_cost(150_000, bare, policy)
+
+
+@pytest.mark.parametrize(
+    ("context_tokens", "cold_cost", "incremental_cost"),
+    [
+        (150_000, 1.875, 1.725),
+        (272_000, 6.8, 6.256),
+    ],
+)
+def test_astra_rewarm_pricing_covers_long_context_tier(
+    context_tokens: int, cold_cost: float, incremental_cost: float
+) -> None:
+    policy = resolve_prompt_cache_policy("openai:gpt-6-astra")
+
+    assert policy is not None
+    estimate = estimate_rewarm_cost(context_tokens, "openai:gpt-6-astra", policy)
+    assert estimate is not None
+    assert estimate.cold_cost_usd == pytest.approx(cold_cost)
+    assert estimate.incremental_cost_usd == pytest.approx(incremental_cost)
 
 
 def test_trusted_endpoints_reject_what_the_loader_rejects() -> None:

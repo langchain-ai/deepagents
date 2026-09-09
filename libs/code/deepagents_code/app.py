@@ -9240,7 +9240,10 @@ class DeepAgentsApp(App):
         # the comparison side filters through `cache_identity_params` too, so
         # unrelated knobs must not read as a cache change here either.
         self._last_cache_model_params = (
-            cache_identity_params(self._model_params_override) or None
+            cache_identity_params(
+                self._model_params_override, model_spec=self._last_cache_model_spec
+            )
+            or None
         )
 
     async def _sync_session_cost_from_checkpoint(self) -> None:
@@ -12042,11 +12045,11 @@ class DeepAgentsApp(App):
                 age_seconds = max(elapsed or 0.0, 0.0)
                 if (
                     model_spec != last_spec
-                    # Only cache-participating params are compared: `/effort`
-                    # and friends rewrite `model_params` without touching the
-                    # prefix, and must not read as a cache identity change.
-                    or cache_identity_params(current_params)
-                    != cache_identity_params(last_params)
+                    # Only cache-participating params are compared. Astra's
+                    # request-level `/effort` value participates because OpenAI
+                    # may rewrite its model-side instruction prefix.
+                    or cache_identity_params(current_params, model_spec=model_spec)
+                    != cache_identity_params(last_params, model_spec=last_spec)
                     # `None` means no endpoint was ever recorded -- e.g. a
                     # thread checkpointed before this field existed, or one
                     # whose stored value was unreadable and discarded on load.

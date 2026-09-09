@@ -1,5 +1,23 @@
 [
   {
+    "id": "openai",
+    "name": "OpenAI",
+    "api_pattern": "https://api\\.openai\\.com",
+    "models": [
+      {
+        "id": "gpt-6-astra",
+        "match": { "or": [{ "equals": "gpt-6-astra" }, { "regex": "^gpt-6-astra-\\d{4}-\\d{2}-\\d{2}$" }] },
+        "price_comments": "Stopgap pending release of merged pydantic/genai-prices#680",
+        "prices": {
+          "input_mtok": { "base": 10.0, "tiers": [{ "start": 271999, "price": 20.0 }] },
+          "cache_write_mtok": { "base": 12.5, "tiers": [{ "start": 271999, "price": 25.0 }] },
+          "cache_read_mtok": { "base": 1.0, "tiers": [{ "start": 271999, "price": 2.0 }] },
+          "output_mtok": { "base": 50.0, "tiers": [{ "start": 271999, "price": 75.0 }] }
+        }
+      }
+    ]
+  },
+  {
     "id": "baseten",
     "name": "Baseten",
     "api_pattern": "https://inference\\.baseten\\.co",

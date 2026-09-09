@@ -28609,6 +28609,48 @@ class TestColdCacheWarningFlow:
         assert warning.policy.provider_name == "OpenAI"
         assert warning.estimate.incremental_cost_usd == pytest.approx(0.25)
 
+    @pytest.mark.parametrize(
+        ("model_spec", "expected_reason"),
+        [
+            ("openai:gpt-6-astra", "identity_changed"),
+            ("openai:gpt-5.6", None),
+        ],
+    )
+    async def test_reasoning_effort_cache_identity(
+        self, model_spec: str, expected_reason: str | None
+    ) -> None:
+        app = DeepAgentsApp()
+        app._model_override = model_spec
+        app._model_params_override = {"reasoning_effort": "high"}
+        app._last_cache_model_spec = model_spec
+        app._last_cache_model_params = {"reasoning_effort": "medium"}
+        app._last_model_request_at = datetime.now(UTC).isoformat()
+        app._context_tokens = 50_000
+        app._cold_cache_warning_threshold_usd = 0.10
+        config = MagicMock()
+        config.get_effective_kwargs.return_value = {"reasoning_effort": "high"}
+
+        def estimate(usage: dict[str, Any], _model: str, _provider: str) -> float:
+            details = usage.get("input_token_details", {})
+            return 0.10 if "cache_read" in details else 0.35
+
+        with (
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=False,
+            ),
+            patch("deepagents_code.cost_tracking.estimate_cost", estimate),
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert getattr(warning, "reason", None) == expected_reason
+
     async def test_endpoint_change_prevents_warm_cache_reuse(
         self,
         monkeypatch: pytest.MonkeyPatch,

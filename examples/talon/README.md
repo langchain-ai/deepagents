@@ -27,6 +27,8 @@ Uncomment the Telegram env vars in `.env` and set `DEEPAGENTS_TALON_TELEGRAM_BOT
 
 Voice transcription is enabled by default in `.env.example`. The Docker example installs `ffmpeg` plus the Talon `media` extra, so inbound voice notes are transcribed locally with NVIDIA Parakeet through Transformers before reaching the agent. The first voice message can be slow because the ASR model is downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when running on a GPU-enabled host.
 
+Parakeet and Qwen embedding model downloads persist through the existing home bind mount. For `docker run`, add `-v "$HOME/.deepagents:/root/.deepagents"`.
+
 Cron records, downloaded inbound media, and channel session state persist under `~/.deepagents/<assistant-id>/`. The agent's default working directory is `/workspace`, so files it creates are written into `~/talon-workspace/` on the host.
 
 The image installs the Talon package at build time. Rebuild after changing the Dockerfile, system packages, Node dependencies, or Talon Python dependencies.

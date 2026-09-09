@@ -92,6 +92,7 @@ async def _adapter(
         from deepagents_talon.history_embeddings import HistoryEmbeddings  # noqa: PLC0415
 
         return HistoryEmbeddings(
+            config=config,
             model=profile.model,
             max_input_tokens=profile.max_input_tokens,
             batch_size=profile.batch_size,

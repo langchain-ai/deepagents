@@ -128,6 +128,11 @@ class TalonConfig:
         return self.home
 
     @property
+    def huggingface_cache_dir(self) -> Path:
+        """Hugging Face model cache shared across assistants."""
+        return self.home.parent / "cache" / "models" / "huggingface"
+
+    @property
     def manifest_dir(self) -> Path:
         """Directory where agent manifest files are materialized."""
         return self.home

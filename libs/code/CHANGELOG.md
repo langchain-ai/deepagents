@@ -2,6 +2,30 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
+
+
+### Features
+
+* **code:** add `GPT-6 Astra` support ([#6141](https://github.com/langchain-ai/deepagents/issues/6141)) ([048f989](https://github.com/langchain-ai/deepagents/commit/048f9890bfe8b640e1e72085a4fa50d9084545f0))
+* **code:** limit thread resume age ([#6068](https://github.com/langchain-ai/deepagents/issues/6068)) ([318311f](https://github.com/langchain-ai/deepagents/commit/318311f56c3d3b9c4af4ece22fcfc387eeece5cc))
+* **code:** reuse server across workspace switches ([#6152](https://github.com/langchain-ai/deepagents/issues/6152)) ([ca2d1ef](https://github.com/langchain-ai/deepagents/commit/ca2d1ef7f270d0fa1040e5473f43e99937b5f03f))
+
+
+### Bug Fixes
+
+* **code:** bound transcript tail reconciliation ([#6057](https://github.com/langchain-ai/deepagents/issues/6057)) ([8da3264](https://github.com/langchain-ai/deepagents/commit/8da32644dc7dcad1125a840bc17ec3d5ea66b8c3))
+* **code:** isolate LangSmith auth and workspace tracing ([#6061](https://github.com/langchain-ai/deepagents/issues/6061)) ([794eda8](https://github.com/langchain-ai/deepagents/commit/794eda83b777a2a7278e5726607e4b305801298d))
+* **code:** offload server config import ([#6089](https://github.com/langchain-ai/deepagents/issues/6089)) ([90fe4f4](https://github.com/langchain-ai/deepagents/commit/90fe4f4ac0a1311f1527b1a5cd02bd3ac8664580))
+* **code:** parse extra skill dirs with platform separator ([#6151](https://github.com/langchain-ai/deepagents/issues/6151)) ([56e4ef1](https://github.com/langchain-ai/deepagents/commit/56e4ef1a5f447950a04ba37a7855c8e0babd2f11))
+* **code:** refuse a second sandbox workspace ([#5979](https://github.com/langchain-ai/deepagents/issues/5979)) ([cb4c973](https://github.com/langchain-ai/deepagents/commit/cb4c973172f7838eefa328ea0c6ca334b6aaab98))
+* **code:** resolve project policy per workspace ([#6064](https://github.com/langchain-ai/deepagents/issues/6064)) ([ea1f253](https://github.com/langchain-ai/deepagents/commit/ea1f2536537efb01c71dce54c46894b9318c4f80))
+* **code:** run sandbox creation and entry off the guarded event loop ([#6017](https://github.com/langchain-ai/deepagents/issues/6017)) ([fd28bfb](https://github.com/langchain-ai/deepagents/commit/fd28bfb5c5e1ca18af975d8e57d361c1c23f81b7))
+* **code:** scope project dotenv to workspaces ([#5980](https://github.com/langchain-ai/deepagents/issues/5980)) ([678c115](https://github.com/langchain-ai/deepagents/commit/678c11559d7534ee5e16ceebfacf01eeb6536ac7))
+* **code:** serialize transcript tail reconciliation ([#6143](https://github.com/langchain-ai/deepagents/issues/6143)) ([5fb8b69](https://github.com/langchain-ai/deepagents/commit/5fb8b699843ecf93debc592d9dbb8a534f54db09))
+* **code:** surface stale updates in-session ([#6063](https://github.com/langchain-ai/deepagents/issues/6063)) ([cdb9d4c](https://github.com/langchain-ai/deepagents/commit/cdb9d4c30f4419c0eb2c98ad53940875e4dfbe9e))
+* **code:** surface the LangSmith credential in `dcode config` ([#6083](https://github.com/langchain-ai/deepagents/issues/6083)) ([a1a0887](https://github.com/langchain-ai/deepagents/commit/a1a0887f7e42d0f8515ad415c9b9062e89350e8c))
+
 ## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
 
 ### Features

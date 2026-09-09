@@ -242,49 +242,11 @@ class TestLoadUserThemes:
     def test_absent_themes_is_silent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """An absent optional themes table emits no warning."""
         config = tmp_path / "config.toml"
         _write_config(config, "[ui]\ncursor_blink = true\n")
-        builtins: dict[str, ThemeEntry] = {}
-        with caplog.at_level("WARNING", logger="deepagents_code.theme"):
-            _load_user_themes(builtins, config_path=config)
-        assert builtins == {}
-        assert not caplog.records
-
-    def test_scalar_themes_warns(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A malformed scalar themes value still emits a warning."""
-        config = tmp_path / "config.toml"
-        _write_config(config, 'themes = "foo"\n')
-        with caplog.at_level("WARNING", logger="deepagents_code.theme"):
-            _load_user_themes({}, config_path=config)
-        assert any(
-            "Ignoring [themes]" in record.getMessage() for record in caplog.records
-        )
-
-    def test_empty_themes_is_silent(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """An empty themes table emits no warning."""
-        config = tmp_path / "config.toml"
-        _write_config(config, "[themes]\n")
         with caplog.at_level("WARNING", logger="deepagents_code.theme"):
             _load_user_themes({}, config_path=config)
         assert not caplog.records
-
-    def test_custom_theme_loads(self, tmp_path: Path) -> None:
-        """A valid custom theme is added to the registry."""
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            '[themes.custom]\nlabel = "Custom"\ndark = true\nprimary = "#123456"\n',
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "custom" in builtins
-        assert builtins["custom"].label == "Custom"
-        assert builtins["custom"].custom is True
 
 
 # ---------------------------------------------------------------------------

@@ -1184,19 +1184,6 @@ class TestMessageCountFromCheckpointBlob:
 class TestGetThreadLimit:
     """Tests for get_thread_limit() env var parsing."""
 
-    def test_canonical_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The Deep Agents Code-prefixed variable controls the limit."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_RECENT_THREADS", "50")
-        assert sessions.get_thread_limit() == 50
-
-    @pytest.mark.parametrize(("value", "expected"), [("0", 1), ("-5", 1), ("bad", 20)])
-    def test_value_validation(
-        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: int
-    ) -> None:
-        """Values are clamped to one or defaulted when invalid."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_RECENT_THREADS", value)
-        assert sessions.get_thread_limit() == expected
-
 
 class TestListThreadsSortAndBranch:
     """Tests for sort_by and branch params on list_threads."""

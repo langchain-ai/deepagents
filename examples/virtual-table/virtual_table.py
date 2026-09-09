@@ -15,7 +15,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.utils import validate_path
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse, PrivateStateAttr
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse, OmitFromInput
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -79,9 +79,9 @@ _ALLOWED_SQL_FUNCTIONS = frozenset(
 
 
 class VirtualTableState(AgentState):
-    """Agent state carrying private materialized tables."""
+    """Agent state carrying middleware-owned materialized tables."""
 
-    _virtual_tables: NotRequired[Annotated[Tables, PrivateStateAttr]]
+    _virtual_tables: NotRequired[Annotated[Tables, OmitFromInput]]
 
 
 class CreateTableInput(BaseModel):

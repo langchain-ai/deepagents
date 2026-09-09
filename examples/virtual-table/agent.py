@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
@@ -27,11 +28,7 @@ FILES = {
     "/feedback/elm.txt": "Billing pages sometimes show stale usage numbers.",
 }
 
-DEFAULT_QUESTION = (
-    "Classify each feedback item by sentiment and product area, count feedback "
-    "by plan, sentiment, and product area, then include a small SQL sample of "
-    "the materialized rows and enrichment statuses."
-)
+DEFAULT_QUESTION = "Classify each feedback item by sentiment and product area, then count feedback by plan, sentiment, and product area."
 
 
 def create_agent(model: str) -> CompiledStateGraph:
@@ -45,7 +42,7 @@ def create_agent(model: str) -> CompiledStateGraph:
 
 
 async def main() -> None:
-    """Run one analysis request and print the final answer."""
+    """Run one analysis request and print the final answer and materialized rows."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
     parser.add_argument("--model", default="anthropic:claude-sonnet-4-6")
@@ -55,6 +52,8 @@ async def main() -> None:
     files = {path: {"content": content, "encoding": "utf-8"} for path, content in FILES.items()}
     result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}], "files": files})
     print(result["messages"][-1].text)
+    print("\nMaterialized feedback table:")
+    print(json.dumps(result["_virtual_tables"]["feedback"], indent=2))
 
 
 if __name__ == "__main__":

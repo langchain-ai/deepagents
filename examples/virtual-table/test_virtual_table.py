@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -202,8 +203,13 @@ def test_middleware_adds_table_instructions() -> None:
     assert {tool.name for tool in middleware.tools} == {"virtual_table_create", "virtual_table_query", "virtual_table_enrich"}
 
 
-def test_initial_tables_are_private_state() -> None:
+def test_initial_tables_are_middleware_owned_state() -> None:
     middleware = VirtualTableMiddleware(backend=_backend(), initial_tables={"docs": [{"file": "/docs/hello.txt"}]})
+    agent = create_agent(FakeListChatModel(responses=["done"]), middleware=[middleware])
+    input_schema = agent.get_input_schema().model_json_schema()
+    assert "_virtual_tables" not in input_schema["$defs"]["InputSchema"]["properties"]
+    assert "_virtual_tables" in agent.get_output_schema().model_json_schema()["properties"]
+
     update = middleware.before_agent({"messages": []}, None)
     assert update == {"_virtual_tables": {"docs": [{"file": "/docs/hello.txt", "_row_id": 1}]}}
     assert middleware.before_agent({"messages": [], **update}, None) is None

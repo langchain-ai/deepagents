@@ -150,10 +150,7 @@ def test_read_file_continuation_notice_skips_truncated_window() -> None:
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
         return ToolMessage(
-            content=(
-                "[Output was truncated due to size limits.]\n"
-                "@@ lines 1-2 of 9 | next offset 2 | truncated due to size @@\nalpha\nbeta"
-            ),
+            content=("[Output was truncated due to size limits.]\n@@ lines 1-2 of 9 | next offset 2 | truncated due to size @@\nalpha\nbeta"),
             tool_call_id="call_1",
         )
 

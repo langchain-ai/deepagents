@@ -1555,9 +1555,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == (
-            "@@ lines 1-2 of 5 | next offset 2 @@\none\ntwo"
-        )
+        assert result.content == ("@@ lines 1-2 of 5 | next offset 2 @@\none\ntwo")
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1590,9 +1588,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == (
-            "@@ lines 3-4 of 5 | next offset 4 @@\nthree\nfour"
-        )
+        assert result.content == ("@@ lines 3-4 of 5 | next offset 4 @@\nthree\nfour")
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1608,9 +1604,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == (
-            "@@ lines 1-1 of 5 | next offset 1 @@\none"
-        )
+        assert result.content == ("@@ lines 1-1 of 5 | next offset 1 @@\none")
 
     def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
         """Invoke `read_file` against a fixed 3-line file with the given window."""

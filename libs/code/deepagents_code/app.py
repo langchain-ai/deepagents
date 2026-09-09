@@ -9218,7 +9218,7 @@ class DeepAgentsApp(App):
                 type(raw_endpoint).__name__,
             )
 
-    def _stamp_cache_identity_locally(self) -> None:
+    async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
 
         Used when a turn reached the model but ended without a readable
@@ -9231,16 +9231,14 @@ class DeepAgentsApp(App):
         """
         from datetime import UTC, datetime
 
-        from deepagents_code.cold_cache import cache_identity_params
+        from deepagents_code.configurable_model import _effective_cache_params
 
         self._last_model_request_at = datetime.now(UTC).isoformat()
         self._last_cache_model_spec = self._effective_model_spec() or ""
-        # Record only the cache-identity projection of the session overrides,
-        # matching what the middleware checkpoints in `_last_cache_params`:
-        # the comparison side filters through `cache_identity_params` too, so
-        # unrelated knobs must not read as a cache change here either.
-        self._last_cache_model_params = (
-            cache_identity_params(self._model_params_override) or None
+        self._last_cache_model_params = await asyncio.to_thread(
+            _effective_cache_params,
+            self._last_cache_model_spec,
+            self._model_params_override,
         )
 
     async def _sync_session_cost_from_checkpoint(self) -> None:
@@ -12042,11 +12040,11 @@ class DeepAgentsApp(App):
                 age_seconds = max(elapsed or 0.0, 0.0)
                 if (
                     model_spec != last_spec
-                    # Only cache-participating params are compared: `/effort`
-                    # and friends rewrite `model_params` without touching the
-                    # prefix, and must not read as a cache identity change.
-                    or cache_identity_params(current_params)
-                    != cache_identity_params(last_params)
+                    # Only cache-participating params are compared. Astra's
+                    # request-level `/effort` value participates because OpenAI
+                    # may rewrite its model-side instruction prefix.
+                    or cache_identity_params(current_params, model_spec=model_spec)
+                    != cache_identity_params(last_params, model_spec=last_spec)
                     # `None` means no endpoint was ever recorded -- e.g. a
                     # thread checkpointed before this field existed, or one
                     # whose stored value was unreadable and discarded on load.
@@ -18777,7 +18775,7 @@ class DeepAgentsApp(App):
                 # the in-memory request time. Leaving it stale would make the
                 # very next send report "no record of when this thread last
                 # reached the model" seconds after a turn that plainly did.
-                self._stamp_cache_identity_locally()
+                await self._stamp_cache_identity_locally()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

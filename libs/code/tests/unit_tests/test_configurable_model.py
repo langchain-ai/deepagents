@@ -296,6 +296,21 @@ def test_checkpoint_records_effective_cache_params() -> None:
     assert update["_model_params"] is None
 
 
+def test_checkpoint_records_astra_reasoning_effort_for_cache_identity() -> None:
+    request = _make_request(
+        _make_model("gpt-6-astra"),
+        context=CLIContext(model_params={"reasoning_effort": "high"}),
+    )
+
+    result = ConfigurableModelMiddleware().wrap_model_call(
+        request, lambda _r: _make_response()
+    )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": "high"}
+    assert update["_model_params"] == {"reasoning_effort": "high"}
+
+
 def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
     """Only cache-identity keys may be persisted for the cold-cache check.
 

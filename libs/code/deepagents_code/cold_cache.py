@@ -76,12 +76,14 @@ CACHE_IDENTITY_PARAM_KEYS = frozenset(
 )
 """Invocation params that select or invalidate a provider cache entry.
 
-The identity check compares only these. Comparing whole `model_params` maps
-instead would report a model change for every unrelated knob -- `/effort`
-rewrites `reasoning_effort` wholesale, and `temperature` or `max_tokens` are
-just as inert for caching -- and the modal would then assert that "the previous
-cached prefix cannot be reused" when nothing about the prefix moved. A modal
-that fires on a false premise trains users into the permanent suppression.
+The identity check compares only these, plus `reasoning_effort` for GPT-6 Astra.
+Comparing whole `model_params` maps instead would report a model change for every
+unrelated knob -- `temperature` or `max_tokens`, for example -- and the modal
+would then assert that "the previous cached prefix cannot be reused" when
+nothing about the prefix moved. Astra is the exception because changing its
+request-level reasoning effort can rewrite model-side instructions and reduce
+prefix reuse. A modal that fires on a false premise trains users into the
+permanent suppression.
 
 `cache_control` is deliberately absent: `AnthropicPromptCachingMiddleware`
 overwrites `model_settings["cache_control"]` with its own TTL on every
@@ -865,23 +867,24 @@ def resolve_prompt_cache_policy(
     if provider != "openai" or not endpoint_ok("api.openai.com"):
         return None
 
-    # Write pricing follows the model version, independent of retention: only
-    # GPT-5.6+ bills a miss as a cache write.
-    write_bucket: CacheWriteBucket = (
-        "generic_write" if _openai_uses_thirty_minute_cache(model_name) else "generic"
-    )
+    # GPT-5.6+ uses `prompt_cache_options.ttl = "30m"`; the legacy
+    # `prompt_cache_retention` knob does not extend that family to one or 24
+    # hours. OpenAI documents 30 minutes as a guaranteed minimum, so the prefix
+    # may still be warm after this window.
+    # https://developers.openai.com/api/docs/guides/prompt-caching
+    if _openai_uses_thirty_minute_cache(model_name):
+        return PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=1800,
+            confidence="may_be_cold",
+            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
+            write_bucket="generic_write",
+        )
 
     # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
     # maximum, not a guarantee"): entries may be evicted earlier, so a warning
     # is only defensible once the maximum has passed -- at which point the
     # entry is gone rather than merely doubtful.
-    #
-    # Checked before the GPT-5.6+ minimum because the two knobs are
-    # independent: `prompt_cache_retention` states a maximum lifetime while the
-    # 5.6+ guarantee states a minimum one, and an explicitly configured
-    # retention is the later, firmer bound. Warning a user who asked for `24h`
-    # at the 30-minute mark would contradict their own configuration.
-    # https://platform.openai.com/docs/guides/prompt-caching
     retention = params.get("prompt_cache_retention")
     retention_windows = {"in_memory": 3600, "24h": 86400}
     window = retention_windows.get(retention) if isinstance(retention, str) else None
@@ -891,41 +894,40 @@ def resolve_prompt_cache_policy(
             window_seconds=window,
             confidence="expired",
             minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket=write_bucket,
-        )
-
-    if write_bucket == "generic_write":
-        # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+ with
-        # no explicit retention configured, but OpenAI may retain the prefix
-        # longer, so past the window it can only be treated as possibly cold.
-        # https://platform.openai.com/docs/guides/prompt-caching
-        return PromptCachePolicy(
-            provider_name="OpenAI",
-            window_seconds=1800,
-            confidence="may_be_cold",
-            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket=write_bucket,
+            write_bucket="generic",
         )
     return None
 
 
-def cache_identity_params(model_params: Mapping[str, Any] | None) -> dict[str, Any]:
+def cache_identity_params(
+    model_params: Mapping[str, Any] | None,
+    *,
+    model_spec: str | None = None,
+) -> dict[str, Any]:
     """Project the params that participate in prompt-cache identity.
 
     Args:
         model_params: Full invocation params, or `None`.
+        model_spec: Optional `provider:model` spec used for model-specific keys.
 
     Returns:
-        Only the `CACHE_IDENTITY_PARAM_KEYS` entries present, so two calls can
-            be compared without unrelated knobs reading as a cache change.
+        Cache-identity entries, excluding unrelated invocation knobs.
     """
     if not model_params:
         return {}
-    return {
-        key: value
-        for key, value in model_params.items()
-        if key in CACHE_IDENTITY_PARAM_KEYS
-    }
+    keys = CACHE_IDENTITY_PARAM_KEYS
+    if model_spec:
+        provider, separator, model_name = model_spec.partition(":")
+        effective_model = (
+            _effective_model_name(provider, model_name) if separator else None
+        )
+        if (
+            provider.strip().lower() == "openai"
+            and effective_model
+            and effective_model.lower().startswith("gpt-6-astra")
+        ):
+            keys |= {"reasoning_effort"}
+    return {key: value for key, value in model_params.items() if key in keys}
 
 
 def estimate_rewarm_cost(

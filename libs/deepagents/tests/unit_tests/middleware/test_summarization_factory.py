@@ -6,7 +6,8 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, MessageLikeRepresentation
+from langchain.agents.middleware.summarization import _DEFAULT_TRIM_TOKEN_LIMIT
+from langchain_core.messages import AIMessage, HumanMessage, MessageLikeRepresentation
 
 from deepagents.middleware.summarization import create_summarization_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -86,6 +87,53 @@ def test_factory_summarization_knobs_are_keyword_only() -> None:
     assert params["summary_prompt"].kind is Parameter.KEYWORD_ONLY
     assert params["trim_tokens_to_summarize"].kind is Parameter.KEYWORD_ONLY
     assert params["token_counter"].kind is Parameter.KEYWORD_ONLY
+
+
+def test_factory_defaults_trim_tokens_to_summarize() -> None:
+    """Regression for #5913: factory must not silently disable trimming.
+
+    `create_summarization_middleware` previously defaulted
+    `trim_tokens_to_summarize` to `None`, overriding the middleware's own
+    `_DEFAULT_TRIM_TOKEN_LIMIT` default. That let the full, untrimmed
+    conversation reach the summary-generation model call, which could
+    overflow the summarization model's context window on large histories.
+    """
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    assert middleware._lc_helper.trim_tokens_to_summarize == _DEFAULT_TRIM_TOKEN_LIMIT
+    assert middleware._lc_helper.trim_tokens_to_summarize is not None
+
+
+def test_factory_still_allows_explicit_none_opt_out() -> None:
+    """Callers can still explicitly disable trimming via `trim_tokens_to_summarize=None`."""
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        trim_tokens_to_summarize=None,
+    )
+
+    assert middleware._lc_helper.trim_tokens_to_summarize is None
+
+
+def test_default_trim_limit_bounds_messages_sent_to_summary_model() -> None:
+    """Regression for #5913: a large history is trimmed before summarization.
+
+    With the restored default, `_trim_messages_for_summary` must bound the
+    batch of messages handed to the summary-generation call instead of
+    passing the entire, potentially oversized conversation through.
+    """
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    # Simulate a conversation large enough that, untrimmed, it would exceed
+    # a small summarization model's own context window.
+    large_messages = [HumanMessage(content=f"Question {i}: " + "x" * 2000) for i in range(500)]
+
+    trimmed = middleware._lc_helper._trim_messages_for_summary(large_messages)
+
+    assert len(trimmed) < len(large_messages)
 
 
 def test_factory_rejects_string_model() -> None:

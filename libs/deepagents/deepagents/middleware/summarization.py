@@ -1638,7 +1638,7 @@ def create_summarization_middleware(
     backend: BackendProtocol,
     *,
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
-    trim_tokens_to_summarize: int | None = None,
+    trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
     token_counter: TokenCounter = count_tokens_approximately,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
@@ -1683,6 +1683,13 @@ def create_summarization_middleware(
         backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
         trim_tokens_to_summarize: Max tokens to include when generating summary.
+
+            Defaults to `_DEFAULT_TRIM_TOKEN_LIMIT` (4000), matching
+            [`_DeepAgentsSummarizationMiddleware`][deepagents.middleware.summarization._DeepAgentsSummarizationMiddleware].
+            Without this, the summary-generation call receives the full,
+            untrimmed message history and can overflow the summarization
+            model's own context window. Pass `None` explicitly to opt out
+            of trimming.
         token_counter: Function to count tokens in messages.
 
     Returns:

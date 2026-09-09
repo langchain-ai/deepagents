@@ -989,9 +989,12 @@ def _truncate_paginated_read(
                 next_offset=end_line,
             )
             adjusted_notice = _remaining_lines_notice(adjusted_result)
-            footer = f"\n@@ end lines {read_result.start_line}-{end_line} @@"
-            if boundary + len(footer) + len(truncation_msg) + len(adjusted_notice) <= threshold:
-                return content[:boundary] + footer + truncation_msg + adjusted_notice
+
+            marker = f"{read_result.start_line}-{end_line}"
+            body = content[:boundary].split("\n", 1)[1]
+            envelope = f"@@ lines {marker} @@\n{body}\n@@ end lines {marker} @@"
+            if len(envelope) + len(truncation_msg) + len(adjusted_notice) <= threshold:
+                return envelope + truncation_msg + adjusted_notice
 
     # No complete source line fits. Keep the size warning but omit the
     # backend's stale pagination offset.

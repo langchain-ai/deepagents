@@ -1773,6 +1773,40 @@ class TestFilesystemMiddleware:
         assert last_displayed_line < 100
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
+    def test_read_file_truncation_rebuilds_opening_marker_to_retained_range(self):
+        """Both envelope markers report the range actually retained.
+
+        A stale opening marker is not cosmetic: consumers take the source-line
+        count from it, so a marker still claiming the full requested window
+        advertises a resume offset past the rows truncation dropped.
+        """
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(
+                content="\n".join(f"line {line}: " + "x" * 80 for line in range(1, 101)),
+                encoding="utf-8",
+            ),
+            total_lines=120,
+            start_line=1,
+            end_line=100,
+            next_offset=100,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=500)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        lines = result.content.splitlines()
+        header = lines[0]
+        footer = next(line for line in lines if line.startswith("@@ end lines "))
+        retained = int(footer.removesuffix(" @@").rsplit("-", maxsplit=1)[1])
+        assert retained < 100
+        assert header == f"@@ lines 1-{retained} @@"
+        # The marker range spans exactly the source rows between the markers.
+        assert lines.index(footer) - 1 == retained
+
     def test_read_file_truncation_adds_notice_when_backend_reached_eof(self):
         backend, _ = _make_backend()
         read_result = ReadResult(

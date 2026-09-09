@@ -139,6 +139,34 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     assert "offset=12" in result.content
 
 
+def test_read_file_continuation_notice_skips_truncated_window() -> None:
+    """A truncated window reports its retained range, so no hint is appended.
+
+    The source-line count comes from the opening marker. A truncated read whose
+    marker still claimed the full request would look like a full page here and
+    hint at an offset past the rows that were dropped.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(
+            content=(
+                "@@ lines 1-2 @@\nalpha\nbeta\n@@ end lines 1-2 @@"
+                "\n\n[Read 2 lines (lines 1-2 of 9 total). 7 lines remaining from offset 2.]"
+            ),
+            tool_call_id="call_1",
+        )
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 5, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert "read_file returned" not in result.content
+    assert "offset=5" not in result.content
+
+
 def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
     """Wrapped chunks should not count toward the source-line limit."""
     middleware = ReadFileContinuationNoticeMiddleware()

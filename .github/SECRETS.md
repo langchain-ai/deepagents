@@ -37,12 +37,13 @@ This environment is selected by `.github/workflows/openwiki-update.yml`.
 
 | Secret | Purpose | Minimum permissions |
 | --- | --- | --- |
-| `OPENWIKI_PR_TOKEN` | Authenticate a non-human GitHub App or service account that pushes `openwiki/update`, creates or updates its pull request, and enables auto-merge. Scope access to this repository. | GitHub repository contents: read/write; pull requests: read/write |
+| `ORG_MEMBERSHIP_APP_PRIVATE_KEY` | Mint a short-lived GitHub App installation token that pushes `openwiki/update`, creates or updates its pull request, and enables auto-merge. | GitHub repository contents: read/write; pull requests: read/write |
 | `LANGSMITH_API_KEY` | Ingest OpenWiki traces into the `openwiki` project. | LangSmith `runs:create` |
 | `LS_GATEWAY_OPENAI_API_KEY` | Invoke the configured model through the workflow's current LangSmith Gateway endpoint. | LangSmith `gateway:invoke`, `workspaces:read` |
 
-| Actions environment variable | Value | Purpose |
+| Actions variable | Value | Purpose |
 | --- | --- | --- |
+| `ORG_MEMBERSHIP_APP_CLIENT_ID` | Existing repository variable | Identify the GitHub App used to mint the OpenWiki installation token. |
 | `OPENAI_BASE_URL` | `https://gateway.smith.langchain.com/openai/v1` | Set LangSmith gateway target. |
 
 Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main`.

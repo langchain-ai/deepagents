@@ -15,6 +15,7 @@ APP_TOKEN_WORKFLOWS = (
     "pr_labeler.yml",
     "pr_labeler_backfill.yml",
     "tag-external-issues.yml",
+    "openwiki-update.yml",
 )
 INTEGRATION_ENV = {
     "ANTHROPIC_API_KEY": "${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/partners/quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
@@ -126,11 +127,20 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     create_pr = _find_step(
         workflow, job="update", name="Create OpenWiki update pull request"
     )
+    token_step = _find_step(
+        workflow, job="update", name="Generate OpenWiki GitHub App token"
+    )
     auto_merge = _find_step(workflow, job="update", name="Enable auto-merge")
-    token = "${{ secrets.OPENWIKI_PR_TOKEN }}"
+    token = "${{ steps.app-token.outputs.token }}"
 
     assert "token" not in checkout["with"]
     assert checkout["with"]["persist-credentials"] is False
+    steps = update["steps"]
+    assert steps.index(token_step) > steps.index(
+        _find_step(workflow, job="update", name="Run OpenWiki")
+    )
+    assert token_step["with"]["permission-contents"] == "write"
+    assert token_step["with"]["permission-pull-requests"] == "write"
     assert create_pr["env"]["GH_TOKEN"] == token
     assert "gh auth setup-git" in create_pr["run"]
     assert auto_merge["env"]["GH_TOKEN"] == token

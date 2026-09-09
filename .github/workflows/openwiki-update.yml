@@ -36,10 +36,19 @@ jobs:
           OPENWIKI_MODEL_ID: gpt-5.6-terra
           LANGSMITH_TRACING: "false"
 
+      - name: Generate OpenWiki GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Create OpenWiki update pull request
         id: create-pr
         env:
-          GH_TOKEN: ${{ secrets.OPENWIKI_PR_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: openwiki/update
           BASE: ${{ github.ref_name }}
         run: |
@@ -92,7 +101,7 @@ jobs:
       - name: Enable auto-merge
         if: ${{ steps.create-pr.outputs.number != '' }}
         env:
-          GH_TOKEN: ${{ secrets.OPENWIKI_PR_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.number }}
         run: |
           set -euo pipefail

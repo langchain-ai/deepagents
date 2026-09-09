@@ -1,0 +1,1 @@
+"""Virtual-table middleware example."""

@@ -1,0 +1,52 @@
+[project]
+name = "virtual-table-example"
+version = "0.1.0"
+description = "Prototype Deep Agents middleware for subagent-enriched text tables"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.7.13,<0.8.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "pytest-asyncio>=1.4.0,<2.0.0",
+    "ruff>=0.15.22,<0.16.0",
+]
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN401",
+    "COM812",
+    "ISC001",
+    "BLE001",
+    "FBT001",
+    "N999",
+    "PLR0913",
+    "S608",
+    "TC002",
+    "TRY301",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["virtual_table"]
+
+[tool.ruff.lint.per-file-ignores]
+"agent.py" = ["T201"]
+"test_*.py" = ["ANN", "ARG", "D", "EM101", "PLR2004", "S101", "SLF001", "TRY003"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

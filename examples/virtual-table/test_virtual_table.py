@@ -16,7 +16,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.types import Command
 
-from virtual_table import VirtualTableMiddleware
+from virtual_table import VirtualTableMiddleware, _worker
 
 
 def _backend(files: dict[str, bytes] | None = None) -> Any:
@@ -96,12 +96,14 @@ async def test_enrich_defines_a_temporary_row_worker(monkeypatch: pytest.MonkeyP
             assert "<row_data>" in message.content
             row = json.loads(message.content.split("<row_data>\n", 1)[1].split("\n</row_data>", 1)[0])
             calls.append({"row": row, "config": config})
-            return {"structured_response": {"sentiment": "positive", "length": len(row["file_content"])}}
+            assert "file_content" not in row
+            return {"structured_response": {"sentiment": "positive", "length": len(row["file"])}}
 
-    def worker(model: Any, prompt: str, schema: dict[str, Any]) -> Worker:
+    def worker(model: Any, prompt: str, schema: dict[str, Any], backend: Any, file_path: str) -> Worker:
         assert isinstance(model, FakeListChatModel)
         assert prompt == "Classify sentiment."
         assert schema["required"] == ["sentiment", "length"]
+        assert file_path in {"/docs/great.txt", "/docs/good.txt"}
         return Worker()
 
     monkeypatch.setattr("virtual_table._worker", worker)
@@ -137,12 +139,34 @@ async def test_enrich_defines_a_temporary_row_worker(monkeypatch: pytest.MonkeyP
     assert isinstance(result, Command)
     rows = result.update["_virtual_tables"]["docs"]
     assert rows[0]["sentiment"] == "positive"
-    assert rows[0]["length"] == 5
+    assert rows[0]["length"] == len("/docs/great.txt")
     assert rows[0]["classification_status"] == "succeeded"
     assert rows[1]["classification_status"] == "succeeded"
-    assert {call["row"]["file_content"] for call in calls} == {"great", "good"}
+    assert {call["row"]["file"] for call in calls} == {"/docs/great.txt", "/docs/good.txt"}
     assert {call["row"]["team"] for call in calls} == {"a", "b"}
-    assert backend.adownload_files.await_count == 2
+    backend.adownload_files.assert_not_awaited()
+
+
+def test_worker_has_read_only_access_to_its_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def create_agent_stub(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr("virtual_table.create_agent", create_agent_stub)
+    _worker(
+        FakeListChatModel(responses=["unused"]),
+        "Extract facts.",
+        {"type": "object", "properties": {"fact": {"type": "string"}}},
+        _backend(),
+        "/docs/large.txt",
+    )
+
+    filesystem = captured["middleware"][0]
+    assert [tool.name for tool in filesystem.tools] == ["read_file"]
+    assert [(rule.paths, rule.mode) for rule in filesystem._permissions] == [(["/docs/large.txt"], "allow"), (["/**"], "deny")]
+    assert "Start with a modest line limit" in captured["system_prompt"]
 
 
 def test_create_requires_a_file_reference() -> None:
@@ -153,8 +177,9 @@ def test_create_requires_a_file_reference() -> None:
         create.invoke({"name": "docs", "rows": [{"title": "missing"}], "runtime": _runtime({"messages": []})})
 
 
-async def test_missing_file_is_materialized_as_a_row_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("virtual_table._worker", lambda *_: SimpleNamespace())
+async def test_worker_failure_is_materialized_as_a_row_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = SimpleNamespace(ainvoke=AsyncMock(side_effect=OSError("file_not_found")))
+    monkeypatch.setattr("virtual_table._worker", lambda *_: worker)
     middleware = VirtualTableMiddleware(
         backend=_backend(),
         initial_tables={"docs": [{"file": "/docs/missing.txt", "team": "a"}]},
@@ -190,6 +215,8 @@ def test_middleware_adds_table_instructions() -> None:
         assert updated.model is model
         assert "Host instructions." in updated.system_message.text
         assert "virtual_table_enrich" in updated.system_message.text
+        assert "Do not read every row's file yourself" in updated.system_message.text
+        assert "sample one or two files" in updated.system_message.text
         assert "initial_tables` already exist" in updated.system_message.text
         assert "virtual_table_create" in updated.system_message.text
         assert "SELECT * FROM <table> LIMIT 3" in updated.system_message.text

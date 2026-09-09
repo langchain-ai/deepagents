@@ -280,10 +280,33 @@ test('response text permits only pull request links and no commit hashes', () =>
     () => draft.responseText('openai', payload(structured('Feature from abc1234.'))),
     /commit hash/,
   );
-  assert.throws(
-    () => draft.responseText('openai', payload(structured('Feature ([docs](https://example.com)).'))),
-    /non-PR link/,
-  );
+  for (const link of [
+    '[docs](/docs)',
+    '[site](//example.com)',
+    '[email](mailto:user@example.com)',
+    '![image](https://github.com/langchain-ai/deepagents/pull/123)',
+    '<mailto:user@example.com>',
+    '<a href="/docs">docs</a>',
+    'https://example.com',
+  ]) {
+    assert.throws(
+      () => draft.responseText('openai', payload(structured(`Feature (${link}).`))),
+      /non-PR link/,
+    );
+  }
+});
+
+test('response text rejects multiline entries', () => {
+  const payload = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  for (const entry of [
+    'Feature A\n### Bug Fixes\n- Feature B',
+    'Feature A\r\nFeature B',
+  ]) {
+    assert.throws(
+      () => draft.responseText('openai', payload(structured(entry))),
+      /multiline entry/,
+    );
+  }
 });
 
 test('response text reassembles structured JSON split across multiple content parts', () => {

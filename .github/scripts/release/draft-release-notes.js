@@ -220,15 +220,21 @@ function providerRequest(provider, model, key, source) {
 const NORMAL_FINISH = { openai: 'stop', anthropic: 'end_turn', google_genai: 'STOP' };
 
 function normalizeEntry(entry, provider) {
+  if (/[\r\n]/.test(entry)) throw new Error(`The ${provider} model returned a multiline entry`);
   const note = entry.trim().replace(
     /https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)/g,
     'https://github.com/$1/$2/pull/$3',
   );
-  const urls = note.match(/https?:\/\/[^\s)]+/g) ?? [];
-  if (urls.some(url => !/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+$/.test(url))) {
+  const destinations = [
+    ...[...note.matchAll(/\]\(\s*([^)\s]+)[^)]*\)/g)].map(match => match[1]),
+    ...[...note.matchAll(/<([^<>\s]+)>/g)].map(match => match[1]),
+    ...(note.match(/https?:\/\/[^\s)>]+/g) ?? []),
+  ].map(url => url.replace(/[.,;:!?]+$/, ''));
+  const pullUrl = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+$/;
+  if (/<[^<>]*\s[^<>]*>/.test(note) || /!\[[^\]]*\]\(/.test(note) || destinations.some(url => !pullUrl.test(url))) {
     throw new Error(`The ${provider} model returned a non-PR link`);
   }
-  if (/\b[0-9a-f]{7,40}\b/i.test(note.replace(/https?:\/\/[^\s)]+/g, ''))) {
+  if (/\b[0-9a-f]{7,40}\b/i.test(note.replace(/https?:\/\/[^\s)>]+/g, ''))) {
     throw new Error(`The ${provider} model returned a commit hash`);
   }
   return note;

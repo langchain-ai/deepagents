@@ -2,6 +2,24 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
+
+### Features
+
+- Added `GPT-6 Astra` support ([#6141](https://github.com/langchain-ai/deepagents/issues/6141)).
+- Reuses the server across workspace switches ([#6152](https://github.com/langchain-ai/deepagents/issues/6152)).
+- Limits thread resume age ([#6068](https://github.com/langchain-ai/deepagents/issues/6068)).
+
+### Bug Fixes
+
+- Improved workspace isolation by resolving project policy per workspace, scoping project dotenv to workspaces, and isolating LangSmith auth and workspace tracing ([#6064](https://github.com/langchain-ai/deepagents/issues/6064), [#5980](https://github.com/langchain-ai/deepagents/issues/5980), [#6061](https://github.com/langchain-ai/deepagents/issues/6061)).
+- Improved transcript tail reconciliation by bounding and serializing reconciliation work ([#6057](https://github.com/langchain-ai/deepagents/issues/6057), [#6143](https://github.com/langchain-ai/deepagents/issues/6143)).
+- Refuses a second sandbox workspace and moves sandbox creation and entry off the guarded event loop ([#5979](https://github.com/langchain-ai/deepagents/issues/5979), [#6017](https://github.com/langchain-ai/deepagents/issues/6017)).
+- Surfaces stale updates in-session ([#6063](https://github.com/langchain-ai/deepagents/issues/6063)).
+- Surfaces the LangSmith credential in `dcode config` ([#6083](https://github.com/langchain-ai/deepagents/issues/6083)).
+- Offloads server config imports ([#6089](https://github.com/langchain-ai/deepagents/issues/6089)).
+- Correctly parses extra skill directories with the platform separator ([#6151](https://github.com/langchain-ai/deepagents/issues/6151)).
+
 ## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
 
 ### Features

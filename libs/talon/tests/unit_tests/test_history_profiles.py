@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import threading
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -84,6 +87,58 @@ def test_remote_adapters_name_the_settings_they_require(tmp_path, missing):
     del env[PREFIX + missing]
     with pytest.raises(TalonConfigError, match=f"{missing} is required"):
         TalonConfig.from_env(env, base_home=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"ADAPTER": "local", "MODEL": "BAAI/bge-m3", "BASE_URL": "https://api.example.org/v1"},
+        {"ADAPTER": "local", "MODEL": "BAAI/bge-m3", "SEND_DIMENSIONS": "0"},
+        {"ADAPTER": "atlas", "MODEL": "voyage-3-large", "MAX_INPUT_TOKENS": "16256"},
+    ],
+)
+def test_settings_an_adapter_cannot_honour_are_refused(tmp_path, settings):
+    # Silently ignoring these is worse than refusing: BASE_URL enters the fingerprint
+    # and forces a reindex, and SEND_DIMENSIONS is advertised as the fix for a
+    # dimension mismatch it cannot repair on these adapters.
+    if settings["ADAPTER"] == "atlas":
+        settings = {**settings, "DIMS": "1024", "SEND_DIMENSIONS": "0"}
+    with pytest.raises(TalonConfigError, match=r"BASE_URL|SEND_DIMENSIONS"):
+        configuration(tmp_path, **settings)
+
+
+@pytest.mark.parametrize(("flag", "expected"), [("1", 1024), ("0", None)])
+async def test_voyage_honours_send_dimensions(tmp_path, monkeypatch, flag, expected):
+    captured = {}
+
+    class FakeVoyage(Embeddings):
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def embed_documents(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+        def embed_query(self, _text):
+            return [1.0, 0.0]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepagents_talon.history_voyage",
+        SimpleNamespace(HistoryVoyageEmbeddings=FakeVoyage),
+    )
+    monkeypatch.setattr(history_adapters, "_driver", lambda *_args: SimpleNamespace())
+    config = configuration(
+        tmp_path,
+        ADAPTER="voyage",
+        MODEL="voyage-3-large",
+        DIMS="1024",
+        BASE_URL="",
+        SEND_DIMENSIONS=flag,
+        API_KEY="test-key",
+    )
+    async with open_profile(config) as profile:
+        assert profile is not None
+    assert captured["output_dimension"] == expected
 
 
 def test_public_endpoints_remain_configurable(tmp_path):
@@ -597,6 +652,103 @@ async def test_threaded_store_uses_native_async_embeddings(tmp_path):
     assert result[0].key == "one"
     assert raw.documents == ["document"]
     assert set(raw.queries) == {"question"}
+
+
+async def test_sync_store_api_is_refused_rather_than_embedding_in_the_lock(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    raw = RecordingEmbeddings()
+    embed = BoundedEmbeddings(raw, configuration(tmp_path).history_embedding_profile)
+    store = PreparedVectorStore(
+        InMemoryStore(index={"dims": 2, "embed": embed, "fields": ["text"]}), embed
+    )
+    # Delegating would embed from the Store's worker thread inside the database lock.
+    with pytest.raises(NotImplementedError, match="async Store API"):
+        store.put(("test",), "one", {"text": "document"})
+    assert raw.documents == []
+
+
+async def test_prepared_store_indexes_configured_fields_without_assuming_text(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    raw = RecordingEmbeddings()
+    embed = BoundedEmbeddings(raw, configuration(tmp_path).history_embedding_profile)
+    store = PreparedVectorStore(
+        InMemoryStore(index={"dims": 2, "embed": embed, "fields": ["body"]}), embed
+    )
+    await store.aput(("test",), "one", {"body": "document"}, index=["body"])
+    assert raw.documents == ["document"]
+
+
+async def test_bridge_gives_up_when_the_loop_cannot_run_the_coroutine(tmp_path, monkeypatch):
+    # raising=False so an unbounded bridge fails on the hang itself, not the constant.
+    monkeypatch.setattr(history_adapters, "_BRIDGE_TIMEOUT_SECONDS", 0.1, raising=False)
+    monkeypatch.setattr(history_adapters, "_BRIDGE_POLL_SECONDS", 0.02, raising=False)
+    profile = configuration(tmp_path).history_embedding_profile
+    embed = BoundedEmbeddings(RecordingEmbeddings(), profile)
+    outcome = []
+
+    def call():
+        try:
+            embed.embed_documents(["text"])
+        except RuntimeError as error:
+            outcome.append(error)
+
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    # Never awaiting keeps the loop from serving the worker's coroutine at all, which
+    # is the state a stopping loop leaves it in. Without a bound the worker would wait
+    # here forever, holding the Store's own shutdown open.
+    time.sleep(0.5)  # noqa: ASYNC251  # Stalling the loop is what this test reproduces.
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert "deadline" in str(outcome[0])
+
+
+async def test_adapter_client_is_closed_when_the_archive_closes(tmp_path, monkeypatch):
+    closed = []
+
+    class ClosingEmbeddings(RecordingEmbeddings):
+        async def aclose(self):
+            closed.append(True)
+
+    raw = ClosingEmbeddings()
+    fake_adapter(monkeypatch, raw)
+    config = configuration(tmp_path)
+    async with open_history(config) as archive:
+        await archive.append(SCOPE, "session", "time", [HumanMessage("car")])
+        await settled(archive)
+    # A reindex reopens the archive, so an unclosed pool leaks sockets per cycle.
+    assert closed == [True]
+
+
+async def test_query_prompt_reaches_stores_that_embed_searches_as_documents(tmp_path):
+    from langgraph.store.memory import InMemoryStore  # noqa: PLC0415
+
+    from deepagents_talon.history_prepared_store import PreparedVectorStore  # noqa: PLC0415
+
+    class DocumentSearchStore(InMemoryStore):
+        # PostgreSQL and SQLite both embed a search through aembed_documents; only the
+        # SQLite subclass marks those calls as queries, so this stands in for the rest.
+        async def _aembed_search_queries(self, search_ops):
+            queries = list({op.query for op, _ in search_ops.values() if op.query})
+            return dict(zip(queries, await self.embeddings.aembed_documents(queries), strict=True))
+
+    raw = RecordingEmbeddings()
+    profile = configuration(tmp_path, QUERY_PROMPT="Instruct: ").history_embedding_profile
+    embed = BoundedEmbeddings(raw, profile)
+    store = PreparedVectorStore(
+        DocumentSearchStore(index={"dims": 2, "embed": embed, "fields": ["text"]}), embed
+    )
+    await store.aput(("test",), "one", {"text": "document"})
+    assert (await store.asearch(("test",), query="question"))[0].key == "one"
+    assert raw.queries == ["Instruct: question"]
+    # The query must not be re-embedded as an unprefixed document inside the batch.
+    assert raw.documents == ["document"]
 
 
 async def test_vector_plugin_receives_generation_and_deletion_mode(tmp_path, monkeypatch):

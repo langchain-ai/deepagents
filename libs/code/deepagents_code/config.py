@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
+from deepagents_code._constants import (
+    FIREWORKS_PROVIDER_ID_PREFIX,
+    LANGSMITH_API_KEY_ENV_VARS as _TRACING_API_KEY_ENV_VARS,
+)
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
     AUTO_CLASSIFIER_TIMEOUT,
@@ -591,9 +594,15 @@ def _dotenv_values_from(
     from dotenv.main import DotEnv
     from dotenv.variables import parse_variables
 
+    # `DotEnv` defaults `encoding` to `None` (the locale encoding, cp1252 on
+    # Windows) where the `dotenv_values` helper this replaced defaulted to
+    # UTF-8. Without this, a `.env` holding non-ASCII bytes raises
+    # `UnicodeDecodeError` -- a `ValueError` the caller swallows -- and the
+    # whole file is dropped.
     parsed = DotEnv(
         dotenv_path=str(dotenv_path),
         interpolate=False,
+        encoding="utf-8",
     ).dict()
     resolved: dict[str, str | None] = {}
     # Built once: `resolved` only grows, and each new key is folded in below, so
@@ -718,9 +727,21 @@ def _dotenv_environment(
             if raw is not None:
                 global_toggle[READ_PROJECT_DOTENV] = raw
     except (OSError, ValueError):
+        # Fail closed. `resolve_read_project_dotenv` defaults to true, so an
+        # unreadable global file would silently discard the user's opt-out and
+        # load the untrusted project `.env` instead. Skipping the project file
+        # costs the user a startup value; honoring it costs them the trust
+        # decision they made. This occupies the global-dotenv tier only, so
+        # managed policy and a shell export still win -- a user who opts in
+        # through a trusted surface keeps project `.env` loading.
+        global_toggle[READ_PROJECT_DOTENV] = "false"
         logger.warning(
-            "Could not read global dotenv at %s; global defaults may be incomplete",
+            "Could not read the trusted global dotenv at %s. Skipping the "
+            "project .env for %s rather than assuming "
+            "startup.read_project_dotenv is true. Fix that file's permissions "
+            "to restore project .env loading.",
             _GLOBAL_DOTENV_PATH,
+            start_path or "cwd",
             exc_info=True,
         )
 
@@ -864,9 +885,6 @@ def _load_dotenv(
         _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
-
-_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
-"""Env vars that hold the LangSmith API key used for trace ingestion."""
 
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
@@ -1403,6 +1421,27 @@ def _decode_user_langsmith_env(
     launch = _validate_user_langsmith_env(decoded["launch"])
     user = _validate_user_langsmith_env(decoded["user"])
     return (launch, user) if launch is not None and user is not None else None
+
+
+def relayed_user_tracing_secrets(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Extract caller API keys from the validated LangSmith settings carrier.
+
+    Args:
+        environ: Environment containing the client-to-server carrier.
+
+    Returns:
+        Launch and user-command API keys for Auto mode output redaction.
+    """
+    encoded = environ.get(_USER_LANGSMITH_ENV_CARRIER)
+    decoded = _decode_user_langsmith_env(encoded) if encoded else None
+    if decoded is None:
+        return ()
+    return tuple(
+        value
+        for mapping in decoded
+        for var in _TRACING_API_KEY_ENV_VARS
+        if isinstance(value := mapping.get(var), str) and value
+    )
 
 
 def _encode_user_langsmith_env() -> str:
@@ -3306,12 +3345,12 @@ def _parse_extra_skills_dirs(
     in user-specified locations without being rejected by the path
     containment check.
 
-    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, colon-separated) takes
-    precedence: when set, `config.toml` values are ignored.
+    The env var (`DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`, separated by
+    `os.pathsep`) takes precedence: when set, `config.toml` values are ignored.
 
     Args:
-        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (colon-separated), or
-            `None` if unset.
+        env_raw: Value of `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (separated by
+            `os.pathsep`), or `None` if unset.
         config_toml_dirs: List of path strings from
             `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
@@ -3322,7 +3361,7 @@ def _parse_extra_skills_dirs(
     if env_raw:
         dirs = [
             _resolve_extra_skills_path(p.strip())
-            for p in env_raw.split(":")
+            for p in env_raw.split(os.pathsep)
             if p.strip()
         ]
         return dirs or None
@@ -5853,12 +5892,9 @@ def _apply_provider_sdk_environment(
     if provider == "azure_openai":
         _apply_azure_sdk_endpoint(kwargs)
 
-    table = {
-        argument: env_names
-        for argument, env_names in _PROVIDER_SDK_ENV_KWARGS.get(provider, {}).items()
-        if argument not in kwargs
-    }
-    kwargs.update(resolve_env_kwargs(table, resolve_env_var))
+    table = _PROVIDER_SDK_ENV_KWARGS.get(provider, {})
+    for argument, value in resolve_env_kwargs(table, resolve_env_var).items():
+        kwargs.setdefault(argument, value)
 
 
 def _get_provider_kwargs(
@@ -5938,6 +5974,48 @@ def _get_provider_kwargs(
 
     _apply_provider_sdk_environment(provider, result)
     return result
+
+
+def _apply_scoped_endpoint(
+    provider: str,
+    kwargs: dict[str, Any],
+    extra_kwargs: dict[str, Any] | None,
+) -> None:
+    """Pair the resolved key with its endpoint on the workspace-scoped path.
+
+    `apply_stored_credentials` is skipped while an environment is bound, so this
+    is the only thing keeping a gateway key from reaching an endpoint that key
+    was not issued for.
+    """
+    if not (extra_kwargs and "api_key" in extra_kwargs):
+        _apply_scoped_stored_endpoint(provider, kwargs)
+        if extra_kwargs and "base_url" in extra_kwargs:
+            kwargs["base_url"] = extra_kwargs["base_url"]
+        return
+    if "base_url" in extra_kwargs:
+        return
+
+    from deepagents_code.model_config import auth_store
+
+    try:
+        stored_base_url = auth_store.get_stored_base_url(provider)
+    except RuntimeError:
+        # The caller passed an explicit `api_key` with no `base_url`. Without
+        # the store we cannot tell whether the inherited endpoint was paired
+        # with the *stored* key, so fail closed and drop it: sending an
+        # explicitly supplied key to a gateway it was not issued for is the
+        # worse outcome.
+        logger.warning(
+            "Could not read the stored endpoint for %r; the credential file "
+            "may be corrupt. Dropping the inherited base URL so the explicitly "
+            "supplied key is not sent to it. Pass `base_url` via "
+            "`--model-params` to target an endpoint explicitly.",
+            provider,
+        )
+        kwargs.pop("base_url", None)
+        return
+    if stored_base_url and kwargs.get("base_url") == stored_base_url:
+        kwargs.pop("base_url", None)
 
 
 def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
@@ -6532,7 +6610,7 @@ def create_model(
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
-    if provider and stored_credential and provider != "google_anthropic_vertex":
+    if stored_credential and provider != "google_anthropic_vertex":
         kwargs["api_key"] = stored_credential
 
     # Compose under existing kwargs: profile < config.toml < --model-params
@@ -6575,35 +6653,7 @@ def create_model(
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
     if provider and scoped_environment:
-        if extra_kwargs and "api_key" in extra_kwargs:
-            if "base_url" not in extra_kwargs:
-                from deepagents_code.model_config import auth_store
-
-                try:
-                    stored_base_url = auth_store.get_stored_base_url(provider)
-                except RuntimeError:
-                    # The caller passed an explicit `api_key` with no
-                    # `base_url`. Without the store we cannot tell whether the
-                    # inherited endpoint was paired with the *stored* key, so
-                    # fail closed and drop it: sending an explicitly supplied
-                    # key to a gateway it was not issued for is the worse
-                    # outcome.
-                    logger.warning(
-                        "Could not read the stored endpoint for %r; the "
-                        "credential file may be corrupt. Dropping the "
-                        "inherited base URL so the explicitly supplied key is "
-                        "not sent to it. Pass `base_url` via `--model-params` "
-                        "to target an endpoint explicitly.",
-                        provider,
-                    )
-                    kwargs.pop("base_url", None)
-                else:
-                    if stored_base_url and kwargs.get("base_url") == stored_base_url:
-                        kwargs.pop("base_url", None)
-        else:
-            _apply_scoped_stored_endpoint(provider, kwargs)
-            if extra_kwargs and "base_url" in extra_kwargs:
-                kwargs["base_url"] = extra_kwargs["base_url"]
+        _apply_scoped_endpoint(provider, kwargs, extra_kwargs)
     kwargs = _compose_openai_reasoning_effort(
         provider,
         kwargs,

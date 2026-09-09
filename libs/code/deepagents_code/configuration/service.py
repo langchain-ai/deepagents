@@ -224,6 +224,8 @@ ENFORCED_MANAGED_KEYS = (
     "models.allowed",
     "models.auto_classifier",
     "runtime.recursion_limit",
+    "threads.max_resume_age",
+    "threads.resume_after",
     "sandboxes.default",
     "shell.allow_list",
     "skills.extra_allowed_dirs",
@@ -237,7 +239,8 @@ Every key here either grants a privilege (approval mode, the YOLO entry in the
 Shift+Tab cycle, shell auto-approval, the interpreter, its programmatic
 tool-calling list, and the acknowledgement that exposes every tool to it) or
 draws a containment boundary (the skill-content allowlist, the recursion limit,
-the classifier that reviews gated actions, and trace redaction). Ignoring an
+the thread-resume cutoff, the classifier that reviews gated actions, and trace
+redaction). Ignoring an
 unusable value for one of these leaves the user's own flag or environment
 variable in force, which is the escalation the policy meant to forbid, so the
 launch stops instead.

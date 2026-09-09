@@ -948,6 +948,11 @@ GLOB_UNREADABLE_NOTE = (
     "Narrowing the search will NOT reveal the missing files -- they are inaccessible. Continue "
     "with what is listed, or report the access problem rather than retrying."
 )
+GLOB_PATHLESS_DENIED_HINT = (
+    ". A glob without 'path' is authorized against the backend's default root, not the "
+    "directories named in 'pattern'. Retry with an explicit 'path' inside an allowed "
+    "directory and a 'pattern' relative to it."
+)
 
 
 def _glob_timeout_message() -> str:
@@ -2449,7 +2454,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}",
+                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -2549,7 +2554,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}",
+                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",

@@ -1,5 +1,7 @@
 """Voyage adapter for inputs already bounded by the history profile."""
 
+import asyncio
+import inspect
 from collections.abc import Generator
 from typing import Self
 
@@ -29,6 +31,17 @@ class HistoryVoyageEmbeddings(VoyageAIEmbeddings):
             max_retries=0,
         )
         return self
+
+    async def aclose(self) -> None:
+        """Release both SDK connection pools; a reindex reopens the archive."""
+        for client in (self._client, self._aclient):
+            for name in ("aclose", "close"):
+                closer = getattr(client, name, None)
+                if callable(closer):
+                    result = await asyncio.to_thread(closer)
+                    if inspect.isawaitable(result):
+                        await result
+                    break
 
     def _build_batches(self, texts: list[str]) -> Generator[tuple[list[str], int], None, None]:
         # Upstream's batching downloads tokenizers synchronously, even for async calls.

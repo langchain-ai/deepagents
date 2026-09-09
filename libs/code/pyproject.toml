@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.66"
+version = "0.1.67"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -34,13 +34,13 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.4,<1.0.0",
     "langgraph-cli[inmem]>=0.4.31,<1.0.0",
-    "langgraph-runtime-inmem>=0.33.4,<1.0.0",
+    "langgraph-runtime-inmem>=0.34.0,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.7.1,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
-    "langchain-openai>=1.6.0,<2.0.0",
+    "langchain-openai>=1.6.1,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
@@ -125,7 +125,7 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.6.0,<2.0.0"]
+openai = ["langchain-openai>=1.6.1,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.8,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.1,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]

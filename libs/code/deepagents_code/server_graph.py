@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import dataclasses
 import logging
 import sys
 from collections import OrderedDict
@@ -36,7 +35,13 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+from deepagents_code.workspace import (
+    PROJECT_POLICY_DRIFT_REASON,
+    SERVER_CONFIG_DRIFT_REASON,
+    WorkspaceConflictError,
+    drifted_project_fields,
+    resolve_workspace,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -50,6 +55,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadOperation
     from deepagents_code.workspace import WorkspaceBinding
 
@@ -60,6 +66,32 @@ _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
 _server_tracing_settings: tuple[dict[str, str | None], bool] | None = None
 _server_tracing_initialized = False
+
+
+def _close_sandbox(context: AbstractContextManager[Any]) -> None:
+    context.__exit__(None, None, None)
+
+
+async def _open_sandbox(
+    create: Callable[[], AbstractContextManager[Any]],
+) -> tuple[AbstractContextManager[Any], Any]:
+    def _enter() -> tuple[AbstractContextManager[Any], Any]:
+        context = create()
+        return context, context.__enter__()  # noqa: PLC2801
+
+    task = asyncio.create_task(asyncio.to_thread(_enter))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            context, _ = await asyncio.shield(task)
+        except BaseException:  # Preserve the caller's cancellation
+            logger.debug(
+                "Sandbox startup did not complete after cancellation", exc_info=True
+            )
+        else:
+            await asyncio.to_thread(_close_sandbox, context)
+        raise
 
 
 def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
@@ -133,7 +165,7 @@ async def _build_tools(
     project_context: ProjectContext | None,
     *,
     tavily_api_key: str | None,
-) -> tuple[list[Any], list[Any] | None, list[Any]]:
+) -> tuple[list[Any], list[Any] | None, list[Any], list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -156,7 +188,10 @@ async def _build_tools(
             reports the key as unconfigured.
 
     Returns:
-        Tuple of `(tools, mcp_server_info, mcp_tools)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools, read_only_builtins)`. The
+        last element is the exact built-in tool objects that are safe to expose
+        to criteria drafting and rubric grading; read-only-ness is known here,
+        at construction, so no consumer has to re-derive it.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
@@ -169,8 +204,11 @@ async def _build_tools(
     )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
+    read_only_builtins: list[Any] = [fetch_url]
     if tavily_api_key is not None:
-        tools.append(create_web_search_tool(tavily_api_key))
+        search_tool = create_web_search_tool(tavily_api_key)
+        tools.append(search_tool)
+        read_only_builtins.append(search_tool)
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -212,28 +250,28 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info, mcp_tools
+    return tools, mcp_server_info, mcp_tools, read_only_builtins
 
 
 def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
+    read_only_builtins: list[Any],
 ) -> list[Any]:
     """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
+        read_only_builtins: Built-in tool objects `_build_tools` created and
+            marked read-only.
 
     Returns:
         External context tools available to criteria generation and grading.
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, is_web_search_tool
-
-    allowed_ids = {id(fetch_url)}
-    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
+    allowed_ids = {id(tool) for tool in read_only_builtins}
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -257,13 +295,7 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
 
 
 class ServerRuntime(NamedTuple):
-    """The one-per-process result of building this server's agent.
-
-    A named tuple rather than a bare tuple so the three slots are addressed by
-    name: `agent` is structurally opaque to the type checker (the SDK exposes no
-    usable compiled-graph type here), so a positional transposition would hand
-    LangGraph the backend as its compiled graph with no complaint.
-    """
+    """The one-per-process result with named slots to prevent transposition."""
 
     agent: Any
     """Compiled LangGraph agent graph served as `agent`."""
@@ -273,6 +305,9 @@ class ServerRuntime(NamedTuple):
 
     offload: OffloadOperation
     """Server-owned thread offload operation bound to `backend`."""
+
+    mcp_server_info: list[MCPServerInfo] | None = None
+    """Workspace-scoped MCP metadata for the interactive client."""
 
 
 async def _make_graphs(
@@ -414,12 +449,14 @@ async def _make_graphs_in_environment(
     )
     result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(
+    tools, mcp_server_info, mcp_tools, read_only_builtins = await _build_tools(
         config,
         project_context,
         tavily_api_key=workspace_credentials.tavily_api_key,
     )
-    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
+    read_only_context_tools = _criteria_context_tools(
+        tools, mcp_tools, read_only_builtins
+    )
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -429,24 +466,22 @@ async def _make_graphs_in_environment(
     # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
     sandbox_backend = None
-    if config.sandbox_type:
+    if sandbox_type := config.sandbox_type:
         from deepagents_code.integrations.sandbox_factory import create_sandbox
 
         try:
-            _sandbox_cm = create_sandbox(
-                config.sandbox_type,
-                sandbox_id=config.sandbox_id,
-                snapshot_name=config.sandbox_snapshot_name,
-                setup_script_path=config.sandbox_setup,
+            context, backend = await _open_sandbox(
+                lambda: create_sandbox(
+                    sandbox_type,
+                    sandbox_id=config.sandbox_id,
+                    snapshot_name=config.sandbox_snapshot_name,
+                    setup_script_path=config.sandbox_setup,
+                )
             )
-            _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime
-            sandbox_backend = _sandbox_backend
-
-            def _cleanup_sandbox() -> None:
-                if _sandbox_cm is not None:
-                    _sandbox_cm.__exit__(None, None, None)
-
-            atexit.register(_cleanup_sandbox)
+            _sandbox_cm = context
+            _sandbox_backend = backend
+            sandbox_backend = backend
+            atexit.register(_close_sandbox, context)
         except ImportError:
             logger.exception(
                 "Sandbox provider '%s' is not installed", config.sandbox_type
@@ -545,6 +580,7 @@ async def _make_graphs_in_environment(
             agent=agent,
             backend=composite_backend,
             offload=offload,
+            mcp_server_info=mcp_server_info,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
@@ -725,12 +761,60 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
-    return await asyncio.to_thread(
-        resolve_workspace,
-        config.cwd,
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+
+    def _bind() -> WorkspaceBinding:
+        # First pass resolves identity only (cwd plus project root); its
+        # fingerprints are digests of an empty policy and are discarded.
+        identity = resolve_workspace(config.cwd)
+        # The shared policy resolver honors the explicit launch root while
+        # keeping the durable identity consistent with workspace validation.
+        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+        return resolve_workspace(
+            identity.cwd,
+            resolved.to_workspace_payload(),
+            config_fingerprint=resolved.workspace_fingerprint(),
+        )
+
+    return await asyncio.to_thread(_bind)
+
+
+def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
+    """Resolve current workspace policy and reject drift from its binding.
+
+    Refusals name the fields that drifted. This runs on every request, and it
+    reads the extension trust store each time, so a transient read failure
+    reports as a policy change; without the field names that refusal is not
+    diagnosable. The values are paths and booleans, never secrets.
+
+    Returns:
+        The current server configuration resolved for the workspace.
+    """
+    config = ServerConfig.from_env()
+    current_config = config.resolve_workspace(binding.cwd, binding.project_root)
+    bound_policy = binding.workspace_config()
+    current_config = current_config.preserve_bound_extension_trust(bound_policy)
+    drifted = drifted_project_fields(
+        bound_policy, current_config.to_project_workspace_policy()
     )
+    if drifted:
+        fields = ", ".join(drifted)
+        logger.warning(
+            "Workspace %s project policy drifted since binding: %s",
+            binding.cwd,
+            fields,
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})"
+        )
+        raise conflict
+    if current_config.workspace_fingerprint() != binding.config_fingerprint:
+        logger.warning(
+            "Workspace %s server config fingerprint changed since binding",
+            binding.cwd,
+        )
+        conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
+        raise conflict
+    return current_config
 
 
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
@@ -739,6 +823,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
+    current_config = await asyncio.to_thread(_resolve_bound_workspace_config, binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached
@@ -746,25 +831,14 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         cached = _cached_workspace_runtime(binding)
         if cached is not None:
             return cached
-        config = ServerConfig.from_env()
-        current_config = dataclasses.replace(
-            config,
-            cwd=binding.cwd,
-            project_root=binding.project_root,
-        )
-        if (
-            current_config.workspace_fingerprint() != binding.config_fingerprint
-            or current_config.to_workspace_payload() != binding.workspace_config()
-        ):
-            reason = "the server configuration changed after this workspace was bound"
-            # Built into a local first: `raise X.from_reason(...)` reads as a
-            # `from_reason` raise to ruff's DOC501.
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
-            project_root=Path(binding.project_root) if binding.project_root else None,
+            project_root=(
+                Path(current_config.project_root)
+                if current_config.project_root
+                else None
+            ),
         )
         runtime = await _make_graphs(
             config_override=current_config,

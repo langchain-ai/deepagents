@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
 
 logger = logging.getLogger(__name__)
@@ -801,24 +802,15 @@ class RemoteAgent:
             raise RuntimeError(msg)
         return await self.abind_workspace(config, self._workspace_cwd)
 
-    async def abind_workspace(
+    async def _request_workspace(
         self, config: Mapping[str, Any], cwd: str
-    ) -> dict[str, Any]:
-        """Create or verify the remote thread's durable workspace binding.
-
-        Returns:
-            The server-validated workspace descriptor.
-
-        Raises:
-            TypeError: If the server returns a malformed descriptor.
-        """
+    ) -> tuple[dict[str, Any], list[MCPServerInfo] | None]:
         thread_id = _require_thread_id(config)
-        graph = self._get_graph()
         payload: dict[str, Any] = {"cwd": cwd}
         if self._workspace_config is not None:
             payload["workspace_config"] = self._workspace_config
             payload["config_fingerprint"] = self._workspace_config_fingerprint
-        response = await graph.client.http.post(
+        response = await self._get_graph().client.http.post(
             f"/dcode/threads/{thread_id}/workspace",
             json=payload,
         )
@@ -827,9 +819,74 @@ class RemoteAgent:
         ):
             msg = "Workspace server returned an invalid binding response."
             raise TypeError(msg)
-        workspace = cast("dict[str, Any]", response["workspace"])
+        raw_mcp = response.get("mcp_server_info")
+        if raw_mcp is None:
+            mcp_server_info = None
+        elif isinstance(raw_mcp, list) and all(
+            isinstance(item, dict) for item in raw_mcp
+        ):
+            from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+            try:
+                mcp_server_info = [
+                    MCPServerInfo(
+                        name=item["name"],
+                        transport=item["transport"],
+                        tools=tuple(
+                            MCPToolInfo(**tool) for tool in item.get("tools", [])
+                        ),
+                        status=item.get("status", "ok"),
+                        error=item.get("error"),
+                        pending_reconnect=item.get("pending_reconnect", False),
+                        uses_oauth=item.get("uses_oauth", False),
+                    )
+                    for item in raw_mcp
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                msg = "Workspace server returned invalid MCP metadata."
+                raise TypeError(msg) from exc
+        else:
+            msg = "Workspace server returned invalid MCP metadata."
+            raise TypeError(msg)
+        return cast("dict[str, Any]", response["workspace"]), mcp_server_info
+
+    async def abind_workspace(
+        self, config: Mapping[str, Any], cwd: str
+    ) -> dict[str, Any]:
+        """Create or verify the remote thread's durable workspace binding.
+
+        Returns:
+            The server-validated workspace descriptor.
+        """
+        thread_id = _require_thread_id(config)
+        workspace, _ = await self._request_workspace(config, cwd)
         self._workspaces[thread_id] = workspace
         return workspace
+
+    def _snapshot_workspace(self) -> tuple[str | None, dict[str, dict[str, Any]]]:
+        return self._workspace_cwd, dict(self._workspaces)
+
+    def _restore_workspace(
+        self, snapshot: tuple[str | None, dict[str, dict[str, Any]]]
+    ) -> None:
+        self._workspace_cwd, workspaces = snapshot
+        self._workspaces.clear()
+        self._workspaces.update(workspaces)
+
+    async def aswitch_workspace(
+        self, config: Mapping[str, Any], cwd: str
+    ) -> list[MCPServerInfo] | None:
+        """Bind one thread to a workspace and make it the default for new threads.
+
+        Returns:
+            MCP metadata for the server runtime selected by the binding.
+        """
+        thread_id = _require_thread_id(config)
+        workspace, mcp_server_info = await self._request_workspace(config, cwd)
+        self._workspace_cwd = cwd
+        self._workspaces.clear()
+        self._workspaces[thread_id] = workspace
+        return mcp_server_info
 
     def set_workspace(
         self,

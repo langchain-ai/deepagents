@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from langchain_core.embeddings import Embeddings
 
+from deepagents_talon.config import TalonConfig
 from deepagents_talon.history_profiles import LOCAL_MODEL, LOCAL_PROMPT
 
 
@@ -47,6 +48,7 @@ class HistoryEmbeddings(Embeddings):
         max_input_tokens: int = 8192,
         batch_size: int = 4,
         query_prompt: str = "",
+        config: TalonConfig | None = None,
     ) -> None:
         """Defer optional imports and model downloads until embedding is requested.
 
@@ -54,7 +56,15 @@ class HistoryEmbeddings(Embeddings):
         applies the model's instruction format before delegating here. Defaulting
         to Qwen's prefix instead would embed it twice whenever a caller forgot to
         pass an empty string.
+
+        Args:
+            model: Hugging Face model identifier or local model path.
+            max_input_tokens: Maximum sequence length for the encoder.
+            batch_size: Number of texts encoded together.
+            query_prompt: Optional prefix applied to retrieval queries.
+            config: Talon home configuration; defaults to the process environment.
         """
+        self.config = config if config is not None else TalonConfig.from_env()
         self.model = model
         self.max_input_tokens = max_input_tokens
         self.batch_size = batch_size
@@ -77,7 +87,12 @@ class HistoryEmbeddings(Embeddings):
                 module = importlib.import_module("sentence_transformers")
                 self._model = cast(
                     "_Encoder",
-                    module.SentenceTransformer(self.model, trust_remote_code=False, device="cpu"),
+                    module.SentenceTransformer(
+                        self.model,
+                        trust_remote_code=False,
+                        device="cpu",
+                        cache_folder=str(self.config.huggingface_cache_dir),
+                    ),
                 )
                 self._model.max_seq_length = self.max_input_tokens
             return self._model.encode(

@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
     from langgraph.store.base import BaseStore
 
+    from deepagents_talon.archive import ArchiveScope
+
 Record = dict[str, object]
 Write = tuple[str, Record | None]
 _MAX_WRITES = 12
@@ -22,6 +24,16 @@ _MAX_WRITES = 12
 def digest(*values: str) -> str:
     """Hash identifiers without relying on backend namespace escaping."""
     return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode()).hexdigest()
+
+
+def number(record: Record, key: str) -> int:
+    """Read a numeric ordering field from a versioned archive record."""
+    return cast("int", record.get(key, 0))
+
+
+def scope_key(scope: ArchiveScope) -> str:
+    """Encode a trusted chat scope as a backend-independent lookup key."""
+    return "scope:" + digest(scope["talon_history_channel"], scope["talon_history_chat"])
 
 
 async def finish[T](operation: Coroutine[object, object, T]) -> T:

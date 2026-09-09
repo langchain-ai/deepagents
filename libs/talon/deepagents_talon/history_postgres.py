@@ -1,4 +1,12 @@
-"""Isolate pgvector dimensions and migrations by embedding generation."""
+"""Isolate pgvector dimensions and migrations by embedding generation.
+
+This module drives internals of `langgraph-checkpoint-postgres` that are not public
+API: `store.VECTOR_MIGRATIONS`, each migration's `condition` and `_replace`, and the
+`dict_row` cursor factory behind the cast in `_vector_table`. A rename inside 3.x
+would not fail loudly - it would leave the migration rewrite below a silent no-op -
+so the `postgres` extra pins that dependency to a single minor version. Widening the
+pin means re-checking those four couplings first.
+"""
 
 from __future__ import annotations
 
@@ -45,6 +53,7 @@ async def _vector_table(store: AsyncPostgresStore, schema: sql.Identifier, dims:
         "WHERE e.extname='vector'"
     )
     row = await cursor.fetchone()
+    await cursor.close()
     if row is None:
         msg = "PostgreSQL vector extension is unavailable"
         raise RuntimeError(msg)

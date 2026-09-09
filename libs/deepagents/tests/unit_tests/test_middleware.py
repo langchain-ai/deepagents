@@ -1696,8 +1696,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert result.content == (
-            "[Requested offset -1 is before the start of the file; read from line 1 instead.]\n"
-            "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
+            "[Requested offset -1 is before the start of the file; read from line 1 instead.]\n@@ lines 1-3 of 3 @@\none\ntwo\nthree"
         )
 
     def test_read_file_non_negative_offset_has_no_clamp_notice(self):

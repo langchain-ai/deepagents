@@ -610,10 +610,11 @@ def _load_user_themes(
         .get(option)
         .value
     )
+    if themes_section is None:
+        return
     if not isinstance(themes_section, dict):
-        # Not merely absent: the table resolved to something that is not a
-        # table, which means every user theme is inert. This reader emits no
-        # ranked diagnostics, so nothing else reports it.
+        # A malformed top-level value makes every user theme inert, and this
+        # reader emits no ranked diagnostics to report it elsewhere.
         logger.warning("Ignoring [themes]: expected a table, got %r", themes_section)
         return
     if not themes_section:

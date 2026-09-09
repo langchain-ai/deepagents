@@ -1189,20 +1189,6 @@ class TestGetThreadLimit:
         monkeypatch.setenv("DEEPAGENTS_CODE_RECENT_THREADS", "50")
         assert sessions.get_thread_limit() == 50
 
-    def test_canonical_value_takes_precedence(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The canonical variable wins over the legacy compatibility alias."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_RECENT_THREADS", "30")
-        monkeypatch.setenv("DA_CLI_RECENT_THREADS", "40")
-        assert sessions.get_thread_limit() == 30
-
-    def test_legacy_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The old variable remains supported when the canonical one is unset."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_RECENT_THREADS", raising=False)
-        monkeypatch.setenv("DA_CLI_RECENT_THREADS", "25")
-        assert sessions.get_thread_limit() == 25
-
     @pytest.mark.parametrize(("value", "expected"), [("0", 1), ("-5", 1), ("bad", 20)])
     def test_value_validation(
         self, monkeypatch: pytest.MonkeyPatch, value: str, expected: int

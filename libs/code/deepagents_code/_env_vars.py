@@ -384,9 +384,6 @@ The app no longer honors this value. It detects the old name so users receive a
 migration notice pointing to `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`.
 """
 
-LEGACY_RECENT_THREADS = "DA_CLI_RECENT_THREADS"
-"""Deprecated thread-list limit retained as a compatibility fallback."""
-
 LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
 """Minimum level for `deepagents_code` runtime logging.
 

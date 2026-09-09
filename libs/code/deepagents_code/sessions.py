@@ -1585,13 +1585,9 @@ def get_thread_limit() -> int:
     """
     import os
 
-    from deepagents_code._env_vars import LEGACY_RECENT_THREADS, RECENT_THREADS
+    from deepagents_code._env_vars import RECENT_THREADS
 
-    name = RECENT_THREADS
-    raw = os.environ.get(name)
-    if raw is None:
-        name = LEGACY_RECENT_THREADS
-        raw = os.environ.get(name)
+    raw = os.environ.get(RECENT_THREADS)
     if raw is None:
         return _DEFAULT_THREAD_LIMIT
     try:
@@ -1599,7 +1595,7 @@ def get_thread_limit() -> int:
     except ValueError:
         logger.warning(
             "Invalid %s value %r, using default %d",
-            name,
+            RECENT_THREADS,
             raw,
             _DEFAULT_THREAD_LIMIT,
         )

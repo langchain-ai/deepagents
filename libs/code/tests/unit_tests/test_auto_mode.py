@@ -183,20 +183,93 @@ class _StructuredModel:
         # so the default keeps existing tests labelled by class name.
         self.model_name = model_name
 
-    def with_structured_output(self, schema: object) -> _StructuredModel:
+    def with_structured_output(
+        self, schema: object, *, include_raw: bool = False
+    ) -> _StructuredModel:
+        _ = include_raw
         self.schema = schema
         return self
 
     async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
         self.calls.append(messages)
-        self.call_kwargs.append(kwargs)
+        self.call_kwargs.append({**getattr(self, "model_kwargs", {}), **kwargs})
         if self.error is not None:
             raise self.error
         return self.result
 
 
+class _OpenAIConversationModel(_StructuredModel):
+    __module__ = "langchain_openai.chat_models.base"
+    __qualname__ = "ChatOpenAI"
+
+    def __init__(
+        self,
+        results: list[AutoDecisionBatch | Exception],
+        *,
+        model_name: str = "gpt-test",
+        base_url: str = "https://api.openai.com/v1",
+        organization: str | None = None,
+        project: str | None = None,
+    ) -> None:
+        super().__init__(model_name=model_name)
+        self.results = results
+        self.model_kwargs: dict[str, object] = (
+            {"project": project} if project is not None else {}
+        )
+        self.openai_api_base = base_url
+        self.openai_organization = organization
+        self.use_responses_api: bool | None = None
+        self.use_previous_response_id: bool | None = None
+        self.store: bool | None = None
+        self._deepagents_model_retries = 0
+        self.include_raw: list[bool] = []
+        self._next = 0
+
+    def model_copy(self, *, update: dict[str, object]) -> _OpenAIConversationModel:
+        if "use_responses_api" in update:
+            self.use_responses_api = cast("bool", update["use_responses_api"])
+        if "use_previous_response_id" in update:
+            self.use_previous_response_id = cast(
+                "bool", update["use_previous_response_id"]
+            )
+        if "store" in update:
+            self.store = cast("bool", update["store"])
+        if "model_kwargs" in update:
+            self.model_kwargs = cast("dict[str, object]", update["model_kwargs"])
+        return self
+
+    def with_structured_output(
+        self, schema: object, *, include_raw: bool = False
+    ) -> _OpenAIConversationModel:
+        self.schema = schema
+        self.include_raw.append(include_raw)
+        return self
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        self.calls.append(messages)
+        self.call_kwargs.append({**getattr(self, "model_kwargs", {}), **kwargs})
+        result = self.results[self._next]
+        self._next += 1
+        if isinstance(result, Exception):
+            raise result
+        payload = json.loads(cast("str", cast("HumanMessage", messages[1]).content))
+        call_id = payload["current_actions"][0]["tool_call_id"]
+        decision = result.decisions[0].model_copy(update={"tool_call_id": call_id})
+        result = AutoDecisionBatch(decisions=[decision])
+        return {
+            "raw": AIMessage(
+                content="", response_metadata={"id": f"resp_{self._next}"}
+            ),
+            "parsed": result,
+            "parsing_error": None,
+        }
+
+
 class _FailIfClassifiedModel(_StructuredModel):
-    def with_structured_output(self, schema: object) -> _StructuredModel:
+    def with_structured_output(
+        self, schema: object, *, include_raw: bool = False
+    ) -> _StructuredModel:
+        _ = include_raw
         msg = f"unexpected classifier call for {schema}"
         raise AssertionError(msg)
 
@@ -333,9 +406,9 @@ def _request(
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
     classifier_model: str | None = None,
+    thread_id: str = "thread-1",
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
-    thread_id = "thread-1"
     key = approval_mode_key(thread_id)
     active_store = store or _Store()
     active_store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
@@ -383,6 +456,7 @@ async def _plan_calls(
     assert response.command is not None
     update = response.command.update
     assert update is not None
+    cast("dict[str, Any]", request.state).update(cast("dict[str, Any]", update))
     return cast("dict[str, Any]", update)["_auto_decision_plan"]
 
 
@@ -517,6 +591,341 @@ def _deny_result(
             )
         ]
     )
+
+
+async def test_openai_classifier_continues_one_provider_conversation(
+    tmp_path: Path,
+) -> None:
+    model = _OpenAIConversationModel([_allow_result(), _deny_result(call_id="call-2")])
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    first = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request.runtime.context["turn_id"] = "turn-2"
+    second = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "older.py"},
+        call_id="call-2",
+    )
+
+    assert first["decisions"][0]["disposition"] == "classifier_allow"
+    assert second["decisions"][0]["disposition"] == "policy_deny"
+    assert model.call_kwargs[0].get("previous_response_id") is None
+    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
+    assert model.include_raw == [True, True]
+    state = cast("dict[str, Any]", request.state)
+    assert state["_auto_classifier_conversation"]["response_id"] == "resp_2"
+    assert model.use_responses_api is True
+    assert model.use_previous_response_id is True
+    assert model.store is True
+
+
+async def test_openai_classifier_conversations_are_thread_scoped(
+    tmp_path: Path,
+) -> None:
+    model = _OpenAIConversationModel([_allow_result(), _allow_result()])
+    middleware = _middleware(tmp_path)
+    first, store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        thread_id="thread-1",
+    )
+    second, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        store=store,
+        thread_id="thread-2",
+    )
+
+    await _plan(middleware, first, tool_name="delete", args={"file_path": "old.py"})
+    await _plan(middleware, second, tool_name="delete", args={"file_path": "old.py"})
+
+    assert [call.get("previous_response_id") for call in model.call_kwargs] == [
+        None,
+        None,
+    ]
+
+
+async def test_openai_classifier_resume_restores_and_identity_changes_reset(
+    tmp_path: Path,
+) -> None:
+    first_model = _OpenAIConversationModel([_allow_result()])
+    first_middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=first_model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    await _plan(
+        first_middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    resumed_model = _OpenAIConversationModel(
+        [_allow_result(), _allow_result()], model_name="gpt-test"
+    )
+    resumed = _middleware(tmp_path)
+    request = request.override(model=cast("BaseChatModel", resumed_model))
+    await _plan(
+        resumed,
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-2",
+    )
+    resumed_model.model_name = "gpt-other"
+    await _plan(
+        resumed,
+        request,
+        tool_name="delete",
+        args={"file_path": "other.py"},
+        call_id="call-3",
+    )
+
+    assert resumed_model.call_kwargs[0]["previous_response_id"] == "resp_1"
+    assert resumed_model.call_kwargs[1].get("previous_response_id") is None
+
+
+@pytest.mark.parametrize(
+    ("attribute", "initial", "changed"),
+    [
+        ("openai_organization", "org-a", "org-b"),
+        ("model_kwargs", {"project": "project-a"}, {"project": "project-b"}),
+    ],
+)
+async def test_openai_classifier_account_changes_reset_conversation(
+    tmp_path: Path,
+    attribute: str,
+    initial: str | dict[str, str],
+    changed: str | dict[str, str],
+) -> None:
+    model = _OpenAIConversationModel([_allow_result(), _allow_result()])
+    setattr(model, attribute, initial)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
+    setattr(model, attribute, changed)
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-2",
+    )
+
+    assert model.call_kwargs[0].get("previous_response_id") is None
+    assert model.call_kwargs[1].get("previous_response_id") is None
+
+
+async def test_concurrent_openai_reviews_serialize_continuation(
+    tmp_path: Path,
+) -> None:
+    model = _OpenAIConversationModel(
+        [_allow_result(call_id="call-1"), _allow_result(call_id="call-2")]
+    )
+    middleware = _middleware(tmp_path)
+    first, store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+    )
+    second, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "two.py"},
+        store=store,
+    )
+
+    await asyncio.gather(
+        _plan(
+            middleware,
+            first,
+            tool_name="delete",
+            args={"file_path": "one.py"},
+            call_id="call-1",
+        ),
+        _plan(
+            middleware,
+            second,
+            tool_name="delete",
+            args={"file_path": "two.py"},
+            call_id="call-2",
+        ),
+    )
+
+    assert model.call_kwargs[0].get("previous_response_id") is None
+    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
+
+
+async def test_openai_classifier_retries_from_verified_head(tmp_path: Path) -> None:
+    model = _OpenAIConversationModel(
+        [
+            _allow_result(call_id="call-1"),
+            ConnectionError("provider connection dropped"),
+            _allow_result(call_id="call-2"),
+        ]
+    )
+    model._deepagents_model_retries = 1
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+        call_id="call-1",
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "two.py"},
+        call_id="call-2",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
+        None,
+        "resp_1",
+        "resp_1",
+    ]
+    state = cast("dict[str, Any]", request.state)
+    assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
+
+
+async def test_failed_openai_review_does_not_advance_continuation(
+    tmp_path: Path,
+) -> None:
+    model = _OpenAIConversationModel(
+        [
+            _allow_result(call_id="call-1"),
+            RuntimeError("provider failed"),
+            _allow_result(call_id="call-3"),
+        ]
+    )
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+    )
+
+    for call_id in ("call-1", "call-2", "call-3"):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": f"{call_id}.py"},
+            call_id=call_id,
+        )
+
+    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
+    assert model.call_kwargs[2]["previous_response_id"] == "resp_1"
+    state = cast("dict[str, Any]", request.state)
+    assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
+
+
+async def test_timed_out_openai_review_does_not_advance_continuation(
+    tmp_path: Path,
+) -> None:
+    class _TimeoutModel(_OpenAIConversationModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append({**self.model_kwargs, **kwargs})
+            self._next += 1
+            if self._next == 2:
+                await asyncio.Future()
+            result = self.results[self._next - 1]
+            assert not isinstance(result, Exception)
+            payload = json.loads(cast("str", cast("HumanMessage", messages[1]).content))
+            call_id = payload["current_actions"][0]["tool_call_id"]
+            decision = result.decisions[0].model_copy(update={"tool_call_id": call_id})
+            result = AutoDecisionBatch(decisions=[decision])
+            return {
+                "raw": AIMessage(
+                    content="", response_metadata={"id": f"resp_{self._next}"}
+                ),
+                "parsed": result,
+                "parsing_error": None,
+            }
+
+    model = _TimeoutModel(
+        [
+            _allow_result(call_id="call-1"),
+            _allow_result(call_id="call-2"),
+            _allow_result(call_id="call-3"),
+        ]
+    )
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.01)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+    )
+
+    for call_id in ("call-1", "call-2", "call-3"):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": f"{call_id}.py"},
+            call_id=call_id,
+        )
+
+    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
+    assert model.call_kwargs[2]["previous_response_id"] == "resp_1"
+
+
+async def test_unsupported_classifier_remains_stateless(tmp_path: Path) -> None:
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "new.py"})
+
+    assert all("previous_response_id" not in call for call in model.call_kwargs)
+    assert "_auto_classifier_conversation" not in request.state
 
 
 async def test_classifier_review_lifecycle_reports_only_opaque_ids(

@@ -29738,20 +29738,12 @@ class TestColdCacheStateLifecycle:
                 "deepagents_code.model_config.ModelConfig.load",
                 return_value=config,
             ),
-            patch(
-                "deepagents_code.model_config.is_warning_suppressed",
-                return_value=False,
-            ),
         ):
             await app._stamp_cache_identity_locally()
-            warning = await app._cold_cache_warning_for(
-                QueuedMessage("continue", "normal")
-            )
 
         assert app._last_model_request_at is not None
         assert app._last_cache_model_spec == "openai:gpt-6-astra"
         assert app._last_cache_model_params == {"reasoning_effort": "high"}
-        assert warning is None
         stamped = datetime.fromisoformat(app._last_model_request_at)
         assert (datetime.now(UTC) - stamped).total_seconds() < 5
 

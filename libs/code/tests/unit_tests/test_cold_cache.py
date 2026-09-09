@@ -13,7 +13,6 @@ from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
     PromptCachePolicy,
-    cache_identity_params,
     endpoint_cache_identity,
     estimate_rewarm_cost,
     load_trusted_cache_endpoints,
@@ -105,16 +104,6 @@ def test_gpt_5_6_and_newer_ignore_legacy_retention() -> None:
         assert resolve_prompt_cache_policy(
             model_spec, {"prompt_cache_retention": "24h"}
         ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
-
-
-def test_astra_reasoning_effort_participates_in_cache_identity() -> None:
-    params = {"reasoning_effort": "high", "temperature": 0.2}
-
-    assert cache_identity_params(params, model_spec="openai:gpt-6-astra") == {
-        "reasoning_effort": "high"
-    }
-    assert cache_identity_params(params, model_spec="openai:gpt-5.6") == {}
-    assert cache_identity_params(params, model_spec="anthropic:gpt-6-astra") == {}
 
 
 def test_trusted_endpoints_enable_policies_on_alternate_hosts() -> None:

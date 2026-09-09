@@ -18,10 +18,14 @@ from deepagents.middleware.project_instructions import (
 def _middleware(tmp_path: Path) -> ProjectInstructionsMiddleware:
     return ProjectInstructionsMiddleware(
         backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
-        project_root=str(tmp_path),
-        cwd=str(tmp_path / "src"),
+        project_root="/",
+        cwd="/src",
         backend_root="/",
     )
+
+
+def _virtual(path: Path, root: Path) -> str:
+    return "/" + path.relative_to(root).as_posix()
 
 
 def _request(
@@ -75,13 +79,13 @@ def test_nested_read_discovers_checkpointed_scoped_instructions(tmp_path: Path) 
         calls += 1
         return ToolMessage(content="file", tool_call_id=request.tool_call["id"])
 
-    result = middleware.wrap_tool_call(_request("read_file", str(nested / "code.py"), state), handler)
+    result = middleware.wrap_tool_call(_request("read_file", _virtual(nested / "code.py", tmp_path), state), handler)
 
     assert calls == 1
     assert isinstance(result, Command)
     assert result.update is not None
     contents = result.update["project_instructions"]["contents"]
-    assert contents[str(nested / "AGENTS.md")] == "feature"
+    assert contents[_virtual(nested / "AGENTS.md", tmp_path)] == "feature"
 
 
 def test_mutation_retries_after_new_instructions_are_visible(tmp_path: Path) -> None:
@@ -97,7 +101,7 @@ def test_mutation_retries_after_new_instructions_are_visible(tmp_path: Path) -> 
         calls += 1
         return ToolMessage(content="written", tool_call_id=request.tool_call["id"])
 
-    request = _request("write_file", str(nested / "code.py"), state)
+    request = _request("write_file", _virtual(nested / "code.py", tmp_path), state)
     result = middleware.wrap_tool_call(request, handler)
 
     assert calls == 0
@@ -109,7 +113,7 @@ def test_mutation_retries_after_new_instructions_are_visible(tmp_path: Path) -> 
     result = middleware.wrap_tool_call(
         _request(
             "write_file",
-            str(nested / "code.py"),
+            _virtual(nested / "code.py", tmp_path),
             {"project_instructions": result.update["project_instructions"]},
         ),
         handler,
@@ -127,7 +131,7 @@ def test_prompt_preserves_scope_and_trust_boundary(tmp_path: Path) -> None:
     prompt = middleware._format_prompt(state)
 
     assert prompt is not None
-    assert f'applies_to="{tmp_path}"' in prompt
+    assert 'applies_to="/"' in prompt
     assert "subordinate to system policy and explicit user instructions" in prompt
     assert "root" in prompt
 
@@ -141,8 +145,8 @@ def test_hidden_instructions_apply_to_project_root(tmp_path: Path) -> None:
     update = _middleware(tmp_path).before_agent({}, None, {})  # type: ignore[arg-type]
 
     data = update["project_instructions"]
-    assert data["contents"][str(hidden)] == "hidden"
-    assert data["scopes"][str(hidden)] == str(tmp_path)
+    assert data["contents"]["/.deepagents/AGENTS.md"] == "hidden"
+    assert data["scopes"]["/.deepagents/AGENTS.md"] == "/"
 
 
 def test_search_tools_discover_nested_instructions(tmp_path: Path) -> None:
@@ -153,9 +157,9 @@ def test_search_tools_discover_nested_instructions(tmp_path: Path) -> None:
     middleware = _middleware(tmp_path)
 
     for name, args in (
-        ("ls", {"path": str(nested)}),
-        ("glob", {"pattern": "*.py", "path": str(nested)}),
-        ("grep", {"pattern": "x", "path": str(nested)}),
+        ("ls", {"path": "/src/feature"}),
+        ("glob", {"pattern": "*.py", "path": "/src/feature"}),
+        ("grep", {"pattern": "x", "path": "/src/feature"}),
     ):
         state = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
         result = middleware.wrap_tool_call(
@@ -165,7 +169,7 @@ def test_search_tools_discover_nested_instructions(tmp_path: Path) -> None:
 
         assert isinstance(result, Command)
         assert result.update is not None
-        assert result.update["project_instructions"]["contents"][str(instructions)] == "feature"
+        assert result.update["project_instructions"]["contents"][_virtual(instructions, tmp_path)] == "feature"
 
 
 def test_search_tool_without_path_defaults_to_cwd(tmp_path: Path) -> None:
@@ -181,7 +185,7 @@ def test_search_tool_without_path_defaults_to_cwd(tmp_path: Path) -> None:
 
     assert isinstance(result, Command)
     assert result.update is not None
-    assert result.update["project_instructions"]["contents"][str(instructions)] == "src"
+    assert result.update["project_instructions"]["contents"][_virtual(instructions, tmp_path)] == "src"
 
 
 def test_before_agent_refreshes_changed_and_deleted_instructions(tmp_path: Path) -> None:
@@ -194,7 +198,7 @@ def test_before_agent_refreshes_changed_and_deleted_instructions(tmp_path: Path)
     middleware = _middleware(tmp_path)
     state = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
     result = middleware.wrap_tool_call(
-        _request("read_file", str(nested / "code.py"), state),
+        _request("read_file", _virtual(nested / "code.py", tmp_path), state),
         lambda request: ToolMessage(content="file", tool_call_id=request.tool_call["id"]),
     )
     assert isinstance(result, Command)
@@ -206,8 +210,8 @@ def test_before_agent_refreshes_changed_and_deleted_instructions(tmp_path: Path)
     update = middleware.before_agent(prior, None, {})  # type: ignore[arg-type]
 
     contents = update["project_instructions"]["contents"]
-    assert contents[str(ambient)] == "new root"
-    assert str(discovered) not in contents
+    assert contents[_virtual(ambient, tmp_path)] == "new root"
+    assert _virtual(discovered, tmp_path) not in contents
 
 
 def test_parallel_discovery_merge_does_not_resurrect_removed_files() -> None:
@@ -259,4 +263,4 @@ def test_execute_retries_after_scanning_nested_instructions(tmp_path: Path) -> N
     assert calls == 0
     assert isinstance(result, Command)
     assert result.update is not None
-    assert result.update["project_instructions"]["contents"][str(instructions)] == "feature"
+    assert result.update["project_instructions"]["contents"][_virtual(instructions, tmp_path)] == "feature"

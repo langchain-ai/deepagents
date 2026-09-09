@@ -2000,27 +2000,23 @@ whose two names diverge would render a link to a nonexistent project.
 """
 
 
-def resolve_max_cost_usd(
-    cli_value: float | None = None,
-    *,
-    toml_data: Mapping[str, Any] | None = None,
-) -> float | None:
+def resolve_max_cost_usd(cli_value: float | None = None) -> float | None:
     """Resolve the effective hard cost cap for `CostTrackingMiddleware`.
 
     Resolution order: `cli_value` (the `--max-cost` flag, when given) beats
-    `[limits].max_cost_usd` in `config.toml`, which beats the disabled
-    default. Follows the same "0 disables" convention as
-    `warnings.session_cost_threshold_usd` -- deliberately simpler than
-    `resolve_recursion_limit`: no managed-policy layer and no range
-    floor/ceiling, since this option has no meaningful upper bound and no
-    managed-config story yet.
+    `[limits].max_cost_usd` in `config.toml` (via the shared process
+    resolver -- managed -> CLI -> env -> TOML -> default, same precedence
+    `_load_float_option` in `app.py` uses for the sibling
+    `warnings.session_cost_threshold_usd` option), which beats the disabled
+    default. Follows the same "0 disables" convention -- deliberately
+    simpler than `resolve_recursion_limit`: no range floor/ceiling, since
+    this option has no meaningful upper bound.
 
     Args:
         cli_value: The `--max-cost` CLI flag's parsed value, or `None` when
             the flag was not given. `positive_float` already rejects
             non-positive input at the argparse layer, so any value reaching
             here is trusted as-is and returned unchanged.
-        toml_data: Parsed `config.toml`; loaded automatically when omitted.
 
     Returns:
         The resolved hard cap in USD, or `None` when disabled (no CLI value,
@@ -2029,12 +2025,15 @@ def resolve_max_cost_usd(
     if cli_value is not None:
         return cli_value
 
-    data = load_config_toml() if toml_data is None else toml_data
     option = get_option("limits.max_cost_usd")
     if option is None:
         return None
 
-    value, _source = resolve_scalar(option, toml_data=data)
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    value = resolved.value
     if not isinstance(value, float) or not math.isfinite(value) or value <= 0:
         return None
     return value

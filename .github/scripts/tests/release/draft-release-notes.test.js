@@ -8,8 +8,17 @@ const test = require('node:test');
 
 const draft = require('../../release/draft-release-notes.js');
 
-function structured(notes) {
-  return JSON.stringify({ release_notes_markdown: notes });
+function structured(notes, overrides = {}) {
+  return JSON.stringify({
+    release_notes: {
+      breaking_changes: [],
+      features: notes ? [notes] : [],
+      bug_fixes: [],
+      performance_improvements: [],
+      reverted_changes: [],
+      ...overrides,
+    },
+  });
 }
 
 test('model spec requires a supported explicit provider', () => {
@@ -81,6 +90,30 @@ test('the openai Responses-API guard never applies to other providers', () => {
   }
 });
 
+test('provider requests require canonical categories and pull-request-only links', () => {
+  const requests = [
+    draft.providerRequest('openai', 'model', 'secret-reference', 'source'),
+    draft.providerRequest('anthropic', 'model', 'secret-reference', 'source'),
+    draft.providerRequest('google_genai', 'model', 'secret-reference', 'source'),
+  ];
+  const prompts = requests.map(request => JSON.stringify(request.body));
+  for (const prompt of prompts) {
+    for (const category of [
+      'breaking_changes',
+      'features',
+      'bug_fixes',
+      'performance_improvements',
+      'reverted_changes',
+    ]) {
+      assert.match(prompt, new RegExp(category));
+    }
+    assert.match(prompt, /renderer controls headings, order, list formatting, and omission of empty sections/);
+    assert.match(prompt, /Preserve every useful pull-request link/);
+    assert.match(prompt, /remove commit links and commit hashes/);
+    assert.match(prompt, /include no other links/);
+  }
+});
+
 test('provider requests share one raised output-token ceiling across providers', () => {
   // Asserted as a range, not a literal: the ceiling is a documented tunable, so
   // pinning the exact value would fail this test on an intentional change. The
@@ -136,15 +169,24 @@ test('maintainer instructions join the user message as subordinate guidance', ()
 test('provider requests embed the structured-output schema in each provider contract', () => {
   // Built independently of the source, so the assertions verify the documented
   // wire shape rather than re-encoding whatever the code happens to produce.
+  const section = description => ({ type: 'array', description, items: { type: 'string' } });
   const expectedSchema = {
     type: 'object',
     properties: {
-      release_notes_markdown: {
-        type: 'string',
-        description: 'Polished Markdown content below the generated release version heading.',
+      release_notes: {
+        type: 'object',
+        properties: {
+          breaking_changes: section('Polished release-note entries for ⚠ BREAKING CHANGES.'),
+          features: section('Polished release-note entries for Features.'),
+          bug_fixes: section('Polished release-note entries for Bug Fixes.'),
+          performance_improvements: section('Polished release-note entries for Performance Improvements.'),
+          reverted_changes: section('Polished release-note entries for Reverted Changes.'),
+        },
+        required: ['breaking_changes', 'features', 'bug_fixes', 'performance_improvements', 'reverted_changes'],
+        additionalProperties: false,
       },
     },
-    required: ['release_notes_markdown'],
+    required: ['release_notes'],
     additionalProperties: false,
   };
   const openai = draft.providerRequest('openai', 'model', 'secret-reference', 'source');
@@ -162,10 +204,10 @@ test('provider requests embed the structured-output schema in each provider cont
   assert.equal(google.body.generationConfig.responseFormat, undefined);
 });
 
-test('response text is extracted from structured output for each supported provider', () => {
-  assert.equal(draft.responseText('openai', { choices: [{ message: { content: structured('OpenAI') }, finish_reason: 'stop' }] }), 'OpenAI\n');
-  assert.equal(draft.responseText('anthropic', { content: [{ type: 'text', text: structured('Anthropic') }], stop_reason: 'end_turn' }), 'Anthropic\n');
-  assert.equal(draft.responseText('google_genai', { candidates: [{ content: { parts: [{ text: structured('Google') }] }, finishReason: 'STOP' }] }), 'Google\n');
+test('response text renders canonical sections for each supported provider', () => {
+  assert.equal(draft.responseText('openai', { choices: [{ message: { content: structured('OpenAI') }, finish_reason: 'stop' }] }), '### Features\n\n- OpenAI\n');
+  assert.equal(draft.responseText('anthropic', { content: [{ type: 'text', text: structured('Anthropic') }], stop_reason: 'end_turn' }), '### Features\n\n- Anthropic\n');
+  assert.equal(draft.responseText('google_genai', { candidates: [{ content: { parts: [{ text: structured('Google') }] }, finishReason: 'STOP' }] }), '### Features\n\n- Google\n');
   // A wholly empty payload has no normal-stop signal, so it is reported as an
   // abnormal finish rather than as empty text — the finish-reason check runs
   // first precisely so budget exhaustion isn't misreported as emptiness.
@@ -191,53 +233,81 @@ test('response text rejects malformed or schema-invalid structured output with a
     () => draft.responseText('openai', payload(JSON.stringify({ other: 'x' }))),
     /unexpected keys.*"other"/s,
   );
-  // Correct single key, but the value is not a string.
   assert.throws(
-    () => draft.responseText('openai', payload(JSON.stringify({ release_notes_markdown: 42 }))),
-    /non-string release_notes_markdown field \(type number\)/,
+    () => draft.responseText('openai', payload(JSON.stringify({ release_notes: 42 }))),
+    /non-object release_notes field/,
   );
   assert.throws(
-    () => draft.responseText('openai', payload(JSON.stringify({ release_notes_markdown: null }))),
-    /non-string release_notes_markdown field \(type object\)/,
+    () => draft.responseText('openai', payload(JSON.stringify({ release_notes: null }))),
+    /non-object release_notes field/,
   );
   assert.throws(
-    () => draft.responseText('openai', payload(JSON.stringify({ release_notes_markdown: {} }))),
-    /non-string release_notes_markdown field \(type object\)/,
+    () => draft.responseText('openai', payload(JSON.stringify({ release_notes: {} }))),
+    /unexpected release-note categories/,
+  );
+  assert.throws(
+    () => draft.responseText('openai', payload(structured('note', { bug_fixes: [''] }))),
+    /invalid bug_fixes entries/,
   );
 });
 
-test('response text trims surrounding whitespace and rejects whitespace-only notes', () => {
+test('response text fixes section order and omits empty sections', () => {
   const payload = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
-  // Surrounding whitespace is stripped but the body is preserved (pins the .trim()).
-  assert.equal(draft.responseText('openai', payload(structured('  Real notes  '))), 'Real notes\n');
-  assert.equal(draft.responseText('openai', payload(structured('\n\nReal\n\n'))), 'Real\n');
-  // Empty and whitespace-only both fail closed.
-  assert.throws(() => draft.responseText('openai', payload(structured(''))), /returned no release-note text/);
-  assert.throws(() => draft.responseText('openai', payload(structured('   '))), /returned no release-note text/);
+  assert.equal(
+    draft.responseText('openai', payload(structured('', {
+      breaking_changes: ['  Breaking  '],
+      features: [],
+      bug_fixes: ['Fix one', 'Fix two'],
+      performance_improvements: ['Faster'],
+    }))),
+    '### ⚠ BREAKING CHANGES\n\n- Breaking\n\n### Bug Fixes\n\n- Fix one\n- Fix two\n\n### Performance Improvements\n\n- Faster\n',
+  );
+  assert.throws(() => draft.responseText('openai', payload(structured(''))), /returned no release-note entries/);
+  assert.throws(() => draft.responseText('openai', payload(structured('   '))), /invalid features entries/);
+});
+
+test('response text permits only pull request links and no commit hashes', () => {
+  const payload = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  assert.equal(
+    draft.responseText('openai', payload(structured('Feature ([#123](https://github.com/langchain-ai/deepagents/issues/123)).'))),
+    '### Features\n\n- Feature ([#123](https://github.com/langchain-ai/deepagents/pull/123)).\n',
+  );
+  assert.throws(
+    () => draft.responseText('openai', payload(structured('Feature ([abc1234](https://github.com/langchain-ai/deepagents/commit/abc1234)).'))),
+    /non-PR link/,
+  );
+  assert.throws(
+    () => draft.responseText('openai', payload(structured('Feature from abc1234.'))),
+    /commit hash/,
+  );
+  assert.throws(
+    () => draft.responseText('openai', payload(structured('Feature ([docs](https://example.com)).'))),
+    /non-PR link/,
+  );
 });
 
 test('response text reassembles structured JSON split across multiple content parts', () => {
-  // Anthropic: JSON split across two text blocks, with a non-text block that must be filtered out.
+  const response = structured('ab');
+  const split = response.indexOf('ab') + 1;
   assert.equal(
     draft.responseText('anthropic', {
       content: [
-        { type: 'text', text: '{"release_notes_markdown":"a' },
+        { type: 'text', text: response.slice(0, split) },
         { type: 'tool_use', id: 'x', name: 'y', input: {} },
-        { type: 'text', text: 'b"}' },
+        { type: 'text', text: response.slice(split) },
       ],
       stop_reason: 'end_turn',
     }),
-    'ab\n',
+    '### Features\n\n- ab\n',
   );
-  // Google: JSON split across two parts.
   assert.equal(
     draft.responseText('google_genai', {
       candidates: [{
-        content: { parts: [{ text: '{"release_notes_markdown":"a' }, { text: 'b"}' }] },
+        content: { parts: [{ text: response.slice(0, split) }, { text: response.slice(split) }] },
         finishReason: 'STOP',
       }],
     }),
-    'ab\n',
+    '### Features\n\n- ab\n',
   );
 });
 
@@ -322,7 +392,7 @@ test('drafting writes only the model response to the requested output', async ()
 
   assert.equal(call.url, 'https://api.openai.com/v1/chat/completions');
   assert.equal(call.options.headers.Authorization, 'Bearer secret-reference');
-  assert.equal(fs.readFileSync(outputFile, 'utf8'), 'Polished notes\n');
+  assert.equal(fs.readFileSync(outputFile, 'utf8'), '### Features\n\n- Polished notes\n');
   fs.rmSync(directory, { recursive: true });
 });
 
@@ -333,14 +403,14 @@ test('drafting handles anthropic and google response shapes end to end', async (
       url: 'https://api.anthropic.com/v1/messages',
       payload: { content: [{ type: 'text', text: structured('Anthropic notes') }], stop_reason: 'end_turn' },
       keyHeader: options => options.headers['x-api-key'],
-      expected: 'Anthropic notes\n',
+      expected: '### Features\n\n- Anthropic notes\n',
     },
     {
       modelSpec: 'google_genai:gemini-test',
       url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent',
       payload: { candidates: [{ content: { parts: [{ text: structured('Google notes') }] }, finishReason: 'STOP' }] },
       keyHeader: options => options.headers['x-goog-api-key'],
-      expected: 'Google notes\n',
+      expected: '### Features\n\n- Google notes\n',
     },
   ];
   for (const testCase of cases) {

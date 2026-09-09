@@ -442,10 +442,10 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         if isinstance(task, str):
             return task
 
-        client = clients.get_async(task["agent_name"])
         try:
+            client = clients.get_async(task["agent_name"])
             run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_async() may raise KeyError; SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -493,8 +493,8 @@ def _build_update_tool(
         tracked = _resolve_tracked_task(task_id, runtime)
         if isinstance(tracked, str):
             return tracked
-        spec = agent_map[tracked["agent_name"]]
         try:
+            spec = agent_map[tracked["agent_name"]]
             client = clients.get_sync(tracked["agent_name"])
             run = client.runs.create(
                 thread_id=tracked["thread_id"],
@@ -502,7 +502,7 @@ def _build_update_tool(
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
             )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # a stale agent_name raises KeyError; SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -532,8 +532,8 @@ def _build_update_tool(
         tracked = _resolve_tracked_task(task_id, runtime)
         if isinstance(tracked, str):
             return tracked
-        spec = agent_map[tracked["agent_name"]]
         try:
+            spec = agent_map[tracked["agent_name"]]
             client = clients.get_async(tracked["agent_name"])
             run = await client.runs.create(
                 thread_id=tracked["thread_id"],
@@ -541,7 +541,7 @@ def _build_update_tool(
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
             )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # a stale agent_name raises KeyError; SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -622,10 +622,10 @@ def _build_cancel_tool(
         if isinstance(tracked, str):
             return tracked
 
-        client = clients.get_async(tracked["agent_name"])
         try:
+            client = clients.get_async(tracked["agent_name"])
             await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_async() may raise KeyError; SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncTask(

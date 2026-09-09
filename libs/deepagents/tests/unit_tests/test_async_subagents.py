@@ -788,6 +788,55 @@ class TestUnknownTaskId:
         assert "No tracked task found" in result
 
 
+_STALE_AGENT_CASES = [
+    ("check_async_task", {}, "Failed to get run status"),
+    ("cancel_async_task", {}, "Failed to cancel run"),
+    ("update_async_task", {"message": "hello"}, "Failed to update async subagent"),
+]
+
+
+class TestStaleAgentName:
+    """A tracked task may name an agent that is no longer configured.
+
+    Both `agent_map[name]` and the `self._agents[name]` inside
+    `_ClientCache.get_sync`/`get_async` read the same dict, so a name absent
+    from `async_subagents` raises `KeyError` either way. The lookup therefore
+    has to sit inside the tool's `try`, or it escapes as an unhandled exception
+    instead of the tool's own error string. Both entry points are pinned
+    because `StructuredTool` exposes `func` and `coroutine` as one tool and
+    they must agree.
+
+    `start_async_task` is not covered here: `_validate_agent_type` rejects an
+    unknown name before the lookup, so its `agent_map` access is unreachable.
+    """
+
+    @pytest.mark.parametrize(("tool_name", "extra", "expected"), _STALE_AGENT_CASES)
+    def test_sync_returns_error_string(self, tool_name: str, extra: dict[str, Any], expected: str) -> None:
+        tools = _build_async_subagent_tools([_make_spec("worker")])
+        tool = _get_tool(tools, tool_name)
+        result = tool.func(
+            task_id="thread_abc",
+            **extra,
+            runtime=_make_runtime_with_task(agent_name="researcher"),
+        )
+        assert isinstance(result, str)
+        assert expected in result
+        assert "researcher" in result
+
+    @pytest.mark.parametrize(("tool_name", "extra", "expected"), _STALE_AGENT_CASES)
+    async def test_async_returns_error_string(self, tool_name: str, extra: dict[str, Any], expected: str) -> None:
+        tools = _build_async_subagent_tools([_make_spec("worker")])
+        tool = _get_tool(tools, tool_name)
+        result = await tool.coroutine(
+            task_id="thread_abc",
+            **extra,
+            runtime=_make_runtime_with_task(agent_name="researcher"),
+        )
+        assert isinstance(result, str)
+        assert expected in result
+        assert "researcher" in result
+
+
 class TestLaunchErrorHandling:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_launch_sdk_error_returns_error_string(self, mock_get_client: MagicMock) -> None:

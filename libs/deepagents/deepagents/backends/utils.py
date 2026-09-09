@@ -259,18 +259,17 @@ def format_content_with_line_numbers(
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 
-def format_content_with_line_range(
-    content: str | list[str],
-    start_line: int = 1,
-) -> str:
-    """Format file content as raw source enclosed by a source-line range.
+def _format_source_block(content: str | list[str]) -> str:
+    """Join file content into the verbatim source body of a `read_file` result.
+
+    Source lines are emitted unchanged. The status header the middleware puts
+    above them is the only structural element, so nothing here needs escaping.
 
     Args:
         content: File content as a string or list of lines.
-        start_line: Source line number of the first line.
 
     Returns:
-        Source content enclosed in `@@ lines start-end @@` markers.
+        The source lines joined by newlines, without a trailing terminator.
     """
     if isinstance(content, str):
         lines = content.split("\n")
@@ -279,12 +278,7 @@ def format_content_with_line_range(
     else:
         lines = content
 
-    if not lines:
-        return ""
-
-    end_line = start_line + len(lines) - 1
-    marker = f"{start_line}-{end_line}"
-    return f"@@ lines {marker} @@\n" + "\n".join(lines) + f"\n@@ end lines {marker} @@"
+    return "\n".join(lines)
 
 
 def check_empty_content(content: str) -> str | None:

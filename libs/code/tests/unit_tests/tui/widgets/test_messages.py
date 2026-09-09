@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from deepagents.backends.utils import (
     MAX_LINE_LENGTH,
+    _format_source_block,
     format_content_with_line_numbers,
-    format_content_with_line_range,
 )
 from rich.style import Style
 from textual.app import App, ComposeResult
@@ -2381,14 +2381,14 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == " 5  42  meaning\n10  ok"
 
-    def test_range_envelope_renders_as_gutter(self) -> None:
-        r"""Envelope markers are dropped and the gutter is re-derived from them.
+    def test_read_status_header_renders_as_gutter(self) -> None:
+        r"""The header is dropped and the gutter counts from the range it states.
 
-        The markers carry the line numbers once, so the display gutter has to
-        count from the header's start line rather than from 1.
+        Line numbers live in the header rather than on each row, so the display
+        gutter has to start from the header's first line, not from 1.
         """
         output = (
-            "@@ lines 100-101 @@\n    def foo():\n\treturn 1\n@@ end lines 100-101 @@"
+            "@@ lines 100-101 of 500 | next offset 101 @@\n    def foo():\n\treturn 1"
         )
 
         compacted = ToolCallMessage._compact_line_gutter(output)
@@ -2396,55 +2396,72 @@ class TestToolCallMessageFileOutput:
         # Width 3 from "101"; source indentation (spaces and tab) untouched.
         assert compacted == "100      def foo():\n101  \treturn 1"
 
-    def test_range_envelope_passes_notices_through_unnumbered(self) -> None:
-        """Pagination notices sit outside the envelope and get no gutter."""
-        notice = (
-            "[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]"
+    def test_read_status_header_numbers_every_following_line(self) -> None:
+        """Rows that mimic a header or a notice are content, and are numbered.
+
+        Source is returned verbatim, so a file can contain either shape. Only
+        line 1 is the harness's, which is what keeps such rows from reading as
+        protocol text.
+        """
+        output = (
+            "@@ lines 1-3 of 3 @@\n"
+            "@@ lines 9-9 of 9 @@\n"
+            "[Read 2 lines (lines 1-2 of 9 total).]\n"
+            "after"
         )
-        output = f"@@ lines 1-2 @@\none\ntwo\n@@ end lines 1-2 @@\n\n{notice}"
 
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == f"1  one\n2  two\n\n{notice}"
+        assert compacted == (
+            "1  @@ lines 9-9 of 9 @@\n"
+            "2  [Read 2 lines (lines 1-2 of 9 total).]\n"
+            "3  after"
+        )
 
-    def test_range_envelope_without_closing_marker_still_numbers_source(self) -> None:
-        """A read truncated mid-line omits the footer; the notice delimits source."""
-        output = "@@ lines 1-1 @@\nxxxx\n\n[Output was truncated due to size limits.]"
+    def test_read_status_header_ignores_trailing_fields_when_numbering(self) -> None:
+        """Truncation fields describe the read; they do not shift the gutter."""
+        output = "@@ lines 1-1 of 1 | truncated mid-line | 40 of 9000 chars @@\nxxxx"
 
-        compacted = ToolCallMessage._compact_line_gutter(output)
+        assert ToolCallMessage._compact_line_gutter(output) == "1  xxxx"
 
-        assert compacted == "1  xxxx\n\n[Output was truncated due to size limits.]"
-
-    def test_range_envelope_single_line_window(self) -> None:
-        """A one-line window needs no padding and drops both markers."""
-        output = "@@ lines 7-7 @@\nonly\n@@ end lines 7-7 @@"
+    def test_read_status_header_single_line_window(self) -> None:
+        """A one-line window needs no padding."""
+        output = "@@ lines 7-7 of 12 | next offset 7 @@\nonly"
 
         assert ToolCallMessage._compact_line_gutter(output) == "7  only"
 
-    def test_range_envelope_blank_rows_keep_their_gutter(self) -> None:
-        """Blank source rows inside the envelope still get a numbered row."""
-        output = "@@ lines 1-4 @@\na\nb\n\n\n@@ end lines 1-4 @@"
+    def test_read_status_header_blank_rows_keep_their_gutter(self) -> None:
+        """Blank source rows still get a numbered row."""
+        output = "@@ lines 1-4 of 5 | next offset 4 @@\na\nb\n\n"
 
         assert ToolCallMessage._compact_line_gutter(output) == "1  a\n2  b\n3  \n4  "
 
-    def test_range_envelope_parses_real_producer_output(self) -> None:
-        r"""Round-trip guard against producer/consumer envelope drift.
+    def test_read_status_header_parses_real_producer_output(self) -> None:
+        r"""Round-trip guard against producer/consumer header drift.
 
-        Feeds real `format_content_with_line_range` output (the authoritative
-        producer, in the deepagents package) through the TUI renderer. If the
-        marker shape changes without this renderer following, the exact
-        assertion fails in CI instead of the markers silently leaking into the
-        displayed source. Line 2 is tab-indented source.
+        Builds a header with the deepagents helpers that produce it and feeds it
+        through the TUI parser. If the header shape changes without this parser
+        following, the exact assertion fails in CI instead of the header
+        silently leaking into the displayed source.
         """
-        output = format_content_with_line_range(
-            ["def f():", "\treturn 1"], start_line=9
+        from deepagents.backends.protocol import ReadResult
+        from deepagents.middleware.filesystem import _assemble_read, _window_fields
+
+        read_result = ReadResult(
+            total_lines=40, start_line=9, end_line=10, next_offset=10
         )
+        output = _assemble_read(
+            _format_source_block(["def f():", "\treturn 1"]),
+            _window_fields(read_result),
+            [],
+        )
+
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         assert compacted == " 9  def f():\n10  \treturn 1"
 
-    def test_range_envelope_malformed_header_falls_back(self) -> None:
-        """A near-miss header is not an envelope and takes the gutter path."""
+    def test_read_status_header_malformed_falls_back(self) -> None:
+        """A near-miss header is not a header and takes the gutter path."""
         output = "@@ lines abc @@\n1  one"
 
         assert ToolCallMessage._compact_line_gutter(output) == "@@ lines abc @@\n1  one"

@@ -544,7 +544,7 @@ class TestDeepAgentEndToEnd:
 
         assert "short line 0" in file_content
         # The oversized source line renders whole, inside the reported range.
-        assert file_content.startswith("@@ lines 1-3 @@\n")
+        assert file_content.startswith("@@ lines 1-3 of 5 | next offset 3 @@\n")
         assert "x" * 18000 in file_content
         # Source line 3 is the third source line and must be included.
         assert "short line 2" in file_content
@@ -553,8 +553,8 @@ class TestDeepAgentEndToEnd:
         assert "short line 4" not in file_content
         # The partial window surfaces the resume offset end-to-end for every
         # backend (StateBackend included, which has no standalone read test).
-        assert "lines 1-3 of 5 total" in file_content
-        assert "2 lines remaining from offset 3.]" in file_content
+        assert "lines 1-3 of 5" in file_content
+        assert "next offset 3" in file_content
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -998,9 +998,9 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
         # Verify the content stays under threshold (including truncation message)
         assert len(file_content) <= 80000
@@ -1056,7 +1056,7 @@ class TestDeepAgentEndToEnd:
         file_content = tool_messages[0].content
 
         # Verify NO truncation occurred
-        assert "Output was truncated" not in file_content
+        assert "truncated" not in file_content
         assert "Hello, world!" in file_content
 
     def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend: BackendProtocol) -> None:
@@ -1111,9 +1111,9 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
     async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files in async mode."""
@@ -1165,9 +1165,9 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
         # Verify the content is actually truncated
         assert len(file_content) < 85000
@@ -1217,8 +1217,8 @@ class TestDeepAgentEndToEnd:
         file_content = tool_messages[0].content
 
         # `limit=1` admits the whole source line; the size cap then trims it.
-        assert file_content.startswith("@@ lines 1-1 @@\n")
-        assert "Output was truncated due to size limits" in file_content
+        assert file_content.startswith("[Output was truncated due to size limits.")
+        assert "@@ lines 1-1 of 1 | truncated mid-line " in file_content
         assert len(file_content) <= 80000
 
     def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
@@ -1333,7 +1333,7 @@ class TestDeepAgentEndToEnd:
         read_file_response = tool_messages[-1]
 
         # Verify truncation occurred and result stays under threshold
-        assert "Output was truncated due to size limits" in read_file_response.content, "Expected truncation message for large single-line file"
+        assert "truncated mid-line" in read_file_response.content, "Expected truncation disclosure for large single-line file"
         assert len(read_file_response.content) <= max_reasonable_chars, (
             f"read_file returned {len(read_file_response.content):,} chars. "
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "

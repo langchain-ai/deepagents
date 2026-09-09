@@ -8,7 +8,6 @@ import logging
 import re
 import textwrap
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
@@ -325,12 +324,12 @@ sync with the separator emitted by deepagents' `format_content_with_line_numbers
 """
 
 
-_RANGE_ENVELOPE_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+) @@$")
-"""Match the opening marker of a `read_file` range envelope."""
+_READ_STATUS_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+)(?: of \d+)?(?: \| .*)? @@$")
+"""Match the status header line of a `read_file` result, capturing its range.
 
-
-_RANGE_ENVELOPE_FOOTER_RE = re.compile(r"^@@ end lines \d+-\d+ @@$")
-"""Match the closing marker of a `read_file` range envelope."""
+Fields after the range vary (resume offset, truncation disclosures), so only
+the range is captured; the rest is display-only.
+"""
 
 
 def _strip_success_exit_line(text: str) -> str:
@@ -3288,9 +3287,9 @@ class ToolCallMessage(Vertical):
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
-        if output.startswith("@@ lines "):
-            rendered = ToolCallMessage._render_range_envelope(output)
-            # Comment out this line to display the raw envelope instead.
+        if "@@ lines " in output:
+            rendered = ToolCallMessage._render_read_status_header(output)
+            # Comment out this line to display the raw status header instead.
             output = output if rendered is None else rendered
             return output  # noqa: RET504  # Assignment kept so the line above toggles
 
@@ -3319,47 +3318,38 @@ class ToolCallMessage(Vertical):
         return "\n".join(compacted)
 
     @staticmethod
-    def _render_range_envelope(output: str) -> str | None:
-        r"""Render a `read_file` range envelope as a display line gutter.
+    def _render_read_status_header(output: str) -> str | None:
+        r"""Re-derive a display line gutter from a `read_file` status header.
 
-        `read_file` encloses raw source in `@@ lines start-end @@` markers, which
-        carry the line numbers once rather than per row. The markers are protocol
-        scaffolding for the model, so the TUI drops them and re-derives the
-        gutter the rest of the file output uses — a right-justified marker, two
-        spaces, then the source line, indentation untouched.
+        `read_file` states the line numbers once, in a header above verbatim
+        source, rather than on every row. The header is protocol scaffolding for
+        the model, so the TUI drops it and restores the gutter the rest of the
+        file output uses -- a right-justified marker, two spaces, then the source
+        line, indentation untouched.
 
-        Trailing pagination and truncation notices sit outside the envelope and
-        are passed through unnumbered. A read truncated mid-line omits the
-        closing marker, in which case the notice block delimits the source.
+        Every line after the header is file content, so all of them are
+        numbered. A truncation explanation may precede the header, and is
+        passed through unnumbered.
 
         Returns:
-            The rendered gutter, or `None` when `output` is not an envelope.
+            The rendered gutter, or `None` when line 1 is not a status header.
         """
         lines = output.split("\n")
-        header = _RANGE_ENVELOPE_HEADER_RE.match(lines[0])
-        if header is None:
-            return None
-        start_line = int(header.group(1))
-
-        source, tail = lines[1:], []
-        for index, line in enumerate(source):
-            if _RANGE_ENVELOPE_FOOTER_RE.match(line):
-                source, tail = source[:index], source[index + 1 :]
+        for index, line in enumerate(lines):
+            header = _READ_STATUS_HEADER_RE.match(line)
+            if header is not None:
+                notices, source = lines[:index], lines[index + 1 :]
                 break
         else:
-            # No closing marker: the notice block is the only thing that can
-            # follow the source, and always opens on its own blank-line break.
-            for index, (line, following) in enumerate(pairwise(source)):
-                if not line and following.startswith("["):
-                    source, tail = source[:index], source[index:]
-                    break
+            return None
 
+        start_line = int(header.group(1))
         width = len(str(start_line + len(source) - 1)) if source else 0
         numbered = [
             f"{start_line + offset:>{width}}  {line}"
             for offset, line in enumerate(source)
         ]
-        return "\n".join([*numbered, *tail])
+        return "\n".join([*notices, *numbered])
 
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False

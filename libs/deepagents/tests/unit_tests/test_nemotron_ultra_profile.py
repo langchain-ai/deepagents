@@ -125,7 +125,7 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
         return ToolMessage(
-            content="@@ lines 10-12 @@\nalpha\nbeta\ngamma\n@@ end lines 10-12 @@",
+            content="@@ lines 10-12 of 20 | next offset 12 @@\nalpha\nbeta\ngamma",
             tool_call_id="call_1",
         )
 
@@ -142,17 +142,17 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
 def test_read_file_continuation_notice_skips_truncated_window() -> None:
     """A truncated window reports its retained range, so no hint is appended.
 
-    The source-line count comes from the opening marker. A truncated read whose
-    marker still claimed the full request would look like a full page here and
-    hint at an offset past the rows that were dropped.
+    The source-line count comes from the status header, which a truncation
+    explanation precedes. A header still claiming the full request would look
+    like a full page here and hint at an offset past the dropped lines.
     """
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
         return ToolMessage(
             content=(
-                "@@ lines 1-2 @@\nalpha\nbeta\n@@ end lines 1-2 @@"
-                "\n\n[Read 2 lines (lines 1-2 of 9 total). 7 lines remaining from offset 2.]"
+                "[Output was truncated due to size limits.]\n"
+                "@@ lines 1-2 of 9 | next offset 2 | truncated due to size @@\nalpha\nbeta"
             ),
             tool_call_id="call_1",
         )

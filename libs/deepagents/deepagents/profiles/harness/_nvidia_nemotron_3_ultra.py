@@ -173,7 +173,9 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             limit = _DEFAULT_READ_LIMIT
 
-        range_match = re.match(r"^@@ lines (\d+)-(\d+) @@(?:\n|$)", content)
+        # A truncation explanation can precede the header, so search line
+        # starts rather than anchoring at the start of the result.
+        range_match = re.search(r"^@@ lines (\d+)-(\d+)\b", content, re.MULTILINE)
         if range_match:
             n_lines = int(range_match.group(2)) - int(range_match.group(1)) + 1
         else:

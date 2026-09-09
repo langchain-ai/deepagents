@@ -10,7 +10,7 @@ import mimetypes
 import threading
 import uuid
 from binascii import Error as BinasciiError
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
@@ -68,11 +68,11 @@ from deepagents.backends.utils import (
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
+    _format_source_block,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
     check_empty_content,
-    format_content_with_line_range,
     format_grep_matches,
     regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
@@ -800,39 +800,64 @@ def _format_glob_tool_result(
     return content
 
 
-def _remaining_lines_notice(read_result: ReadResult) -> str:
-    """Render the read pagination notice when the backend returned a partial window.
+def _window_fields(read_result: ReadResult) -> list[str]:
+    """Describe the window a read returned, as status header fields.
+
+    Carries the facts the pagination notice used to spell out in prose: which
+    source lines came back, how many the file has, and where to resume.
 
     Args:
         read_result: Backend read result carrying the pagination metadata
             (`start_line`, `end_line`, `next_offset`, `total_lines`).
 
     Returns:
-        A model-facing notice describing the window that was read and where to
-            resume, or an empty string when no window metadata is present or the
-            window already reached the end of the file (nothing more to read).
+        The `lines A-B[ of T]` field, followed by `next offset N` when the
+            window stopped short of the end of the file.
     """
     start_line = read_result.start_line
     end_line = read_result.end_line
-    next_offset = read_result.next_offset
-    if start_line is None or end_line is None or next_offset is None:
-        return ""
+    if start_line is None or end_line is None:
+        return []
 
     total_lines = read_result.total_lines
-    read_count = end_line - start_line + 1
-    read_unit = "line" if read_count == 1 else "lines"
-    if total_lines is None:
-        return f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}). More lines remain from offset {next_offset}.]"
-    if end_line >= total_lines:
-        return ""
+    span = f"lines {start_line}-{end_line}"
+    if total_lines is not None:
+        span += f" of {total_lines}"
+    fields = [span]
+    next_offset = read_result.next_offset
+    if next_offset is not None and (total_lines is None or end_line < total_lines):
+        fields.append(f"next offset {next_offset}")
+    return fields
 
-    remaining = total_lines - end_line
-    remaining_unit = "line" if remaining == 1 else "lines"
-    return (
-        f"\n\n[Read {read_count} {read_unit} "
-        f"(lines {start_line}-{end_line} of {total_lines} total). "
-        f"{remaining} {remaining_unit} remaining from offset {next_offset}.]"
-    )
+
+def _read_header(fields: Sequence[str]) -> str:
+    """Render the status header that sits above a text `read_file` result.
+
+    Args:
+        fields: Header fields, already formatted, in display order.
+
+    Returns:
+        The header line, without a trailing newline.
+    """
+    return f"@@ {' | '.join(fields)} @@"
+
+
+def _assemble_read(body: str, fields: Sequence[str], notices: Sequence[str]) -> str:
+    """Compose a read result from its notices, status header, and source body.
+
+    Notices sit above the header so everything below it is verbatim file
+    content, leaving no harness-authored text below for a crafted source line
+    to imitate.
+
+    Args:
+        body: Verbatim source lines for the window, newline-joined.
+        fields: Status header fields.
+        notices: Bracketed explanations to place above the header.
+
+    Returns:
+        The assembled tool result.
+    """
+    return "\n".join([*notices, _read_header(fields), body])
 
 
 def _clamped_offset_notice(offset: int) -> str:
@@ -925,62 +950,122 @@ READ_FILE_TRUNCATION_MSG = (
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
 
+_MIDLINE_FIELD_SOLVE_ROUNDS = 4
+"""Rounds allowed to settle the mid-line char count against its own header width."""
+
+
+def _midline_truncated_read(
+    body: str,
+    read_result: ReadResult,
+    threshold: int,
+    notices: Sequence[str],
+    extra_fields: Sequence[str] = (),
+) -> str:
+    """Assemble a read cut inside a single source line too long to fit.
+
+    No offset reaches the remainder of such a line, so the header reports how
+    much of it is shown in place of a resume point.
+
+    Args:
+        body: Verbatim source lines for the window, newline-joined.
+        read_result: Backend read result carrying the window metadata.
+        threshold: Char budget the assembled result must fit under.
+        notices: Bracketed explanations to place above the header.
+        extra_fields: Header fields to carry through from the caller.
+
+    Returns:
+        The assembled tool result, cut to the budget.
+    """
+    oversized = len(body.split("\n", 1)[0])
+    clipped = ReadResult(
+        total_lines=read_result.total_lines,
+        start_line=read_result.start_line,
+        end_line=read_result.start_line,
+        next_offset=None,
+    )
+
+    def fields(shown: int) -> list[str]:
+        return [*_window_fields(clipped), "truncated mid-line", f"{shown} of {oversized} chars", *extra_fields]
+
+    # The count appears in the header it has to fit under, so solve for it:
+    # only its digit width feeds back, which settles within a couple of rounds.
+    shown = oversized
+    for _ in range(_MIDLINE_FIELD_SOLVE_ROUNDS):
+        settled = max(0, min(oversized, threshold - len(_assemble_read("", fields(shown), notices))))
+        if settled == shown:
+            break
+        shown = settled
+    return _assemble_read(body[:shown], fields(shown), notices)
+
 
 def _truncate_paginated_read(
-    content: str,
+    body: str,
     file_path: str,
     read_result: ReadResult,
     token_limit: int | None,
+    *,
+    notices: Sequence[str] = (),
+    extra_fields: Sequence[str] = (),
 ) -> str:
     """Truncate a paginated read without skipping undisplayed source lines.
 
-    The backend computes the pagination notice from the full window it
-    returned, but the char budget may drop trailing rows from what the model
-    actually sees. Appending the backend's notice verbatim would then advertise
-    a `next_offset` past those dropped lines, so a re-read would silently skip
-    them. This recomputes the notice from the last *complete* rendered row that
-    still fits, and falls back to the size warning alone (no stale offset) when
-    not even one full source line fits.
+    The backend reports the window it returned, but the char budget may drop
+    trailing lines from what the model actually sees. Reporting the backend's
+    `next_offset` verbatim would then advertise an offset past those dropped
+    lines, so a re-read would silently skip them. This rebuilds the header from
+    the last *complete* source line that still fits, and reports
+    `truncated mid-line` with no resume offset when not even one line fits.
 
     Args:
-        content: Source content enclosed by `@@ lines start-end @@` markers.
+        body: Verbatim source lines for the window, newline-joined.
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
-            adjusted `next_offset` is derived from its 1-indexed line range.
+            adjusted resume offset is derived from its 1-indexed line range.
         token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
-            falsy, content is returned with its notice untouched.
+            falsy, the untruncated result is returned.
+        notices: Bracketed explanations to place above the header, such as an
+            offset-clamp disclosure that truncation must not drop.
+        extra_fields: Header fields to carry onto every outcome, alongside the
+            window and truncation fields computed here.
 
     Returns:
-        The (possibly truncated) content with a notice that never overstates
-            which source lines were shown.
+        The (possibly truncated) result, whose header never overstates which
+            source lines were shown.
 
     Examples:
         If the backend returns source lines 11-20 with `next_offset=20`, but
-        the budget fits only through line 14, the returned notice reports lines
-        11-14 and tells the caller to resume from offset 14 rather than 20.
+        the budget fits only through line 14, the header reports lines 11-14
+        and a resume offset of 14 rather than 20.
     """
-    notice = _remaining_lines_notice(read_result)
-    if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
-        return content + notice
+    result = _assemble_read(body, [*_window_fields(read_result), *extra_fields], notices)
+    if not token_limit or len(result) < NUM_CHARS_PER_TOKEN * token_limit:
+        return result
 
-    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path).strip()
     threshold = NUM_CHARS_PER_TOKEN * token_limit
     if read_result.start_line is not None and read_result.end_line is not None:
-        header, *source_rows, _ = content.split("\n")
-        position = len(header) + 1
+        # Build the safe places where the body can be truncated: one per source
+        # line, so a cut never lands inside a line the header then claims to
+        # have shown. `position` tracks each line's end in `body`.
+        rows = body.split("\n")
+        position = 0
         boundaries: list[tuple[int, int]] = []
-        for index, row in enumerate(source_rows, start=read_result.start_line):
-            if index > read_result.end_line:
+        for source_line, row in enumerate(rows, start=read_result.start_line):
+            # Rows past the window's last source line are not file content: a
+            # byte-capped backend page appends its own truncation banner
+            # (preceded by a blank line). Stop before them so a banner row is
+            # never chosen as a boundary — resuming from its inflated number
+            # would overshoot `total_lines` and skip real lines.
+            if source_line > read_result.end_line:
                 break
             position += len(row)
-            boundaries.append((position, index))
+            boundaries.append((position, source_line))
             position += 1
 
-        # Only advertise source lines whose complete rendered rows fit. If the
-        # byte cut landed partway through a row, resuming after that row would
-        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
-        # after the last one shown, which for a 1-indexed `end_line` is exactly
-        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
+        # Only advertise source lines that fit whole. `next_offset` is the
+        # 0-indexed line after the last one shown, which for a 1-indexed
+        # `end_line` is exactly `end_line` (no reliance on how the request
+        # `offset` maps to `start_line`).
         for boundary, end_line in reversed(boundaries):
             adjusted_result = ReadResult(
                 total_lines=read_result.total_lines,
@@ -988,18 +1073,16 @@ def _truncate_paginated_read(
                 end_line=end_line,
                 next_offset=end_line,
             )
-            adjusted_notice = _remaining_lines_notice(adjusted_result)
+            candidate = _assemble_read(
+                body[:boundary],
+                [*_window_fields(adjusted_result), "truncated due to size", *extra_fields],
+                [*notices, truncation_msg],
+            )
+            if len(candidate) <= threshold:
+                return candidate
 
-            marker = f"{read_result.start_line}-{end_line}"
-            body = content[:boundary].split("\n", 1)[1]
-            envelope = f"@@ lines {marker} @@\n{body}\n@@ end lines {marker} @@"
-            if len(envelope) + len(truncation_msg) + len(adjusted_notice) <= threshold:
-                return envelope + truncation_msg + adjusted_notice
-
-    # No complete source line fits. Keep the size warning but omit the
-    # backend's stale pagination offset.
-    max_content_length = max(0, threshold - len(truncation_msg))
-    return content[:max_content_length] + truncation_msg
+    # No complete source line fits, so no offset reaches the remainder.
+    return _midline_truncated_read(body, read_result, threshold, [*notices, truncation_msg], extra_fields)
 
 
 def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
@@ -1007,7 +1090,7 @@ def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[
 
     Backends that join a page's lines with `"\n"` as a separator leave a blank
     final row indistinguishable from a trailing terminator, which
-    `format_content_with_line_range` drops. Pads to the window the backend
+    `_format_source_block` drops. Pads to the window the backend
     reported and never truncates, since a backend may append a truncation
     banner numbered past `end_line`.
 
@@ -1248,8 +1331,7 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
-- Text results enclose raw source in `@@ lines start-end @@` and `@@ end lines start-end @@` markers. The first source line is `offset` + 1 (1 by default); do not include the markers when editing.
-- Source lines are returned unchanged; `limit` counts source lines, not envelope markers.
+- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.
 - Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
@@ -1283,7 +1365,7 @@ EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
 - You must read the file before editing; this tool errors otherwise.
-- Preserve the exact source indentation from the read output, and never include the `@@ lines ... @@` envelope markers in old_string or new_string.
+- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.
 - Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
 
@@ -1956,17 +2038,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             rows: str | list[str] = content
             if read_result.start_line is not None and read_result.end_line is not None:
                 rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
-            content = format_content_with_line_range(
-                rows,
-                # `max(offset, 0)` keeps the fallback source range 1-indexed when
-                # a backend returns text without `start_line`.
-                start_line=read_result.start_line or max(offset, 0) + 1,
-            )
             # `limit` already bounded raw source lines at the backend; do not
-            # re-truncate by row count here.
-            # The clamp notice is appended after truncation so it cannot be cut.
+            # re-truncate by row count here, or real source lines would be
+            # pushed off the end of the page (#2453).
+            # The clamp notice sits above the header so truncation cannot cut it.
+            clamp_notice = _clamped_offset_notice(offset).strip()
             return ToolMessage(
-                content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),
+                content=_truncate_paginated_read(
+                    _format_source_block(rows),
+                    validated_path,
+                    read_result,
+                    token_limit,
+                    notices=[clamp_notice] if clamp_notice else [],
+                    extra_fields=[f"offset clamped from {offset}"] if clamp_notice else [],
+                ),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

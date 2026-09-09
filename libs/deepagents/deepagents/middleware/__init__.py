@@ -71,6 +71,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import (
     DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
+    SummarizationMethod,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -98,6 +99,7 @@ __all__ = [
     "SkillsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "SummarizationMethod",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
     "create_summarization_tool_middleware",

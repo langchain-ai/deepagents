@@ -22,8 +22,9 @@ reliable by owning stable row IDs, structured column materialization, bounded
 concurrency, per-row errors, private cross-turn state, and SQL semantics. Raw
 code remains the better escape hatch for adaptive workflows.
 
-The middleware adds its own tool-usage instructions to the parent model's system
-message. The host agent does not need a virtual-table-specific system prompt or a
+The middleware adds its own tool-usage and table-lifecycle instructions to the
+parent model's system message, including that `initial_tables` already exist and
+other tables require `virtual_table_create`. The host agent does not need a virtual-table-specific system prompt or a
 predeclared subagent. Each `virtual_table_enrich` call defines a temporary,
 no-tools row worker with `worker_prompt` and `output_schema`; it inherits the
 parent model unless `worker_model` is set. The worker is reused across the rows
@@ -54,12 +55,12 @@ caller to async invocation.
 
 - `virtual_table_create`: materialize document rows shaped like
   `{"file": "/docs/a.txt", ...metadata}` with stable `_row_id` values.
-- `virtual_table_describe`: return columns, row count, and a bounded sample.
 - `virtual_table_enrich`: define a row worker from a prompt and strict output
   schema, then add its structured fields plus `<name>_status` and `<name>_error`
   columns.
-- `virtual_table_query`: execute one read-only `SELECT` or `WITH` query using
-  parameter binding, an SQLite authorizer, a time limit, and a row limit.
+- `virtual_table_query`: inspect rows/columns and execute one read-only `SELECT`
+  or `WITH` query using parameter binding, an SQLite authorizer, a time limit,
+  and a row limit.
 
 Tables live in `_virtual_tables`, a `PrivateStateAttr`, while document blobs stay
 in the configured filesystem backend. Enrichment dereferences only selected files

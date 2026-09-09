@@ -43,7 +43,7 @@ def _tool(middleware: VirtualTableMiddleware, name: str):
     return next(tool for tool in middleware.tools if tool.name == name)
 
 
-def test_create_describe_and_query() -> None:
+def test_create_and_query() -> None:
     middleware = VirtualTableMiddleware(backend=_backend())
     runtime = _runtime({"messages": []})
     create = _tool(middleware, "virtual_table_create")
@@ -187,6 +187,9 @@ def test_middleware_adds_table_instructions() -> None:
         assert updated.model is model
         assert "Host instructions." in updated.system_message.text
         assert "virtual_table_enrich" in updated.system_message.text
+        assert "initial_tables` already exist" in updated.system_message.text
+        assert "virtual_table_create" in updated.system_message.text
+        assert "SELECT * FROM <table> LIMIT 3" in updated.system_message.text
         assert "Define the\n  row worker" in updated.system_message.text
         return ModelResponse(result=[AIMessage("done")])
 
@@ -194,6 +197,7 @@ def test_middleware_adds_table_instructions() -> None:
 
     assert response.result[0].text == "done"
     assert middleware._model is model
+    assert {tool.name for tool in middleware.tools} == {"virtual_table_create", "virtual_table_query", "virtual_table_enrich"}
 
 
 def test_initial_tables_are_private_state() -> None:

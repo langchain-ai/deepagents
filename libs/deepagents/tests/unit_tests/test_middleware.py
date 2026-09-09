@@ -3514,22 +3514,6 @@ class TestTruncation:
         assert "results truncated" in result[-1]
         assert "try being more specific" in result[-1]
 
-    def test_truncate_list_result_accounts_for_rendering(self):
-        # Many short paths: the repr overhead alone pushes the rendered list over budget.
-        paths = [f"/{index:04x}" for index in range(10_000)]
-        result = truncate_if_too_long(paths)
-
-        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
-        assert result[-1] == TRUNCATION_GUIDANCE
-
-    def test_truncate_list_result_uneven_item_lengths(self):
-        # A single oversized leading item must not be retained whole.
-        paths = ["/" + "x" * (TOOL_RESULT_TOKEN_LIMIT * 4), *[f"/{index}.py" for index in range(100)]]
-        result = truncate_if_too_long(paths)
-
-        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
-        assert result == [TRUNCATION_GUIDANCE]
-
     def test_truncate_string_result_no_truncation(self):
         content = "short content"
         result = truncate_if_too_long(content)

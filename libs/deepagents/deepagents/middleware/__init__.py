@@ -50,6 +50,7 @@ Use a **plain tool** when:
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.project_instructions import ProjectInstructionsMiddleware
 from deepagents.middleware.rubric import (
     GRADER_SYSTEM_PROMPT,
     RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -91,6 +92,7 @@ __all__ = [
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",
+    "ProjectInstructionsMiddleware",
     "RubricEvaluation",
     "RubricMiddleware",
     "RubricResult",

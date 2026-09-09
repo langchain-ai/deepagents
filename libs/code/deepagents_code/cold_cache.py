@@ -76,20 +76,42 @@ CACHE_IDENTITY_PARAM_KEYS = frozenset(
 )
 """Invocation params that select or invalidate a provider cache entry.
 
-The identity check compares only these, plus `reasoning_effort` for GPT-6 Astra.
-Comparing whole `model_params` maps instead would report a model change for every
-unrelated knob -- `temperature` or `max_tokens`, for example -- and the modal
-would then assert that "the previous cached prefix cannot be reused" when
-nothing about the prefix moved. Astra is the exception because changing its
-request-level reasoning effort can rewrite model-side instructions and reduce
-prefix reuse. A modal that fires on a false premise trains users into the
-permanent suppression.
+The identity check compares only these, plus the provider's reasoning-effort
+settings where a change is documented to move the cached prefix (see
+`_EFFORT_CACHE_IDENTITY_PROVIDERS`). Comparing whole `model_params` maps
+instead would report a model change for every unrelated knob -- `temperature`
+or `max_tokens`, for example -- and the modal would then assert that "the
+previous cached prefix cannot be reused" when nothing about the prefix moved.
+A modal that fires on a false premise trains users into the permanent
+suppression.
 
 `cache_control` is deliberately absent: `AnthropicPromptCachingMiddleware`
 overwrites `model_settings["cache_control"]` with its own TTL on every
 Anthropic request (see `_ANTHROPIC_MIDDLEWARE_TTL_SECONDS`), so a
 user-supplied value never reaches the wire. Comparing it would report an
 identity change for a setting the effective requests never differed on.
+"""
+
+_EFFORT_CACHE_IDENTITY_PROVIDERS = frozenset({"openai", "openai_codex", "anthropic"})
+"""Providers whose reasoning-effort settings participate in cache identity.
+
+OpenAI documents `reasoning.effort` as a setting that "can change model-side
+reasoning instructions" for its models generally -- the GPT-6 Astra
+`configuration_update` escape hatch exists precisely because the top-level
+knob rewrites the hidden prefix -- and pre-GPT-5.6 minimum cacheable lengths
+vary with request settings including reasoning effort:
+https://developers.openai.com/api/docs/guides/prompt-caching
+
+Anthropic is stricter: the thinking/effort configuration is rendered into the
+prompt, so changing it always invalidates message blocks:
+https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+
+Other providers (`google_genai`, `fireworks`, `xai`, ...) document no link
+between effort and cache identity, so their effort settings stay out of the
+projection: including them would fire the modal on a false premise.
+`openai_codex` resolves no cache policy today (`resolve_prompt_cache_policy`
+gates on the `openai` provider), so its entries matter only for checkpointed
+storage until that changes.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
@@ -899,6 +921,50 @@ def resolve_prompt_cache_policy(
     return None
 
 
+_EFFORT_IDENTITY_KEY = "reasoning_effort"
+"""Checkpoint key the effective effort value is projected under.
+
+Canonical rather than request-shaped: the identity question is whether the
+effort value changed, not which request shape carried it. Storing the native
+shape would report an identity change for a flat-to-nested representation
+swap that leaves the prefix untouched.
+"""
+
+
+def _effort_identity_entries(
+    model_params: Mapping[str, Any], provider: str
+) -> dict[str, Any]:
+    """Project the provider's effective reasoning effort from `model_params`.
+
+    Uses the same path resolution and precedence as `/effort`
+    (`reasoning_effort._effort_paths`), so native request shapes -- OpenAI's
+    nested `reasoning: {"effort": ...}`, Anthropic's `output_config.effort`
+    -- participate alongside the canonical flat `reasoning_effort`. Sibling
+    keys in nested containers (`reasoning.summary`, say) stay out: they are
+    not documented to move the prefix, and including them would fire the
+    modal on a false premise.
+
+    Args:
+        model_params: Full invocation params.
+        provider: Lowercase provider name from the model spec.
+
+    Returns:
+        `{_EFFORT_IDENTITY_KEY: value}` when an effort setting is present and
+            non-`None`, or `{}` when the provider has none configured.
+    """
+    from deepagents_code.reasoning_effort import _effort_paths
+
+    for path in _effort_paths(provider):
+        if len(path) == 1:
+            if path[0] in model_params and model_params[path[0]] is not None:
+                return {_EFFORT_IDENTITY_KEY: model_params[path[0]]}
+        else:
+            nested = model_params.get(path[0])
+            if isinstance(nested, dict) and nested.get(path[1]) is not None:
+                return {_EFFORT_IDENTITY_KEY: nested[path[1]]}
+    return {}
+
+
 def cache_identity_params(
     model_params: Mapping[str, Any] | None,
     *,
@@ -917,16 +983,11 @@ def cache_identity_params(
         return {}
     keys = CACHE_IDENTITY_PARAM_KEYS
     if model_spec:
-        provider, separator, model_name = model_spec.partition(":")
-        effective_model = (
-            _effective_model_name(provider, model_name) if separator else None
-        )
-        if (
-            provider.strip().lower() == "openai"
-            and effective_model
-            and effective_model.lower().startswith("gpt-6-astra")
-        ):
-            keys |= {"reasoning_effort"}
+        provider = model_spec.partition(":")[0].strip().lower()
+        if provider in _EFFORT_CACHE_IDENTITY_PROVIDERS:
+            result = {key: value for key, value in model_params.items() if key in keys}
+            result.update(_effort_identity_entries(model_params, provider))
+            return result
     return {key: value for key, value in model_params.items() if key in keys}
 
 

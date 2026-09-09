@@ -11917,6 +11917,7 @@ class DeepAgentsApp(App):
                 parse_cache_timestamp,
                 resolve_prompt_cache_policy,
             )
+            from deepagents_code.config import _compose_openai_reasoning_effort
             from deepagents_code.model_config import (
                 ModelConfig,
                 is_warning_suppressed,
@@ -11947,6 +11948,14 @@ class DeepAgentsApp(App):
                 fallback_base_url = config.get_base_url(provider)
                 if isinstance(fallback_base_url, str):
                     current_params["base_url"] = fallback_base_url
+            # Match model construction before projecting the cache identity.
+            overrides = self._model_params_override or {}
+            current_params = _compose_openai_reasoning_effort(
+                provider,
+                current_params,
+                overrides.get("reasoning_effort"),
+                overrides.get("reasoning"),
+            )
             # Endpoint changes have their own normalized identity. Keeping
             # `base_url` out of this mapping avoids treating the same endpoint
             # as two independent identity changes.
@@ -12048,9 +12057,11 @@ class DeepAgentsApp(App):
                 age_seconds = max(elapsed or 0.0, 0.0)
                 if (
                     model_spec != last_spec
-                    # Only cache-participating params are compared. Astra's
-                    # request-level `/effort` value participates because OpenAI
-                    # may rewrite its model-side instruction prefix.
+                    # Only cache-participating params are compared. OpenAI and
+                    # Anthropic reasoning-effort settings participate because
+                    # both providers render effort into the prefix: OpenAI may
+                    # rewrite model-side instructions, Anthropic always renders
+                    # the thinking config into the prompt.
                     or cache_identity_params(current_params, model_spec=model_spec)
                     != cache_identity_params(last_params, model_spec=last_spec)
                     # `None` means no endpoint was ever recorded -- e.g. a

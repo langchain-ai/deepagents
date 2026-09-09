@@ -296,9 +296,30 @@ def test_checkpoint_records_effective_cache_params() -> None:
     assert update["_model_params"] is None
 
 
-def test_checkpoint_records_astra_reasoning_effort_for_cache_identity() -> None:
+@pytest.mark.parametrize(
+    ("ls_provider", "model_name", "expected"),
+    [
+        ("openai", "gpt-6-astra", {"reasoning_effort": "high"}),
+        ("openai", "gpt-5.6", {"reasoning_effort": "high"}),
+        ("anthropic", "claude-opus-5", {"reasoning_effort": "high"}),
+        ("google_genai", "gemini-3", None),
+    ],
+)
+def test_checkpoint_records_reasoning_effort_for_cache_identity(
+    ls_provider: str, model_name: str, expected: dict[str, Any] | None
+) -> None:
+    """Effort reaches `_last_cache_params` only where it moves the prefix.
+
+    OpenAI and Anthropic render reasoning effort into the prompt prefix (the
+    GPT-6 Astra `configuration_update` escape hatch exists because the
+    top-level knob rewrites it; Anthropic always renders thinking config), so
+    an effort change there can invalidate the cache. Google documents no such
+    link, so its effort settings must stay out of the identity projection.
+    """
+    model = _make_model(model_name)
+    model._get_ls_params.return_value = {"ls_provider": ls_provider}
     request = _make_request(
-        _make_model("gpt-6-astra"),
+        model,
         context=CLIContext(model_params={"reasoning_effort": "high"}),
     )
 
@@ -307,8 +328,68 @@ def test_checkpoint_records_astra_reasoning_effort_for_cache_identity() -> None:
     )
 
     update = _checkpoint_update(result)
-    assert update["_last_cache_params"] == {"reasoning_effort": "high"}
+    assert update["_last_cache_params"] == expected
     assert update["_model_params"] == {"reasoning_effort": "high"}
+
+
+@pytest.mark.parametrize("effort", ["high", "low"])
+def test_checkpoint_composes_configured_reasoning_effort(effort: str) -> None:
+    """Runtime effort overrides nested config in the saved cache identity."""
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={
+            "openai": {
+                "params": {
+                    "gpt-5.6": {"reasoning": {"effort": "medium", "summary": "auto"}}
+                }
+            }
+        }
+    )
+    request = _make_request(
+        _make_model("gpt-5.6"),
+        context=CLIContext(model_params={"reasoning_effort": effort}),
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        result = ConfigurableModelMiddleware().wrap_model_call(
+            request, lambda _r: _make_response()
+        )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": effort}
+    assert update["_model_params"] == {"reasoning_effort": effort}
+    assert config.get_kwargs("openai", model_name="gpt-5.6")["reasoning"] == {
+        "effort": "medium",
+        "summary": "auto",
+    }
+
+
+def test_checkpoint_records_nested_openai_reasoning_effort() -> None:
+    """The nested `reasoning: {"effort": ...}` shape must not slip through.
+
+    `/effort` composes session overrides into the native `reasoning` mapping
+    for OpenAI when config carries one (`_compose_openai_reasoning_effort`), so
+    the flat `reasoning_effort` key alone would miss effort changes for users
+    with a configured `reasoning` block. The checkpoint stores the canonical
+    effort value, not the container: `reasoning.summary` is not documented to
+    move the prefix, so only the effort value participates.
+    """
+    request = _make_request(
+        _make_model("gpt-5.6"),
+        context=CLIContext(
+            model_params={"reasoning": {"effort": "high", "summary": "auto"}}
+        ),
+    )
+
+    result = ConfigurableModelMiddleware().wrap_model_call(
+        request, lambda _r: _make_response()
+    )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": "high"}
+    assert update["_model_params"] == {
+        "reasoning": {"effort": "high", "summary": "auto"}
+    }
 
 
 def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
@@ -344,9 +425,14 @@ def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
         )
 
     update = _checkpoint_update(result)
-    # Only the identity key survives; `base_url` is tracked separately as the
-    # endpoint identity, and the runtime override is not a cache-identity key.
-    assert update["_last_cache_params"] == {"prompt_cache_retention": "24h"}
+    # Only the identity keys survive: `base_url` is tracked separately as the
+    # endpoint identity, `temperature` and friends are unrelated knobs, and
+    # the runtime effort override is projected too because OpenAI effort
+    # participates in cache identity.
+    assert update["_last_cache_params"] == {
+        "prompt_cache_retention": "24h",
+        "reasoning_effort": "high",
+    }
     # Resume semantics are untouched: exactly the runtime overrides.
     assert update["_model_params"] == {"reasoning_effort": "high"}
 
@@ -1084,7 +1170,9 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-opus-4-5",
             "_model_params": {"reasoning_effort": "high"},
-            "_last_cache_params": None,
+            # `_make_model` reports the OpenAI provider regardless of the model
+            # name, so the effort override participates in cache identity here.
+            "_last_cache_params": {"reasoning_effort": "high"},
         }
 
 

@@ -60,6 +60,8 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
+Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links.
+
 > [!NOTE]
 > When `@release-bot apply` adds a trusted commit that changes only the package's managed `CHANGELOG.md`, the main CI workflow intentionally skips its package lint and test jobs. The `✅ CI Success` gate reuses the result from the apply commit's parent, where the same release-PR contents already ran through normal CI. Skipped package jobs on the apply commit are therefore expected; inspect the parent's `✅ CI Success` check and linked workflow run to see the reused tests. If the parent did not pass CI, the apply commit does not pass the gate.
 

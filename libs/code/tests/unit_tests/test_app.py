@@ -15904,20 +15904,20 @@ class TestDispatchModelSwitch:
         async def thread_switch() -> None:  # noqa: RUF029
             order.append("thread_switch")
 
-        app._deferred_actions.append(
-            DeferredAction(
-                kind="model_switch",
-                execute=partial(
-                    app._confirm_and_switch_model,
-                    "openai:gpt-5.5",
-                ),
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._deferred_actions.append(
+                DeferredAction(
+                    kind="model_switch",
+                    execute=partial(
+                        app._confirm_and_switch_model,
+                        "openai:gpt-5.5",
+                    ),
+                )
             )
-        )
-        app._deferred_actions.append(
-            DeferredAction(kind="thread_switch", execute=thread_switch)
-        )
-
-        async with app.run_test():
+            app._deferred_actions.append(
+                DeferredAction(kind="thread_switch", execute=thread_switch)
+            )
             drain = asyncio.create_task(app._drain_deferred_actions())
             # Let the drain reach the confirmation prompt, then yield several
             # times: a drain that resumes early has ample opportunity to run

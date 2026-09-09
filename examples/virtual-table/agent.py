@@ -7,26 +7,37 @@ import asyncio
 import json
 
 from deepagents import create_deep_agent
+from deepagents.backends import StateBackend
 from langgraph.graph.state import CompiledStateGraph
 
 from virtual_table import VirtualTableMiddleware
 
 FEEDBACK = [
-    {"customer": "Acme", "plan": "enterprise", "text": "The dashboard is fast, but exports time out every Friday."},
-    {"customer": "Beacon", "plan": "starter", "text": "Setup was easy. I wish the API docs had more Python examples."},
-    {"customer": "Cedar", "plan": "enterprise", "text": "Support fixed our SSO issue quickly, although audit logs are hard to search."},
-    {"customer": "Delta", "plan": "pro", "text": "The new search is excellent and cut our investigation time in half."},
-    {"customer": "Elm", "plan": "pro", "text": "Billing pages sometimes show stale usage numbers."},
+    {"file": "/feedback/acme.txt", "customer": "Acme", "plan": "enterprise"},
+    {"file": "/feedback/beacon.txt", "customer": "Beacon", "plan": "starter"},
+    {"file": "/feedback/cedar.txt", "customer": "Cedar", "plan": "enterprise"},
+    {"file": "/feedback/delta.txt", "customer": "Delta", "plan": "pro"},
+    {"file": "/feedback/elm.txt", "customer": "Elm", "plan": "pro"},
 ]
+
+FILES = {
+    "/feedback/acme.txt": "The dashboard is fast, but exports time out every Friday.",
+    "/feedback/beacon.txt": "Setup was easy. I wish the API docs had more Python examples.",
+    "/feedback/cedar.txt": "Support fixed our SSO issue quickly, although audit logs are hard to search.",
+    "/feedback/delta.txt": "The new search is excellent and cut our investigation time in half.",
+    "/feedback/elm.txt": "Billing pages sometimes show stale usage numbers.",
+}
 
 DEFAULT_QUESTION = "Classify each feedback item by sentiment and product area, then count feedback by plan, sentiment, and product area."
 
 
 def create_agent(model: str) -> CompiledStateGraph:
     """Create the prototype agent."""
+    backend = StateBackend()
     return create_deep_agent(
         model=model,
-        middleware=[VirtualTableMiddleware(initial_tables={"feedback": FEEDBACK})],
+        backend=backend,
+        middleware=[VirtualTableMiddleware(backend=backend, initial_tables={"feedback": FEEDBACK})],
     )
 
 
@@ -38,7 +49,8 @@ async def main() -> None:
     args = parser.parse_args()
 
     agent = create_agent(args.model)
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}]})
+    files = {path: {"content": content, "encoding": "utf-8"} for path, content in FILES.items()}
+    result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}], "files": files})
     print(result["messages"][-1].text)
     print("\nMaterialized feedback table:")
     print(json.dumps(result.get("_virtual_tables", {}).get("feedback", []), indent=2))

@@ -9,8 +9,10 @@ response as new columns.
 2. **Deterministic analysis:** run bounded, read-only SQLite queries over those
 materialized rows for filtering, grouping, joins, and aggregation.
 
-It is deliberately an example, not library API. It requires no sandbox, no CLI,
-and no dependency beyond Deep Agents and Python's standard library.
+It is deliberately an example, not library API. Each row is a document dictionary
+with a mandatory `file` backend path and optional queryable metadata. The file may
+live in any Deep Agents filesystem backend, including the default virtual state
+filesystem or a per-thread sandbox; the table stores the path rather than the blob.
 
 ## Why this differs from `js_eval + task`
 
@@ -50,7 +52,8 @@ caller to async invocation.
 
 ## Tools
 
-- `virtual_table_create`: materialize JSON rows with stable `_row_id` values.
+- `virtual_table_create`: materialize document rows shaped like
+  `{"file": "/docs/a.txt", ...metadata}` with stable `_row_id` values.
 - `virtual_table_describe`: return columns, row count, and a bounded sample.
 - `virtual_table_enrich`: define a row worker from a prompt and strict output
   schema, then add its structured fields plus `<name>_status` and `<name>_error`
@@ -58,13 +61,17 @@ caller to async invocation.
 - `virtual_table_query`: execute one read-only `SELECT` or `WITH` query using
   parameter binding, an SQLite authorizer, a time limit, and a row limit.
 
-Tables live in `_virtual_tables`, a `PrivateStateAttr`. With a checkpointer they
-can persist across turns without appearing in public agent input/output schemas.
-The included script prints the state returned from its single run.
+Tables live in `_virtual_tables`, a `PrivateStateAttr`, while document blobs stay
+in the configured filesystem backend. Enrichment dereferences only selected files
+and adds their UTF-8 content to the row worker input as `file_content`. With a
+checkpointer, both virtual files and table pointers persist across turns without
+copying large blobs into every table row. The included script uses one
+`StateBackend` for both `create_deep_agent` and `VirtualTableMiddleware`.
 
 ## Current prototype limits
 
-- At most 500 rows and 2 MB per materialized table by default.
+- At most 500 rows and 2 MB of paths/metadata per materialized table by default.
+- Each file read for enrichment is capped at 1 MB by default and must be UTF-8 text.
 - At most 10 concurrent row workers; five by default.
 - One SQLite table per query call.
 - Query results are capped at 100 rows and 100 KB.
@@ -81,4 +88,4 @@ The included script prints the state returned from its single run.
 uv run pytest test_virtual_table.py
 ```
 
-The focused tests use a fake `task` tool and make no network calls.
+The focused tests use a fake row worker and filesystem backend and make no network calls.

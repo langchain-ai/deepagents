@@ -991,7 +991,6 @@ def _midline_truncated_read(
     read_result: ReadResult,
     threshold: int,
     notices: Sequence[str],
-    extra_fields: Sequence[str] = (),
 ) -> str:
     """Assemble a read cut inside a single source line too long to fit.
 
@@ -1003,7 +1002,6 @@ def _midline_truncated_read(
         read_result: Backend read result carrying the window metadata.
         threshold: Char budget the assembled result must fit under.
         notices: Bracketed explanations to place above the header.
-        extra_fields: Header fields to carry through from the caller.
 
     Returns:
         The assembled tool result, cut to the budget.
@@ -1017,7 +1015,7 @@ def _midline_truncated_read(
     )
 
     def fields(shown: int) -> list[str]:
-        return [*_window_fields(clipped), "truncated mid-line", f"{shown} of {oversized} chars", *extra_fields]
+        return [*_window_fields(clipped), "truncated mid-line", f"{shown} of {oversized} chars"]
 
     # The count appears in the header it has to fit under, so solve for it:
     # only its digit width feeds back, which settles within a couple of rounds.
@@ -1037,7 +1035,6 @@ def _truncate_paginated_read(
     token_limit: int | None,
     *,
     notices: Sequence[str] = (),
-    extra_fields: Sequence[str] = (),
 ) -> str:
     """Truncate a paginated read without skipping undisplayed source lines.
 
@@ -1057,8 +1054,6 @@ def _truncate_paginated_read(
             falsy, the untruncated result is returned.
         notices: Bracketed explanations to place above the header, such as an
             offset-clamp disclosure that truncation must not drop.
-        extra_fields: Header fields to carry onto every outcome, alongside the
-            window and truncation fields computed here.
 
     Returns:
         The (possibly truncated) result, whose header never overstates which
@@ -1069,7 +1064,7 @@ def _truncate_paginated_read(
         the budget fits only through line 14, the header reports lines 11-14
         and a resume offset of 14 rather than 20.
     """
-    result = _assemble_read(body, [*_window_fields(read_result), *extra_fields], notices)
+    result = _assemble_read(body, _window_fields(read_result), notices)
     if not token_limit or len(result) < NUM_CHARS_PER_TOKEN * token_limit:
         return result
 
@@ -1107,14 +1102,14 @@ def _truncate_paginated_read(
             )
             candidate = _assemble_read(
                 body[:boundary],
-                [*_window_fields(adjusted_result), "truncated due to size", *extra_fields],
+                [*_window_fields(adjusted_result), "truncated due to size"],
                 [*notices, truncation_msg],
             )
             if len(candidate) <= threshold:
                 return candidate
 
     # No complete source line fits, so no offset reaches the remainder.
-    return _midline_truncated_read(body, read_result, threshold, [*notices, truncation_msg], extra_fields)
+    return _midline_truncated_read(body, read_result, threshold, [*notices, truncation_msg])
 
 
 def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
@@ -2080,7 +2075,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     read_result,
                     token_limit,
                     notices=[clamp_notice] if clamp_notice else [],
-                    extra_fields=[f"offset clamped from {offset}"] if clamp_notice else [],
                 ),
                 name="read_file",
                 tool_call_id=tool_call_id,

@@ -681,7 +681,7 @@ class TestFilesystemMiddlewareAsync:
         assert negative_offset.status == "success"
         assert negative_offset.content == (
             "[Requested offset -1 is before the start of the file; read from line 1 instead.]\n"
-            "@@ lines 1-3 of 3 | offset clamped from -1 @@\nLine 1\nLine 2\nLine 3"
+            "@@ lines 1-3 of 3 @@\nLine 1\nLine 2\nLine 3"
         )
 
     async def test_aread_file_with_offset(self):

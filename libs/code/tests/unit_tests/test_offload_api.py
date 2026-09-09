@@ -277,6 +277,41 @@ class TestWorkspaceRoute:
         assert bound_policy["auto_approve"] is True
         runtime.assert_awaited_once_with(binding)
 
+    async def test_validation_does_not_bind_or_update_thread(self, tmp_path) -> None:
+        """A successful hostability check does not change durable thread state."""
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        runtime = AsyncMock()
+        with (
+            patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
+            patch.object(offload_api, "bind_thread_workspace", new=AsyncMock()) as bind,
+            patch.object(offload_api, "get_server_runtime", new=runtime),
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+        ):
+            response = await offload_api.workspace(
+                cast(
+                    "Any",
+                    SimpleNamespace(
+                        path_params={"thread_id": "thread-1"},
+                        json=AsyncMock(
+                            return_value={"cwd": str(tmp_path), "validate_only": True}
+                        ),
+                    ),
+                )
+            )
+
+        assert response.status_code == 200
+        bind.assert_not_awaited()
+        runtime.assert_awaited_once()
+        threads.create.assert_not_awaited()
+        threads.update.assert_not_awaited()
+
     async def test_runtime_conflict_returns_409_before_thread_creation(
         self, tmp_path
     ) -> None:

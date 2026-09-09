@@ -873,6 +873,14 @@ class _ServerRespawnResult:
     """
 
 
+@dataclass(frozen=True)
+class _CwdServerReuseResult:
+    """Server decision for a destination workspace."""
+
+    outcome: Literal["continue", "abort", "restart"]
+    workspace_snapshot: tuple[str | None, dict[str, dict[str, Any]]] | None = None
+
+
 def _format_mcp_server_changes(
     previous: list[MCPServerInfo] | None,
     current: list[MCPServerInfo] | None,
@@ -29107,23 +29115,18 @@ class DeepAgentsApp(App):
 
     async def _reuse_server_after_cwd_switch(
         self, cwd: Path, thread_id: str
-    ) -> Literal["continue", "abort", "restart"]:
+    ) -> _CwdServerReuseResult:
         remote = self._remote_agent()
-        if remote is None or self._sandbox_type is not None:
-            return "restart"
+        if remote is None:
+            return _CwdServerReuseResult("restart")
         from langgraph_sdk.errors import ConflictError
 
-        previous_cwd = Path(self._cwd)
-        previous_server_cwd = (
-            self._server_kwargs.get("cwd") if self._server_kwargs is not None else None
-        )
-        previous_mcp_info = self._mcp_server_info
         workspace_snapshot = remote._snapshot_workspace()
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
-            mcp_info = await remote.aswitch_workspace(config, str(cwd))
+            await remote.aswitch_workspace(config, str(cwd), validate_only=True)
         except ConflictError:
-            return "restart"
+            return _CwdServerReuseResult("restart")
         except Exception as exc:
             logger.exception("Server could not validate the destination workspace")
             self.notify(
@@ -29133,21 +29136,33 @@ class DeepAgentsApp(App):
                 timeout=10,
                 markup=False,
             )
-            return "abort"
+            return _CwdServerReuseResult("abort")
+        return _CwdServerReuseResult(
+            "continue",
+            workspace_snapshot=workspace_snapshot,
+        )
+
+    async def _apply_reused_server_cwd_switch(
+        self, cwd: Path, thread_id: str, reuse: _CwdServerReuseResult
+    ) -> None:
+        remote = self._remote_agent()
+        if remote is None or reuse.workspace_snapshot is None:
+            msg = "A validated workspace switch has no remote workspace snapshot."
+            raise RuntimeError(msg)
+        previous_cwd = Path(self._cwd)
+        previous_server_cwd = (
+            self._server_kwargs.get("cwd") if self._server_kwargs is not None else None
+        )
+        previous_mcp_info = self._mcp_server_info
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
             if self._server_kwargs is not None:
                 self._server_kwargs["cwd"] = self._cwd
-            self._mcp_server_info = mcp_info
-            self._mcp_optimistic_original_server_info.clear()
-            self._pending_mcp_login_reconnect = False
-            self._pending_mcp_disable_reconnect_servers.clear()
-            self._mcp_viewer_disable_toggled = False
-            self._sync_pending_mcp_reconnect()
-            self._refresh_mcp_client_state()
+            mcp_server_info = await remote.aswitch_workspace(config, str(cwd))
         except BaseException:
-            remote._restore_workspace(workspace_snapshot)
+            remote._restore_workspace(reuse.workspace_snapshot)
             self._mcp_server_info = previous_mcp_info
             if self._server_kwargs is not None:
                 self._server_kwargs["cwd"] = previous_server_cwd
@@ -29157,8 +29172,16 @@ class DeepAgentsApp(App):
                 await self._switch_process_cwd(previous_cwd)
             self._refresh_mcp_client_state()
             raise
-        else:
-            return "continue"
+        self._mcp_server_info = mcp_server_info
+        self._mcp_optimistic_original_server_info.clear()
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._mcp_viewer_disable_toggled = False
+        self._sync_pending_mcp_reconnect()
+        try:
+            self._refresh_mcp_client_state()
+        except Exception:
+            logger.exception("Failed to refresh MCP state after cwd switch")
 
     @staticmethod
     async def _preview_project_settings_change(cwd: Path) -> bool:
@@ -29343,6 +29366,9 @@ class DeepAgentsApp(App):
                 failed (the caller should stop the resume). The user-declined
                 abort fires only when `abort` is set, and the switch-failed
                 abort only when `restart_server` is True.
+
+        Raises:
+            RuntimeError: If an in-session switch has no server decision.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -29350,8 +29376,21 @@ class DeepAgentsApp(App):
 
         from deepagents_code.tui.widgets.cwd_switch import CwdSwitchPromptScreen
 
-        project_settings_change_detected = await self._preview_project_settings_change(
-            target
+        reuse = (
+            await self._reuse_server_after_cwd_switch(target, thread_id)
+            if restart_server
+            else None
+        )
+        if reuse is not None and reuse.outcome == "abort":
+            return "abort"
+        owns_server = self._server_kwargs is not None and self._server_proc is not None
+        server_refusal: Literal["restart", "unavailable"] | None = None
+        if reuse is not None and reuse.outcome == "restart":
+            server_refusal = "restart" if owns_server else "unavailable"
+        project_settings_change_detected = (
+            await self._preview_project_settings_change(target)
+            if server_refusal is None
+            else False
         )
         choice = await self._push_screen_wait(
             CwdSwitchPromptScreen(
@@ -29359,27 +29398,30 @@ class DeepAgentsApp(App):
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
                 abort=abort,
+                server_refusal=server_refusal,
             )
         )
+        if server_refusal == "unavailable":
+            return "abort"
+        if server_refusal == "restart" and choice != "switch":
+            return "abort"
         if choice == "abort":
+            if reuse is not None and reuse.workspace_snapshot is not None:
+                remote = self._remote_agent()
+                if remote is not None:
+                    remote._restore_workspace(reuse.workspace_snapshot)
             return "abort"
         if choice == "switch":
             if restart_server:
-                reuse_outcome = await self._reuse_server_after_cwd_switch(
-                    target, thread_id
-                )
-                outcome = (
-                    await self._replace_server_after_cwd_switch(target)
-                    if reuse_outcome == "restart"
-                    else reuse_outcome
-                )
+                if reuse is None:
+                    msg = "An in-session cwd switch has no server decision."
+                    raise RuntimeError(msg)
+                outcome = reuse.outcome
+                if outcome == "restart":
+                    outcome = await self._replace_server_after_cwd_switch(target)
+                elif outcome == "continue":
+                    await self._apply_reused_server_cwd_switch(target, thread_id, reuse)
                 if outcome == "abort":
-                    # A failed restart returns "abort" just like a user-declined
-                    # abort, so the caller cannot tell them apart.
-                    # `_replace_server_after_cwd_switch` already rolled back and
-                    # notified, but that toast is transient -- leave a persistent
-                    # in-chat record so a failed switch is not mistaken for a
-                    # deliberate cancel.
                     await self._mount_message(
                         AppMessage(
                             "Could not switch to the thread's directory; staying "
@@ -29397,6 +29439,10 @@ class DeepAgentsApp(App):
             )
             return "continue"
 
+        if reuse is not None and reuse.workspace_snapshot is not None:
+            remote = self._remote_agent()
+            if remote is not None:
+                remote._restore_workspace(reuse.workspace_snapshot)
         self.notify(
             "Continuing in the current directory. Cached local context may be "
             "stale and tools may operate in the wrong project.",

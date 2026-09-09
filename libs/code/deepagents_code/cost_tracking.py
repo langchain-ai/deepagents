@@ -56,13 +56,14 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
     OmitFromInput,
     PrivateStateAttr,
+    hook_config,
 )
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
@@ -2077,26 +2078,106 @@ def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:
     return None
 
 
+def _build_cost_limit_message(total_usd: float, limit_usd: float) -> str:
+    """Build a message indicating the hard cost limit was reached.
+
+    Args:
+        total_usd: Cumulative thread cost that crossed the limit.
+        limit_usd: Configured hard limit that was reached.
+
+    Returns:
+        A formatted message describing the halt, using the same currency
+        formatting as the TUI's cost displays.
+    """
+    from deepagents_code._session_stats import format_cost
+
+    return (
+        f"Session halted: estimated cost {format_cost(total_usd)} has reached "
+        f"the configured limit of {format_cost(limit_usd)}. Raise the limit "
+        "(e.g. `--max-cost`) or start a new session to continue."
+    )
+
+
+class CostLimitExceededError(Exception):
+    """Raised when the hard cost limit is exceeded and `exit_behavior='error'`.
+
+    Mirrors `ModelCallLimitExceededError`
+    (`langchain.agents.middleware.model_call_limit`) -- same shape, cost
+    instead of call count.
+    """
+
+    def __init__(self, total_usd: float, limit_usd: float) -> None:
+        """Initialize the exception with the cost that triggered it.
+
+        Args:
+            total_usd: Cumulative thread cost that crossed the limit.
+            limit_usd: Configured hard limit that was reached.
+        """
+        self.total_usd = total_usd
+        self.limit_usd = limit_usd
+        super().__init__(_build_cost_limit_message(total_usd, limit_usd))
+
+
 class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     """Own the thread's cumulative `_session_cost_usd` checkpoint value.
 
     The main agent owns the thread total. Nested instances checkpoint local
     deltas before an interrupt can pause their graph, then transfer the completed
     subagent total through state for its owning parent graph to checkpoint.
+
+    Optionally enforces a hard `hard_limit_usd` spend cap: unlike the TUI's soft
+    cost-threshold toast (`app.py`, `[warnings].session_cost_threshold_usd`),
+    which only notifies, a hard limit here actually halts the agent loop before
+    the next model call runs -- checked only on the main (non-nested) instance,
+    since a nested instance's `_session_cost_usd` channel tracks local subagent
+    spend, not the cumulative session total the limit is meant to bound.
     """
 
     state_schema = CostState
 
-    def __init__(self, *, nested: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        nested: bool = False,
+        hard_limit_usd: float | None = None,
+        exit_behavior: Literal["end", "error"] = "end",
+    ) -> None:
         """Initialize cost tracking.
 
         Args:
             nested: When `True`, this instance belongs to a subagent. It
                 checkpoints local spend and transfers the completed delta to the
                 owning parent graph through state.
+            hard_limit_usd: Optional hard cap on the thread's cumulative
+                estimated cost. `None` (the default) disables enforcement --
+                the middleware still tracks and checkpoints cost either way.
+                Only enforced on a non-nested instance; a nested instance
+                accepts the argument for constructor symmetry but ignores it.
+            exit_behavior: What to do when `hard_limit_usd` is reached.
+
+                - `'end'`: Jump to the end of the agent execution and inject
+                    an artificial AI message stating the limit was reached.
+                - `'error'`: Raise `CostLimitExceededError`.
+
+        Raises:
+            ValueError: If `hard_limit_usd` is not `None` and not positive, or
+                `exit_behavior` is invalid.
         """
         super().__init__()
+        if hard_limit_usd is not None and (
+            not math.isfinite(hard_limit_usd) or hard_limit_usd <= 0
+        ):
+            msg = (
+                "hard_limit_usd must be a positive, finite number, "
+                f"got {hard_limit_usd!r}"
+            )
+            raise ValueError(msg)
+        if exit_behavior not in {"end", "error"}:
+            msg = f"Invalid exit_behavior: {exit_behavior!r}. Must be 'end' or 'error'"
+            raise ValueError(msg)
         self._nested = nested
+        self._hard_limit_usd = hard_limit_usd
+        self._exit_behavior = exit_behavior
 
     def before_agent(  # ty: ignore[invalid-method-override]
         self,
@@ -2124,6 +2205,62 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             The same state update as `before_agent`.
         """
         return self.before_agent(state, runtime)
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(  # ty: ignore[invalid-method-override]
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],  # noqa: ARG002
+    ) -> dict[str, Any] | None:
+        """Halt the run before the next model call if the hard cost cap is met.
+
+        Checked against the checkpointed cumulative total from the *previous*
+        step -- the same figure the TUI's soft warning reads via
+        `_set_session_cost` -- so this fires at the same point in the loop a
+        user would already have seen the warning toast, just before the next
+        request that would push spend further over the configured cap.
+
+        Args:
+            state: Current agent state containing the checkpointed cost total.
+            runtime: LangGraph runtime (unused; kept for the hook signature).
+
+        Returns:
+            If the hard limit is set and reached and `exit_behavior` is
+                `'end'`, a `jump_to: "end"` update with an explanatory AI
+                message. Otherwise `None`.
+
+        Raises:
+            CostLimitExceededError: If the limit is reached and
+                `exit_behavior` is `'error'`.
+        """
+        if self._nested or self._hard_limit_usd is None:
+            return None
+        total_usd = state.get("_session_cost_usd")
+        if (
+            isinstance(total_usd, bool)
+            or not isinstance(total_usd, int | float)
+            or not math.isfinite(total_usd)
+        ):
+            return None
+        if total_usd < self._hard_limit_usd:
+            return None
+        if self._exit_behavior == "error":
+            raise CostLimitExceededError(total_usd, self._hard_limit_usd)
+        limit_message = _build_cost_limit_message(total_usd, self._hard_limit_usd)
+        return {"jump_to": "end", "messages": [AIMessage(content=limit_message)]}
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(  # ty: ignore[invalid-method-override]
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Async variant of `before_model`.
+
+        Returns:
+            The same state update (or raises the same error) as `before_model`.
+        """
+        return self.before_model(state, runtime)
 
     def after_model(  # ty: ignore[invalid-method-override]
         self,

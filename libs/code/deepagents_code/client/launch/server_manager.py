@@ -315,6 +315,7 @@ async def start_server_and_get_agent(
     rubric_max_iterations: int | None = None,
     auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
+    max_cost_usd: float | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -353,6 +354,9 @@ async def start_server_and_get_agent(
             env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
+        max_cost_usd: Explicit hard cost cap in USD; `None` resolves from
+            `--max-cost` / `[limits].max_cost_usd` / disabled at
+            agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -405,6 +409,7 @@ async def start_server_and_get_agent(
         rubric_max_iterations=rubric_max_iterations,
         auto_classifier_model=auto_classifier_model,
         recursion_limit=recursion_limit,
+        max_cost_usd=max_cost_usd,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
@@ -489,6 +494,7 @@ async def server_session(
     rubric_max_iterations: int | None = None,
     auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
+    max_cost_usd: float | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -530,6 +536,9 @@ async def server_session(
             env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
+        max_cost_usd: Explicit hard cost cap in USD; `None` resolves from
+            `--max-cost` / `[limits].max_cost_usd` / disabled at
+            agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -567,6 +576,7 @@ async def server_session(
             rubric_max_iterations=rubric_max_iterations,
             auto_classifier_model=auto_classifier_model,
             recursion_limit=recursion_limit,
+            max_cost_usd=max_cost_usd,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

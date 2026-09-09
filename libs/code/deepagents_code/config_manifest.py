@@ -120,6 +120,14 @@ Zero or negative disables the suggestion.
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
+MAX_COST_USD_DEFAULT = 0.0
+"""Default hard cost cap: 0 (disabled), same "0 disables" convention as the
+soft warning threshold above. `resolve_max_cost_usd` translates 0-or-negative
+to `None` for `CostTrackingMiddleware(hard_limit_usd=...)`, which still tracks
+and checkpoints cost either way -- it just never halts the run when unset.
+Set via `--max-cost` (per invocation) or `[limits].max_cost_usd` (persistent).
+"""
+
 COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.50
 """Default incremental re-warm cost that triggers a cold-cache warning."""
 
@@ -1442,6 +1450,46 @@ whose two names diverge would render a link to a nonexistent project.
 """
 
 
+def resolve_max_cost_usd(
+    cli_value: float | None = None,
+    *,
+    toml_data: Mapping[str, Any] | None = None,
+) -> float | None:
+    """Resolve the effective hard cost cap for `CostTrackingMiddleware`.
+
+    Resolution order: `cli_value` (the `--max-cost` flag, when given) beats
+    `[limits].max_cost_usd` in `config.toml`, which beats the disabled
+    default. Follows the same "0 disables" convention as
+    `warnings.session_cost_threshold_usd` -- deliberately simpler than
+    `resolve_recursion_limit`: no managed-policy layer and no range
+    floor/ceiling, since this option has no meaningful upper bound and no
+    managed-config story yet.
+
+    Args:
+        cli_value: The `--max-cost` CLI flag's parsed value, or `None` when
+            the flag was not given. `positive_float` already rejects
+            non-positive input at the argparse layer, so any value reaching
+            here is trusted as-is and returned unchanged.
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved hard cap in USD, or `None` when disabled (no CLI value,
+            and the configured/default value is 0 or negative).
+    """
+    if cli_value is not None:
+        return cli_value
+
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("limits.max_cost_usd")
+    if option is None:
+        return None
+
+    value, _source = resolve_scalar(option, toml_data=data)
+    if not isinstance(value, float) or not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
 def provider_install_extra(provider: str) -> str | None:
     """Return the `deepagents-code` extra that installs `provider`, if known.
 
@@ -2208,6 +2256,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.FLOAT,
         default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
         toml_keys=("warnings", "session_cost_threshold_usd"),
+    ),
+    # --- Limits --------------------------------------------------------
+    ConfigOption(
+        key="limits.max_cost_usd",
+        group="Limits",
+        summary=(
+            "Hard cap on the main thread's estimated cost in USD (0 disables). "
+            "Unlike warnings.session_cost_threshold_usd, the agent halts before "
+            "the next model call instead of only warning."
+        ),
+        kind=OptionKind.FLOAT,
+        default=MAX_COST_USD_DEFAULT,
+        toml_keys=("limits", "max_cost_usd"),
+        cli_flag="--max-cost",
     ),
     ConfigOption(
         key="warnings.suppress",

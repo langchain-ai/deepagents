@@ -1877,6 +1877,7 @@ async def run_non_interactive(
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
+    max_cost_usd: float | None = None,
     trust_project_hooks: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
@@ -1954,6 +1955,10 @@ async def run_non_interactive(
             uses the middleware default.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
+        max_cost_usd: Hard cap, in USD, on the main thread's cumulative
+            estimated cost; `None` disables the cap. Already resolved by the
+            caller via `config_manifest.resolve_max_cost_usd` -- passed
+            straight through to `create_cli_agent`.
         trust_project_hooks: When `True`, load project-scoped
             `.deepagents/hooks.json` handlers.
 
@@ -2203,6 +2208,7 @@ async def run_non_interactive(
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             recursion_limit=recursion_limit,
+            max_cost_usd=max_cost_usd,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

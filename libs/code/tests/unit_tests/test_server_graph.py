@@ -321,6 +321,7 @@ class TestServerGraph:
             rubric_max_iterations=None,
             auto_classifier_model=None,
             recursion_limit=None,
+            max_cost_usd=None,
             mcp_server_info=mcp_server_info,
             cwd=user_cwd,
             project_context=project_context,

@@ -12,6 +12,7 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,6 +157,28 @@ def _read_env_int(suffix: str, *, default: int | None) -> int | None:
         return int(raw)
     except ValueError:
         return default
+
+
+def _read_env_float(suffix: str, *, default: float | None) -> float | None:
+    """Read a `DEEPAGENTS_CODE_SERVER_*` float from the environment.
+
+    Args:
+        suffix: Variable name suffix after the `DEEPAGENTS_CODE_SERVER_` prefix.
+        default: Value when the variable is absent or malformed.
+
+    Returns:
+        Parsed float, or the default when absent, non-finite, or parsing fails.
+    """
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
+    if raw is None:
+        return default
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed
 
 
 def _read_env_optional_bool(suffix: str) -> bool | None:
@@ -357,6 +380,18 @@ class ServerConfig:
     over those layers. Must be a positive integer when set.
     """
 
+    max_cost_usd: float | None = None
+    """Explicit hard cap, in USD, on the main thread's cumulative estimated cost.
+
+    `None` means "resolve from `--max-cost` / `[limits].max_cost_usd` / disabled
+    at agent-build time" (`resolve_max_cost_usd`) -- already resolved by the CLI
+    layer before this field is set, so by the time it reaches `ServerConfig` it
+    is either the final effective value or `None` (no cap). Must be a positive,
+    finite number when set. Unlike `recursion_limit`, which only bounds graph
+    steps, this actually halts the agent loop
+    (`CostTrackingMiddleware.before_model`) once checkpointed spend reaches it.
+    """
+
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
     host. `'none'` is normalized to `None` in `__post_init__`."""
@@ -393,11 +428,12 @@ class ServerConfig:
         """Normalize fields and validate invariants.
 
         Raises:
-            TypeError: If `rubric_max_iterations` or `recursion_limit` is a
-                boolean.
+            TypeError: If `rubric_max_iterations`, `recursion_limit`, or
+                `max_cost_usd` is a boolean.
             ValueError: If `shell_allow_list` is an empty list,
                 `allow_fs_tools` is an empty list or omits `"read_file"`, or
-                `rubric_max_iterations` / `recursion_limit` is non-positive.
+                `rubric_max_iterations` / `recursion_limit` / `max_cost_usd`
+                is non-positive (or non-finite, for `max_cost_usd`).
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
@@ -429,6 +465,14 @@ class ServerConfig:
             raise TypeError(msg)
         if self.recursion_limit is not None and self.recursion_limit <= 0:
             msg = "recursion_limit must be None or a positive integer"
+            raise ValueError(msg)
+        if isinstance(self.max_cost_usd, bool):
+            msg = "max_cost_usd must be None or a positive, finite number"
+            raise TypeError(msg)
+        if self.max_cost_usd is not None and (
+            not math.isfinite(self.max_cost_usd) or self.max_cost_usd <= 0
+        ):
+            msg = "max_cost_usd must be None or a positive, finite number"
             raise ValueError(msg)
 
     # ------------------------------------------------------------------
@@ -494,6 +538,9 @@ class ServerConfig:
             "RECURSION_LIMIT": (
                 str(self.recursion_limit) if self.recursion_limit is not None else None
             ),
+            "MAX_COST_USD": (
+                str(self.max_cost_usd) if self.max_cost_usd is not None else None
+            ),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
@@ -548,6 +595,7 @@ class ServerConfig:
             auto_classifier_model=_read_env_str("AUTO_CLASSIFIER_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             recursion_limit=_read_env_int("RECURSION_LIMIT", default=None),
+            max_cost_usd=_read_env_float("MAX_COST_USD", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
@@ -589,6 +637,7 @@ class ServerConfig:
         rubric_max_iterations: int | None = None,
         auto_classifier_model: str | None = None,
         recursion_limit: int | None = None,
+        max_cost_usd: float | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -633,6 +682,9 @@ class ServerConfig:
                 env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
                 from env / `config.toml` / default at agent-build time.
+            max_cost_usd: Explicit hard cost cap in USD; `None` resolves from
+                `--max-cost` / `[limits].max_cost_usd` / disabled at
+                agent-build time (`resolve_max_cost_usd`).
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -666,6 +718,7 @@ class ServerConfig:
             rubric_max_iterations=rubric_max_iterations,
             auto_classifier_model=auto_classifier_model,
             recursion_limit=recursion_limit,
+            max_cost_usd=max_cost_usd,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_snapshot_name=sandbox_snapshot_name,

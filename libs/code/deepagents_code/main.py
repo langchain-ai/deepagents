@@ -2129,7 +2129,7 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
-    from deepagents_code.ui import non_negative_int, positive_int
+    from deepagents_code.ui import non_negative_int, positive_float, positive_int
 
     parser.add_argument(
         "--max-retries",
@@ -2286,6 +2286,19 @@ def parse_args() -> argparse.Namespace:
         help="Override the main agent's LangGraph recursion_limit (graph step "
         "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
         "[runtime].recursion_limit; defaults to 2000.",
+    )
+
+    parser.add_argument(
+        "--max-cost",
+        dest="max_cost",
+        type=positive_float,
+        metavar="USD",
+        help="Hard cap on the main thread's estimated cost in USD (must be "
+        "> 0). Unlike the soft cost-threshold warning "
+        "([warnings].session_cost_threshold_usd), the agent actually halts "
+        "before the next model call once the checkpointed total reaches "
+        "this amount, instead of only notifying. Overrides "
+        "[limits].max_cost_usd; unset by default (no hard cap).",
     )
 
     parser.add_argument(
@@ -2643,6 +2656,7 @@ async def run_textual_cli_async(
     allow_fs_tools: "list[FsToolName] | None" = None,
     auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
+    max_cost_usd: float | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2720,6 +2734,9 @@ async def run_textual_cli_async(
             reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
+        max_cost_usd: Explicit hard cost cap in USD; `None` resolves from
+            `--max-cost` / `[limits].max_cost_usd` / disabled at
+            agent-build time.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2844,6 +2861,7 @@ async def run_textual_cli_async(
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
         "recursion_limit": recursion_limit,
+        "max_cost_usd": max_cost_usd,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -5420,6 +5438,8 @@ def cli_main() -> None:
                 _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
                 sys.exit(2)
 
+            from deepagents_code.config_manifest import resolve_max_cost_usd
+
             timeout = getattr(args, "timeout", None)
             try:
                 exit_code = asyncio.run(
@@ -5454,6 +5474,9 @@ def cli_main() -> None:
                                 args, "rubric_max_iterations", None
                             ),
                             recursion_limit=getattr(args, "recursion_limit", None),
+                            max_cost_usd=resolve_max_cost_usd(
+                                getattr(args, "max_cost", None)
+                            ),
                         ),
                         timeout=timeout,
                     )
@@ -5571,6 +5594,7 @@ def cli_main() -> None:
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
                 from deepagents_code.approval_mode import ApprovalMode
+                from deepagents_code.config_manifest import resolve_max_cost_usd
 
                 approval_mode = _resolve_approval_mode(args)
                 if (
@@ -5620,6 +5644,9 @@ def cli_main() -> None:
                             args, "auto_classifier_model", None
                         ),
                         recursion_limit=getattr(args, "recursion_limit", None),
+                        max_cost_usd=resolve_max_cost_usd(
+                            getattr(args, "max_cost", None)
+                        ),
                     )
                 )
                 return_code = result.return_code

@@ -2234,6 +2234,7 @@ def create_cli_agent(
     rubric_max_iterations: int | None = None,
     auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
+    max_cost_usd: float | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     store: BaseStore | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
@@ -2373,6 +2374,15 @@ def create_cli_agent(
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
             in `config.toml`, then the default via `resolve_recursion_limit`.
+        max_cost_usd: Optional hard cap, in USD, on the main thread's
+            cumulative estimated cost. `None` (the default) disables
+            enforcement -- cost is still tracked and checkpointed either way,
+            it just never halts the run. When set, `CostTrackingMiddleware`
+            jumps the graph to `end` (with an explanatory message) the first
+            time a `before_model` check finds the checkpointed total at or
+            above this limit, before the next model call runs. This is a
+            hard stop, unlike the TUI's `[warnings].session_cost_threshold_usd`
+            soft warning, which only shows a toast.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.
@@ -2616,7 +2626,11 @@ def create_cli_agent(
     from deepagents_code.resume_state import ResumeStateMiddleware
 
     agent_middleware.extend(
-        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
+        [
+            ResumeStateMiddleware(),
+            CostTrackingMiddleware(hard_limit_usd=max_cost_usd),
+            GoalToolsMiddleware(),
+        ]
     )
 
     # Add ask_user middleware (must be early so its tool is available)

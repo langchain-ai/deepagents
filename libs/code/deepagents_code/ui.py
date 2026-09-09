@@ -5,6 +5,7 @@ argparse tree.  It must stay lightweight — no SDK or langchain imports.
 """
 
 import argparse
+import math
 
 from rich.markup import escape
 
@@ -39,6 +40,29 @@ def positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(msg) from exc
     if parsed < 1:
         msg = f"must be a positive integer (>= 1), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    """Argparse type for float arguments that must be > 0.
+
+    Args:
+        value: Raw argument string to parse.
+
+    Returns:
+        Parsed positive float.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not a finite float or is <= 0.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        msg = f"invalid float value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        msg = f"must be a positive, finite number (> 0), got {parsed}"
         raise argparse.ArgumentTypeError(msg)
     return parsed
 

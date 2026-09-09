@@ -66,8 +66,11 @@ Tables live in `_virtual_tables`, a `PrivateStateAttr`, while document blobs sta
 in the configured filesystem backend. Enrichment dereferences only selected files
 and adds their UTF-8 content to the row worker input as `file_content`. With a
 checkpointer, both virtual files and table pointers persist across turns without
-copying large blobs into every table row. The included script uses one
-`StateBackend` for both `create_deep_agent` and `VirtualTableMiddleware`.
+copying large blobs into every table row. Because `_virtual_tables` is private,
+LangGraph intentionally omits it from `agent.ainvoke()` output; inspect materialized
+rows through `virtual_table_query` instead. The included script asks the agent to
+include a bounded SQL sample in its final answer and uses one `StateBackend` for
+both `create_deep_agent` and `VirtualTableMiddleware`.
 
 ## Current prototype limits
 

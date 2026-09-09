@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import uuid
 from typing import TYPE_CHECKING
 
@@ -310,6 +311,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
+                start_new_session=(sys.platform != "win32"),
             )
 
             # Combine stdout and stderr

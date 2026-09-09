@@ -576,7 +576,8 @@ def _load_user_themes(
             logger.debug("Cannot determine home directory; skipping user theme loading")
             return
 
-    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
     from deepagents_code.configuration.service import get_config_sources
 
     # `None` on the default path: that is what includes managed policy.
@@ -601,14 +602,21 @@ def _load_user_themes(
     if option is None:
         logger.error("Theme option is missing from the config manifest")
         return
-    themes_section: Any = resolve_ranked_scalar(
-        option,
-        toml_data=sources.user.data,
-        managed_toml_data=sources.managed.data,
-        managed_status=sources.managed.status,
-        user_status=sources.user.status,
-    ).value
-    if not isinstance(themes_section, dict) or not themes_section:
+    # Resolve against the supplied snapshots: a non-default `config_path`
+    # deliberately excludes managed policy, and the shared process cache
+    # always reads the default path.
+    themes_section: Any = (
+        resolver_from_snapshots(managed=sources.managed, user=sources.user)
+        .get(option)
+        .value
+    )
+    if not isinstance(themes_section, dict):
+        # Not merely absent: the table resolved to something that is not a
+        # table, which means every user theme is inert. This reader emits no
+        # ranked diagnostics, so nothing else reports it.
+        logger.warning("Ignoring [themes]: expected a table, got %r", themes_section)
+        return
+    if not themes_section:
         return
 
     valid_color_names = {f.name for f in fields(ThemeColors)}

@@ -17,6 +17,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
     ToolCallRequest,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -340,6 +342,9 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     (pick exactly one), or multi-select (pick one or more).
     The tool uses LangGraph interrupts to pause execution and wait for user input.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(
         self,

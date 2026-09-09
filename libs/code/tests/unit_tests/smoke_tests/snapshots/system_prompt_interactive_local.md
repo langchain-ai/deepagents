@@ -189,9 +189,9 @@ The filesystem backend is currently operating in: `/home/user/project`
 
 ### Skills Directory
 
-Your skills are stored at: `~/.deepagents/agent/skills`
+Your skills are stored at: `<deepagents_home>/agent/skills`
 Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
-Example: `bash python ~/.deepagents/agent/skills/web-research/script.py`
+Example: `bash python <deepagents_home>/agent/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
@@ -318,7 +318,7 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
 
 **Available Skills:**
 
-- **deepagents-thread-inspector**: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse ~/.deepagents/.state/sessions.db and a thread UUID or prefix. (License: MIT, Compatibility: designed for deepagents-code)
+- **deepagents-thread-inspector**: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix. (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/deepagents-thread-inspector/SKILL.md` for full instructions
 - **remember**: Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings. (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/remember/SKILL.md` for full instructions

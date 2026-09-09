@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import logging
 import os
 import sys
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
+from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -26,21 +26,30 @@ from deepagents_talon.fleet_import import (
     import_fleet_zip,
 )
 from deepagents_talon.host import TalonHost
-from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
-from deepagents_talon.runtime import (
-    DeepAgentRuntime,
-    EchoAgentRuntime,
-    interrupt_on_with_env_overlay,
-)
+from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from langgraph.types import Checkpointer
+
     from deepagents_talon.cron import CronJob
-    from deepagents_talon.interfaces import ChannelAdapter
+    from deepagents_talon.interfaces import AgentRuntime, ChannelAdapter
 
 logger = logging.getLogger(__name__)
+
+_DCODE_DEBUG_ENV = "DEEPAGENTS_CODE_DEBUG"
+_DCODE_LOG_LEVEL_ENV = "DEEPAGENTS_CODE_LOG_LEVEL"
+_DCODE_DEBUG_VALUES = frozenset({"1", "true", "yes", "on"})
+_DCODE_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+_CHANNEL_LOGGER_NAME = "deepagents_talon.channels"
 
 
 def main() -> None:
@@ -61,12 +70,17 @@ def main() -> None:
         action="store_true",
         help="Attach the Telegram channel adapter.",
     )
+    parser.add_argument(
+        "--discord",
+        action="store_true",
+        help="Attach the Discord channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    _configure_logging(os.environ)
 
     config = TalonConfig.from_env()
     if args.command == "import-fleet":
@@ -79,25 +93,13 @@ def main() -> None:
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channels = _channels(config, whatsapp=args.whatsapp, telegram=args.telegram)
-    host = TalonHost(
-        config=config,
-        agent=asyncio.run(_agent_runtime(config, cron_store)),
-        channels=channels,
-        voice_transcriber=build_voice_transcriber(config),
+    channels = _channels(
+        config,
+        whatsapp=args.whatsapp,
+        telegram=args.telegram,
+        discord=args.discord,
     )
-    if channels:
-        host.scheduler = PersistentCronScheduler(
-            store=cron_store,
-            run_job=host.run_scheduled_job,
-            deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
-        )
-
-    if args.once:
-        asyncio.run(_run_once(host))
-        return
-
-    asyncio.run(host.run_until_stopped())
+    asyncio.run(_run_host(args, config, cron_store, channels))
 
 
 def _add_import_fleet_parser(
@@ -113,10 +115,7 @@ def _add_import_fleet_parser(
         epilog=(
             "Usage: deepagents-talon import-fleet <fleet-export.zip> "
             "[--assistant-id <id>] [--target-dir <dir>]\n\n"
-            ".mcp.json is generated as the runtime MCP config file; "
-            ".mcp.json.setup is a human-readable setup handoff for operators. "
-            "Fleet config.json is "
-            "ignored, Fleet tools.json is import input only, and old Fleet direct-run "
+            "Fleet config.json and tools.json are ignored, and old Fleet direct-run "
             "environment variables are unsupported. Use import-fleet before running "
             "the Talon host."
         ),
@@ -188,16 +187,82 @@ def _has_configured_assistant_id(env: Mapping[str, str]) -> bool:
     return "DEEPAGENTS_TALON_ASSISTANT_ID" in env or "AGENT_ASSISTANT_ID" in env
 
 
-async def _agent_runtime(
+async def _run_host(
+    args: argparse.Namespace,
     config: TalonConfig,
     cron_store: CronJobStore,
-) -> EchoAgentRuntime | DeepAgentRuntime:
+    channels: Sequence[ChannelAdapter],
+    *,
+    checkpointer: Checkpointer | None = None,
+) -> None:
+    if config.model is None:
+        await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
+        return
+    if checkpointer is not None:
+        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
+        await _run_host_with_agent(args, config, cron_store, channels, agent)
+        return
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
+
+    from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
+    from deepagents_talon.history_backends import open_history  # noqa: PLC0415
+
+    async with (
+        AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as sqlite_checkpointer,
+        open_history(config) as archive,
+    ):
+        await sqlite_checkpointer.setup()
+        agent = await _agent_runtime(
+            config,
+            cron_store=cron_store,
+            checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
+        )
+        await _run_host_with_agent(args, config, cron_store, channels, agent)
+
+
+async def _run_host_with_agent(
+    args: argparse.Namespace,
+    config: TalonConfig,
+    cron_store: CronJobStore,
+    channels: Sequence[ChannelAdapter],
+    agent: AgentRuntime,
+) -> None:
+    host = TalonHost(
+        config=config,
+        agent=agent,
+        channels=channels,
+        voice_transcriber=build_voice_transcriber(config),
+    )
+    if channels:
+        host.scheduler = PersistentCronScheduler(
+            store=cron_store,
+            run_job=host.run_scheduled_job,
+            deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
+        )
+    if args.once:
+        await _run_once(host)
+    else:
+        await host.run_until_stopped()
+
+
+async def _agent_runtime(
+    config: TalonConfig,
+    cron_store: CronJobStore | None = None,
+    checkpointer: Checkpointer | None = None,
+) -> AgentRuntime:
+    from deepagents_talon.runtime import (  # noqa: PLC0415
+        DeepAgentRuntime,
+        EchoAgentRuntime,
+        interrupt_on_with_env_overlay,
+    )
+
     env = _runtime_env(config)
     if config.model is None:
         return EchoAgentRuntime()
 
-    async_subagents = tuple(load_async_subagents())
-    mcp = await load_mcp_tools(config)
+    mcp_provider = MCPToolProvider(config)
+    mcp = await mcp_provider.load()
     for server in mcp.servers:
         if server.error is not None:
             logger.warning("MCP server %s failed: %s", server.name, server.error)
@@ -206,10 +271,13 @@ async def _agent_runtime(
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,
+        refresh_tools=mcp_provider.refresh_if_needed,
+        reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,
-        subagents=async_subagents or None,
+        load_subagents=lambda: load_async_subagents(strict=True),
         cron_store=cron_store,
         interrupt_on=interrupt_on_with_env_overlay(None, env),
+        checkpointer=checkpointer,
         env=env,
     )
 
@@ -219,22 +287,9 @@ async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int
         print_mcp_config_paths(config)
         return 0
     if args.mcp_command == "login":
-        return await _run_mcp_login(args)
+        return await login_mcp_server(config, args.server, args.config_path)
     print("Specify an MCP command: config or login", file=sys.stderr)  # noqa: T201
     return 2
-
-
-async def _run_mcp_login(args: argparse.Namespace) -> int:
-    try:
-        module = importlib.import_module("deepagents_code.client.commands.mcp")
-    except ImportError:
-        print(  # noqa: T201
-            "MCP login requires deepagents-code to be installed in this environment.",
-            file=sys.stderr,
-        )
-        return 1
-    run_mcp_login = module.run_mcp_login
-    return await run_mcp_login(server=args.server, config_path=args.config_path)
 
 
 async def _run_once(host: TalonHost) -> None:
@@ -247,13 +302,36 @@ def _channels(
     *,
     whatsapp: bool = False,
     telegram: bool = False,
+    discord: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
     if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
+    if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
+        channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
     return tuple(channels)
+
+
+def _configure_logging(env: Mapping[str, str]) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logging.getLogger(_CHANNEL_LOGGER_NAME).setLevel(_channel_log_level(env))
+
+
+def _channel_log_level(env: Mapping[str, str]) -> int:
+    debug_enabled = env.get(_DCODE_DEBUG_ENV, "").strip().lower() in _DCODE_DEBUG_VALUES
+    fallback = logging.DEBUG if debug_enabled else logging.INFO
+    raw_level = env.get(_DCODE_LOG_LEVEL_ENV, "").strip().upper()
+    if not raw_level:
+        return fallback
+    if level := _DCODE_LOG_LEVELS.get(raw_level):
+        return level
+    logger.warning(
+        "Ignoring invalid %s; expected DEBUG, INFO, WARNING, ERROR, or CRITICAL",
+        _DCODE_LOG_LEVEL_ENV,
+    )
+    return fallback
 
 
 def _env_enabled(env: Mapping[str, str], key: str) -> bool:

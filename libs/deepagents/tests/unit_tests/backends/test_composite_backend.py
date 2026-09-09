@@ -683,24 +683,6 @@ def test_composite_backend_execute_without_sandbox_default():
         comp.execute("ls -la")
 
 
-def test_composite_backend_supports_execution_check():
-    """Test the isinstance check works correctly for CompositeBackend."""
-    mem_store = InMemoryStore()
-
-    # CompositeBackend with sandbox default should pass isinstance check
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
-    comp_with_sandbox = CompositeBackend(default=sandbox, routes={})
-    # Note: CompositeBackend itself has execute() method, so isinstance will pass
-    # but the actual support depends on the default backend
-    assert hasattr(comp_with_sandbox, "execute")
-
-    # CompositeBackend with non-sandbox default should still have execute() method
-    # but will raise NotImplementedError when called
-    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
-    comp_without_sandbox = CompositeBackend(default=state, routes={})
-    assert hasattr(comp_without_sandbox, "execute")
-
-
 def test_composite_backend_execute_with_routed_backends():
     """Test that execution doesn't interfere with file routing."""
     mem_store = InMemoryStore()
@@ -1348,6 +1330,41 @@ def test_composite_root_glob_preserves_route_pattern_anchoring() -> None:
     matches = comp.glob("/memories/*.py", path="/").matches
 
     assert [match["path"] for match in matches] == ["/memories/top.py"]
+
+
+def test_composite_root_anchored_pattern_skips_routed_backends() -> None:
+    """`/*.py` means top-level only, and every routed match is deeper than that.
+
+    Routed results are prefixed with their route (`/memories/foo.py`), so
+    forwarding a root-anchored pattern to a route makes the composite return
+    depth-2 paths for a pattern the shared contract defines as top-level only.
+    """
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/top.py", "top")
+    comp.write("/memories/foo.py", "routed")
+
+    matches = comp.glob("/*.py", path="/").matches
+
+    assert [match["path"] for match in matches] == ["/top.py"]
+
+
+def test_composite_root_bare_pattern_still_reaches_routes() -> None:
+    """A bare pattern is basename-at-any-depth, so routes must still be searched."""
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/top.py", "top")
+    comp.write("/memories/foo.py", "routed")
+
+    matches = comp.glob("*.py", path="/").matches
+
+    assert {match["path"] for match in matches} == {"/top.py", "/memories/foo.py"}
 
 
 def test_composite_glob_nested_path_in_route() -> None:

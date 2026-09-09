@@ -3,33 +3,41 @@
 # `deepagents-code` publishes with an exact SDK pin (see `check_sdk_pin.yml`
 # and the release workflow's pin gate), so every time the workspace SDK
 # version in `libs/deepagents/pyproject.toml` moves ahead of the pin, someone
-# has to bump it by hand before the next Code release. This workflow opens
-# that bump PR automatically.
+# has to bump it by hand before the next Code release. This workflow creates
+# or updates that bump PR automatically.
 #
 # Triggering:
 # - `release.yml` dispatches this workflow via `workflow_dispatch` from its
 #   `bump-code-sdk-pin` job after a `deepagents` release has been published
 #   to PyPI. Running post-publish (rather than on the version-commit push to
 #   `main`) guarantees the new SDK is installable from PyPI, so CI on the
-#   auto-opened PR can resolve `deepagents==X.Y.Z`.
+#   automated PR can resolve `deepagents==X.Y.Z`.
 # - It can also be run manually from the Actions UI / `gh` CLI (e.g. to
 #   recover after a failed dispatch, or to bump the pin for an unreleased
 #   workspace version).
 #
 # Notes:
 # - A pin *ahead* of the workspace version (intentional prerelease
-#   coordination) is respected: the job only acts when the pin is strictly
-#   behind the workspace SDK version.
+#   coordination) is respected. Two gates enforce this: the pin on `main`
+#   must be behind the workspace SDK version for the job to act at all, and
+#   the pin on the PR branch must be behind it for any file to change.
 # - The commit regenerates `libs/code/uv.lock` so the pre-commit lock check
 #   stays green on the PR.
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
 #   files inside the managed `libs/code` package would make release-please
 #   open a separate `release(deepagents-code)` PR (multi-component fan-out).
-# - The PR is created with the Org Membership App installation token rather
-#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+# - The PR is created and updated with the Org Membership App installation
+#   token rather than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent: if a PR for the target version already exists (or the pin is
-#   already current), the workflow exits without creating a duplicate.
+# - Idempotent: the workflow finds its own open PR by the
+#   `<!-- bump-code-sdk-pin-pr -->` body marker, then compares the pin on
+#   that PR's branch against the workspace SDK version. An older automated
+#   PR is updated in place, never replaced, so its review history survives.
+#   A branch that already pins the target version gets a metadata refresh
+#   only. A branch that pins a newer version keeps its files.
+# - The branch name records the SDK version at the time of creation only. A
+#   long-lived PR keeps its original branch as the pin moves, so the PR title
+#   is authoritative and the branch name is not.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -48,9 +56,14 @@ concurrency:
 
 jobs:
   bump:
-    name: "Open PR if the Code SDK pin is stale"
+    name: "Create or update PR if the Code SDK pin is stale"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Both the workspace pin and the branch pin are validated against this
+    # before `packaging` sees them. One definition, so the two checks cannot
+    # drift apart.
+    env:
+      SEMVER_PATTERN: '^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$'
     permissions:
       contents: read
       # For the failure-tracking issue in the final step.
@@ -62,48 +75,64 @@ jobs:
       # `Authorization` header while ignoring the app token embedded in the
       # push URL — git cannot send two `Authorization` headers, so the config
       # credential wins and the push runs as `github-actions[bot]` with
-      # `contents: read` and is denied (403). The only write in this job
-      # authenticates explicitly with the app token below, so nothing is
-      # lost; the fetch path in the push step also uses that app-token URL.
+      # `contents: read` and is denied (403). Nothing is lost: this repo is
+      # public, so the reads through `origin` succeed anonymously, and every
+      # write below authenticates explicitly with the app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Updating an existing PR merges the default branch into the PR
+          # branch. A shallow clone shares no commit with the fetched PR
+          # branch, so that merge fails outright. Full history also gives the
+          # `origin/<default branch>` ref that the merge uses.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
         with:
+          # `uv_setup` declares this `required: true`, but GitHub does not
+          # enforce `required` on composite-action inputs: it resolved to
+          # empty and `setup-uv` installed no managed Python. Match the
+          # version the lockfile is regenerated with below.
+          python-version: "3.12"
           enable-cache: "false"
 
       - name: Resolve workspace SDK version and current Code pin
         id: versions
         run: |
           set -euo pipefail
+          # Record the cause for the tracking issue step below, which
+          # otherwise files the same contentless issue for every failure
+          # mode. A failure that does not come through here (a crash in a
+          # tool, say) leaves the reason unset and the issue says so.
+          fail() {
+            echo "::error::$1"
+            echo "BUMP_FAILURE_REASON=$1" >> "$GITHUB_ENV"
+            exit 1
+          }
+
           sdk_pyproject="libs/deepagents/pyproject.toml"
           code_pyproject="libs/code/pyproject.toml"
 
           sdk_version=$(grep -m1 -E '^version = "' "$sdk_pyproject" | sed -E 's/version = "([^"]+)"/\1/')
 
           code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
-          semver='^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$'
-          if [[ ! "$sdk_version" =~ $semver ]]; then
-            echo "::error::Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
-            exit 1
+          if [[ ! "$sdk_version" =~ $SEMVER_PATTERN ]]; then
+            fail "Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
           fi
-          if [[ ! "$code_pin" =~ $semver ]]; then
-            echo "::error::Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
-            exit 1
+          if [[ ! "$code_pin" =~ $SEMVER_PATTERN ]]; then
+            fail "Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
           fi
 
-          stale=$(CODE_PIN="$code_pin" SDK_VERSION="$sdk_version" uv run --no-project --with packaging python - <<'PY'
-          import os
-          import sys
-
-          from packaging.version import Version
-
-          stale = Version(os.environ["CODE_PIN"]) < Version(os.environ["SDK_VERSION"])
-          sys.stdout.write("true" if stale else "false")
-          PY
-          )
+          # `compare_versions.py` owns the PEP 440 ordering for both this gate
+          # and the branch-pin gate below, so the two cannot disagree about
+          # which of two versions is older.
+          relation=$(uv run --no-project --with packaging python \
+            .github/scripts/release/compare_versions.py "$code_pin" "$sdk_version")
+          stale=false
+          if [ "$relation" = "behind" ]; then
+            stale=true
+          fi
 
           echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
           echo "code_pin=$code_pin" >> "$GITHUB_OUTPUT"
@@ -124,26 +153,45 @@ jobs:
           CODE_PIN: ${{ steps.versions.outputs.code_pin }}
         run: 'echo "::notice::Nothing to do: Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION."'
 
-      - name: Skip if PR already open for this version
+      - name: Find existing automated pin bump PR
         id: existing
         if: steps.versions.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
+          NEW_BRANCH: ${{ steps.versions.outputs.branch }}
         run: |
           set -euo pipefail
-          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
-          count=$(printf '%s' "$existing_json" | jq 'length')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" -gt 0 ]; then
-            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
-            echo "Open PR already exists for $BRANCH; skipping."
-            echo "::notice::Open SDK pin bump PR already exists: $pr_url"
+          # Every field here is read either by the selector or by the `jq`
+          # calls below. A dropped field makes the selector match nothing,
+          # which silently opens a duplicate PR.
+          open_prs=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            --jq '[.[][] | {
+              body,
+              headRefName: .head.ref,
+              isCrossRepository: (.head.repo.full_name != .base.repo.full_name),
+              number,
+              url: .html_url
+            }]')
+          existing=$(printf '%s' "$open_prs" | \
+            uv run --no-project python .github/scripts/release/find_code_sdk_pin_pr.py)
+          number=$(printf '%s' "$existing" | jq -r '.number // ""')
+          if [ -z "$number" ]; then
+            echo "No open automated pin bump PR; the next step creates one on $NEW_BRANCH."
+            echo "branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          branch=$(printf '%s' "$existing" | jq -r '.headRefName')
+          url=$(printf '%s' "$existing" | jq -r '.url')
+          echo "Found the open automated pin bump PR on $branch: $url"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Generate GitHub App token
         id: app-token
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+        if: steps.versions.outputs.stale == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
@@ -151,16 +199,27 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Open pin bump PR
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+      - name: Create or update pin bump PR
+        if: steps.versions.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
           CODE_PIN: ${{ steps.versions.outputs.code_pin }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
+          BRANCH: ${{ steps.existing.outputs.branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXISTING_PR: ${{ steps.existing.outputs.number }}
+          EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
         run: |
           set -euo pipefail
+          # Record the cause for the tracking issue step below, which
+          # otherwise files the same contentless issue for every failure
+          # mode. A failure that does not come through here (a crash in a
+          # tool, say) leaves the reason unset and the issue says so.
+          fail() {
+            echo "::error::$1"
+            echo "BUMP_FAILURE_REASON=$1" >> "$GITHUB_ENV"
+            exit 1
+          }
 
           # The push and PR calls authenticate as the Org Membership App
           # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
@@ -169,85 +228,192 @@ jobs:
           # persisted, an empty app token would now degrade these to an
           # anonymous 403; fail fast instead so the cause is obvious.
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
-            exit 1
+            fail "App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
           fi
 
           code_pyproject="libs/code/pyproject.toml"
           lockfile="libs/code/uv.lock"
 
-          # Update only the exact-pin dependency line. The quoted
-          # `deepagents==` match cannot touch the unquoted
-          # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
-          # and 2 on read errors; capture the exit code separately so
-          # `set -e` doesn't swallow either case.
-          pattern="\"deepagents==${CODE_PIN}\""
-          replacement="\"deepagents==${SDK_VERSION}\""
-          set +e
-          before=$(grep -cF "$pattern" "$code_pyproject")
-          before_rc=$?
-          set -e
-          if [ "$before_rc" -gt 1 ]; then
-            echo "::error::grep read error on $code_pyproject (exit=$before_rc)"
-            exit 1
-          fi
-          if [ "$before" -ne 1 ]; then
-            echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
-            exit 1
-          fi
-          sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
-          after=$(grep -cF "$replacement" "$code_pyproject")
-          if [ "$after" -ne 1 ]; then
-            echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
-            exit 1
-          fi
-
-          # Regenerate the lockfile alongside the manifest change so the
-          # pre-commit lock check passes on the PR.
-          uv lock --directory libs/code --python 3.12
-          if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
-            echo "::error::Expected $lockfile to exist after uv lock"
-            exit 1
-          fi
-          if git diff --quiet "$code_pyproject" "$lockfile"; then
-            echo "No changes after edit; bailing out (pin=$CODE_PIN, sdk=$SDK_VERSION)."
-            exit 1
-          fi
-
-          # Reuse-or-recreate orphan branch from a prior run that pushed
-          # but failed before `gh pr create` (no open PR sits on it).
-          # The delete can race a concurrent run (manual workflow_dispatch
-          # firing while a push-triggered run is mid-flight, since the
-          # concurrency group does not cancel-in-progress); fall through
-          # with a warning so a losing race does not kill an otherwise-clean
-          # job mid-state.
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
-            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
-              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
-            fi
-          fi
+          # Set on the create path when the pre-push branch delete fails, so
+          # the push below can name the real cause of a rejection.
+          delete_failed=0
 
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add "$code_pyproject" "$lockfile"
-          git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+          # Capture a trusted copy of the release scripts from the
+          # default-branch commit this run was dispatched on, before the
+          # PR-branch checkout below replaces the working tree. The
+          # version-compare step later in this script runs this copy, so
+          # a PR cannot swap in its own version of the script.
+          trusted_scripts="$(mktemp -d)"
+          cp .github/scripts/release/compare_versions.py "$trusted_scripts/"
+          if [ -n "$EXISTING_PR" ]; then
+            git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            # The lockfile resolves `deepagents` through the adjacent editable
+            # checkout, so bring the latest SDK version onto the PR branch
+            # before regenerating it. The merge appends a commit; the branch
+            # is never force-pushed, so review history and existing review
+            # comments on the PR stay valid.
+            # Merge the remote-tracking ref after refreshing it, so the merge
+            # uses the current tip of the default branch rather than whatever
+            # `actions/checkout` materialized at dispatch time. A stale
+            # dispatch ref would silently merge an old commit here.
+            git fetch origin "$DEFAULT_BRANCH"
+            if ! git merge --no-edit "origin/$DEFAULT_BRANCH"; then
+              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+              if [ "${#conflicts[@]}" -eq 0 ]; then
+                fail "Merge of $DEFAULT_BRANCH failed without reporting a file conflict."
+              fi
 
+              unexpected_conflict=false
+              for conflict in "${conflicts[@]}"; do
+                case "$conflict" in
+                  "$code_pyproject" | "$lockfile")
+                    # An obsolete bump PR and the latest default branch are
+                    # expected to have changed these generated pin files from
+                    # the same base. Start from the default branch versions;
+                    # the target pin and lockfile are regenerated below.
+                    git checkout --theirs -- "$conflict"
+                    git add "$conflict"
+                    ;;
+                  *)
+                    echo "::error::Unexpected merge conflict in $conflict"
+                    unexpected_conflict=true
+                    ;;
+                esac
+              done
+              if [ "$unexpected_conflict" = "true" ]; then
+                fail "Merge of $DEFAULT_BRANCH into $BRANCH conflicts outside the generated pin files"
+              fi
+              git commit --no-edit
+            fi
+          else
+            # Reuse-or-recreate an orphan branch from a prior run that pushed
+            # but failed before `gh pr create` (no open PR sits on it).
+            if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+              echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+              if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+                delete_failed=1
+                echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+              fi
+            fi
+            git checkout -b "$BRANCH"
+          fi
+
+          # The pin on the branch, not the PR title, is the authority on what
+          # the PR does. A title can be edited by hand, and a prior run can
+          # push a pin commit and then fail before it updates the title. A
+          # title-based skip would then exit green on a PR whose title names a
+          # version that the branch does not pin.
+          branch_code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
+          # This file comes off the PR branch after a merge, so a person may
+          # have edited it. Without these checks a malformed pin reaches
+          # `Version()` and surfaces as a bare `InvalidVersion` traceback that
+          # names neither the file nor the branch, and an absent pin line
+          # fails the assignment through `pipefail` with no output at all.
+          if [ -z "$branch_code_pin" ]; then
+            fail "No quoted \"deepagents==...\" pin found in $code_pyproject on branch $BRANCH"
+          fi
+          if [[ ! "$branch_code_pin" =~ $SEMVER_PATTERN ]]; then
+            fail "Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
+          fi
+          relation=$(python "$trusted_scripts/compare_versions.py" "$branch_code_pin" "$SDK_VERSION")
+          # `ahead` means the branch pins a newer SDK than this run targets:
+          # intentional prerelease coordination, or a hand-pushed commit. Keep
+          # the files as they are, but describe the pin that the branch really
+          # has. An exit here would leave the PR title and body naming a
+          # version that the branch does not pin.
+          pr_version="$SDK_VERSION"
+          if [ "$relation" = "ahead" ]; then
+            echo "::warning::The pin bump PR pins $branch_code_pin, ahead of workspace SDK version $SDK_VERSION; correcting its title and body only."
+            pr_version="$branch_code_pin"
+          fi
+
+          if [ "$relation" = "behind" ]; then
+            # Update only the exact-pin dependency line. The quoted
+            # `deepagents==` match cannot touch the unquoted
+            # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
+            # and 2 on read errors; capture the exit code separately so
+            # `set -e` doesn't swallow either case.
+            pattern="\"deepagents==${branch_code_pin}\""
+            replacement="\"deepagents==${SDK_VERSION}\""
+            set +e
+            before=$(grep -cF "$pattern" "$code_pyproject")
+            before_rc=$?
+            set -e
+            if [ "$before_rc" -gt 1 ]; then
+              fail "grep read error on $code_pyproject (exit=$before_rc)"
+            fi
+            if [ "$before" -ne 1 ]; then
+              fail "Expected exactly 1 '$pattern' in $code_pyproject, found $before"
+            fi
+            sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
+            after=$(grep -cF "$replacement" "$code_pyproject")
+            if [ "$after" -ne 1 ]; then
+              fail "Expected exactly 1 '$replacement' after sed, found $after"
+            fi
+
+            # Regenerate the lockfile alongside the manifest change so the
+            # pre-commit lock check passes on the PR.
+            uv lock --directory libs/code --python 3.12
+            if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
+              fail "$lockfile is not tracked in $BRANCH after uv lock"
+            fi
+            if git diff --quiet "$code_pyproject" "$lockfile"; then
+              fail "No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
+            fi
+
+            git add "$code_pyproject" "$lockfile"
+            git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
+          fi
+
+          # Push whenever the branch moved: a pin commit, or the merge commit
+          # alone. The merge above runs on every update, but a push confined
+          # to the `behind` path discarded it with the runner. The PR then
+          # stayed behind the default branch, and the next run had to resolve
+          # the same conflict again.
+          if [ -z "$EXISTING_PR" ] || \
+            [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ]; then
+            # The push carries no `--force`, so an undeleted branch is
+            # rejected as a non-fast-forward. Read on its own that message
+            # points at the push; the cause is the delete that failed
+            # roughly a hundred lines earlier.
+            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"; then
+              if [ "$delete_failed" = 1 ]; then
+                fail "Push of $BRANCH was rejected, and the earlier delete of the same branch also failed. A concurrent run probably owns this branch."
+              fi
+              fail "Push of $BRANCH to origin was rejected."
+            fi
+          else
+            echo "$BRANCH already matches origin; no push needed."
+          fi
+
+          # The body describes the whole diff of the PR against the default
+          # branch, so it quotes CODE_PIN, the pin on `main`. branch_code_pin
+          # would describe only the newest increment and would disagree with
+          # the Files changed tab.
           body_file="$(mktemp)"
           {
-            printf 'Bumps the exact %s pin in %s from `%s` to `%s` (current workspace SDK version) and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$SDK_VERSION" '`libs/code/uv.lock`'
-            printf 'Opened automatically by %s after a commit on `main` changed the SDK version. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents-code`'
+            printf '%s\n' '<!-- bump-code-sdk-pin-pr -->'
+            printf 'Bumps the exact %s pin in %s from `%s` to `%s` and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$pr_version" '`libs/code/uv.lock`'
+            printf 'Maintained automatically by %s, which runs after each %s release. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents`' '`deepagents-code`'
           } > "$body_file"
 
-          pr_url=$(gh pr create \
-            --head "$BRANCH" \
-            --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION" \
-            --body-file "$body_file")
-          echo "Opened SDK pin bump PR: $pr_url"
-          echo "::notice::Opened SDK pin bump PR: $pr_url"
+          title="chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $pr_version"
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --title "$title" --body-file "$body_file"
+            echo "Updated SDK pin bump PR: $EXISTING_PR_URL"
+            echo "::notice::Updated SDK pin bump PR: $EXISTING_PR_URL"
+          else
+            pr_url=$(gh pr create \
+              --head "$BRANCH" \
+              --base "$DEFAULT_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file")
+            echo "Opened SDK pin bump PR: $pr_url"
+            echo "::notice::Opened SDK pin bump PR: $pr_url"
+          fi
 
       - name: File a tracking issue on failure
         # A failed dispatch is otherwise invisible until the next Code
@@ -257,19 +423,23 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REASON: ${{ env.BUMP_FAILURE_REASON }}
         with:
           script: |
             const marker = '<!-- bump-code-sdk-pin-failure -->';
             const { owner, repo } = context.repo;
             const runUrl = process.env.RUN_URL;
+            const reason = process.env.REASON || 'not recorded; see the run log';
             const title = 'Code SDK pin bump is failing';
             const body = [
               marker,
               '`bump_code_sdk_pin.yml` failed, so the `deepagents` pin in `libs/code/pyproject.toml` is not being bumped automatically after SDK releases.',
               '',
+              `Cause: ${reason}`,
+              '',
               `Most recent failed run: ${runUrl}`,
               '',
-              'This issue is reused by later failures rather than duplicated. Close it once the workflow is green again.',
+              'This issue is reused by later failures rather than duplicated. It closes itself when the workflow next succeeds.',
             ].join('\n');
 
             try {
@@ -283,7 +453,7 @@ jobs:
               if (found) {
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: found.number,
-                  body: `Still failing: ${runUrl}`,
+                  body: `Still failing (${reason}): ${runUrl}`,
                 });
                 core.info(`Commented on existing tracking issue #${found.number}.`);
               } else {
@@ -294,4 +464,42 @@ jobs:
               // Never mask the real failure with a reporting failure — the job
               // is already red for the reason that matters.
               core.warning(`Could not file the SDK pin bump tracking issue: ${err.message}`);
+            }
+
+      - name: Close the tracking issue when the bump is healthy
+        # The failure issue is reused rather than duplicated, so nothing else
+        # would ever close it. It would stay open after a person fixed the
+        # cause, and a health signal that needs a manual reset gets ignored.
+        # A run where the pin was already current counts as healthy.
+        if: success()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const marker = '<!-- bump-code-sdk-pin-failure -->';
+            const { owner, repo } = context.repo;
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (!found) {
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: found.number,
+                body: `Green again: ${process.env.RUN_URL}`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: found.number, state: 'closed',
+              });
+              core.info(`Closed tracking issue #${found.number}.`);
+            } catch (err) {
+              // Closing the issue is bookkeeping. Never fail a successful
+              // bump because the bookkeeping failed.
+              core.warning(`Could not close the SDK pin bump tracking issue: ${err.message}`);
             }

@@ -158,6 +158,7 @@ venv.bak/
 *.jks
 credentials.json
 token.json
+**/.deepagents/mcp-tokens/
 Cookies
 Cookies.db
 cookies.sqlite

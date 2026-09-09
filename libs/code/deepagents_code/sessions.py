@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
@@ -237,7 +238,7 @@ class _CheckpointSummary(NamedTuple):
 
 
 def format_timestamp(iso_timestamp: str | None) -> str:
-    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+    """Format ISO timestamp for display (e.g., 'dec 05, 6:10pm').
 
     Args:
         iso_timestamp: ISO 8601 timestamp string, or `None`.
@@ -249,12 +250,6 @@ def format_timestamp(iso_timestamp: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-        return (
-            dt.strftime("%b %d, %-I:%M%p")
-            .lower()
-            .replace("am", "am")
-            .replace("pm", "pm")
-        )
     except (ValueError, TypeError):
         logger.debug(
             "Failed to parse timestamp %r; displaying as blank",
@@ -262,6 +257,12 @@ def format_timestamp(iso_timestamp: str | None) -> str:
             exc_info=True,
         )
         return ""
+    # `%-I` (12-hour clock, no zero padding) is a glibc/BSD extension. MSVC's
+    # CRT rejects it as an invalid formatting code, which CPython surfaces as
+    # `ValueError`, so the hour is derived by hand to keep every platform on
+    # the same rendering.
+    hour_12 = dt.hour % 12 or 12
+    return f"{dt:%b %d}, {hour_12}:{dt:%M}{dt:%p}".lower()
 
 
 def format_relative_timestamp(iso_timestamp: str | None) -> str:
@@ -354,7 +355,10 @@ def get_db_path() -> Path:
         return _db_path
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
-    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Pass the directory rather than letting it default to
+    # `PATHS.profile.state_dir`: the database has always been located from
+    # `DEFAULT_STATE_DIR`, and tests patch that name on its own.
+    harden_state_dir(DEFAULT_STATE_DIR)
     _db_path = DEFAULT_STATE_DIR / "sessions.db"
     return _db_path
 
@@ -1403,6 +1407,27 @@ async def get_most_recent(
             return row[0] if row else None
 
 
+async def get_thread_updated_at(thread_id: str) -> str | None:
+    """Get the latest stored update timestamp for a thread.
+
+    Returns:
+        The ISO timestamp, or `None` when none is stored.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+
+        query = """
+            SELECT MAX(json_extract(metadata, '$.updated_at'))
+            FROM checkpoints
+            WHERE thread_id = ?
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            value = row[0] if row else None
+            return value if isinstance(value, str) and value else None
+
+
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 
@@ -1553,24 +1578,24 @@ _DEFAULT_THREAD_LIMIT = 20
 
 
 def get_thread_limit() -> int:
-    """Read the thread listing limit from `DA_CLI_RECENT_THREADS`.
-
-    Falls back to `_DEFAULT_THREAD_LIMIT` when the variable is unset or contains
-    a non-integer value. The result is clamped to a minimum of 1.
+    """Read the thread listing limit from the environment.
 
     Returns:
         Number of threads to display.
     """
     import os
 
-    raw = os.environ.get("DA_CLI_RECENT_THREADS")
+    from deepagents_code._env_vars import RECENT_THREADS
+
+    raw = os.environ.get(RECENT_THREADS)
     if raw is None:
         return _DEFAULT_THREAD_LIMIT
     try:
         return max(1, int(raw))
     except ValueError:
         logger.warning(
-            "Invalid DA_CLI_RECENT_THREADS value %r, using default %d",
+            "Invalid %s value %r, using default %d",
+            RECENT_THREADS,
             raw,
             _DEFAULT_THREAD_LIMIT,
         )
@@ -1599,8 +1624,8 @@ async def list_threads_command(
             When `None`, threads for all agents are shown.
         limit: Maximum number of threads to display.
 
-            When `None`, reads from `DA_CLI_RECENT_THREADS` or falls back to
-            the default.
+            When `None`, reads from `DEEPAGENTS_CODE_RECENT_THREADS` or falls
+            back to the default.
         sort_by: Sort field — `"updated"` or `"created"`.
 
             When `None`, reads the merged managed and user config
@@ -1746,9 +1771,11 @@ async def list_threads_command(
     console.print()
     console.print(table)
     if len(threads) >= limit:
+        from deepagents_code._env_vars import RECENT_THREADS
+
         console.print(
             f"[dim]Showing last {limit} threads. "
-            "Override with -n/--limit or DA_CLI_RECENT_THREADS.[/dim]"
+            f"Override with -n/--limit or {RECENT_THREADS}.[/dim]"
         )
     console.print()
 

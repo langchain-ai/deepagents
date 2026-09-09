@@ -9,6 +9,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -125,7 +127,7 @@ class ThreadAgentSwitchPromptScreen(ModalScreen[ThreadAgentSwitchChoice]):
                 markup=False,
             )
             yield Static(
-                "Enter: switch and resume · Esc: cancel",
+                f"Enter: switch and resume {get_glyphs().separator} Esc: cancel",
                 classes="thread-agent-switch-help",
                 markup=False,
             )

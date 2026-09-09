@@ -28,7 +28,7 @@ CONFIG = {
     ],
     "packages": {
         "libs/deepagents": {"component": "deepagents"},
-        "libs/cli": {"component": "deepagents-cli"},
+        "libs/acp": {"component": "deepagents-acp"},
         "libs/code": {"component": "deepagents-code"},
         "libs/partners/quickjs": {"component": "langchain-quickjs"},
     },
@@ -40,13 +40,13 @@ def test_lockfile_only_dependent_is_flagged() -> None:
     changed = [
         "libs/deepagents/deepagents/graph.py",
         "libs/deepagents/uv.lock",
-        "libs/cli/uv.lock",
+        "libs/acp/uv.lock",
         "libs/partners/quickjs/uv.lock",
     ]
     offenders = find_offenders("feat(sdk): surface subagents", changed, CONFIG)
-    assert offenders == ["deepagents-cli", "langchain-quickjs"]
+    assert offenders == ["deepagents-acp", "langchain-quickjs"]
     fanout = find_fanout("feat(sdk): surface subagents", changed, CONFIG)
-    assert fanout["lockfile_only"] == ["deepagents-cli", "langchain-quickjs"]
+    assert fanout["lockfile_only"] == ["deepagents-acp", "langchain-quickjs"]
     # Owner has real source — not multi-component (only one package with real files).
     assert fanout["multi_component"] == []
 
@@ -64,9 +64,9 @@ def test_owner_with_source_changes_not_flagged() -> None:
 def test_non_bump_title_skipped() -> None:
     """A hidden type (chore) does not cut a release, so nothing is flagged."""
     changed = [
-        "libs/cli/uv.lock",
+        "libs/acp/uv.lock",
         "libs/partners/quickjs/uv.lock",
-        "libs/cli/pyproject.toml",
+        "libs/acp/pyproject.toml",
         "libs/code/pyproject.toml",
     ]
     assert find_fanout("chore(deps): relock", changed, CONFIG) == {
@@ -77,9 +77,9 @@ def test_non_bump_title_skipped() -> None:
 
 def test_breaking_bang_is_flagged() -> None:
     """The `!` breaking shorthand counts as bump-worthy even for an odd type."""
-    changed = ["libs/cli/uv.lock"]
-    assert find_offenders("refactor(cli)!: drop thing", changed, CONFIG) == [
-        "deepagents-cli"
+    changed = ["libs/acp/uv.lock"]
+    assert find_offenders("refactor(acp)!: drop thing", changed, CONFIG) == [
+        "deepagents-acp"
     ]
 
 
@@ -91,8 +91,8 @@ def test_no_managed_paths_touched() -> None:
 
 def test_mixed_lock_and_source_in_dependent_not_flagged() -> None:
     """A dependent with both a source edit and a lockfile bump is a real change."""
-    changed = ["libs/cli/deepagents_cli/main.py", "libs/cli/uv.lock"]
-    assert find_offenders("feat(cli): real cli change", changed, CONFIG) == []
+    changed = ["libs/acp/deepagents_acp/main.py", "libs/acp/uv.lock"]
+    assert find_offenders("feat(acp): real acp change", changed, CONFIG) == []
 
 
 def test_multi_component_real_files_flagged() -> None:
@@ -101,15 +101,15 @@ def test_multi_component_real_files_flagged() -> None:
         "libs/code/deepagents_code/models.py",
         "libs/code/pyproject.toml",
         "libs/code/uv.lock",
-        "libs/cli/pyproject.toml",
-        "libs/cli/uv.lock",
+        "libs/acp/pyproject.toml",
+        "libs/acp/uv.lock",
         "libs/deepagents/pyproject.toml",
         "libs/deepagents/uv.lock",
     ]
     fanout = find_fanout("feat(code): add model support", changed, CONFIG)
     assert fanout["multi_component"] == [
         "deepagents",
-        "deepagents-cli",
+        "deepagents-acp",
         "deepagents-code",
     ]
     # Every touched package has a non-lockfile edit — none are lockfile-only.
@@ -121,11 +121,11 @@ def test_multi_component_plus_lockfile_only_dependent() -> None:
     changed = [
         "libs/code/deepagents_code/models.py",
         "libs/code/pyproject.toml",
-        "libs/cli/pyproject.toml",
+        "libs/acp/pyproject.toml",
         "libs/partners/quickjs/uv.lock",
     ]
     fanout = find_fanout("feat(code): add model support", changed, CONFIG)
-    assert fanout["multi_component"] == ["deepagents-cli", "deepagents-code"]
+    assert fanout["multi_component"] == ["deepagents-acp", "deepagents-code"]
     assert fanout["lockfile_only"] == ["langchain-quickjs"]
 
 
@@ -146,11 +146,11 @@ def test_single_package_real_files_not_multi() -> None:
 def test_touched_components_lists_all_package_hits() -> None:
     """`touched_components` reports every managed package path hit, bump or not."""
     changed = [
-        "libs/cli/uv.lock",
+        "libs/acp/uv.lock",
         "libs/code/pyproject.toml",
         "README.md",
     ]
-    assert touched_components(changed, CONFIG) == ["deepagents-cli", "deepagents-code"]
+    assert touched_components(changed, CONFIG) == ["deepagents-acp", "deepagents-code"]
 
 
 def test_parse_title_variants() -> None:
@@ -165,7 +165,7 @@ def test_parse_title_variants() -> None:
 def test_is_bump_worthy() -> None:
     """Bump-worthy covers visible types and the `!` shorthand only."""
     assert is_bump_worthy("feat(sdk): x", CONFIG)
-    assert is_bump_worthy("refactor(cli)!: x", CONFIG)
+    assert is_bump_worthy("refactor(acp)!: x", CONFIG)
     assert not is_bump_worthy("chore(deps): x", CONFIG)
     assert not is_bump_worthy("not conventional", CONFIG)
 
@@ -207,28 +207,28 @@ def test_path_prefix_collision_not_misattributed() -> None:
     """A path that is a string prefix of another must not steal its lockfile.
 
     `_package_files` enforces a `/` boundary; a bare `startswith` would
-    misattribute `libs/cli-extra/uv.lock` to `libs/cli`. This pins that.
+    misattribute `libs/acp-extra/uv.lock` to `libs/acp`. This pins that.
     """
     config = {
         "changelog-sections": [{"type": "feat", "section": "Features"}],
         "packages": {
-            "libs/cli": {"component": "deepagents-cli"},
-            "libs/cli-extra": {"component": "cli-extra"},
+            "libs/acp": {"component": "deepagents-acp"},
+            "libs/acp-extra": {"component": "acp-extra"},
         },
     }
-    offenders = find_offenders("feat: x", ["libs/cli-extra/uv.lock"], config)
-    assert offenders == ["cli-extra"]
+    offenders = find_offenders("feat: x", ["libs/acp-extra/uv.lock"], config)
+    assert offenders == ["acp-extra"]
 
 
 def test_package_dir_as_exact_changed_file_not_flagged() -> None:
     """A changed entry equal to the package dir itself is not a lockfile."""
-    assert find_offenders("feat: x", ["libs/cli"], CONFIG) == []
+    assert find_offenders("feat: x", ["libs/acp"], CONFIG) == []
 
 
 def test_uppercase_title_is_not_bump_worthy() -> None:
     """Matching is case-sensitive: an uppercase type is treated as non-conventional."""
     assert parse_title("FEAT: x") == (None, False)
-    assert find_offenders("FEAT: x", ["libs/cli/uv.lock"], CONFIG) == []
+    assert find_offenders("FEAT: x", ["libs/acp/uv.lock"], CONFIG) == []
 
 
 def test_main_happy_path_stdout_is_json_stderr_is_summary(capsys, tmp_path) -> None:
@@ -239,12 +239,12 @@ def test_main_happy_path_stdout_is_json_stderr_is_summary(capsys, tmp_path) -> N
     config_path = tmp_path / "release-please-config.json"
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
-    rc = main("feat(sdk): x", ["libs/cli/uv.lock"], config_path=config_path)
+    rc = main("feat(sdk): x", ["libs/acp/uv.lock"], config_path=config_path)
     captured = capsys.readouterr()
 
     assert rc == 0
     assert json.loads(captured.out) == {
-        "lockfile_only": ["deepagents-cli"],
+        "lockfile_only": ["deepagents-acp"],
         "multi_component": [],
     }
     assert "lockfile-only release scope" in captured.err
@@ -257,14 +257,14 @@ def test_main_multi_component_stdout_shape(capsys, tmp_path) -> None:
 
     rc = main(
         "feat(code): model",
-        ["libs/code/pyproject.toml", "libs/cli/pyproject.toml"],
+        ["libs/code/pyproject.toml", "libs/acp/pyproject.toml"],
         config_path=config_path,
     )
     captured = capsys.readouterr()
     assert rc == 0
     assert json.loads(captured.out) == {
         "lockfile_only": [],
-        "multi_component": ["deepagents-cli", "deepagents-code"],
+        "multi_component": ["deepagents-acp", "deepagents-code"],
     }
     assert "multi-component" in captured.err
 
@@ -274,7 +274,7 @@ def test_main_no_offenders_stdout_is_empty_result(capsys, tmp_path) -> None:
     config_path = tmp_path / "release-please-config.json"
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
-    rc = main("chore(deps): relock", ["libs/cli/uv.lock"], config_path=config_path)
+    rc = main("chore(deps): relock", ["libs/acp/uv.lock"], config_path=config_path)
     captured = capsys.readouterr()
 
     assert rc == 0
@@ -283,7 +283,7 @@ def test_main_no_offenders_stdout_is_empty_result(capsys, tmp_path) -> None:
 
 def test_main_missing_config_returns_2(capsys, tmp_path) -> None:
     """A missing config file fails closed (exit 2), not a silent empty pass."""
-    rc = main("feat: x", ["libs/cli/uv.lock"], config_path=tmp_path / "nope.json")
+    rc = main("feat: x", ["libs/acp/uv.lock"], config_path=tmp_path / "nope.json")
     assert rc == 2
     assert "::error::" in capsys.readouterr().err
 
@@ -292,7 +292,7 @@ def test_main_malformed_config_returns_2(capsys, tmp_path) -> None:
     """Invalid JSON fails closed (exit 2)."""
     config_path = tmp_path / "release-please-config.json"
     config_path.write_text("{not json", encoding="utf-8")
-    rc = main("feat: x", ["libs/cli/uv.lock"], config_path=config_path)
+    rc = main("feat: x", ["libs/acp/uv.lock"], config_path=config_path)
     assert rc == 2
     assert "::error::" in capsys.readouterr().err
 
@@ -304,7 +304,7 @@ def test_main_empty_packages_returns_2(capsys, tmp_path) -> None:
         json.dumps({"changelog-sections": CONFIG["changelog-sections"], "packages": {}}),
         encoding="utf-8",
     )
-    rc = main("feat: x", ["libs/cli/uv.lock"], config_path=config_path)
+    rc = main("feat: x", ["libs/acp/uv.lock"], config_path=config_path)
     assert rc == 2
     assert "packages" in capsys.readouterr().err
 
@@ -321,6 +321,6 @@ def test_main_no_visible_sections_returns_2(capsys, tmp_path) -> None:
         ),
         encoding="utf-8",
     )
-    rc = main("feat: x", ["libs/cli/uv.lock"], config_path=config_path)
+    rc = main("feat: x", ["libs/acp/uv.lock"], config_path=config_path)
     assert rc == 2
     assert "changelog-sections" in capsys.readouterr().err

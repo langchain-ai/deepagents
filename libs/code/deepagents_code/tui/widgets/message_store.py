@@ -54,6 +54,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_group_expanded",
         "skill_expanded",
         "rubric_expanded",
+        "reasoning_expanded",
         "user_expanded",
         "is_streaming",
     }
@@ -73,6 +74,9 @@ class MessageType(StrEnum):
 
     ASSISTANT = "assistant"
     """Streamed agent response rendered with markdown."""
+
+    REASONING = "reasoning"
+    """Provider-visible reasoning rendered separately from the final answer."""
 
     TOOL = "tool"
     """Record of a tool invocation, including its args, status, and output."""
@@ -265,6 +269,9 @@ class MessageData:
     rubric_expanded: bool = False
     """Whether the grader details are expanded in the UI."""
 
+    reasoning_expanded: bool = False
+    """Whether provider-visible reasoning is expanded in the UI."""
+
     # USER message fields - only populated for USER messages
     user_expanded: bool = False
     """Whether a collapsed long user message is expanded in the UI."""
@@ -288,9 +295,10 @@ class MessageData:
     assistant_local_only: bool = False
     """Whether an `ASSISTANT` row holds client-side output, not agent output.
 
-    Set for non-incognito `!` shell output, which renders through
+    Set for both `!` and `!!` shell output, which render through
     `AssistantMessage` without invoking the agent. Lets callers ask whether the
-    *agent* produced anything in a thread rather than trusting the row type.
+    *agent* produced anything in a thread rather than trusting the row type —
+    see `_store_has_server_output` and the `/copy` scan in `app.py`.
     Never set on a restored transcript: shell output reaches thread state as a
     `<user_shell_command>` human message, not as an assistant turn.
     """
@@ -368,6 +376,7 @@ class MessageData:
             DiffMessage,
             ErrorMessage,
             LazyToolGroupSummary,
+            ReasoningMessage,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -392,6 +401,11 @@ class MessageData:
                 return AssistantMessage(
                     self.content, id=self.id, local_only=self.assistant_local_only
                 )
+
+            case MessageType.REASONING:
+                widget = ReasoningMessage(self.content, id=self.id)
+                widget._deferred_expanded = self.reasoning_expanded
+                return widget
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -493,6 +507,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            ReasoningMessage,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -531,6 +546,15 @@ class MessageData:
                 id=widget_id,
                 is_streaming=widget._stream is not None,
                 assistant_local_only=widget._local_only,
+            )
+
+        if isinstance(widget, ReasoningMessage):
+            return cls(
+                type=MessageType.REASONING,
+                content=widget._content,
+                id=widget_id,
+                is_streaming=widget._streaming,
+                reasoning_expanded=widget._expanded,
             )
 
         if isinstance(widget, ToolCallMessage):
@@ -646,7 +670,7 @@ class MessageStore:
             hydration starts.
     """
 
-    INITIAL_WINDOW_SIZE: int = 100
+    INITIAL_WINDOW_SIZE: int = 30
     WINDOW_SIZE: int = 800
     HARD_WINDOW_SIZE: int = 900
     HYDRATE_BUFFER: int = 8
@@ -1044,6 +1068,30 @@ class MessageStore:
             count: Number of messages that were hydrated below the window.
         """
         self._visible_end = min(len(self._messages), self._visible_end + count)
+
+    def get_tail_window(self, count: int) -> list[MessageData] | None:
+        """Return a bounded tail window when moving there preserves live rows.
+
+        Returns:
+            The tail rows, or None when the move would archive a protected row.
+        """
+        start = max(0, len(self._messages) - max(0, count))
+        if any(self.is_protected(message.id) for message in self._messages[:start]):
+            return None
+        return self._messages[start:]
+
+    def move_visible_window_to_tail(self, count: int) -> list[MessageData] | None:
+        """Move the visible range directly to a bounded protected-safe tail.
+
+        Returns:
+            The new visible tail, or None when a protected row blocks the move.
+        """
+        tail = self.get_tail_window(count)
+        if tail is None:
+            return None
+        self._visible_end = len(self._messages)
+        self._visible_start = self._visible_end - len(tail)
+        return tail
 
     def should_hydrate_above(
         self,

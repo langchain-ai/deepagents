@@ -323,15 +323,16 @@ class ModelLabel(Widget):
         if len(model_with_effort) <= width:
             return self._clickable_content(model, effort=self.effort)
         suffix = f" {self.effort}" if self.effort else ""
-        if suffix and width > len(suffix) + 1:
+        ellipsis = get_glyphs().ellipsis
+        if suffix and width > len(suffix) + len(ellipsis):
             model_width = width - len(suffix)
-            truncated_model = f"\u2026{model[-(model_width - 1) :]}"
+            truncated_model = ellipsis + model[-(model_width - len(ellipsis)) :]
             return self._clickable_content(truncated_model, effort=self.effort)
         if len(model) <= width:
             return self._clickable_content(model)
-        if width > 1:
-            return self._clickable_content("\u2026" + model[-(width - 1) :])
-        return self._clickable_content("\u2026")
+        if width > len(ellipsis):
+            return self._clickable_content(ellipsis + model[-(width - len(ellipsis)) :])
+        return self._clickable_content(ellipsis[:width])
 
 
 class BranchLabel(Widget):
@@ -658,7 +659,7 @@ class StatusBar(Vertical):
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         self.cwd = self._initial_cwd
         if self._hide_cwd:
@@ -668,9 +669,9 @@ class StatusBar(Vertical):
                 self.query_one("#branch-display", BranchLabel).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
-        label.provider = settings.model_provider or ""
-        label.model = settings.model_name or ""
-        self.set_context_limit(settings.model_context_limit)
+        label.provider = runtime_state.model_provider or ""
+        label.model = runtime_state.model_name or ""
+        self.set_context_limit(runtime_state.model_context_limit)
         with suppress(NoMatches):
             self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on

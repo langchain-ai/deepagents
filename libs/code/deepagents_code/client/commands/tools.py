@@ -1,8 +1,8 @@
 """The `dcode tools` command group: provision managed external tools.
 
 `dcode tools install` fetches the pinned, SHA-256-verified ripgrep binary into
-`~/.deepagents/bin` (the same managed path used on first run) and is also handy
-for repairing a missing or stale `rg`. The install script calls this verb
+the dcode installation (the same managed path used on first run) and is also
+handy for repairing a missing or stale `rg`. The install script calls this verb
 instead of re-encoding the pinned version + checksum table in bash.
 
 `dcode tools list` prints the tools available to the agent, grouped by source
@@ -97,8 +97,11 @@ def _run_tools_list(args: argparse.Namespace) -> int:
         explicit `--mcp-config` was given but MCP discovery failed.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
-    from deepagents_code._server_config import _resolve_enable_interpreter
-    from deepagents_code.main import _parse_allow_fs_tools_flag, _resolve_agent_arg
+    from deepagents_code.main import (
+        _parse_allow_fs_tools_flag,
+        _resolve_agent_arg,
+        _resolve_interpreter_enabled,
+    )
     from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
@@ -106,9 +109,11 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     assistant_id = (
         _resolve_agent_arg(args) if hasattr(args, "agent") else DEFAULT_AGENT_NAME
     )
-    enable_interpreter = _resolve_enable_interpreter(
-        getattr(args, "interpreter", None), getattr(args, "sandbox", None)
-    )
+    # Shares the launch's resolution rule so the catalog cannot claim a tool
+    # the launch would refuse to build (or omit one policy enables).
+    # `strict=False`: a listing has nothing to abort, so an unsatisfiable
+    # combination reports the interpreter as absent, which it would be.
+    enable_interpreter = _resolve_interpreter_enabled(args, strict=False)
     catalog = collect_catalog(
         assistant_id=assistant_id,
         enable_interpreter=enable_interpreter,

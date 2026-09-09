@@ -22,12 +22,3 @@ def test_modal_navigation_hint_copy(glyphs: Glyphs, expected: str) -> None:
     instead of passing against its own f-string.
     """
     assert modal_navigation_hint(glyphs) == expected
-
-
-def test_modal_navigation_hint_advertises_both_tab_directions() -> None:
-    """The copy names Shift+Tab, not just Tab.
-
-    Reverse navigation is routed by the app rather than the screen, so it is
-    the direction most likely to be dropped without the footer noticing.
-    """
-    assert "Tab/Shift+Tab" in modal_navigation_hint(UNICODE_GLYPHS)

@@ -128,7 +128,8 @@ class SandboxConfig:
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
-        from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
         from deepagents_code.configuration.service import get_config_sources
         from deepagents_code.configuration.types import Invalid, ProviderHealth
 
@@ -171,20 +172,24 @@ class SandboxConfig:
         if default_option is None or providers_option is None:
             msg = "sandbox options are missing from the config manifest"
             raise RuntimeError(msg)
-        default = resolve_ranked_scalar(
-            default_option,
-            toml_data=sources.user.data,
-            managed_toml_data=sources.managed.data,
-            managed_status=sources.managed.status,
-            user_status=sources.user.status,
-        ).value
-        providers_resolved = resolve_ranked_scalar(
-            providers_option,
-            toml_data=sources.user.data,
-            managed_toml_data=sources.managed.data,
-            managed_status=sources.managed.status,
-            user_status=sources.user.status,
-        )
+        # Resolve against the supplied snapshots: a non-default `config_path`
+        # deliberately excludes managed policy, and the shared process cache
+        # always reads the default path.
+        resolver = resolver_from_snapshots(managed=sources.managed, user=sources.user)
+        default_resolved = resolver.get(default_option)
+        default = default_resolved.value
+        if any(
+            isinstance(result, Invalid)
+            for result in default_resolved.tier_health.values()
+        ):
+            # Without this the value degrades to `None` and nothing is logged,
+            # on the option that decides which sandbox executes agent code.
+            # `dcode doctor` covers file health, not value health -- the file
+            # parses fine, and the rejected entry is reported nowhere.
+            logger.warning(
+                "[sandboxes].default is not a string; ignoring the default sandbox"
+            )
+        providers_resolved = resolver.get(providers_option)
         providers = providers_resolved.value
         if providers is None:
             if any(

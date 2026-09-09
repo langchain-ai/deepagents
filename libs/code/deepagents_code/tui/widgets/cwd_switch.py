@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.sessions import format_path
 
 if TYPE_CHECKING:
@@ -37,6 +38,9 @@ used at distinct sites, so a checker already keeps them apart) -- so a mode toke
 is never mistaken for an outcome token in a log, test, or debugger.
 `test_abort_mode_tokens_disjoint_from_choice` enforces it.
 """
+
+CwdSwitchServerRefusal = Literal["restart", "unavailable"]
+"""How the client can respond to the server's workspace refusal."""
 
 
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
@@ -101,6 +105,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         thread_cwd: str,
         project_settings_change_detected: bool = False,
         abort: CwdSwitchAbortMode | None = None,
+        server_refusal: CwdSwitchServerRefusal | None = None,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
@@ -108,6 +113,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
         self._abort: CwdSwitchAbortMode | None = abort
+        self._server_refusal = server_refusal
 
     def _title_text(self) -> str:
         """Return the title, phrased for the flow that opened the prompt.
@@ -118,6 +124,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         mode fails statically here rather than silently inheriting the resume
         wording.
         """
+        if self._server_refusal == "restart":
+            return "Restart required to switch directories"
+        if self._server_refusal == "unavailable":
+            return "Cannot switch directories from this client"
         if self._abort is None or self._abort == "resume":
             return "Resume from the thread's original directory?"
         if self._abort == "thread_switch":
@@ -128,8 +138,18 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """Return the prompt body text."""
         current = format_path(self._current_cwd)
         target = format_path(self._thread_cwd)
+        if self._server_refusal == "restart":
+            return (
+                f"To use {target}, restart the agent server. "
+                "Any running work will stop."
+            )
+        if self._server_refusal == "unavailable":
+            return (
+                f"This client cannot switch to {target}. Open this thread in a "
+                "client that can use that directory."
+            )
         settings_note = (
-            "\n\nSwitching may also reload project-specific config like .env, "
+            "\n\nSwitching will also reload project-specific config like .env, "
             "MCP, skills, and AGENTS.md."
             if self._project_settings_change_detected
             else ""
@@ -153,7 +173,11 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
-        help_text = "Enter: switch · Esc: stay in cwd"
+        if self._server_refusal == "restart":
+            return f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
+        if self._server_refusal == "unavailable":
+            return "Enter or Esc: stay here"
+        help_text = f"Enter: switch {get_glyphs().separator} Esc: stay in cwd"
         if self._abort is None:
             return help_text
         if self._abort == "resume":
@@ -162,7 +186,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             abort_help = "A: don't switch"
         else:
             assert_never(self._abort)
-        return f"{help_text} · {abort_help}"
+        return f"{help_text} {get_glyphs().separator} {abort_help}"
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -217,7 +241,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         return True
 
     def action_switch(self) -> None:
-        """Dismiss with `switch`."""
+        """Dismiss with `switch`, or stay when no switch is available."""
+        if self._server_refusal == "unavailable":
+            self.action_stay()
+            return
         self.dismiss("switch")
 
     def action_stay(self) -> None:
@@ -299,7 +326,8 @@ class HookTrustScreen(ModalScreen[HookTrustChoice]):
                 markup=False,
             )
             yield Static(
-                "Enter: allow once · A: always allow · Esc: deny",
+                f"Enter: allow once {get_glyphs().separator} A: always allow "
+                f"{get_glyphs().separator} Esc: deny",
                 classes="cwd-switch-help",
                 markup=False,
             )

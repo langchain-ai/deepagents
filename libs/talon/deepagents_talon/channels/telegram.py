@@ -6,6 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import mimetypes
@@ -44,6 +45,7 @@ from deepagents_talon.interfaces import (
     ReactionHandler,
     SendResult,
 )
+from deepagents_talon.observability import log_debug_event
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -74,6 +76,11 @@ class _TelegramError(RuntimeError):
         """Initialize the Telegram error."""
         super().__init__(message)
         self.retry_after = retry_after
+
+
+def _telegram_error_type(error: _TelegramError) -> str:
+    cause = error.__cause__
+    return type(cause).__name__ if cause is not None else type(error).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +224,16 @@ class _TelegramTransport:
         Raises:
             _TelegramError: If the request fails or the API returns an error.
         """
-        return await asyncio.to_thread(self._request, method, params)
+        try:
+            return await asyncio.to_thread(self._request, method, params)
+        except _TelegramError as error:
+            log_debug_event(
+                logger,
+                "telegram.api.request.failed",
+                error_type=_telegram_error_type(error),
+                method=method,
+            )
+            raise
 
     async def upload(
         self,
@@ -241,7 +257,16 @@ class _TelegramTransport:
         Raises:
             _TelegramError: If the request fails or the API returns an error.
         """
-        return await asyncio.to_thread(self._upload, method, file_field, file_path, params)
+        try:
+            return await asyncio.to_thread(self._upload, method, file_field, file_path, params)
+        except _TelegramError as error:
+            log_debug_event(
+                logger,
+                "telegram.api.upload.failed",
+                error_type=_telegram_error_type(error),
+                method=method,
+            )
+            raise
 
     def _request(self, method: str, params: dict[str, object]) -> object:
         url = f"{self.api_base}/bot{self.token}/{method}"
@@ -287,7 +312,12 @@ class _TelegramTransport:
                 timeout=self.timeout,
             ) as response:
                 payload = json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise _TelegramError(msg) from error
         return _validate_response(payload)
@@ -346,6 +376,14 @@ class TelegramChannel:
 
     async def start(self) -> None:
         """Load persisted offset, call getMe, and start the long-polling loop."""
+        log_debug_event(
+            logger,
+            "telegram.channel.starting",
+            exposure=self._exposure.mode.value,
+            inbound_media_enabled=self.config.inbound_media_dir is not None,
+            poll_interval_seconds=self.config.poll_interval_seconds,
+            poll_timeout_seconds=self.config.poll_timeout_seconds,
+        )
         self.config.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config.session_dir.chmod(0o700)
         if self.config.inbound_media_dir is not None:
@@ -355,15 +393,23 @@ class TelegramChannel:
         self._offset = _load_offset(self.config.offset_file)
         await self._identify_bot()
         self._poll = asyncio.create_task(self._poll_updates(), name="talon:telegram:poll")
+        log_debug_event(
+            logger,
+            "telegram.channel.started",
+            connected=self._status.connected,
+            offset_loaded=self._offset > 0,
+        )
 
     async def stop(self) -> None:
         """Stop the polling task and mark the channel as disconnected."""
+        log_debug_event(logger, "telegram.channel.stopping", poll_active=self._poll is not None)
         self._stopped.set()
         if self._poll is not None:
             self._poll.cancel()
             await asyncio.gather(self._poll, return_exceptions=True)
             self._poll = None
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
+        log_debug_event(logger, "telegram.channel.stopped")
 
     async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send chunked plain text.
@@ -375,13 +421,27 @@ class TelegramChannel:
         Returns:
             Result indicating whether the send succeeded.
         """
-        for chunk in chunk_text(text, limit=MAX_TEXT_CHARS):
+        chunks = chunk_text(text, limit=MAX_TEXT_CHARS)
+        log_debug_event(
+            logger,
+            "telegram.outbound.text.started",
+            chunk_count=len(chunks),
+            text_chars=len(text),
+        )
+        for chunk in chunks:
             payload = await self._transport.call(
                 "sendMessage",
                 chat_id=conversation_id,
                 text=chunk,
             )
-        return SendResult(success=True, message_id=_extract_telegram_message_id(payload))
+        message_id = _extract_telegram_message_id(payload)
+        log_debug_event(
+            logger,
+            "telegram.outbound.text.completed",
+            chunk_count=len(chunks),
+            message_id_present=message_id is not None,
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send validated image, video, or document media to a Telegram chat.
@@ -403,6 +463,13 @@ class TelegramChannel:
         )
         caption = await self._media_caption(conversation_id, checked.caption)
         method, file_field = _telegram_send_method(checked.media_type)
+        log_debug_event(
+            logger,
+            "telegram.outbound.media.started",
+            caption_present=caption is not None,
+            media_type=checked.media_type,
+            method=method,
+        )
         params: dict[str, object] = {"chat_id": conversation_id}
         if caption:
             params["caption"] = caption
@@ -412,7 +479,15 @@ class TelegramChannel:
             file_path=checked.path,
             **params,
         )
-        return SendResult(success=True, message_id=_extract_telegram_message_id(payload))
+        message_id = _extract_telegram_message_id(payload)
+        log_debug_event(
+            logger,
+            "telegram.outbound.media.completed",
+            media_type=checked.media_type,
+            message_id_present=message_id is not None,
+            method=method,
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, conversation_id: str) -> None:
         """Send a Telegram typing indicator.
@@ -426,8 +501,12 @@ class TelegramChannel:
                 chat_id=conversation_id,
                 action="typing",
             )
-        except _TelegramError:
-            logger.debug("Could not send Telegram typing indicator", exc_info=True)
+        except _TelegramError as error:
+            log_debug_event(
+                logger,
+                "telegram.outbound.typing.failed",
+                error_type=_telegram_error_type(error),
+            )
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously sent Telegram message.
@@ -453,10 +532,16 @@ class TelegramChannel:
         return self._status
 
     async def _identify_bot(self) -> None:
+        log_debug_event(logger, "telegram.bot.identification.started")
         try:
             payload = await self._transport.call("getMe")
-        except _TelegramError:
-            logger.exception("Telegram getMe failed during startup")
+        except _TelegramError as error:
+            logger.log(logging.ERROR, "Telegram getMe failed during startup")
+            log_debug_event(
+                logger,
+                "telegram.bot.identification.failed",
+                error_type=_telegram_error_type(error),
+            )
             self._status = ChannelStatus(
                 provider="telegram",
                 connected=False,
@@ -470,7 +555,13 @@ class TelegramChannel:
         username = result.get("username") if isinstance(result, dict) else None
         if isinstance(username, str):
             self._bot_username = username
-            logger.info("Telegram bot connected as @%s", username)
+            logger.info("Telegram bot connected")
+        log_debug_event(
+            logger,
+            "telegram.bot.identification.completed",
+            bot_id_present=self._bot_id is not None,
+            username_present=self._bot_username is not None,
+        )
         self._status = ChannelStatus(
             provider="telegram",
             connected=True,
@@ -495,6 +586,12 @@ class TelegramChannel:
                     allowed_updates=_ALLOWED_UPDATES,
                 )
                 updates = _extract_updates(payload)
+                if updates:
+                    log_debug_event(
+                        logger,
+                        "telegram.poll.batch.received",
+                        update_count=len(updates),
+                    )
                 self._status = ChannelStatus(
                     provider="telegram",
                     connected=True,
@@ -504,6 +601,11 @@ class TelegramChannel:
                     await self._process_update(update)
                 if updates:
                     self._advance_offset(updates)
+                    log_debug_event(
+                        logger,
+                        "telegram.poll.batch.completed",
+                        update_count=len(updates),
+                    )
             except _TelegramError as error:
                 delay = (
                     error.retry_after
@@ -515,6 +617,13 @@ class TelegramChannel:
                     delay,
                     error,
                 )
+                log_debug_event(
+                    logger,
+                    "telegram.poll.retrying",
+                    error_type=_telegram_error_type(error),
+                    retry_after_seconds=delay,
+                    server_retry_after=error.retry_after is not None,
+                )
                 self._status = ChannelStatus(
                     provider="telegram",
                     connected=False,
@@ -522,8 +631,15 @@ class TelegramChannel:
                 )
                 await asyncio.sleep(delay)
                 continue
-            except (urllib.error.URLError, TimeoutError):
-                logger.exception("Telegram long-polling error; retrying after interval")
+            except (urllib.error.URLError, TimeoutError) as error:
+                logger.warning("Telegram long-polling error; retrying after interval")
+                log_debug_event(
+                    logger,
+                    "telegram.poll.retrying",
+                    error_type=type(error).__name__,
+                    retry_after_seconds=self.config.poll_interval_seconds,
+                    server_retry_after=False,
+                )
                 self._status = ChannelStatus(
                     provider="telegram",
                     connected=False,
@@ -567,14 +683,24 @@ class TelegramChannel:
             self.config.allowed_user_ids,
             message,
         ):
-            logger.debug(
-                "Dropping Telegram message %s from %s due to exposure policy",
-                message.message_id,
-                message.conversation_id,
+            log_debug_event(
+                logger,
+                "telegram.inbound.message.rejected",
+                exposure=self._exposure.mode.value,
+                has_media=bool(message.metadata.get("has_media")),
+                text_chars=len(message.text),
             )
             return
         message = await self._prepare_inbound_media(message)
+        log_debug_event(
+            logger,
+            "telegram.inbound.message.dispatching",
+            has_media=bool(message.metadata.get("has_media")),
+            media_type=message.metadata.get("media_type"),
+            text_chars=len(message.text),
+        )
         await dispatch_message(self._handler, message, provider="Telegram")
+        log_debug_event(logger, "telegram.inbound.message.dispatched")
 
     async def _process_reaction(self, reaction: ChannelReaction) -> None:
         if not _allows_telegram_reaction(
@@ -582,13 +708,15 @@ class TelegramChannel:
             self.config.allowed_user_ids,
             reaction,
         ):
-            logger.debug(
-                "Dropping Telegram reaction %s on %s due to exposure policy",
-                reaction.message_id,
-                reaction.conversation_id,
+            log_debug_event(
+                logger,
+                "telegram.inbound.reaction.rejected",
+                exposure=self._exposure.mode.value,
             )
             return
+        log_debug_event(logger, "telegram.inbound.reaction.dispatching")
         await self._dispatch_reaction(reaction)
+        log_debug_event(logger, "telegram.inbound.reaction.dispatched")
 
     async def _dispatch_reaction(self, reaction: ChannelReaction) -> None:
         if self._reaction_handler is None:
@@ -611,10 +739,12 @@ class TelegramChannel:
                 message_id=message.message_id,
             )
         except (ChannelMediaError, _TelegramError, urllib.error.URLError, TimeoutError) as error:
-            logger.warning(
-                "Skipping Telegram inbound media for message %s: %s",
-                message.message_id,
-                error,
+            logger.warning("Skipping Telegram inbound media after download failure")
+            log_debug_event(
+                logger,
+                "telegram.inbound.media.failed",
+                error_type=type(error).__name__,
+                media_type=media_type,
             )
             metadata = dict(message.metadata)
             metadata["has_media"] = False
@@ -622,6 +752,12 @@ class TelegramChannel:
             return replace(message, metadata=metadata)
         path = str(destination)
         mime_type = _downloaded_mime_type(destination, dict(message.metadata))
+        log_debug_event(
+            logger,
+            "telegram.inbound.media.completed",
+            media_type=media_type,
+            mime_type_present=mime_type is not None,
+        )
         return message_with_media_paths(
             message,
             media_paths=[path],

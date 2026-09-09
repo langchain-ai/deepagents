@@ -41,6 +41,7 @@ from deepagents_code._debug_buffer import (
     retention_bucket_for_level,
 )
 from deepagents_code.clipboard import copy_text_to_clipboard
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
 from deepagents_code.unicode_security import sanitize_control_chars
@@ -1152,7 +1153,9 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · Enter copy line",
+            f"Esc close {get_glyphs().separator} Ctrl+L clear view "
+            f"{get_glyphs().separator} c copy visible logs "
+            f"{get_glyphs().separator} Enter copy line",
             "dim italic",
         )
 

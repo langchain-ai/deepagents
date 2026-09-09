@@ -1,5 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+from deepagents_talon import speech
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMessage
 from deepagents_talon.speech import (
@@ -135,3 +138,24 @@ async def test_transcribe_voice_message_ignores_plain_document() -> None:
 
     assert updated == message
     assert transcriber.calls == 0
+
+
+def test_local_pipeline_uses_talon_home_cache(tmp_path: Path, monkeypatch) -> None:
+    config = TalonConfig.from_env({"DEEPAGENTS_TALON_HOME": str(tmp_path)})
+    download = Mock(return_value=str(tmp_path / "snapshot"))
+    pipeline = Mock()
+    modules = {
+        "huggingface_hub": SimpleNamespace(snapshot_download=download),
+        "transformers": SimpleNamespace(pipeline=pipeline),
+    }
+    monkeypatch.setattr(speech.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setattr(speech, "_local_pipelines", {})
+
+    speech._load_local_pipeline(DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL, "cpu", config)
+
+    download.assert_called_once_with(
+        repo_id=DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
+        cache_dir=str(tmp_path / "cache" / "models" / "huggingface"),
+        token=False,
+    )
+    assert pipeline.call_args.kwargs["model"] == download.return_value

@@ -16,18 +16,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
+import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
-from deepagents_code.tools import fetch_url, web_search
+from deepagents_code.tools import create_web_search_tool, fetch_url
+from deepagents_talon.archive import ArchiveScope, conversation_tools
+from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.authorization import (
+    reset_authorization_handler,
+    set_authorization_handler,
+)
+from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.clock import current_time
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -36,13 +50,26 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
-from deepagents_talon.observability import log_event, stable_log_ref
+from deepagents_talon.mcp_config import MCP_CONFIG_AUTO_APPROVE_ENV, MCP_CONFIG_UPDATE_TOOL
+from deepagents_talon.observability import (
+    AgentActivityCallback,
+    agent_activity_logging_enabled,
+    log_event,
+    stable_log_ref,
+)
+from deepagents_talon.subagents import (
+    Attachment,
+    LocalSubAgent,
+    TaskTools,
+    _tool_map,
+    prepare_subagents,
+)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-    from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware import AgentState, InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -57,7 +84,11 @@ DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
 _ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
-    {"start_async_task", "update_async_task", "cancel_async_task"}
+    {
+        "start_async_task",
+        "update_async_task",
+        "cancel_async_task",
+    }
 )
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
@@ -156,7 +187,12 @@ _CRON_AUTO_DENY_MESSAGE = (
 _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
-_LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_INTERRUPTED_MESSAGE = "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+
+_HISTORY_SCOPE: contextvars.ContextVar[ArchiveScope | None] = contextvars.ContextVar(
+    "talon_history_scope",
+    default=None,
+)
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -172,6 +208,9 @@ class EchoAgentRuntime:
 
     async def stop(self) -> None:
         """Release placeholder runtime resources."""
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Leave placeholder conversation state unchanged."""
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Return the request text as a trivial agent response.
@@ -199,10 +238,16 @@ class DeepAgentRuntime:
 
     Args:
         model: Chat model identifier for `create_deep_agent`.
-        tools: Runtime tools exposed to the agent in addition to web and cron tools.
+        tools: Runtime tools exposed to the agent in addition to the clock,
+            web, and cron tools.
+        refresh_tools: Optional callback that supplies replacement runtime tools
+            after an external authorization changes their availability.
+        reload_tools: Optional callback that reloads runtime tools on demand.
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
         subagents: Optional subagent specs available to the main agent.
+        load_subagents: Optional callback reading configured subagents at startup
+            and when explicitly reloaded.
         assistant_dir: Materialized assistant directory containing `AGENTS.md`,
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
@@ -218,7 +263,7 @@ class DeepAgentRuntime:
             assistant-local memory file.
         checkpointer: Optional LangGraph checkpointer. Defaults to in-memory
             checkpointing so turns in the same conversation share chat history.
-        include_web_tools: Whether to include fetch/search/request tools.
+        include_web_tools: Whether to attach built-in web tools to external research.
         recursion_limit: Per-invocation graph recursion limit.
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
@@ -230,8 +275,14 @@ class DeepAgentRuntime:
         *,
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
+        refresh_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]] | None]]
+        | None = None,
+        reload_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]]]]
+        | None = None,
         system_prompt: str | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+        load_subagents: Callable[[], Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent]]
+        | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
         backend: BackendProtocol | None = None,
@@ -261,9 +312,12 @@ class DeepAgentRuntime:
 
         self.model = model
         self.tools = tuple(tools)
+        self.refresh_tools = refresh_tools
+        self.reload_tools = reload_tools
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
-        self._has_async_subagents = _has_async_subagents(self.subagents)
+        self.load_subagents = load_subagents
+        self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -278,39 +332,138 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self._graph: object | None = None
+        self._attachments: list[Attachment] = []
+        self._mcp_reload_failed = False
+        self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+            "talon_invocation_graph",
+            default=None,
+        )
+        self._tools_lock = asyncio.Lock()
+        self.background = BackgroundSubagents()
+        self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
+            contextvars.ContextVar("talon_subagent_results", default=None)
+        )
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        tools = self._build_tools()
+        self._resolved_subagents = self._resolve_subagents(strict=True)
+        self._graph = self._create_graph()
+
+    def _create_graph(
+        self,
+        runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+        *,
+        subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    ) -> object:
+        resolved = [
+            spec.copy() for spec in (self._resolved_subagents if subagents is None else subagents)
+        ]
+        tools = self._build_tools(runtime_tools)
+        interrupt_on = _interrupt_on_with_mcp_config(self.interrupt_on, self.env, tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
+        for spec in resolved:
+            if (
+                "runnable" not in spec
+                and "graph_id" not in spec
+                and isinstance(spec.get("model"), str)
+            ):
+                local = cast("LocalSubAgent", spec)
+                local["model"] = _resolve_model_from_env(
+                    cast("str", local["model"]), self.env, context_size=context_size
+                )
+        local_subagents = [
+            spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
+        ]
+        attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        catalog = _tool_map(attachments_tools)
+        web_tools = _tool_map([fetch_url]) if self.include_web_tools else {}
+        tavily_key = self.env.get("TAVILY_API_KEY", "").strip()
+        if self.include_web_tools and tavily_key:
+            web_tools["web_search"] = create_web_search_tool(tavily_key)
+        for spec in local_subagents:
+            _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
+        resolved, attachments = prepare_subagents(resolved, attachments_tools, model, interrupt_on)
+        tools.append(self._attachment_tool(attachments))
         middleware = list(self.middleware)
+        task_tools = TaskTools(
+            model,
+            interrupt_on,
+            subagents=local_subagents,
+            prepared=[
+                cast("CompiledSubAgent", spec) for spec in resolved if "graph_id" not in spec
+            ],
+            backend=self.backend,
+        )
+        middleware.append(task_tools)
+        middleware.append(self.background.configured(resolved))
+        interrupt_on = _interrupt_on_with_async_subagents(
+            interrupt_on, has_async_subagents=_has_async_subagents(resolved)
+        )
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
-        self._graph = create_deep_agent(
+        graph = create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=self._resolve_subagents(),
+            subagents=resolved or None,
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
-            interrupt_on=_interrupt_on_with_async_subagents(
-                self.interrupt_on,
-                has_async_subagents=self._has_async_subagents,
-            ),
+            interrupt_on=interrupt_on,
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
+        node = getattr(getattr(graph, "nodes", {}).get("tools"), "bound", None)
+        if isinstance(node, ToolNode) and "task" in node.tools_by_name:
+            selectable = task_tools.bind(node.tools_by_name)
+            for attachment in attachments:
+                if attachment["name"] in {spec["name"] for spec in local_subagents}:
+                    attachment["selectable_tools"] = selectable
+        attachments.insert(
+            0,
+            {
+                "name": "main",
+                "mode": "conversation",
+                "tools": sorted(node.tools_by_name) if isinstance(node, ToolNode) else None,
+            },
+        )
+        self._attachments = attachments
+        return graph
 
     async def stop(self) -> None:
         """Release runtime resources."""
+        if not await self.background.cancel():
+            msg = "Background subagents did not stop; runtime resources remain open"
+            raise RuntimeError(msg)
         self._graph = None
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
             result = cleanup()
             if isinstance(result, Awaitable):
                 await result
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Append an interruption marker after the latest committed checkpoint."""
+        if self._graph is None:
+            msg = "DeepAgentRuntime must be started before recovery"
+            raise RuntimeError(msg)
+
+        config = {"configurable": {"thread_id": conversation_id}}
+        get_state = getattr(self._graph, "aget_state", None)
+        update_state = getattr(self._graph, "aupdate_state", None)
+        if not callable(get_state) or not callable(update_state):
+            msg = "Deep Agents graph does not expose async state recovery"
+            raise TypeError(msg)
+        snapshot = await get_state(config)
+        checkpoint_config = getattr(snapshot, "config", None) or config
+        values = cast("AgentState[Any]", getattr(snapshot, "values", {}))
+        repair = PatchToolCallsMiddleware().before_agent(values, cast("Any", None))
+        messages = [] if repair is None else repair.get("messages", [])
+        await update_state(
+            checkpoint_config,
+            {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+        )
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Invoke the Deep Agents graph for one Talon request.
@@ -328,27 +481,171 @@ class DeepAgentRuntime:
             msg = "DeepAgentRuntime must be started before invoke"
             raise RuntimeError(msg)
 
+        await self._refresh_runtime_tools()
+        graph_token = self._invocation_graph.set(self._graph)
+        pending = self.background.results(request.conversation_id)
+        pending_token = self._pending_results.set(pending)
+        activity = self._activity_callback(request)
+        if activity is not None:
+            activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
+        history_token = _HISTORY_SCOPE.set(_history_scope(request))
+        authorization_token = set_authorization_handler(request.authorization_handler)
         try:
-            text = await self._invoke_until_text(request)
+            text = await self._invoke_until_text(request, activity)
+        except BaseException as error:
+            if activity is not None:
+                activity.run_failed(error)
+            raise
         finally:
+            reset_authorization_handler(authorization_token)
+            _HISTORY_SCOPE.reset(history_token)
             _CRON_ORIGIN.reset(token)
+            self._invocation_graph.reset(graph_token)
+            self._pending_results.reset(pending_token)
+        if activity is not None:
+            activity.run_completed(text)
+        self.background.acknowledge(pending)
         return AgentResult(text=text)
 
-    def _build_tools(self) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = []
-        if self.include_web_tools:
-            tools.extend([fetch_url, web_search])
+    @property
+    def history_enabled(self) -> bool:
+        """Whether this runtime uses the persistent conversation archive."""
+        return isinstance(self.checkpointer, ConversationSaver)
+
+    async def clear_history(self, channel: str, chat: str) -> None:
+        """Erase all persisted sessions belonging to a channel and chat.
+
+        Args:
+            channel: Trusted channel provider identifier.
+            chat: Channel-specific chat identifier supplied by the host.
+
+        Raises:
+            TypeError: If the configured checkpointer does not support archives.
+        """
+        if not isinstance(self.checkpointer, ConversationSaver):
+            msg = "Conversation history reset requires a ConversationSaver wrapper"
+            raise TypeError(msg)
+        await self.checkpointer.clear_history(
+            ArchiveScope(talon_history_channel=channel, talon_history_chat=chat)
+        )
+
+    async def _refresh_runtime_tools(self) -> None:
+        if self.refresh_tools is None:
+            return
+        async with self._tools_lock:
+            try:
+                refreshed = await self.refresh_tools()
+                if refreshed is not None:
+                    self._replace_runtime_tools(refreshed)
+            except Exception:  # noqa: BLE001  # keep the previous graph usable after an invalid edit
+                self._mcp_reload_failed = True
+                logger.warning("MCP reload failed; saved changes are inactive")
+
+    async def reload_mcp_configuration(self) -> None:
+        """Reload MCP tools without restarting the Talon runtime."""
+        if self.reload_tools is None:
+            msg = "MCP configuration reload is unavailable"
+            raise RuntimeError(msg)
+        async with self._tools_lock:
+            try:
+                self._replace_runtime_tools(await self.reload_tools())
+            except Exception:
+                self._mcp_reload_failed = True
+                raise
+
+    def _replace_runtime_tools(
+        self,
+        tools: Sequence[BaseTool | Callable[..., object]],
+    ) -> None:
+        replacement = tuple(tools)
+        graph = self._create_graph(replacement)
+        self.tools = replacement
+        self._graph = graph
+        self._mcp_reload_failed = False
+
+    async def reload_subagent_configuration(self) -> None:
+        """Activate validated definitions for subsequent turns, preserving active graphs."""
+        async with self._tools_lock:
+            replacement = self._resolve_subagents(strict=True)
+            graph = self._create_graph(subagents=replacement)
+            self._resolved_subagents = replacement
+            self._graph = graph
+
+    def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
+        @tool
+        def get_agent_tools() -> dict[str, object]:
+            """Inspect active tool attachments without credentials or prompt contents.
+
+            Null tools mean an opaque compiled/remote agent has not been inspected.
+            Saved edits require reload. Running turns and tasks retain old capabilities;
+            use list_subagents and cancel_subagent before claiming revocation is complete.
+            """
+            try:
+                changed = self._resolve_subagents(strict=True) != self._resolved_subagents
+            except Exception:  # noqa: BLE001  # never return configuration contents
+                changed = True
+            return {
+                "agents": attachments,
+                "latest_agents": self._attachments,
+                "saved_changes_inactive": changed or self._mcp_reload_failed,
+                "current_turn_uses_previous_graph": attachments is not self._attachments,
+                "running_tasks": "Running turns and tasks retain their original capabilities.",
+            }
+
+        return get_agent_tools
+
+    def _subagent_reload_tool(self) -> BaseTool:
+        @tool(
+            "reload_subagent_configuration",
+            description=(
+                "Call after adding, editing, or deleting Talon's local or remote subagent "
+                "definitions to validate and reload them. "
+                "Definitions are not reloaded automatically. "
+                "Definitions activate next turn; running local tasks keep their original graph."
+            ),
+        )
+        async def reload_subagent_configuration() -> dict[str, str]:
+            try:
+                await self.reload_subagent_configuration()
+            except Exception:  # noqa: BLE001  # report reload failure without leaking config values
+                return {
+                    "status": "failed",
+                    "message": "Saved changes are inactive; previous agents retained",
+                }
+            return {"status": "reloaded", "available": "next_turn"}
+
+        return reload_subagent_configuration
+
+    def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
+        if not agent_activity_logging_enabled(self.env):
+            return None
+        return AgentActivityCallback(logger, request.conversation_id)
+
+    def _build_tools(
+        self,
+        runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+    ) -> list[BaseTool | Callable[..., object]]:
+        tools: list[BaseTool | Callable[..., object]] = [current_time]
+        if isinstance(self.checkpointer, ConversationSaver):
+            tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
+        if self.assistant_dir is not None or self.load_subagents is not None:
+            tools.append(self._subagent_reload_tool())
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
-        tools.extend(self.tools)
+        tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 
-    async def _invoke_until_text(self, request: AgentRequest) -> str:
+    async def _invoke_until_text(
+        self,
+        request: AgentRequest,
+        activity: AgentActivityCallback | None,
+    ) -> str:
         state = await self._invoke_until_unblocked(
             _request_model_content(request),
             request,
+            activity,
         )
         text = _last_text(state)
         if text:
@@ -361,35 +658,57 @@ class DeepAgentRuntime:
                 attempt + 1,
                 self.max_continuations,
             )
-            state = await self._invoke_until_unblocked(
-                _CONTINUATION_NUDGE,
-                request,
-            )
+            state = await self._invoke_until_unblocked(_CONTINUATION_NUDGE, request, activity)
             text = _last_text(state)
             if text:
                 return text
 
-        state = await self._invoke_until_unblocked(
-            _FORCE_SUMMARY_PROMPT,
-            request,
-        )
+        state = await self._invoke_until_unblocked(_FORCE_SUMMARY_PROMPT, request, activity)
         return _last_text(state)
 
-    async def _invoke_with_retries(self, content: ModelContent, conversation_id: str) -> object:
+    async def _invoke_with_retries(
+        self,
+        content: ModelContent,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
         return await self._invoke_payload_with_retries(
-            {"messages": [{"role": "user", "content": content}]},
+            {
+                "messages": [
+                    *[
+                        {"role": "user", "id": task_id, "content": result}
+                        for task_id, result in (self._pending_results.get() or {}).items()
+                    ],
+                    {"role": "user", "content": content},
+                ]
+            },
             conversation_id,
+            activity,
         )
 
-    async def _resume_with_retries(self, command: Command, conversation_id: str) -> object:
-        return await self._invoke_payload_with_retries(command, conversation_id)
+    async def _resume_with_retries(
+        self,
+        command: Command,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
+        return await self._invoke_payload_with_retries(command, conversation_id, activity)
 
-    async def _invoke_payload_with_retries(self, payload: object, conversation_id: str) -> object:
+    async def _invoke_payload_with_retries(
+        self,
+        payload: object,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
         invoke = self._graph_invoke()
-        config = {
+        config: dict[str, object] = {
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
         }
+        if (scope := _HISTORY_SCOPE.get()) is not None:
+            config["metadata"] = scope
+        if activity is not None:
+            config["callbacks"] = [activity]
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -414,7 +733,10 @@ class DeepAgentRuntime:
         raise RuntimeError(msg)
 
     def _graph_invoke(self) -> Callable[..., Awaitable[object]]:
-        ainvoke = getattr(self._graph, "ainvoke", None)
+        graph = self._invocation_graph.get()
+        if graph is None:
+            graph = self._graph
+        ainvoke = getattr(graph, "ainvoke", None)
         if not callable(ainvoke):
             msg = "Deep Agents graph does not expose async invocation"
             raise TypeError(msg)
@@ -424,14 +746,15 @@ class DeepAgentRuntime:
         self,
         content: ModelContent,
         request: AgentRequest,
+        activity: AgentActivityCallback | None,
     ) -> object:
-        state = await self._invoke_with_retries(content, request.conversation_id)
+        state = await self._invoke_with_retries(content, request.conversation_id, activity)
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)
             if not interrupts:
                 return state
             resume = await self._build_approval_resume(request, interrupts)
-            state = await self._resume_with_retries(resume, request.conversation_id)
+            state = await self._resume_with_retries(resume, request.conversation_id, activity)
         msg = "agent hit tool approval interrupt limit"
         raise RuntimeError(msg)
 
@@ -496,13 +819,29 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
-    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+    def _resolve_subagents(
+        self, *, strict: bool = False
+    ) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
         resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         if self.assistant_dir is not None:
-            resolved.extend(_load_local_subagents(self.assistant_dir))
+            resolved.extend(_load_local_subagents(self.assistant_dir, strict=strict))
         if self.subagents is not None:
             resolved.extend(self.subagents)
-        return resolved or None
+        if self.load_subagents is not None:
+            resolved.extend(self.load_subagents())
+        names = [agent["name"] for agent in resolved]
+        if len(names) != len(set(names)):
+            msg = "Subagent names must be unique across local and remote definitions"
+            raise ValueError(msg)
+        snapshots = []
+        for agent in resolved:
+            snapshot = agent.copy()
+            if "graph_id" in snapshot:
+                remote = cast("AsyncSubAgent", snapshot)
+                if "headers" in remote:
+                    remote["headers"] = remote["headers"].copy()
+            snapshots.append(snapshot)
+        return snapshots
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
@@ -698,6 +1037,21 @@ def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
     if raw is None or not raw.strip():
         return {}
     return {name: True for name in (part.strip() for part in raw.split(",")) if name}
+
+
+def _interrupt_on_with_mcp_config(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    env: Mapping[str, str],
+    tools: Sequence[BaseTool | Callable[..., object]],
+) -> Mapping[str, bool | InterruptOnConfig] | None:
+    if not any(getattr(tool, "name", None) == MCP_CONFIG_UPDATE_TOOL for tool in tools):
+        return interrupt_on
+    if env.get(MCP_CONFIG_AUTO_APPROVE_ENV, "").strip().lower() == "true":
+        return interrupt_on
+    return {
+        **(interrupt_on or {}),
+        MCP_CONFIG_UPDATE_TOOL: {"allowed_decisions": ["approve", "reject"]},
+    }
 
 
 def _interrupt_on_with_async_subagents(
@@ -899,77 +1253,115 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
     return paths
 
 
-def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
+def _load_local_subagents(assistant_dir: Path, *, strict: bool = False) -> list[SubAgent]:
     agents_dir = _local_subagents_dir(assistant_dir)
-    if agents_dir is None:
+    if not agents_dir.is_dir():
         return []
-    subagents: list[SubAgent] = []
-    for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
-        if not child.is_dir():
+    subagents: dict[str, SubAgent] = {}
+    for directory in sorted(agents_dir.iterdir(), key=lambda path: path.name):
+        path = directory / "AGENTS.md"
+        if not directory.is_dir() or not path.is_file():
             continue
-        path = child / "AGENTS.md"
-        if not path.is_file():
-            continue
-        if not _valid_local_subagent_name(child.name):
-            logger.warning(
-                "Skipping Talon subagent prompt from %s: unsafe subagent name %r",
-                path,
-                child.name,
-            )
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
-            continue
-        description, system_prompt, model = _parse_local_subagent_prompt(text, child.name)
-        subagent: SubAgent = {
-            "name": child.name,
-            "description": description,
-            "system_prompt": system_prompt,
-        }
-        if model is not None:
-            subagent["model"] = model
-        subagents.append(subagent)
-    return subagents
+        subagent = _parse_local_subagent(path, fallback_name=directory.name)
+        if strict and (subagent is None or subagent["name"] in subagents):
+            msg = "Invalid or duplicate local subagent definition"
+            raise ValueError(msg)
+        if subagent is not None:
+            subagents[subagent["name"]] = subagent
+    return list(subagents.values())
 
 
-def _local_subagents_dir(assistant_dir: Path) -> Path | None:
-    local = assistant_dir / "agents"
-    if local.is_dir():
-        return local
-    sibling = assistant_dir.parent / "agents"
-    if sibling.is_dir():
-        return sibling
-    return None
-
-
-def _valid_local_subagent_name(name: str) -> bool:
-    return _LOCAL_SUBAGENT_NAME_PATTERN.fullmatch(name) is not None and name not in {".", ".."}
-
-
-def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
+def _parse_local_subagent(path: Path, *, fallback_name: str) -> SubAgent | None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Skipping Talon subagent %s: could not read file (%s)", path, exc)
+        return None
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", content, re.DOTALL)
     if match is None:
-        return _default_subagent_description(name), text, None
-    frontmatter = match.group(1)
-    description = _frontmatter_value(frontmatter, "description") or _default_subagent_description(
-        name
+        logger.warning("Skipping Talon subagent %s: missing YAML frontmatter", path)
+        return None
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        logger.warning("Skipping Talon subagent %s: invalid YAML frontmatter", path)
+        return None
+    return _subagent_from_frontmatter(path, frontmatter, match.group(2), fallback_name)
+
+
+def _subagent_from_frontmatter(
+    path: Path, frontmatter: object, prompt: str, fallback_name: str
+) -> SubAgent | None:
+    if not isinstance(frontmatter, dict):
+        logger.warning("Skipping Talon subagent %s: frontmatter must be a mapping", path)
+        return None
+    metadata = _normalize_subagent_metadata(
+        frontmatter.get("name", fallback_name),
+        frontmatter.get("description"),
+        frontmatter.get("model"),
     )
-    return description, match.group(2).lstrip(), _frontmatter_value(frontmatter, "model_id")
+    if metadata is None:
+        logger.warning("Skipping Talon subagent %s: invalid name, description, or model", path)
+        return None
+    name, description, model = metadata
+    subagent: SubAgent = {
+        "name": name,
+        "description": description,
+        "system_prompt": prompt.strip(),
+    }
+    if model:
+        subagent["model"] = model
+    _local_subagent_options(cast("LocalSubAgent", subagent), cast("dict[str, object]", frontmatter))
+    return subagent
 
 
-def _frontmatter_value(frontmatter: str, field: str) -> str | None:
-    for line in frontmatter.splitlines():
-        key, separator, value = line.partition(":")
-        if separator and key.strip() == field:
-            parsed = value.strip().strip("\"'")
-            return parsed or None
-    return None
+def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object]) -> None:
+    if frontmatter.get("mode", "fresh") != "fresh":
+        msg = "Talon subagents use fresh context; remove the mode setting"
+        raise ValueError(msg)
+    names = frontmatter.get("tools", [])
+    if (
+        not isinstance(names, list)
+        or any(not isinstance(name, str) or not name.strip() for name in names)
+        or len(names) != len(set(names))
+    ):
+        msg = "Local subagent tools must be unique, nonempty exact names"
+        raise ValueError(msg)
+    spec["tool_names"] = cast("list[str]", names)
 
 
-def _default_subagent_description(name: str) -> str:
-    return f"Use the {name} subagent."
+def _resolve_local_tools(
+    spec: LocalSubAgent,
+    catalog: Mapping[str, BaseTool],
+    web_tools: Mapping[str, BaseTool],
+) -> None:
+    external = spec["name"] == "external-research"
+    available = {**catalog, **web_tools} if external else catalog
+    if "tool_names" in spec:
+        names = spec.pop("tool_names")
+        if any(name not in available for name in names):
+            msg = "Subagent attachment is unavailable; previous configuration retained"
+            raise ValueError(msg)
+        spec["tools"] = [available[name] for name in names]
+    if external:
+        spec["tools"] = list({**_tool_map(spec.get("tools", [])), **web_tools}.values())
+
+
+def _normalize_subagent_metadata(
+    name: object, description: object, model: object
+) -> tuple[str, str, str | None] | None:
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(description, str) or not description.strip():
+        return None
+    if model is not None and not isinstance(model, str):
+        return None
+    return name.strip(), description.strip(), model
+
+
+def _local_subagents_dir(assistant_dir: Path) -> Path:
+    local = assistant_dir / "agents"
+    return local if local.is_dir() else assistant_dir.parent / "agents"
 
 
 def _prepare_memory_path(raw: str) -> str | None:
@@ -1045,3 +1437,19 @@ def _content_block_text(block: object) -> str:
         if isinstance(text, str):
             return text
     return ""
+
+
+def _history_scope(request: AgentRequest) -> ArchiveScope | None:
+    channel = request.metadata.get("history_channel")
+    chat = request.metadata.get("history_chat")
+    if isinstance(channel, str) and isinstance(chat, str):
+        return ArchiveScope(talon_history_channel=channel, talon_history_chat=chat)
+    return None
+
+
+def _current_history_scope() -> ArchiveScope:
+    scope = _HISTORY_SCOPE.get()
+    if scope is None:
+        msg = "Conversation retrieval requires a channel and chat supplied by the host"
+        raise RuntimeError(msg)
+    return scope

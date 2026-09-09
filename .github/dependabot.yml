@@ -19,7 +19,6 @@ updates:
   - package-ecosystem: "uv"
     directories:
       - "/libs/deepagents"
-      - "/libs/cli"
       - "/libs/code"
       - "/libs/evals"
       - "/libs/acp"
@@ -41,7 +40,6 @@ updates:
     versioning-strategy: increase
     ignore:
       - dependency-name: "deepagents"
-      - dependency-name: "deepagents-cli"
       - dependency-name: "deepagents-code"
       - dependency-name: "deepagents-evals"
       - dependency-name: "deepagents-acp"

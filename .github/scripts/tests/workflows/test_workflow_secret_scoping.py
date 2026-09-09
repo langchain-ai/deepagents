@@ -6,7 +6,6 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[4]
 WORKFLOWS = ROOT / ".github" / "workflows"
 APP_TOKEN_WORKFLOWS = (
@@ -118,6 +117,21 @@ def test_release_keeps_disabled_package_scoped_integration_wiring() -> None:
     assert run_step["env"] == RELEASE_INTEGRATION_ENV
 
 
-def test_openwiki_uses_dedicated_environment() -> None:
+def test_openwiki_uses_dedicated_environment_and_token() -> None:
     workflow = _load_workflow("openwiki-update.yml")
-    assert workflow["jobs"]["update"]["environment"] == "openwiki"
+    update = workflow["jobs"]["update"]
+    assert update["environment"] == "openwiki"
+
+    checkout = _find_step(workflow, job="update", name="Check out repository")
+    create_pr = _find_step(
+        workflow, job="update", name="Create OpenWiki update pull request"
+    )
+    auto_merge = _find_step(workflow, job="update", name="Enable auto-merge")
+    token = "${{ secrets.OPENWIKI_PR_TOKEN }}"
+
+    assert checkout["with"]["token"] == token
+    assert create_pr["env"]["GH_TOKEN"] == token
+    assert auto_merge["env"]["GH_TOKEN"] == token
+    assert auto_merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
+    assert '[[ "$PR_NUMBER" =~ ^[0-9]+$ ]]' in auto_merge["run"]
+    assert 'gh pr merge --auto --squash "$PR_NUMBER"' in auto_merge["run"]

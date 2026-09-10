@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
-import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypedDict
 
@@ -50,6 +50,44 @@ _EVENT_LABEL_MAX_CHARS = 120
 
 _EVENT_LABEL_FALLBACK_MAX_CHARS = 60
 """Character cap on a label derived from the description fallback."""
+
+_DISPATCH_ID_SALT: Final = "langchain-quickjs-subagent-dispatch-v1"
+"""Domain-separation salt for derived dispatch ids."""
+
+
+def derive_dispatch_id(
+    *,
+    eval_id: str | None,
+    task_tool_name: str,
+    dispatch_ordinal: int,
+    description: str,
+    subagent_type: str,
+    label: str | None,
+) -> str:
+    """Derive a dispatch id that is stable across interrupt/resume replays.
+
+    When a subagent's hook raises `GraphInterrupt`, LangGraph replays the
+    parent tool node on resume, re-running the JavaScript and dispatching
+    the same `task()` calls again. A random per-invocation id would make
+    each replay look like a brand-new agent downstream (e.g. an inflated
+    fan-out panel). Hashing stable identity inputs — the parent eval's
+    tool-call id, the dispatch ordinal within that eval, and the payload —
+    keeps the id stable across replays while staying distinct for separate
+    `js_eval` calls and for identical-payload dispatches within one eval.
+    """
+    parts = [
+        _DISPATCH_ID_SALT,
+        task_tool_name,
+        str(dispatch_ordinal),
+        subagent_type,
+        description,
+        label or "",
+        eval_id or "",
+    ]
+    digest = hashlib.sha1(  # noqa: S324 — display identity, not security
+        "\x1f".join(parts).encode()
+    ).hexdigest()[:12]
+    return f"ptc_{task_tool_name}_{digest}"
 
 
 class SubagentStartEvent(TypedDict):
@@ -196,11 +234,15 @@ async def call_subagent_task_tool(
     response_schema: dict[str, Any] | None,
     runtime: Any,
     label: str | None = None,
+    dispatch_ordinal: int = 0,
 ) -> Any:
     """Call the Deep Agents task tool and return a JavaScript-friendly value.
 
     This also emits `start` then `complete`/`error` subagent lifecycle
-    events on the custom stream.
+    events on the custom stream. `dispatch_ordinal` is the 0-based position
+    of this dispatch within its parent eval; together with the eval's
+    tool-call id it yields a per-dispatch id that survives the replays a
+    hook-driven `GraphInterrupt` causes on resume.
     """
     if runtime is None:
         msg = "task() requires an active ToolRuntime"
@@ -214,7 +256,14 @@ async def call_subagent_task_tool(
 
     eval_id = getattr(runtime, "tool_call_id", None)
     stream_writer = getattr(runtime, "stream_writer", None)
-    subagent_id = f"ptc_{task_tool.name}_{uuid.uuid4().hex[:8]}"
+    subagent_id = derive_dispatch_id(
+        eval_id=eval_id,
+        task_tool_name=task_tool.name,
+        dispatch_ordinal=dispatch_ordinal,
+        description=description,
+        subagent_type=subagent_type,
+        label=label,
+    )
 
     runtime = _runtime_with_tool_call_id(runtime, subagent_id)
 

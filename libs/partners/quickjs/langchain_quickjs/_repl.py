@@ -131,6 +131,13 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    task_dispatch_count: int = 0
+    """Count of `task()` dispatches made during this eval.
+
+    Seeds each dispatch's stable id; because the state is reset at eval
+    start, interrupted-and-resumed evals assign the same ordinals to the
+    same dispatches, keeping ids stable across replays.
+    """
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -539,6 +546,14 @@ class _ThreadREPL:
         validated = self._validate_task_payload(payload)
         description, subagent_type, label, response_schema = validated
 
+        # Freeze this dispatch's ordinal before dispatching: consecutive
+        # task() calls in one eval get 0, 1, 2, ... Replays of an interrupted
+        # eval restart the count, so the same logical dispatch keeps the same
+        # stable id across interrupt/resume cycles.
+        state = replace(state, task_dispatch_count=state.task_dispatch_count + 1)
+        self._ptc_state = state
+        dispatch_ordinal = state.task_dispatch_count - 1
+
         async def _call() -> Any:
             runtime = state.outer_runtime
             if runtime is None:
@@ -555,6 +570,7 @@ class _ThreadREPL:
                 response_schema=response_schema,
                 runtime=runtime,
                 label=label,
+                dispatch_ordinal=dispatch_ordinal,
             )
 
         outer_loop = state.outer_loop

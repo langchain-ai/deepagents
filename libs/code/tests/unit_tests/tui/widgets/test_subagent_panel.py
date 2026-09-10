@@ -220,6 +220,80 @@ class TestReset:
             assert panel._phase_order == []
 
 
+class TestReplayStability:
+    """Replayed starts (hook interrupts + resumes) must not inflate counts.
+
+    A subagent's PostToolUse hook can raise `GraphInterrupt`; LangGraph then
+    replays the parent tool node on resume and the bridge re-emits `start`
+    events. Dispatch ids are replay-stable, so the panel must replace the
+    existing row rather than append a new one.
+    """
+
+    async def test_replayed_start_updates_row_instead_of_adding(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            for _ in range(6):  # original + five interrupt/resume replays
+                panel.on_subagent_event(_start("a", "E1", label="Validate outcomes"))
+                await pilot.pause()
+            phase = panel._phases["E1"]
+            assert len(phase.records) == 1
+            assert phase.order == ["a"]
+            done, total = phase.counts()
+            assert (done, total) == (0, 1)
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
+            assert "0/1 done" in header
+
+    async def test_replayed_start_after_completion_resets_to_running(self) -> None:
+        # A replay that interrupts again after an earlier replay completed
+        # puts the row back in a running state — the latest attempt wins.
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_start("a", "E1"))  # replay interrupts again
+            await pilot.pause()
+            record = panel._find_record("a")
+            assert record is not None
+            assert record.status == "running"
+            assert record.duration_ms is None
+            done, total = panel._phases["E1"].counts()
+            assert (done, total) == (0, 1)
+
+    async def test_mixed_progress_one_completes_another_interrupts_then_resumes(
+        self,
+    ) -> None:
+        # Fan-out of two: `a` completes, `b`'s hook interrupts, then the
+        # resume replays both. Counts must stay 2 logical agents with `a`
+        # finished and `b` settled by the resume's terminal event.
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+
+            # Attempt 1: `a` completes; `b` starts, then interrupts.
+            panel.on_subagent_event(_start("a", "E1", label="Validate outcomes"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_start("b", "E1", label="Validate reviewers"))
+            panel.finalize_running()  # the interrupt cancels in-flight rows
+            await pilot.pause()
+            assert panel._phases["E1"].counts() == (2, 2)
+
+            # Attempt 2 (resume): both dispatches replay; `b` completes.
+            panel.on_subagent_event(_start("a", "E1", label="Validate outcomes"))
+            panel.on_subagent_event(_start("b", "E1", label="Validate reviewers"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_complete("b", "E1"))
+            await pilot.pause()
+
+            phase = panel._phases["E1"]
+            assert phase.order == ["a", "b"]
+            assert len(phase.records) == 2
+            assert phase.counts() == (2, 2)
+            assert not phase.any_running()
+            assert not phase.any_cancelled()
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
+            assert "2/2 done" in header
+            assert "cancelled" not in header
+
+
 class TestSafety:
     async def test_strips_escapes_and_bounds_length(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:

@@ -231,6 +231,29 @@ def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[A
 class TestEstimateCost:
     """Tests for the shared `genai-prices` adapter."""
 
+    def test_structured_estimate_has_inclusive_parents_and_child_subsets(self) -> None:
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_read": 200,
+            "cache_creation": 100,
+        }
+        usage["output_token_details"] = {"reasoning": 50}
+
+        estimate = cost_tracking._estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert estimate is not None
+        assert estimate.input_tokens == usage["input_tokens"]
+        assert estimate.output_tokens == usage["output_tokens"]
+        assert estimate.cache_creation_tokens == 100
+        assert estimate.cache_read_tokens == 200
+        assert estimate.reasoning_tokens == 50
+        assert estimate.total_cost_usd == pytest.approx(
+            estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        )
+        assert estimate.input_cost_usd + estimate.output_cost_usd == pytest.approx(
+            estimate.total_cost_usd
+        )
+
 
 def _override_catalog(
     models: list[dict[str, Any]],
@@ -564,12 +587,14 @@ class TestCostTrackingMiddleware:
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
 
         assert one_call is not None
-        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert prepared.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert prepared.update["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
         prepared.rollback()
         retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
-        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert retried.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert retried.update["_session_cost_breakdown"]["request_count"] == 1
 
     def test_committed_prepare_does_not_restore_records(
         self,
@@ -742,8 +767,12 @@ class TestCostTrackingMiddleware:
 
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         assert one_call is not None
-        assert first == {"_session_cost_usd": pytest.approx(one_call)}
-        assert second == {"_session_cost_usd": pytest.approx(one_call)}
+        assert first is not None
+        assert second is not None
+        assert first["_session_cost_usd"] == pytest.approx(one_call)
+        assert second["_session_cost_usd"] == pytest.approx(one_call)
+        assert first["_session_cost_breakdown"]["request_count"] == 1
+        assert second["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
     def test_nested_agent_claims_only_transfers_owned_by_its_graph(self) -> None:

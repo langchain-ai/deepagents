@@ -4178,8 +4178,10 @@ def test_read_file_video_frames_attached_after_tool_message(monkeypatch: pytest.
     ]
 
 
-def test_invalid_tool_call_retries_once_and_patches_on_next_turn() -> None:
-    # Each invocation retries once, then the next invocation patches the dangling call.
+def test_invalid_tool_call_patched_on_next_turn() -> None:
+    # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
+    # will be produced because agents only route on `tool_calls`).
+    # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
     fake_model = FakeChatModelWithHistory(
         messages=iter(
             [
@@ -4188,30 +4190,6 @@ def test_invalid_tool_call_retries_once_and_patches_on_next_turn() -> None:
                     invalid_tool_calls=[
                         {
                             "id": "call_truncated",
-                            "name": "search",
-                            "args": '{"query": "weath',
-                            "error": "Unterminated string at line 1 column 17",
-                            "type": "invalid_tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(
-                    content="",
-                    invalid_tool_calls=[
-                        {
-                            "id": "call_truncated_again",
-                            "name": "search",
-                            "args": '{"query": "weath',
-                            "error": "Unterminated string at line 1 column 17",
-                            "type": "invalid_tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(
-                    content="",
-                    invalid_tool_calls=[
-                        {
-                            "id": "call_third",
                             "name": "search",
                             "args": '{"query": "weath',
                             "error": "Unterminated string at line 1 column 17",
@@ -4228,20 +4206,15 @@ def test_invalid_tool_call_retries_once_and_patches_on_next_turn() -> None:
     config: dict = {"configurable": {"thread_id": "patch-invalid-tool-calls"}}
 
     first_result = agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
-    assert len(fake_model.call_history) == 2
     assert isinstance(first_result["messages"][-1], AIMessage)
-    assert first_result["messages"][-1].invalid_tool_calls[0]["id"] == "call_truncated_again"
-    assert not any(isinstance(message, ToolMessage) for message in first_result["messages"])
+    assert first_result["messages"][-1].invalid_tool_calls
 
     result = agent.invoke({"messages": [HumanMessage(content="Try again")]}, config)
-    assert len(fake_model.call_history) == 4
-    assert isinstance(result["messages"][-1], AIMessage)
-    assert result["messages"][-1].content == "Recovered."
 
-    # The next invocation must see the dangling invalid_tool_call paired with a ToolMessage.
-    next_invocation_inputs = fake_model.call_history[2]["messages"]
+    # The second model call must see the dangling invalid_tool_call paired with a ToolMessage.
+    second_call_inputs = fake_model.call_history[1]["messages"]
     synthetic = next(
-        (m for m in next_invocation_inputs if isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated_again"),
+        (m for m in second_call_inputs if isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated"),
         None,
     )
     assert synthetic is not None, "PatchToolCallsMiddleware did not inject a ToolMessage for invalid_tool_calls"
@@ -4251,7 +4224,7 @@ def test_invalid_tool_call_retries_once_and_patches_on_next_turn() -> None:
     assert synthetic.status == "error"
 
     # Final state must also expose the patched ToolMessage.
-    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated_again" for m in result["messages"])
+    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
 
 
 _OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000

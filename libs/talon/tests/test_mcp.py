@@ -12,7 +12,8 @@ import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from mcp.types import CallToolResult
+from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, ErrorData
 from pydantic import SecretStr
 
 from deepagents_talon.authorization import (
@@ -37,6 +38,7 @@ from deepagents_talon.mcp import (
     _authorization_interceptor,
     _connection,
     _normalize_mcp_arguments,
+    _protocol_error_interceptor,
     _run_authorized,
     load_mcp_tools,
     login_mcp_server,
@@ -339,6 +341,88 @@ def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:
     )
 
     assert arguments == {"query": "", "fetchMode": {}}
+
+
+async def test_protocol_error_interceptor_reports_error_to_model() -> None:
+    """An McpError becomes a failed result instead of aborting the agent turn."""
+    request = MCPToolCallRequest(
+        name="listVulnerabilities",
+        args={"severity": "NOPE"},
+        server_name="vanta",
+    )
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise McpError(
+            ErrorData(
+                code=-32602,
+                message="severity must be one of CRITICAL, HIGH, MEDIUM, LOW",
+                data={"internal_trace": "/srv/vanta/handler.py:81", "token": "do-not-leak-this-fixture"},
+            )
+        )
+
+    result = await _protocol_error_interceptor(request, execute)
+
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    text = "".join(block.text for block in result.content if block.type == "text")
+    assert "severity must be one of CRITICAL, HIGH, MEDIUM, LOW" in text
+    assert "-32602" in text
+    assert "listVulnerabilities" in text
+    # The unbounded server-controlled `data` payload is never fed to the model.
+    assert "internal_trace" not in text
+    assert "do-not-leak-this-fixture" not in text
+    assert "handler.py" not in text
+
+
+async def test_protocol_error_interceptor_passes_success_through_unchanged() -> None:
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+    expected = CallToolResult(content=[])
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        return expected
+
+    assert await _protocol_error_interceptor(request, execute) is expected
+
+
+async def test_protocol_error_interceptor_lets_cancellation_propagate() -> None:
+    """Cancellation must not be converted into a tool result."""
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _protocol_error_interceptor(request, execute)
+
+
+async def test_protocol_error_interceptor_keeps_authorization_bookkeeping() -> None:
+    """Nesting order leaves the authorization layer observing the raw McpError.
+
+    `_protocol_error_interceptor` is registered outermost so `_authorization_interceptor`
+    still sees the failure and reports it, rather than being handed a successful-looking
+    result.
+    """
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+    events: list[AuthorizationEvent] = []
+
+    async def handler(event: AuthorizationEvent) -> None:
+        events.append(event)
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise McpError(ErrorData(code=-32602, message="invalid params"))
+
+    async def authorized(inner: MCPToolCallRequest) -> CallToolResult:
+        return await _authorization_interceptor(inner, execute)
+
+    token = set_authorization_handler(handler)
+    try:
+        result = await _protocol_error_interceptor(request, authorized)
+    finally:
+        reset_authorization_handler(token)
+
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    assert not any(isinstance(event, AuthorizationCompleted) for event in events)
 
 
 async def test_argument_normalization_interceptor_overrides_request_arguments() -> None:

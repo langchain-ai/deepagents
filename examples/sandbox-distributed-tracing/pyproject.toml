@@ -1,0 +1,13 @@
+[project]
+name = "sandbox-distributed-tracing-example"
+version = "0.1.0"
+description = "Nest sandbox LLM calls inside a Deep Agents LangSmith trace"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.7.13,<0.8.0",
+    "langchain-openai>=1.1.14,<2.0.0",
+    "langsmith[sandbox]>=0.12.3,<0.13.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }

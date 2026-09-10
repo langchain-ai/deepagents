@@ -93,6 +93,7 @@ Production agents powered by the LangChain stack:
 | [**Ralph Loop**](ralph_mode/) | Autonomous looping with fresh context each iteration, using the filesystem for persistence |
 | [**Agents as Folders**](downloading_agents/) | Download a zip, unzip, and run |
 | [**Better Harness**](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness |
+| [**Sandbox Distributed Tracing**](sandbox-distributed-tracing/) | Nest LLM calls from sandbox-generated code under the invoking agent tool span |
 | [**Rubric Middleware**](rubric_middleware/) | Grader-model rubric feedback loop that revises output until all criteria pass |
 
 Each example has its own `README` with setup instructions.

@@ -7,6 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
+from rich.cells import cell_len
 from textual import events
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
@@ -21,6 +22,7 @@ from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code._session_stats import format_cost, format_token_count
 from deepagents_code.config import get_glyphs
+from deepagents_code.tui.widgets._condense_path import condense_path
 from deepagents_code.tui.widgets.loading import Spinner
 
 logger = logging.getLogger(__name__)
@@ -335,6 +337,79 @@ class ModelLabel(Widget):
         return self._clickable_content(ellipsis[:width])
 
 
+_CWD_MAX_FRACTION = 0.45
+"""Share of the status row `.status-cwd` may claim (its CSS `max-width`)."""
+
+
+def _home_relative(path: str) -> str:
+    """Substitute `~` for the user's home directory.
+
+    Returns:
+        The path with a leading `~` when it lives under the home directory,
+            otherwise the path unchanged.
+    """
+    try:
+        candidate = Path(path)
+        home = Path.home()
+        if candidate.is_relative_to(home):
+            relative = candidate.relative_to(home).as_posix()
+            return "~" if relative == "." else f"~/{relative}"
+    except (ValueError, RuntimeError):
+        pass
+    return path
+
+
+class CwdLabel(Widget):
+    """A label that displays the working directory, condensed to fit.
+
+    The tail of a path is the part users read, so directory components are
+    collapsed from the middle outward (see :func:`condense_path`) rather than
+    clipping the end the way CSS `text-overflow: ellipsis` does. The widget
+    sizes to the full path but is capped by `.status-cwd`'s `max-width`, so
+    `render` always sees the real budget in `content_size`. The untruncated
+    path is always available as the widget's tooltip.
+    """
+
+    path: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so the widget participates in flex layout.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Cell width of the full home-relative path. Returning the full path
+                (not the condensed form) keeps the label's size independent of
+                its own output and lets the CSS `max-width` provide the budget
+                `render` condenses against.
+        """
+        if not self.path:
+            return 0
+        return cell_len(_home_relative(self.path))
+
+    def watch_path(self, path: str) -> None:
+        """Expose the untruncated path as the widget's tooltip."""
+        self.tooltip = path or None
+
+    def render(self) -> RenderResult:
+        """Render the path condensed to the available width.
+
+        Returns:
+            The home-relative path, condensed when it overflows, or the empty
+                string when no path is set.
+        """
+        if not self.path:
+            return Content("")
+        display = _home_relative(self.path)
+        width = self.content_size.width
+        # Before the first layout there is no width to condense against.
+        if width <= 0:
+            return Content(display)
+        return Content(condense_path(display, width))
+
+
 class BranchLabel(Widget):
     """A label that displays the git branch with glyph-aware truncation.
 
@@ -527,7 +602,6 @@ class StatusBar(Vertical):
         padding: 0 1 0 0;
         color: $text-muted;
         overflow-x: hidden;
-        text-overflow: ellipsis;
         text-wrap: nowrap;
     }
 
@@ -625,7 +699,7 @@ class StatusBar(Vertical):
                 classes="status-auto-approve manual",
                 id="auto-approve-indicator",
             )
-            yield Static("", classes="status-cwd", id="cwd-display")
+            yield CwdLabel(classes="status-cwd", id="cwd-display")
             yield BranchLabel(classes="status-branch", id="branch-display")
             yield Static("", classes="status-rubric", id="rubric-display")
             yield ModelLabel(id="model-display")
@@ -651,7 +725,7 @@ class StatusBar(Vertical):
     def _set_cwd_visible(self, visible: bool) -> None:
         """Show or hide the cwd."""
         with suppress(NoMatches):
-            self.query_one("#cwd-display", Static).display = visible
+            self.query_one("#cwd-display", CwdLabel).display = visible
 
     def on_unmount(self) -> None:
         """Stop the spinner timer so it can't tick on a detached widget."""
@@ -715,10 +789,10 @@ class StatusBar(Vertical):
     def watch_cwd(self, new_value: str) -> None:
         """Update cwd display when it changes."""
         try:
-            display = self.query_one("#cwd-display", Static)
+            display = self.query_one("#cwd-display", CwdLabel)
         except NoMatches:
             return
-        display.update(self._format_cwd(new_value))
+        display.path = new_value or self.cwd or self._initial_cwd
 
     def watch_branch(self, new_value: str) -> None:
         """Update branch display when it changes."""
@@ -875,22 +949,6 @@ class StatusBar(Vertical):
             count: Count of queued messages (negative values clamp to `0`).
         """
         self.queued_count = max(count, 0)
-
-    def _format_cwd(self, cwd_path: str = "") -> str:
-        """Format the current working directory for display.
-
-        Returns:
-            Formatted path string, using ~ for home directory when possible.
-        """
-        path = Path(cwd_path or self.cwd or self._initial_cwd)
-        try:
-            # Try to use ~ for home directory
-            home = Path.home()
-            if path.is_relative_to(home):
-                return "~/" + path.relative_to(home).as_posix()
-        except (ValueError, RuntimeError):
-            pass
-        return str(path)
 
     def set_mode(self, mode: str) -> None:
         """Set the current input mode.

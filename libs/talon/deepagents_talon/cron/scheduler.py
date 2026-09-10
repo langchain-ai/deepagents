@@ -149,10 +149,10 @@ class PersistentCronScheduler:
             "cron.success",
             job_id=claimed.id,
             job_name=claimed.name,
-            silent=_is_silent(text),
-            has_delivery=bool(text and not _is_silent(text)),
+            silent=is_silent(text),
+            has_delivery=bool(text and not is_silent(text)),
         )
-        if _is_silent(text):
+        if is_silent(text):
             log_event(
                 logger,
                 "cron.delivery_suppressed",
@@ -188,6 +188,14 @@ class PersistentCronScheduler:
             )
 
 
-def _is_silent(text: str) -> bool:
+def is_silent(text: str) -> bool:
+    """Whether a scheduled result asks to be withheld from the chat.
+
+    Args:
+        text: Agent output produced for a scheduled job.
+
+    Returns:
+        Whether the text carries the silent sentinel at either end.
+    """
     stripped = text.strip()
     return stripped.startswith(SILENT_SENTINEL) or stripped.endswith(SILENT_SENTINEL)

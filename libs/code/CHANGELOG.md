@@ -4,20 +4,17 @@
 
 ## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
 
-
 ### Features
 
-* **code:** recommend GLM 5.3 models ([#6211](https://github.com/langchain-ai/deepagents/issues/6211)) ([e7e88d5](https://github.com/langchain-ai/deepagents/commit/e7e88d5efaf2bbce33237ea323fb68487eabd721))
-
+- Recommended GLM 5.3 models are now available in code workflows ([#6211](https://github.com/langchain-ai/deepagents/pull/6211)).
 
 ### Bug Fixes
 
-* **code:** confirm server restart for workspace switch ([#6178](https://github.com/langchain-ai/deepagents/issues/6178)) ([7997203](https://github.com/langchain-ai/deepagents/commit/7997203245915aa83e87db83252c04391bd00440))
-* **code:** price Fireworks GLM-5.3 Flash usage ([#6223](https://github.com/langchain-ai/deepagents/issues/6223)) ([d3627ea](https://github.com/langchain-ai/deepagents/commit/d3627eaaeda2de62c19b0647ac29f80767057241))
-* **code:** price Fireworks GLM-5.3 usage ([#6221](https://github.com/langchain-ai/deepagents/issues/6221)) ([07c5d2e](https://github.com/langchain-ai/deepagents/commit/07c5d2ecfe5db6238eff782f714fbbe08865e8d4))
-* **code:** silence absent themes config warning ([#6220](https://github.com/langchain-ai/deepagents/issues/6220)) ([b93f748](https://github.com/langchain-ai/deepagents/commit/b93f7483bb5722bbae281a19a80a7aea21d38832))
-* **code:** standardize recent-thread environment variable ([#6205](https://github.com/langchain-ai/deepagents/issues/6205)) ([a4c218e](https://github.com/langchain-ai/deepagents/commit/a4c218e185bc49a11a381c3afde91f6efa7226fc))
-* **code:** treat effort changes as cache identity for OpenAI and Anthropic ([#6196](https://github.com/langchain-ai/deepagents/issues/6196)) ([cacd50a](https://github.com/langchain-ai/deepagents/commit/cacd50adc365e949e4f0b9a7e94ad6f8eeb7d497))
+- Added pricing support for Fireworks GLM-5.3 and GLM-5.3 Flash usage ([#6221](https://github.com/langchain-ai/deepagents/pull/6221), [#6223](https://github.com/langchain-ai/deepagents/pull/6223)).
+- Workspace switches now ask for confirmation before restarting the server ([#6178](https://github.com/langchain-ai/deepagents/pull/6178)).
+- Effort changes are now included in cache identity for OpenAI and Anthropic requests ([#6196](https://github.com/langchain-ai/deepagents/pull/6196)).
+- Standardized the recent-thread environment variable ([#6205](https://github.com/langchain-ai/deepagents/pull/6205)).
+- Silenced warnings when the themes config is absent ([#6220](https://github.com/langchain-ai/deepagents/pull/6220)).
 
 ## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
 

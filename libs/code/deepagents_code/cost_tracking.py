@@ -2522,6 +2522,22 @@ class PreparedOperationCost:
             )
 
 
+def _has_legacy_cost_history(state: CostState) -> bool:
+    """Return whether scalar cost exists without structured historical detail.
+
+    Returns:
+        `True` when a legacy checkpoint has positive cost but no breakdown.
+    """
+    cost_usd = state.get("_session_cost_usd")
+    return (
+        isinstance(cost_usd, int | float)
+        and not isinstance(cost_usd, bool)
+        and math.isfinite(cost_usd)
+        and cost_usd > 0
+        and not isinstance(state.get("_session_cost_breakdown"), Mapping)
+    )
+
+
 def prepare_operation_cost(
     state: CostState,
     thread_id: str,
@@ -2544,7 +2560,9 @@ def prepare_operation_cost(
     records = _drain_recorded_costs(thread_id)
     fallback = _checkpointed_model_spec(state)
     delta_usd = 0.0
-    breakdown = _empty_cost_breakdown()
+    breakdown = _empty_cost_breakdown(
+        historical_complete=not _has_legacy_cost_history(state)
+    )
     try:
         for record in records:
             estimate = _request_estimate(
@@ -2844,7 +2862,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             delta_breakdown = update.get("_session_cost_breakdown") if update else None
             total_breakdown = _merge_cost_breakdowns(prior_breakdown, delta_breakdown)
             scope = _checkpoint_scope(runtime)
-            if scope and total_usd > 0:
+            has_breakdown = total_breakdown["request_count"] > 0
+            if scope and (total_usd > 0 or has_breakdown):
                 transfers = dict(state.get("_session_cost_transfers") or {})
                 if update:
                     pending = update.get("_session_cost_transfers")
@@ -2891,10 +2910,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         main_message_id = message.id if message is not None else None
         delta_usd = 0.0
         breakdown = _empty_cost_breakdown(
-            historical_complete=not (
-                state.get("_session_cost_usd", 0.0) > 0
-                and not isinstance(state.get("_session_cost_breakdown"), Mapping)
-            )
+            historical_complete=not _has_legacy_cost_history(state)
         )
         transfers = state.get("_session_cost_transfers") or {}
         remaining_transfers = dict(transfers)
@@ -2906,8 +2922,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 and isinstance(transfer, Mapping)
                 and transfer.get("owner_scope") == owner_scope
                 and isinstance(transfer.get("cost_usd"), int | float)
+                and not isinstance(transfer.get("cost_usd"), bool)
                 and math.isfinite(transfer["cost_usd"])
-                and transfer["cost_usd"] > 0
+                and transfer["cost_usd"] >= 0
+                and (
+                    transfer["cost_usd"] > 0
+                    or isinstance(transfer.get("breakdown"), Mapping)
+                )
             ):
                 delta_usd += float(transfer["cost_usd"])
                 transfer_breakdown = transfer.get("breakdown")
@@ -2919,8 +2940,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 )
                 remaining_transfers.pop(source_scope, None)
                 claimed_transfer = True
-        charged_message_ids: set[str] = set()
-        charged_count = 0
+        represented_message_ids: set[str] = set()
+        represented_count = 0
         pricing_attempted = False
         scope = _checkpoint_scope(runtime) if self._nested else None
         # `drain` removes what it returns, so anything that raises below would
@@ -2941,9 +2962,19 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     record.usage_metadata,
                     *_pricing_target(record.model_name, provider, fallback),
                 )
-                breakdown = _merge_cost_breakdowns(
-                    breakdown, _breakdown_for_estimate(estimate)
+                defer_to_message = (
+                    price_latest_message
+                    and main_message_id is not None
+                    and record.message_id == main_message_id
+                    and estimate is None
                 )
+                if not defer_to_message:
+                    breakdown = _merge_cost_breakdowns(
+                        breakdown, _breakdown_for_estimate(estimate)
+                    )
+                    represented_count += 1
+                    if record.message_id is not None:
+                        represented_message_ids.add(record.message_id)
                 if estimate is None:
                     # Silently omitting this leaves the total quietly short, so
                     # leave a breadcrumb naming what could not be priced.
@@ -2955,34 +2986,32 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     )
                     continue
                 delta_usd += estimate.total_cost_usd
-                charged_count += 1
-                if record.message_id is not None:
-                    charged_message_ids.add(record.message_id)
             if price_latest_message:
                 # A model that never fires callbacks (or a request the recorder
                 # could not attribute to this thread) leaves the agent's own
                 # response uncharged, so price it from state. Joining on message
-                # ID keeps a request the recorder already charged from being
-                # added twice; only successfully priced records are in the
-                # charged set. An unidentified response cannot be joined, so
-                # treat any charged request as covering it: undercounting one
-                # request beats charging the same one twice.
-                already_charged = (
-                    message.id in charged_message_ids
+                # ID keeps a request the recorder already represented from being
+                # added twice. An unpriceable matching record defers its breakdown
+                # contribution to this fallback so successful fallback pricing
+                # replaces rather than duplicates it. An unidentified response
+                # cannot be joined, so treat any represented request as covering
+                # it: undercounting one request beats charging the same one twice.
+                already_represented = (
+                    message.id in represented_message_ids
                     if message is not None and message.id is not None
-                    else charged_count > 0
+                    else represented_count > 0
                 )
                 if (
                     message is not None
                     and message.id is None
-                    and already_charged
+                    and already_represented
                     and logger.isEnabledFor(logging.DEBUG)
                 ):
                     logger.debug(
                         "Not pricing an unidentified main response from state; a "
                         "drained record may already cover it."
                     )
-                if message is not None and not already_charged:
+                if message is not None and not already_represented:
                     model_name, provider = resolve_message_model(
                         message,
                         fallback_model=fallback[0],
@@ -2999,9 +3028,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     if estimate is not None:
                         delta_usd += estimate.total_cost_usd
 
-            if not self._nested and (delta_usd > 0 or pricing_attempted):
+            has_breakdown = breakdown["request_count"] > 0
+            if not self._nested and (
+                delta_usd > 0 or pricing_attempted or has_breakdown
+            ):
                 pricing_ok = pricing_data_available()
-                if delta_usd > 0 or not pricing_ok:
+                if delta_usd > 0 or has_breakdown or not pricing_ok:
                     self._emit_total(
                         state,
                         runtime,
@@ -3009,9 +3041,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                         breakdown,
                         pricing_ok=pricing_ok,
                     )
-            if delta_usd <= 0 and not claimed_transfer:
+            if delta_usd <= 0 and not claimed_transfer and not has_breakdown:
                 return None
-            update: dict[str, Any] = {"_session_cost_breakdown": breakdown}
+            update: dict[str, Any] = {}
+            if has_breakdown or claimed_transfer:
+                update["_session_cost_breakdown"] = breakdown
             if claimed_transfer:
                 update["_session_cost_transfers"] = Overwrite(remaining_transfers)
             if delta_usd > 0:

@@ -2,7 +2,7 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -2080,7 +2080,7 @@ class TestSessionCostEvents:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        updates: list[tuple[float, dict[str, object] | None]] = []
+        updates: list[tuple[float, Mapping[str, Any] | None]] = []
 
         def on_cost(
             total: float,
@@ -2088,7 +2088,7 @@ class TestSessionCostEvents:
             *,
             thread_id: str = "",
             pricing_ok: bool | None = None,
-            breakdown: dict[str, object] | None = None,
+            breakdown: Mapping[str, Any] | None = None,
         ) -> None:
             assert thread_id == "thread-1"
             assert pricing_ok is True

@@ -750,24 +750,59 @@ class TalonHost:
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
             self._clear_authorization(agent_conversation_id)
+        await self._settle_agent_turn(
+            turn,
+            result,
+            channel=channel,
+            reply_conversation_id=message.conversation_id,
+            suppress_result=suppress_result,
+        )
+
+    async def _settle_agent_turn(
+        self,
+        turn: _Turn,
+        result: AgentResult,
+        *,
+        channel: ChannelAdapter,
+        reply_conversation_id: str,
+        suppress_result: bool,
+    ) -> None:
+        """Send a finished turn's reply, or return the work behind it to the queue.
+
+        Args:
+            turn: Turn whose model call has completed.
+            result: Output that turn produced.
+            channel: Channel that would carry the reply.
+            reply_conversation_id: Chat the reply is addressed to.
+            suppress_result: Whether the host is withholding this reply on purpose.
+        """
+        agent_conversation_id = turn.conversation_id
         try:
             async with self._conversation_lock(turn.conversation_root):
-                superseded = (
+                if suppress_result:
+                    # Withheld on purpose -- a terminal authorization, or a scheduled
+                    # run that chose silence. The model consumed these results and
+                    # nobody was waiting to hear about them, so they stay acknowledged
+                    # even if a newer turn has since taken the thread.
+                    return
+                if (
                     self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
                     or self._generations[agent_conversation_id] != turn.generation
-                )
-                if superseded:
+                ):
                     # Not a deliberate silence: a newer turn took this thread, so a
                     # reply nobody asked for any more is dropped. The background work
                     # behind it was never reported, so it goes back to the queue.
                     self._requeue_background_results(result)
-                elif not suppress_result:
-                    await self._deliver_agent_result(channel, message.conversation_id, result)
+                    return
+                await self._deliver_agent_result(channel, reply_conversation_id, result)
         except asyncio.CancelledError:
             # Cancelled between the model finishing and this reply going out -- the
             # same loss, reached by the other route, and the reason this runs while
-            # the cancellation is in flight rather than after it.
-            self._requeue_background_results(result)
+            # the cancellation is in flight rather than after it. Suppression still
+            # wins: it was decided before the cancellation and does not become a loss
+            # because of one.
+            if not suppress_result:
+                self._requeue_background_results(result)
             raise
 
     def _requeue_background_results(self, result: AgentResult) -> None:

@@ -1210,6 +1210,17 @@ class BackgroundResultAgent(BlockingAgent):
         )
 
 
+class SilentFollowUpAgent(BackgroundResultAgent):
+    """Scheduled agent whose background follow-up turn blocks, then chooses silence."""
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        if request.text.startswith(_BACKGROUND_FOLLOW_UP):
+            await self.released.wait()
+            return AgentResult(text="[SILENT]", background_results=("subagent-1",))
+        return AgentResult(text="[SILENT]")
+
+
 async def _park_turn_at_delivery(agent: BlockingAgent) -> None:
     """Let a blocked turn finish its model work while the delivery lock is held."""
     agent.released.set()
@@ -1312,6 +1323,81 @@ async def test_deliberately_suppressed_turn_does_not_requeue(tmp_path: Path) -> 
 
         assert channel.sent == []
         assert agent.background.requeued == []
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("discard", ["superseded", "cancelled"])
+async def test_suppressed_turn_does_not_requeue_when_also_discarded(
+    tmp_path: Path, discard: str
+) -> None:
+    """Supersession does not turn a deliberate silence into a lost result.
+
+    A terminal authorization withholds the reply, and that turn can still be
+    superseded or cancelled while parked on the conversation lock. The suppression
+    was decided before either happened, so the results stay acknowledged; re-queueing
+    them would make a later turn report work the host meant to keep quiet about.
+    """
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await _wait_for_request(agent, "block")
+        turn = host._tasks["test:chat"]
+
+        async with host._conversation_lock("test:chat"):
+            await _park_turn_at_delivery(agent)
+            if discard == "superseded":
+                host._generations["test:chat"] += 1
+            else:
+                turn.cancel()
+                for _ in range(50):
+                    await asyncio.sleep(0)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == []
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("discard", ["superseded", "cancelled"])
+async def test_silent_scheduled_turn_does_not_requeue_when_also_discarded(
+    tmp_path: Path, discard: str
+) -> None:
+    """The same for a scheduled follow-up that answered with the silent sentinel."""
+    channel = RecordingChannel()
+    agent = SilentFollowUpAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    job = _cron_job(tmp_path)
+    cron_id = f"{job.id}:talon-cron"
+    await host.start()
+    try:
+        agent.background.pending.add(cron_id)
+        await host.run_scheduled_job(job)
+        await host._dispatch_background_results()
+        await _wait_for_request(agent, _SCHEDULED_FOLLOW_UP)
+        turn = host._tasks[cron_id]
+
+        async with host._conversation_lock(cron_id):
+            await _park_turn_at_delivery(agent)
+            if discard == "superseded":
+                host._generations[cron_id] += 1
+            else:
+                turn.cancel()
+                for _ in range(50):
+                    await asyncio.sleep(0)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == []
+        assert channel.sent == []
     finally:
         await host.stop()
 

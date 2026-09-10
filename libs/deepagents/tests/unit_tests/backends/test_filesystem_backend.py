@@ -630,6 +630,29 @@ def test_filesystem_download_errors(tmp_path: Path):
     assert responses[0].content is None
 
 
+def test_filesystem_read_path_segment_containing_dots(tmp_path: Path):
+    """A name that merely contains "..", such as a Next.js catch-all route
+    segment, is not traversal and must remain readable."""
+    root = tmp_path
+    route = root / "src" / "app" / "feed" / "[...sections]"
+    route.mkdir(parents=True)
+    (route / "page.tsx").write_text("export default function Page() {}\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    read_result = be.read("/src/app/feed/[...sections]/page.tsx")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "export default" in read_result.file_data["content"]
+
+
+def test_filesystem_read_rejects_traversal_segment(tmp_path: Path):
+    """A ".." that is its own path segment still escapes the root and is refused."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    with pytest.raises(ValueError, match="Path traversal not allowed"):
+        be.read("/src/app/../../etc/passwd")
+
+
 def test_filesystem_upload_errors(tmp_path: Path):
     """Test upload error handling."""
     root = tmp_path

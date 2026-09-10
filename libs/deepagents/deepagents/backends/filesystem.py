@@ -13,7 +13,7 @@ import threading
 import time
 from bisect import bisect_left, bisect_right
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
@@ -202,7 +202,9 @@ class FilesystemBackend(BackendProtocol):
         """
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
-            if ".." in vpath or vpath.startswith("~"):
+            # Check for traversal as a path component (not substring) to avoid
+            # false-positive rejection of legitimate names like "[...slug]"
+            if ".." in PurePosixPath(vpath).parts or vpath.startswith("~"):
                 msg = "Path traversal not allowed"
                 raise ValueError(msg)
             full = (self.cwd / vpath.lstrip("/")).resolve()

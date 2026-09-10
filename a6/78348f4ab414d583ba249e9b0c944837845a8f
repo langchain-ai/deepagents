@@ -1,0 +1,33 @@
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_94ec94e9292098::t_cef5d4d6a6cf40 27-31,114-118,354-357
+libs/partners/quickjs/langchain_quickjs/_repl.py
+  s_fe409a6aae2006::t_254eac81114a7a 14,62,117-132,157,178-192,275-284,554,557-559,570,605-606,621-653,857-863,1083,1124-1127,1171-1179,1221,1270,1294
+libs/partners/quickjs/langchain_quickjs/middleware.py
+  s_fe409a6aae2006::t_1412b628b74749 62,186-188,204,271,287-289,299,321
+libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  s_fe409a6aae2006::t_684054f6eb0b77 36-43,162-166,411-445,545-557,575,1565
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "a678348f4ab414d583ba249e9b0c944837845a8f",
+  "prompts": {},
+  "sessions": {
+    "s_94ec94e9292098": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5958dcf3-d6c2-4582-b468-57d09b59a053",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    },
+    "s_fe409a6aae2006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "beb73acb-a824-47ad-b5f4-dcddfcadc022",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

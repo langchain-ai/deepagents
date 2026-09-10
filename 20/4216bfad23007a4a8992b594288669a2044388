@@ -1,0 +1,31 @@
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message.md
+  s_a7337d7f42304e::t_9e1c601d816b7b 9,241-245
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute.md
+  s_a7337d7f42304e::t_24c09951975de8 7,239-243
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills.md
+  s_a7337d7f42304e::t_52d003c43d1f7d 132,364-368
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend.md
+  s_a7337d7f42304e::t_7b9127f36f1593 25,257-261
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sandbox_default.md
+  s_a7337d7f42304e::t_c75217f482a6c3 21,253-257
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents.md
+  s_a7337d7f42304e::t_670b986418cafe 7,239-244
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute.md
+  s_a7337d7f42304e::t_72eb48b691634a 7,239-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "204216bfad23007a4a8992b594288669a2044388",
+  "prompts": {},
+  "sessions": {
+    "s_a7337d7f42304e": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a044ec-5493-762a-ba93-46f53751c891",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

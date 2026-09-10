@@ -718,7 +718,6 @@ class TalonHost:
                 )
             )
         )
-        metadata["tool_approval_operator"] = operator
 
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
@@ -726,37 +725,35 @@ class TalonHost:
         suppress_result = False
         try:
             result = await self._invoke_agent(
-                request=AgentRequest(
-                    conversation_id=agent_conversation_id,
-                    text=message.text,
-                    metadata=metadata,
-                    # A scheduled turn has no operator to ask. Approvals are auto-denied
-                    # upstream for `trigger: cron`, and an authorization prompt raises on
-                    # the absent sender rather than reaching anyone, so both are withheld
-                    # exactly as `run_scheduled_job` withholds them.
-                    approval_handler=None
-                    if unattended
-                    else (
-                        lambda approval: self._request_tool_approval(
-                            channel,
-                            approval,
-                            provider=_channel_key(channel, turn.provider),
-                            reply_conversation_id=message.conversation_id,
-                            sender_id=message.sender_id,
-                        )
-                    ),
-                    authorization_handler=None
-                    if unattended
-                    else (
-                        lambda event: self._handle_authorization_event(
-                            channel,
-                            event,
-                            provider=_channel_key(channel, turn.provider),
-                            reply_conversation_id=message.conversation_id,
-                            agent_conversation_id=agent_conversation_id,
-                            sender_id=message.sender_id,
-                        )
-                    ),
+                conversation_id=agent_conversation_id,
+                text=message.text,
+                metadata=metadata,
+                # A scheduled turn has no operator to ask. Approvals are auto-denied
+                # upstream for `trigger: cron`, and an authorization prompt raises on
+                # the absent sender rather than reaching anyone, so both are withheld
+                # exactly as `run_scheduled_job` withholds them.
+                approval_handler=None
+                if unattended
+                else (
+                    lambda approval: self._request_tool_approval(
+                        channel,
+                        approval,
+                        provider=_channel_key(channel, turn.provider),
+                        reply_conversation_id=message.conversation_id,
+                        sender_id=message.sender_id,
+                    )
+                ),
+                authorization_handler=None
+                if unattended
+                else (
+                    lambda event: self._handle_authorization_event(
+                        channel,
+                        event,
+                        provider=_channel_key(channel, turn.provider),
+                        reply_conversation_id=message.conversation_id,
+                        agent_conversation_id=agent_conversation_id,
+                        sender_id=message.sender_id,
+                    )
                 ),
                 tool_approval_operator=operator,
             )
@@ -871,11 +868,9 @@ class TalonHost:
                 await self.origin_channel(job.origin),
             )
             result = await self._invoke_agent(
-                request=AgentRequest(
-                    conversation_id=conversation_id,
-                    text=job.prompt,
-                    metadata=_scheduled_metadata(job),
-                ),
+                conversation_id=conversation_id,
+                text=job.prompt,
+                metadata=_scheduled_metadata(job),
             )
             return result.text
 
@@ -969,18 +964,22 @@ class TalonHost:
         """
         await send_with_retry(lambda: channel.send_message(job.origin.conversation_id, text))
 
-    async def _invoke_agent(
+    async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
         *,
-        request: AgentRequest,
+        conversation_id: str,
+        text: str,
+        metadata: dict[str, object],
+        approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
+        | None = None,
+        authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
     ) -> AgentResult:
-        conversation_id = request.conversation_id
         metadata = {
-            **request.metadata,
+            **metadata,
             "tool_approval_operator": tool_approval_operator is True
-            and request.metadata.get("trigger") != "cron"
-            and not request.metadata.get("background_delivery"),
+            and metadata.get("trigger") != "cron"
+            and not metadata.get("background_delivery"),
         }
         try:
             with langsmith_trace_context(
@@ -990,7 +989,13 @@ class TalonHost:
                 metadata=metadata,
             ):
                 return await self.agent.invoke(
-                    replace(request, metadata=metadata),
+                    AgentRequest(
+                        conversation_id=conversation_id,
+                        text=text,
+                        metadata=metadata,
+                        approval_handler=approval_handler,
+                        authorization_handler=authorization_handler,
+                    ),
                 )
         except asyncio.CancelledError:
             raise

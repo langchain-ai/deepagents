@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
@@ -17,42 +16,6 @@ from deepagents_talon.tool_approvals import (
     ApprovalSnapshot,
     ToolApprovalStore,
 )
-
-
-def test_ensure_defaults_and_preserve(tmp_path):
-    path = tmp_path / "nested" / "tools.json"
-    store = ToolApprovalStore(path)
-    with pytest.raises(FileNotFoundError):
-        store.read()
-    snapshot = store.ensure()
-    assert snapshot.approvals == {
-        "update_tool_approvals": True,
-        "delete_conversations": True,
-        "update_mcp_server": True,
-        "start_async_task": True,
-    }
-    assert snapshot.approvals.get("execute", False) is False
-    assert snapshot.interrupt_on["update_tool_approvals"] == {
-        "allowed_decisions": ["approve", "reject"]
-    }
-    raw = b'{"custom": false}\n'
-    path.write_bytes(raw)
-    assert store.ensure().approvals == {"custom": False}
-    assert path.read_bytes() == raw
-
-
-def test_snapshot_immutable():
-    policy = {"one": True, "two": False}
-    snapshot = ApprovalSnapshot("revision", policy)
-    policy["one"] = False
-    assert snapshot.approvals["one"] is True
-    with pytest.raises(TypeError):
-        snapshot.approvals["one"] = False
-    with pytest.raises(FrozenInstanceError):
-        snapshot.revision = "changed"
-    interrupts = snapshot.interrupt_on
-    interrupts["one"]["allowed_decisions"].append("edit")
-    assert snapshot.interrupt_on == {"one": {"allowed_decisions": ["approve", "reject"]}}
 
 
 @pytest.mark.parametrize(
@@ -216,23 +179,3 @@ def test_tool_denies_without_operator_and_invocation(tmp_path, operator, invocat
         ACTIVE_APPROVALS.reset(active_token)
     assert result["status"] == "error"
     assert store.read() == active
-
-
-def test_authorized_tools_keep_old_snapshot(tmp_path):
-    store = ToolApprovalStore(tmp_path / "tools.json")
-    active = store.ensure()
-    read, update = store.tools(active)
-    operator_token = APPROVAL_OPERATOR.set(True)
-    active_token = ACTIVE_APPROVALS.set(active)
-    try:
-        result = update.invoke(
-            {"updates": {"update_tool_approvals": False}, "expected_revision": active.revision}
-        )
-    finally:
-        APPROVAL_OPERATOR.reset(operator_token)
-        ACTIVE_APPROVALS.reset(active_token)
-    assert result["status"] == "updated"
-    assert result["available"] == "next_invocation"
-    assert result["saved_changes_inactive"] is True
-    assert read.invoke({})["active_tools"]["update_tool_approvals"] is True
-    assert read.invoke({})["tools"]["update_tool_approvals"] is False

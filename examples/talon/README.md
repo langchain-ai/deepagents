@@ -48,39 +48,10 @@ do not mount a single `tools.json` or `.mcp.json`, because updates replace files
 with an atomic rename. For `docker run`, use
 `-v "$HOME/.deepagents:/root/.deepagents" -v "$HOME/talon-workspace:/workspace"`.
 
-`tools.json` is a flat mapping of exact tool names to booleans (`true` prompts,
-`false` does not). Defaults are:
-
-```json
-{
-  "update_tool_approvals": true,
-  "delete_conversations": true,
-  "update_mcp_server": true,
-  "start_async_task": true
-}
-```
-
-Unspecified tools are `false`; list/search/read history tools do not prompt by
-default. Read `get_tool_approvals` for `tools`, `active_tools`,
-`persisted_revision`, `active_revision`, and `saved_changes_inactive`. Use
-`update_tool_approvals(updates={"execute": true}, expected_revision=<persisted_revision>)`
-for atomic batch compare-and-swap updates that preserve unrelated entries.
-A stale revision rejects the entire batch; read again before retrying.
-
-Changes activate on the next invocation without restarting; existing turns and
-tasks keep their snapshot. Invalid configuration fails closed on the next
-invocation and requires operator repair. No migration from old settings is provided.
-Policy self-edits use the pre-edit policy and require an operator even when their
-prompt is `false`. In `self` exposure, a message identified as `from_self` needs
-no extra operator list; otherwise only the configured channel operator IDs qualify,
-not allowlists or mention matches.
-
-A same-UID shell can edit these files directly: keeping them outside the workspace
-is not a sandbox boundary. Opaque remote graphs are not locally enforced beyond
-the `start_async_task` delegation gate. Disabling MCP update prompts does not
-remove restrictions on unsafe reuse of redacted credentials. See the package's
-[tool approval policy](../../libs/talon/README.md#tool-approvals) and
-[MCP configuration guidance](../../libs/talon/README.md#mcp-tools).
+See the [tool approval policy](../../libs/talon/README.md#tool-approvals) for
+defaults, operator authorization, and next-invocation activation, and
+[MCP configuration guidance](../../libs/talon/README.md#mcp-tools) for credential
+restrictions. Out-of-workspace placement is not a same-UID shell isolation boundary.
 
 ## Local Run Without Docker
 

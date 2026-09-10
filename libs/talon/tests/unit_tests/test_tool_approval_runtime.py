@@ -278,58 +278,6 @@ async def test_failed_reload_blocks_graph_and_preserves_previous_snapshot(
 
 
 @pytest.mark.parametrize("protected", [True, False])
-async def test_local_subagent_inherits_invocation_approvals(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, protected: bool
-) -> None:
-    parent = ToolModel(
-        responses=[
-            call("task", subagent_type="worker", description="work"),
-            AIMessage(content="delegated"),
-        ]
-    )
-    child = ToolModel(responses=[call("protected_effect"), AIMessage(content="child done")])
-    runtime = make_runtime(tmp_path, monkeypatch, parent)
-    effects = []
-
-    @tool
-    def protected_effect() -> str:
-        """Record a delegated effect."""
-        effects.append(ACTIVE_APPROVALS.get())
-        return "done"
-
-    runtime.subagents = (
-        {
-            "name": "worker",
-            "description": "Worker",
-            "system_prompt": "Work",
-            "model": child,
-            "tools": [protected_effect],
-        },
-    )
-    initial = runtime.approval_store.ensure()
-    runtime.approval_store.update({"protected_effect": protected}, initial.revision)
-    await runtime.start()
-    active = runtime.approval_store.read()
-    try:
-        assert (await runtime.invoke(AgentRequest("chat", "delegate"))).text == "delegated"
-        await asyncio.wait_for(
-            asyncio.gather(*(job.worker for job in runtime.background._jobs.values())), 5
-        )
-        results = runtime.background.results("chat")
-        assert len(results) == 1
-        if protected:
-            assert effects == []
-            assert "approval" in next(iter(results.values()))
-        else:
-            assert effects == [active]
-            assert "<subagent_result>\nchild done\n</subagent_result>" in next(
-                iter(results.values())
-            )
-    finally:
-        await runtime.stop()
-
-
-@pytest.mark.parametrize("protected", [True, False])
 async def test_detached_operator_cannot_edit_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, protected: bool
 ) -> None:

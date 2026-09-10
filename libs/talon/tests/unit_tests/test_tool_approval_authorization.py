@@ -7,7 +7,7 @@ import pytest
 
 from deepagents_talon.channels.base import ChannelExposure, ExposureMode
 from deepagents_talon.host import TalonHost, _BackgroundRoute, _Turn
-from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.interfaces import ChannelMessage
 from tests.conftest import RecordingChannel
 from tests.test_host import RoutedAgent, _config, _cron_job
 
@@ -140,10 +140,8 @@ async def test_direct_invocation_defaults_to_deny(tmp_path):
     agent = RoutedAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[])
     await host._invoke_agent(
-        request=AgentRequest(
-            conversation_id="chat",
-            text="edit policy",
-            metadata={"tool_approval_operator": True, "from_self": True, "sender_id": "alice"},
-        ),
+        conversation_id="chat",
+        text="edit policy",
+        metadata={"tool_approval_operator": True, "from_self": True, "sender_id": "alice"},
     )
     assert agent.requests[-1].metadata["tool_approval_operator"] is False

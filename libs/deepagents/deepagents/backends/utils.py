@@ -588,14 +588,19 @@ def truncate_if_too_long(result: str) -> str: ...
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     """Truncate list or string result if it exceeds token limit (rough estimate: 4 chars/token)."""
+    limit = TOOL_RESULT_TOKEN_LIMIT * 4
     if isinstance(result, list):
-        total_chars = sum(len(item) for item in result)
-        if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
+        # Callers render the list with `str()`, so each item costs its repr plus ", ".
+        budget = limit - len(repr(TRUNCATION_GUIDANCE)) - 2
+        used = 0
+        for kept, item in enumerate(result):
+            used += len(repr(item)) + 2
+            if used > budget:
+                return result[:kept] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
-    if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
-        return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
+    if len(result) > limit:
+        return result[: limit - len(TRUNCATION_GUIDANCE) - 1] + "\n" + TRUNCATION_GUIDANCE
     return result
 
 

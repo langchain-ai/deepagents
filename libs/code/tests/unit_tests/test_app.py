@@ -30325,3 +30325,122 @@ class TestPromptClipboard:
                 setattr(app, attribute, None)
 
             assert app._prompt_clipboard_block_reason() is None
+
+
+class TestProvisionalCostReconciliation:
+    """Request-keyed provisional deltas survive backend resets correctly."""
+
+    async def test_a_late_correction_only_retracts_its_own_contribution(
+        self,
+    ) -> None:
+        """A child's completion correcting it down must not subtract spend.
+
+        Other children added spend after a backend total cleared the pool; the
+        correction must leave theirs alone.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._add_provisional_cost(0.5, request_id="child-1")
+            # A backend total arrives and clears all provisional spend.
+            app._set_session_cost(2.0)
+            assert app._displayed_cost_usd == pytest.approx(2.0)
+
+            # A second child adds new provisional spend after the reset.
+            app._add_provisional_cost(0.7, request_id="child-2")
+
+            # child-1's late correction arrives: its own $0.50 is no longer
+            # held, so the correction must not touch child-2's contribution.
+            app._add_provisional_cost(-0.5, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(2.7)
+
+    async def test_a_correction_applies_while_its_contribution_is_still_held(
+        self,
+    ) -> None:
+        """Before any backend reset, a correction adjusts the total.
+
+        The request's contribution is retracted by the signed delta only.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+            app._add_provisional_cost(0.5, request_id="child-1")
+            app._add_provisional_cost(0.7, request_id="child-2")
+
+            app._add_provisional_cost(-0.45, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(1.75)
+
+    async def test_chunk_revisions_accumulate_per_request(self) -> None:
+        """A request priced across several chunks reconciles correctly.
+
+        The retraction matches the running total, not just the last delta.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+            app._add_provisional_cost(0.3, request_id="child-1")
+            app._add_provisional_cost(0.2, request_id="child-1")
+
+            app._add_provisional_cost(-0.1, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(1.4)
+
+    async def test_a_backend_reset_clears_keyed_contributions(self) -> None:
+        """After `_set_session_cost`, no keyed contribution can be retracted."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+            app._add_provisional_cost(0.5, request_id="child-1")
+            app._set_session_cost(1.5)
+
+            app._add_provisional_cost(-0.5, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(1.5)
+
+    async def test_unkeyed_deltas_keep_the_legacy_behavior(self) -> None:
+        """Deltas without request identity still adjust the running total."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+
+            app._add_provisional_cost(0.5)
+            app._add_provisional_cost(-0.2)
+
+            assert app._displayed_cost_usd == pytest.approx(1.3)
+
+    async def test_a_correction_never_drives_the_display_negative(self) -> None:
+        """Clamping still applies to a keyed retraction."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(0.0)
+            app._add_provisional_cost(0.01, request_id="child-1")
+
+            app._add_provisional_cost(-0.5, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(0.0)
+
+    async def test_an_oversized_retraction_spares_other_children(self) -> None:
+        """A correction may only give back what its own request contributed.
+
+        Applying the whole signed delta would take a sibling's provisional
+        spend with it, which the next backend total would then have to add
+        back — the drop the display is meant to avoid.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+            app._add_provisional_cost(0.1, request_id="child-1")
+            app._add_provisional_cost(0.7, request_id="child-2")
+
+            # Larger than child-1's own contribution.
+            app._add_provisional_cost(-0.5, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(1.7)

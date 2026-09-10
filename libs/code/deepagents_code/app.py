@@ -4449,6 +4449,11 @@ class DeepAgentsApp(App):
         reset whenever a server total arrives.
         """
 
+        self._provisional_cost_by_request: dict[str, float] = {}
+        """Which request each provisional dollar came from, so a correction to
+        one request cannot subtract spend the last server total already
+        replaced. Cleared with `_provisional_cost_usd` on every reset."""
+
         self._server_pricing_ok: bool | None = None
         """Whether price data loaded in the process that does the pricing.
 
@@ -8829,6 +8834,7 @@ class DeepAgentsApp(App):
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
+        self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
         if (
@@ -8887,7 +8893,21 @@ class DeepAgentsApp(App):
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
-    def _add_provisional_cost(self, cost_usd: float, /) -> None:
+    def _apply_provisional_delta(self, delta_usd: float) -> None:
+        """Move the running provisional figure and refresh the display.
+
+        Clamps the running total, not the increment: dropping a negative delta
+        would strand the display at the estimate the correction supersedes.
+        """
+        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
+        self._refresh_session_cost_display()
+
+    def _add_provisional_cost(
+        self,
+        cost_usd: float,
+        /,
+        request_id: str | None = None,
+    ) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
 
         The graph checkpoints this same request and streams the total that
@@ -8898,14 +8918,33 @@ class DeepAgentsApp(App):
         Args:
             cost_usd: Estimated cost this message contributed, in US dollars.
                 Negative when a later chunk re-prices its request downward.
+            request_id: Message ID of the request the delta belongs to, when
+                known. A correction to a request the last backend total already
+                covered must not subtract other requests' newer provisional
+                spend, so a keyed delta is only applied while its own
+                contribution is still held.
         """
         delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
         if delta_usd is None or delta_usd == 0:
             return
-        # Clamp the running total, not the increment: dropping a negative delta
-        # would strand the display at the estimate the correction supersedes.
-        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
-        self._refresh_session_cost_display()
+        if request_id is None:
+            # Legacy callers without request identity cannot be reconciled; the
+            # running total is all they can adjust.
+            self._apply_provisional_delta(delta_usd)
+            return
+        held = self._provisional_cost_by_request.get(request_id, 0.0)
+        if held <= 0 and delta_usd < 0:
+            # A backend total already folded this request's contribution into
+            # the durable figure and cleared the provisional pool; its
+            # correction is stale and must not claw back other spend.
+            return
+        # Clamp a retraction to what this request still holds. A correction
+        # larger than its own contribution -- a partial reset, or an estimate
+        # that fell further than the pool it is drawn from -- would otherwise
+        # subtract spend that other in-flight children put there.
+        applied_usd = max(delta_usd, -held) if delta_usd < 0 else delta_usd
+        self._provisional_cost_by_request[request_id] = held + applied_usd
+        self._apply_provisional_delta(applied_usd)
 
     def _pricing_is_broken(self) -> bool:
         """Report whether price data failed to load where pricing happens.

@@ -2086,7 +2086,15 @@ class TestSessionCostEvents:
             request_approval=_mock_approval,
         )
         adapter._on_usage_update = lambda: None
-        adapter._on_provisional_cost = updates.append
+
+        def _record_provisional(
+            cost_usd: float,
+            /,
+            request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+        ) -> None:
+            updates.append(cost_usd)
+
+        adapter._on_provisional_cost = _record_provisional
         chunks = [
             (
                 ("tools:task",),
@@ -2144,7 +2152,15 @@ class TestSessionCostEvents:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        adapter._on_provisional_cost = updates.append
+
+        def _record_provisional(
+            cost_usd: float,
+            /,
+            request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+        ) -> None:
+            updates.append(cost_usd)
+
+        adapter._on_provisional_cost = _record_provisional
         usage = {
             "input_tokens": 1_000,
             "output_tokens": 100,
@@ -2195,6 +2211,97 @@ class TestSessionCostEvents:
         assert updates == [pytest.approx(0.42)]
         assert turn_stats.per_kind["subagent"].request_count == 1
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
+
+    async def test_a_completion_after_partial_chunks_reports_a_negative_delta(
+        self,
+    ) -> None:
+        """A nested usage event correcting a chunk-built request flows on.
+
+        The provisional callback receives a signed, request-keyed delta.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        async def mount_message(_: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        updates: list[tuple[float, str | None]] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_usage_update = lambda: None
+        adapter._on_provisional_cost = lambda cost_usd, /, request_id=None: (
+            updates.append((cost_usd, request_id))
+        )
+        partial = {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        }
+        corrected = {
+            "input_tokens": 100,
+            "output_tokens": 5,
+            "total_tokens": 105,
+        }
+        chunks = [
+            (
+                ("tools:task",),
+                "messages",
+                (
+                    AIMessageChunk(  # ty: ignore[invalid-argument-type]
+                        content="",
+                        id="child-1",
+                        usage_metadata=partial,
+                        response_metadata={"model_provider": "openai"},
+                    ),
+                    {},
+                ),
+            ),
+            (
+                ("tools:task",),
+                "custom",
+                {
+                    "type": "model_usage",
+                    "version": 1,
+                    "request_id": "child-1",
+                    "usage_metadata": corrected,
+                    "model_name": "real-model",
+                    "provider": "openai",
+                    "thread_id": "thread-1",
+                    "scope": "tools:task",
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+
+        def price(_usage: object, model: str, _provider: str = "") -> float | None:
+            return 0.5 if model == "gpt-5.5" else 0.05
+
+        with (
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
+            patch("deepagents_code.cost_tracking.estimate_cost", price),
+        ):
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert updates == [
+            (pytest.approx(0.5), "child-1"),
+            (pytest.approx(-0.45), "child-1"),
+        ]
+        assert turn_stats.request_count == 1
+        assert turn_stats.total_cost_usd == pytest.approx(0.05)
+        assert turn_stats.input_tokens == 100
 
 
 class TestExecuteTaskTextualAutoModeClassifier:

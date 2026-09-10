@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, create_autospec, patch
@@ -230,6 +231,29 @@ def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[A
 
 class TestEstimateCost:
     """Tests for the shared `genai-prices` adapter."""
+
+    def test_structured_estimate_has_inclusive_parents_and_child_subsets(self) -> None:
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_read": 200,
+            "cache_creation": 100,
+        }
+        usage["output_token_details"] = {"reasoning": 50}
+
+        estimate = cost_tracking._estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert estimate is not None
+        assert estimate.input_tokens == usage["input_tokens"]
+        assert estimate.output_tokens == usage["output_tokens"]
+        assert estimate.cache_creation_tokens == 100
+        assert estimate.cache_read_tokens == 200
+        assert estimate.reasoning_tokens == 50
+        assert estimate.total_cost_usd == pytest.approx(
+            estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        )
+        assert estimate.input_cost_usd + estimate.output_cost_usd == pytest.approx(
+            estimate.total_cost_usd
+        )
 
 
 def _override_catalog(
@@ -564,12 +588,39 @@ class TestCostTrackingMiddleware:
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
 
         assert one_call is not None
-        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert prepared.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert prepared.update["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
         prepared.rollback()
         retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
-        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert retried.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert retried.update["_session_cost_breakdown"]["request_count"] == 1
+
+    def test_prepared_operation_preserves_legacy_history_gap(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """The first post-upgrade offload must not erase missing historical detail."""
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {
+                "messages": [],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+                "_session_cost_usd": 1.25,
+            },
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+
+        assert (
+            prepared.update["_session_cost_breakdown"]["historical_complete"] is False
+        )
 
     def test_committed_prepare_does_not_restore_records(
         self,
@@ -651,6 +702,116 @@ class TestCostTrackingMiddleware:
         assert result["_session_cost_usd"] == pytest.approx(
             estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         )
+
+    def test_unpriceable_main_with_priced_side_counts_each_request_once(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """State fallback replaces an unpriceable matching recorder contribution."""
+        _collect(
+            recorder,
+            _record(message_id="side", model=KNOWN_MODEL),
+        )
+        _collect(
+            recorder,
+            _record(message_id="main", model="missing-model"),
+        )
+        real_request_estimate = cost_tracking._request_estimate
+
+        def request_estimate(
+            usage_metadata: dict[str, Any] | None,
+            model_name: str,
+            provider: str = "",
+        ) -> object:
+            if model_name == "missing-model":
+                return None
+            return real_request_estimate(usage_metadata, model_name, provider)
+
+        monkeypatch.setattr(cost_tracking, "_request_estimate", request_estimate)
+        state: CostState = {
+            "messages": [_message(_usage(), message_id="main")],
+            "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        }
+
+        result = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID)
+        )
+
+        assert result is not None
+        assert result["_session_cost_breakdown"]["request_count"] == 2
+        assert result["_session_cost_breakdown"]["priced_request_count"] == 2
+
+    def test_zero_cost_breakdown_is_persisted_and_emitted(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Free requests keep tokens and request counts despite a zero USD delta."""
+        _collect(recorder, _record(message_id="free"))
+        estimate = cost_tracking._estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        assert estimate is not None
+        monkeypatch.setattr(
+            cost_tracking,
+            "_request_estimate",
+            lambda *_args: replace(
+                estimate,
+                total_cost_usd=0.0,
+                input_cost_usd=0.0,
+                output_cost_usd=0.0,
+            ),
+        )
+        events: list[dict[str, Any]] = []
+
+        result = CostTrackingMiddleware().after_model(
+            cast("CostState", {"messages": [_message(_usage(), message_id="free")]}),
+            _runtime(thread_id=THREAD_ID, events=events),
+        )
+
+        assert result is not None
+        assert "_session_cost_usd" not in result
+        assert result["_session_cost_breakdown"]["request_count"] == 1
+        assert events[0]["total"] == pytest.approx(0.0)
+        assert events[0]["breakdown"]["request_count"] == 1
+
+    def test_nested_zero_cost_breakdown_transfers_to_parent(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nested free requests transfer structured detail without positive cost."""
+        _collect(
+            recorder,
+            _record(message_id="free", scope="tools:a"),
+            checkpoint_ns="tools:a|model:a",
+        )
+        monkeypatch.setattr(cost_tracking, "_request_estimate", lambda *_args: None)
+        middleware = CostTrackingMiddleware(nested=True)
+        runtime = _runtime(
+            thread_id=THREAD_ID,
+            checkpoint_ns="tools:a|CostTrackingMiddleware.after_model:a",
+        )
+        update = middleware.after_model(
+            cast("CostState", {"messages": [_message(_usage(), message_id="free")]}),
+            runtime,
+        )
+        assert update is not None
+
+        transfer = middleware.after_agent(
+            cast(
+                "CostState",
+                {
+                    "messages": [],
+                    "_session_cost_breakdown": update["_session_cost_breakdown"],
+                },
+            ),
+            runtime,
+        )
+
+        assert transfer is not None
+        pending = transfer["_session_cost_transfers"].value
+        assert pending["tools:a"]["cost_usd"] == pytest.approx(0.0)
+        assert pending["tools:a"]["breakdown"]["request_count"] == 1
 
     def test_nested_agent_checkpoints_and_transfers_cost(
         self, recorder: _SessionCostRecorder
@@ -742,8 +903,12 @@ class TestCostTrackingMiddleware:
 
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         assert one_call is not None
-        assert first == {"_session_cost_usd": pytest.approx(one_call)}
-        assert second == {"_session_cost_usd": pytest.approx(one_call)}
+        assert first is not None
+        assert second is not None
+        assert first["_session_cost_usd"] == pytest.approx(one_call)
+        assert second["_session_cost_usd"] == pytest.approx(one_call)
+        assert first["_session_cost_breakdown"]["request_count"] == 1
+        assert second["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
     def test_nested_agent_claims_only_transfers_owned_by_its_graph(self) -> None:
@@ -843,7 +1008,10 @@ class TestCostTrackingMiddleware:
         assert priced_providers
         assert set(priced_providers) == {configured_provider}
         if expected_delta is None:
-            assert result is None
+            assert result is not None
+            assert "_session_cost_usd" not in result
+            assert result["_session_cost_breakdown"]["request_count"] == 1
+            assert result["_session_cost_breakdown"]["priced_request_count"] == 0
         else:
             assert result is not None
             assert result["_session_cost_usd"] == pytest.approx(expected_delta)

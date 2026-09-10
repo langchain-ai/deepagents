@@ -2,7 +2,7 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -2073,6 +2073,53 @@ class TestExecuteTaskTextualUsageStats:
 
 class TestSessionCostEvents:
     """The graph's absolute cost total drives the client display."""
+
+    async def test_versioned_event_forwards_optional_breakdown(self) -> None:
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(return_value=True),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        updates: list[tuple[float, Mapping[str, Any] | None]] = []
+
+        def on_cost(
+            total: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+            breakdown: Mapping[str, Any] | None = None,
+        ) -> None:
+            assert thread_id == "thread-1"
+            assert pricing_ok is True
+            updates.append((total, breakdown))
+
+        adapter._on_session_cost = on_cost
+        detail = {"version": 1, "input_tokens": 12}
+        chunks = [
+            (
+                (),
+                "custom",
+                {
+                    "type": "session_cost",
+                    "version": 2,
+                    "total": 0.00001,
+                    "thread_id": "thread-1",
+                    "pricing_ok": True,
+                    "breakdown": detail,
+                },
+            )
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert updates == [(0.00001, detail)]
 
     async def test_nested_usage_updates_provisional_cost(self) -> None:
         async def mount_message(_: object) -> bool:

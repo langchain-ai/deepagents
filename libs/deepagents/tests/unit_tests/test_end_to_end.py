@@ -4205,7 +4205,10 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
     agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
     config: dict = {"configurable": {"thread_id": "patch-invalid-tool-calls"}}
 
-    agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
+    first_result = agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
+    assert isinstance(first_result["messages"][-1], AIMessage)
+    assert first_result["messages"][-1].invalid_tool_calls
+
     result = agent.invoke({"messages": [HumanMessage(content="Try again")]}, config)
 
     # The second model call must see the dangling invalid_tool_call paired with a ToolMessage.
@@ -4218,6 +4221,7 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
     assert "could not be executed" in synthetic.content
     assert "malformed or truncated" in synthetic.content
     assert synthetic.name == "search"
+    assert synthetic.status == "error"
 
     # Final state must also expose the patched ToolMessage.
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])

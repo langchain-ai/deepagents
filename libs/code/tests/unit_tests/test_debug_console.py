@@ -62,6 +62,25 @@ def _snapshot() -> list[SnapshotField]:
 
 
 class TestDebugConsoleScreen:
+    def test_level_filters_group_thresholds_before_exact_levels(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: True)
+
+        assert [label for label, _ in debug_console_mod._filter_options()] == [
+            "All",
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+            "Only DEBUG",
+            "Only INFO",
+            "Only WARNING",
+            "Only ERROR",
+            "Only CRITICAL",
+        ]
+
     async def test_wrapped_snapshot_values_align_to_value_column(self) -> None:
         fields = [
             SnapshotField(

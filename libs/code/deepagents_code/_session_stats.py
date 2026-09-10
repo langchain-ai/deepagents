@@ -149,6 +149,14 @@ class RecordedUsage:
     request_tokens: int
     """Running token total for the request after applying this message."""
 
+    request_id: str | None = None
+    """Bare message ID of the request this delta belongs to, when known.
+
+    Lets the provisional-cost accumulator key corrections to the request that
+    earned them, so a late revision cannot subtract spend a backend total has
+    already replaced with other requests' contributions.
+    """
+
 
 UsageLedgerKey = str | tuple[Hashable, str]
 """Key of the recorded-request ledger: a message ID, optionally scoped.
@@ -460,6 +468,15 @@ def finalize_recorded_requests(
             recorded_requests[request_id[1]] = closed
 
 
+def _bare_request_id(request_id: UsageLedgerKey | None) -> str | None:
+    """Return a ledger key's bare message ID, dropping any attempt scope."""
+    if request_id is None:
+        return None
+    if isinstance(request_id, tuple):
+        return request_id[1]
+    return request_id
+
+
 def _names_a_model(message: object) -> bool:
     """Report whether a message's own metadata names the model that served it.
 
@@ -630,21 +647,24 @@ def _resolve_usage_model(
         The `(model_name, provider)` pair to record and price under.
     """
     from deepagents_code.cost_tracking import (
+        _CONFIGURED_MODEL_METADATA_KEY,
         _CONFIGURED_PROVIDER_METADATA_KEY,
         resolve_message_model,
     )
 
-    configured_provider = (
-        request_metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
-        if request_metadata is not None
-        else None
-    )
+    request_metadata = request_metadata or {}
+    configured_provider = request_metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
     has_request_provider = isinstance(configured_provider, str) and bool(
         configured_provider
     )
+    configured_model = request_metadata.get(_CONFIGURED_MODEL_METADATA_KEY)
+    has_request_model = isinstance(configured_model, str) and bool(configured_model)
     return resolve_message_model(
         message,
-        fallback_model=fallback_model,
+        # The request's own configured model describes this very call, so unlike
+        # the caller's fallback it is valid for nested calls too; it only
+        # replaces the parent-fallback step, ahead of the existing chain.
+        fallback_model=configured_model if has_request_model else fallback_model,
         fallback_provider=(
             configured_provider if has_request_provider else fallback_provider
         ),
@@ -733,6 +753,93 @@ def _move_request_to_named_model(
     )
 
 
+def _finalize_from_completed(
+    stats: SessionStats,
+    message: object,
+    previous: RecordedRequest,
+    *,
+    usage: Mapping[str, Any],
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    request_id: UsageLedgerKey,
+    fallback_model: str,
+    fallback_provider: str,
+    request_metadata: Mapping[str, Any] | None,
+    kind: UsageKind,
+) -> RecordedUsage | None:
+    """Replace a chunk-built request record with a completed message's usage.
+
+    Chunks report incremental deltas, so a request recorded mid-stream holds
+    partial tokens priced under whatever model was known then. The completed
+    message carries the whole usage; it must replace the partial record rather
+    than join it, or corrected token counts, cache details, and model
+    attribution never reach the stats.
+
+    Args:
+        stats: Accumulator holding the partial request.
+        message: The completed message with the request's whole usage.
+        previous: The partial ledger entry to supersede.
+        usage: The completed message's whole usage metadata.
+        recorded_requests: Ledger to update in place.
+        request_id: Message ID keying the ledger entry.
+        fallback_model: Model to use when response metadata does not name one.
+        fallback_provider: Provider to use when response metadata omits it.
+        request_metadata: Stream metadata for this specific request, if any.
+        kind: Request class used by the type breakdown.
+
+    Returns:
+        The signed cost change the replacement applied, for the caller's
+            provisional display, or `None` when nothing changed.
+    """
+    from deepagents_code.cost_tracking import cache_token_counts, estimate_cost
+
+    model_name, provider = _resolve_usage_model(
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        request_metadata=request_metadata,
+        kind=kind,
+    )
+    input_count, output_count = _display_token_counts(usage)
+    cost_usd = estimate_cost(usage, model_name, provider)
+    cache_reads, cache_writes = cache_token_counts(usage)
+
+    stats.retract_request(previous)
+    stats.record_request(
+        model_name,
+        input_count,
+        output_count,
+        provider,
+        cost_usd=cost_usd,
+        kind=kind,
+        cache_read_tokens=cache_reads,
+        cache_write_tokens=sum(cache_writes),
+    )
+    recorded_requests[request_id] = RecordedRequest(
+        model_name=model_name,
+        provider=provider,
+        kind=kind,
+        input_tokens=input_count,
+        output_tokens=output_count,
+        cache_read_tokens=cache_reads,
+        cache_write_tokens=sum(cache_writes),
+        cost_usd=cost_usd,
+        usage_metadata=usage,
+        finalized=True,
+    )
+    return RecordedUsage(
+        input_tokens=input_count - previous.input_tokens,
+        output_tokens=output_count - previous.output_tokens,
+        cost_usd=_cost_delta(
+            previous.cost_usd,
+            cost_usd,
+            model_name=model_name,
+            previous_model_name=previous.model_name,
+        ),
+        request_tokens=input_count + output_count,
+        request_id=_bare_request_id(request_id),
+    )
+
+
 def record_message_usage(
     stats: SessionStats,
     message: object,
@@ -810,10 +917,28 @@ def record_message_usage(
         request_id = (attempt_scope, request_id)
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
-        # A completed message repeats the whole request. Whether the request was
-        # built from chunks or from an identical earlier replay, it is already
-        # accounted for.
-        return None
+        previous = recorded_requests[request_id]
+        if previous.finalized:
+            # A completed message repeats the whole request, and a completed
+            # record already holds it in full. Whether this entry was built
+            # from an identical earlier completion or re-records one, it is
+            # already accounted for.
+            return None
+        # A partial ledger entry was built only from incremental chunks; this
+        # completion carries the request's whole usage and must *replace* it.
+        # Retry-attempt scoping keeps this keyed to its own attempt's entry.
+        return _finalize_from_completed(
+            stats,
+            message,
+            previous,
+            usage=usage,
+            recorded_requests=recorded_requests,
+            request_id=request_id,
+            fallback_model=fallback_model,
+            fallback_provider=fallback_provider,
+            request_metadata=request_metadata,
+            kind=kind,
+        )
 
     input_count, output_count = _display_token_counts(usage)
     previous = recorded_requests.get(request_id) if request_id is not None else None
@@ -850,6 +975,7 @@ def record_message_usage(
                     output_tokens=0,
                     cost_usd=reprice_delta,
                     request_tokens=previous.input_tokens + previous.output_tokens,
+                    request_id=_bare_request_id(request_id),
                 )
         return None
 
@@ -925,6 +1051,7 @@ def record_message_usage(
             previous_model_name=previous.model_name if previous else model_name,
         ),
         request_tokens=input_count + output_count,
+        request_id=_bare_request_id(request_id),
     )
 
 

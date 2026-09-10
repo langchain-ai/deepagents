@@ -95,16 +95,21 @@ def _sandbox_env() -> dict[str, str]:
 def _create_sandbox(client: SandboxClient) -> Sandbox:
     """Create the reusable snapshot when needed, then start a sandbox."""
     snapshots = client.list_snapshots(name_contains=SNAPSHOT_NAME)
-    if not any(
-        snapshot.name == SNAPSHOT_NAME and snapshot.status == "ready"
-        for snapshot in snapshots
-    ):
-        client.create_snapshot(
+    snapshot = next(
+        (
+            item
+            for item in snapshots
+            if item.name == SNAPSHOT_NAME and item.status == "ready"
+        ),
+        None,
+    )
+    if snapshot is None:
+        snapshot = client.create_snapshot(
             name=SNAPSHOT_NAME,
             docker_image=SNAPSHOT_IMAGE,
             fs_capacity_bytes=FS_CAPACITY,
         )
-    return client.create_sandbox(snapshot_name=SNAPSHOT_NAME)
+    return client.create_sandbox(snapshot_id=snapshot.id)
 
 
 def main() -> None:

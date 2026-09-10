@@ -19523,13 +19523,14 @@ class DeepAgentsApp(App):
             return False
 
         if not had_agent_output:
-            # `info`, not `debug`, for the same reason as the store-failure
-            # branch below: the always-on ring buffer behind the Debug Console
-            # captures INFO and above, and at `debug` a vanished hint leaves no
-            # trace. Deliberately does not report a store count — by the time
-            # `_resume_thread` reaches here the store holds the *incoming*
-            # thread's history, so any count would describe the wrong thread.
-            logger.info(
+            # `debug`, not `info`: the always-on ring buffer behind the Debug
+            # Console captures INFO and above, but a suppressed hint is normal
+            # operation for a thread that never produced output, not a
+            # condition worth surfacing. Deliberately does not report a store
+            # count — by the time `_resume_thread` reaches here the store holds
+            # the *incoming* thread's history, so any count would describe the
+            # wrong thread.
+            logger.debug(
                 "Suppressing previous-thread hint for %s: no server-backed "
                 "output was recorded in it",
                 previous_thread_id,
@@ -19550,7 +19551,9 @@ class DeepAgentsApp(App):
             # `info`, not `debug`: the always-on ring buffer behind the Debug
             # Console captures INFO and above, and a store failure here is
             # suspicious — callers have usually just read the same store
-            # successfully. At `debug` a vanished hint leaves no trace.
+            # successfully. At `debug` a vanished hint leaves no trace; here
+            # losing that trace would hide a real failure, so this stays at
+            # `info` while the routine no-output suppression above is `debug`.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
                 previous_thread_id,

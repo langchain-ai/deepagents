@@ -2039,6 +2039,8 @@ Shared by every such command -- `/effort`, `/summarization-model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
 
+_UNKNOWN_EFFORT_LABEL = "effort"
+
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
     """Parse the argument tail of `/mcp reconnect [force]`.
@@ -18208,7 +18210,13 @@ class DeepAgentsApp(App):
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
                 or default_effort_for_model(spec, cli_override=self._profile_override)
-                or ""
+                or (
+                    _UNKNOWN_EFFORT_LABEL
+                    if supported_efforts_for_model(
+                        spec, cli_override=self._profile_override
+                    )
+                    else ""
+                )
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 

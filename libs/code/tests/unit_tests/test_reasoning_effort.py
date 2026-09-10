@@ -7,10 +7,11 @@ Support data comes from LangChain model profiles, so most tests mock
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from textual.app import App
+from textual.widgets import OptionList, Static
 
 from deepagents_code import model_config, reasoning_effort
 from deepagents_code.app import DeepAgentsApp
@@ -63,6 +64,24 @@ def test_fireworks_duplicate_forms_fail_closed(
 
 
 # app.py integration (uses real profile data for openai/anthropic)
+
+
+def test_status_exposes_effort_when_default_is_unknown() -> None:
+    app = DeepAgentsApp(
+        profile_override={
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["low", "medium", "high"],
+        }
+    )
+    app._status_bar = Mock()
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-6-astra"
+
+    app._sync_status_model()
+
+    app._status_bar.set_model.assert_called_once_with(
+        provider="openai", model="gpt-6-astra", effort="effort"
+    )
 
 
 async def test_profile_override_controls_persisted_restoration() -> None:
@@ -152,6 +171,26 @@ async def test_effort_selector_escape_cancels() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert results == [None]
+
+
+async def test_effort_selector_explains_unknown_default() -> None:
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-6-astra",
+                efforts=("low", "medium", "high"),
+            )
+        )
+        await pilot.pause()
+
+        subtitle = app.screen.query_one(".effort-selector-subtitle", Static)
+        options = app.screen.query_one("#effort-options", OptionList)
+        assert "Provider default unknown" in str(subtitle.render())
+        assert all(
+            "default" not in str(options.get_option_at_index(index).prompt)
+            for index in range(options.option_count)
+        )
 
 
 async def test_effort_selector_dims_underlying_content() -> None:

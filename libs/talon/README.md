@@ -196,13 +196,69 @@ A new message in a conversation cancels the active turn, records an interruption
 
 Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
 
-## Tool Approval Overrides
+## Tool Approvals
 
-Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with agent-provided HITL configuration and applies to MCP or local runtime tools.
+Each assistant has one fixed policy at `TalonConfig.home / "tools.json"`, normally
+`~/.deepagents/<assistant_id>/tools.json`. It is a flat JSON object mapping exact
+tool names to booleans: `true` requires a channel approval prompt; `false` does
+not. There are no patterns or per-agent policy files. The defaults are:
 
-```bash
-DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=bash,execute,github_create_pr
+```json
+{
+  "update_tool_approvals": true,
+  "delete_conversations": true,
+  "update_mcp_server": true,
+  "start_async_task": true
+}
 ```
+
+Native and container startup create these defaults when the file is missing and
+preserve existing configuration. Unspecified tools default to `false`; listing,
+searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+availability or authorization. There is no migration from the old approval settings.
+
+Read `get_tool_approvals` before editing:
+
+- `tools` is the persisted policy; `active_tools` is the current invocation's policy.
+- `persisted_revision` is the revision to use for the next write; `active_revision`
+  identifies the current invocation's snapshot.
+- `saved_changes_inactive` indicates that saved changes are not active in this invocation.
+
+Call `update_tool_approvals(updates={"execute": true, "delete_conversations": true},
+expected_revision=<persisted_revision>)` with an updates mapping and the revision
+returned by the read. The batch is atomic compare-and-swap: a stale revision
+rejects the entire write, and unrelated entries are preserved. Read again and
+review before retrying; do not replace the whole file to resolve a conflict.
+
+Saved changes activate on the next invocation without a restart. Existing turns
+and tasks keep their policy snapshot. An invalid file fails closed on the next
+invocation rather than silently using an older policy; repair it as the operator.
+
+Policy self-edits are checked against the **pre-edit** policy, so disabling
+`update_tool_approvals` prompting cannot bypass the approval required for that
+edit. An operator is required even when its prompt is `false`. In `self` exposure,
+messages identified as `from_self` qualify without an extra operator list;
+otherwise only the configured channel operator IDs qualify, not chat/user
+allowlists or mention matches. Configure `DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID`,
+`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, or `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`
+for the applicable channel. Unidentified senders, scheduled runs, detached workers,
+and background-result follow-ups cannot edit policy. Unattended follow-ups cannot
+start interactive approvals or authorization flows.
+
+`DeepAgentRuntime` no longer accepts `interrupt_on`; embedding hosts can pass an
+`approval_store=ToolApprovalStore(path)` instead. The underlying Deep Agents
+`interrupt_on` graph API is unchanged. Embedding hosts are responsible for supplying
+trusted `AgentRequest.metadata["tool_approval_operator"]` authorization; never copy
+that value from model arguments or untrusted inbound metadata.
+
+Keep the assistant home outside the workspace, just like MCP configuration, and
+persist its parent directory rather than bind-mounting a single `tools.json`:
+updates use atomic file replacement. These controls are not a sandbox boundary.
+A shell running as the same UID can bypass the tool API and edit the file directly;
+filesystem isolation must be enforced separately. Talon-built local subagents inherit
+this policy for their attached tools. Local tool gates do not enforce policy inside
+opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
+remote graph's internal calls.
 
 ## WhatsApp
 
@@ -349,9 +405,14 @@ Run `deepagents-talon mcp config` to print the resolved config path. The termina
 
 On Linux/macOS, Talon can manage its MCP configuration through chat using
 `get_mcp_configuration` (redacted view) and `update_mcp_server` (add, replace, or
-remove one server). Updates require human approval by default and reload before
-the next turn. Set `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` in the host
-environment to opt out; explicit tool approval policies still apply.
+remove one server). Updates require human approval by default through the
+`update_mcp_server` entry in `tools.json` and reload before the next turn.
+Setting that entry to `false` disables its prompt, not validation or secret-safety
+restrictions. Unprompted updates that reuse `<redacted>` values may change only
+`allowedTools` and `disabledTools`; other managed settings must remain unchanged.
+To change those settings, supply `${ENV_VAR}` references instead of redacted
+values, or have the operator re-enable approval. Redaction is not permission to
+redirect stored credentials.
 
 Use `${ENV_VAR}` references for credentials. Set `DEEPAGENTS_TALON_MCP_CONFIG`
 to keep the file outside the workspace. These tools do not sandbox Talon's local

@@ -15,6 +15,7 @@ from pydantic import PrivateAttr
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.tool_approvals import ToolApprovalStore
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -337,13 +338,16 @@ async def test_named_task_adds_tools_without_changing_defaults(tmp_path, monkeyp
             AIMessage(content="Delegated"),
         ]
     )
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    snapshot = store.ensure()
+    store.update({"second": protected}, snapshot.revision)
     runtime = _runtime(
         tmp_path,
         monkeypatch,
         parent,
         child,
         tools=[first, second],
-        interrupt_on={"second": protected},
+        approval_store=store,
     )
     await runtime.start()
     try:

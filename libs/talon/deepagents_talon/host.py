@@ -30,7 +30,12 @@ from deepagents_talon.authorization import (
     CallbackURLRequested,
     DeviceCode,
 )
-from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
+from deepagents_talon.channels.base import (
+    ChannelExposure,
+    ExposureMode,
+    outbound_media_root_from_env,
+    send_with_retry,
+)
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -635,6 +640,7 @@ class TalonHost:
                     await self._replace_agent_turn(
                         replace(
                             route,
+                            metadata={**route.metadata, "background_delivery": True},
                             message=ChannelMessage(
                                 route.message.conversation_id,
                                 _follow_up_prompt(route),
@@ -681,6 +687,7 @@ class TalonHost:
             **route.metadata,
         }
         scheduled = metadata.get("trigger") == "cron"
+        unattended = scheduled or bool(route.metadata.get("background_delivery"))
         if (
             isinstance(self.agent, ConversationHistoryRuntime)
             and self.agent.history_enabled
@@ -697,42 +704,61 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
+        exposure = getattr(getattr(channel, "config", None), "exposure", None)
+        operator = bool(
+            not unattended
+            and isinstance(exposure, ChannelExposure)
+            and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
+            and route.message.sender_id
+            and (
+                route.message.sender_id in exposure.operator_ids
+                or (
+                    exposure.mode == ExposureMode.SELF
+                    and route.message.metadata.get("from_self") is True
+                )
+            )
+        )
+        metadata["tool_approval_operator"] = operator
+
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
         try:
             result = await self._invoke_agent(
-                conversation_id=agent_conversation_id,
-                text=message.text,
-                metadata=metadata,
-                # A scheduled turn has no operator to ask. Approvals are auto-denied
-                # upstream for `trigger: cron`, and an authorization prompt raises on
-                # the absent sender rather than reaching anyone, so both are withheld
-                # exactly as `run_scheduled_job` withholds them.
-                approval_handler=None
-                if scheduled
-                else (
-                    lambda approval: self._request_tool_approval(
-                        channel,
-                        approval,
-                        provider=_channel_key(channel, turn.provider),
-                        reply_conversation_id=message.conversation_id,
-                        sender_id=message.sender_id,
-                    )
+                request=AgentRequest(
+                    conversation_id=agent_conversation_id,
+                    text=message.text,
+                    metadata=metadata,
+                    # A scheduled turn has no operator to ask. Approvals are auto-denied
+                    # upstream for `trigger: cron`, and an authorization prompt raises on
+                    # the absent sender rather than reaching anyone, so both are withheld
+                    # exactly as `run_scheduled_job` withholds them.
+                    approval_handler=None
+                    if unattended
+                    else (
+                        lambda approval: self._request_tool_approval(
+                            channel,
+                            approval,
+                            provider=_channel_key(channel, turn.provider),
+                            reply_conversation_id=message.conversation_id,
+                            sender_id=message.sender_id,
+                        )
+                    ),
+                    authorization_handler=None
+                    if unattended
+                    else (
+                        lambda event: self._handle_authorization_event(
+                            channel,
+                            event,
+                            provider=_channel_key(channel, turn.provider),
+                            reply_conversation_id=message.conversation_id,
+                            agent_conversation_id=agent_conversation_id,
+                            sender_id=message.sender_id,
+                        )
+                    ),
                 ),
-                authorization_handler=None
-                if scheduled
-                else (
-                    lambda event: self._handle_authorization_event(
-                        channel,
-                        event,
-                        provider=_channel_key(channel, turn.provider),
-                        reply_conversation_id=message.conversation_id,
-                        agent_conversation_id=agent_conversation_id,
-                        sender_id=message.sender_id,
-                    )
-                ),
+                tool_approval_operator=operator,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
             if scheduled and is_silent(result.text):
@@ -845,9 +871,11 @@ class TalonHost:
                 await self.origin_channel(job.origin),
             )
             result = await self._invoke_agent(
-                conversation_id=conversation_id,
-                text=job.prompt,
-                metadata=_scheduled_metadata(job),
+                request=AgentRequest(
+                    conversation_id=conversation_id,
+                    text=job.prompt,
+                    metadata=_scheduled_metadata(job),
+                ),
             )
             return result.text
 
@@ -944,13 +972,16 @@ class TalonHost:
     async def _invoke_agent(
         self,
         *,
-        conversation_id: str,
-        text: str,
-        metadata: dict[str, object],
-        approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
-        | None = None,
-        authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
+        request: AgentRequest,
+        tool_approval_operator: bool = False,
     ) -> AgentResult:
+        conversation_id = request.conversation_id
+        metadata = {
+            **request.metadata,
+            "tool_approval_operator": tool_approval_operator is True
+            and request.metadata.get("trigger") != "cron"
+            and not request.metadata.get("background_delivery"),
+        }
         try:
             with langsmith_trace_context(
                 self.config.env,
@@ -959,13 +990,7 @@ class TalonHost:
                 metadata=metadata,
             ):
                 return await self.agent.invoke(
-                    AgentRequest(
-                        conversation_id=conversation_id,
-                        text=text,
-                        metadata=metadata,
-                        approval_handler=approval_handler,
-                        authorization_handler=authorization_handler,
-                    ),
+                    replace(request, metadata=metadata),
                 )
         except asyncio.CancelledError:
             raise

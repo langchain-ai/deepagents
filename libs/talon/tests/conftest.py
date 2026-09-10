@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
@@ -12,6 +14,13 @@ from deepagents_talon.interfaces import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def isolated_talon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "talon-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
 class RecordingChannel:

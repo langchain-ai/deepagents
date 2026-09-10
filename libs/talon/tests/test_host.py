@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
-from deepagents_talon.host import TalonHost
+from deepagents_talon.host import TalonHost, _save_conversation_resets
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -100,12 +100,17 @@ class StubBackground:
 
 
 class ArchiveAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, failures: int = 0) -> None:
         super().__init__()
         self.history_enabled = True
         self.cleared: list[tuple[str, str]] = []
+        self.failures = failures
 
     async def clear_history(self, channel: str, chat: str) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            message = "archive backend unavailable"
+            raise RuntimeError(message)
         self.cleared.append((channel, chat))
 
 
@@ -125,6 +130,24 @@ class FailingStartChannel(RecordingChannel):
     async def start(self) -> None:
         message = "channel start failed"
         raise RuntimeError(message)
+
+
+class PartiallyStartingChannel(RecordingChannel):
+    """Channel that acquires a resource and then fails, like the WhatsApp bridge."""
+
+    def __init__(self, provider: str = "broken") -> None:
+        super().__init__(provider=provider)
+        self.bridge_running = False
+
+    async def start(self) -> None:
+        self.started = True
+        self.bridge_running = True
+        message = "bridge did not become ready"
+        raise RuntimeError(message)
+
+    async def stop(self) -> None:
+        self.bridge_running = False
+        await super().stop()
 
 
 class FailingRecoveryAgent(BlockingAgent):
@@ -1512,7 +1535,7 @@ async def test_start_unwinds_started_components_when_a_channel_fails(tmp_path: P
 
     assert first.started is True
     assert first.stopped is True
-    assert second.stopped is False
+    assert second.stopped is True
     assert agent.stopped is True
     assert scheduler.started is False
     assert host.running is False
@@ -1662,7 +1685,7 @@ async def test_history_reset_keeps_the_archive_when_the_counter_cannot_persist(
         await host.receive_message(channel, ChannelMessage("chat", "/reset-all-history"))
 
         assert agent.cleared == []
-        assert "try /reset-all-history again" in channel.sent[-1][1]
+        assert "Could not finish clearing history" in channel.sent[-1][1]
         assert host._agent_conversation_id("test:chat") == "test:chat"
     finally:
         await host.stop()
@@ -1702,5 +1725,93 @@ async def test_channel_keyed_threads_still_reply_to_the_channel_conversation(
         # thread id: cron origins and replies address the conversation, not the thread.
         assert agent.requests[0].metadata["origin_conversation_id"] == "chat"
         assert channel.sent == [("chat", "reply:hello")]
+    finally:
+        await host.stop()
+
+
+async def test_start_releases_the_channel_that_failed_partway_through(tmp_path: Path) -> None:
+    failing = PartiallyStartingChannel()
+    never_reached = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[failing, never_reached],
+        scheduler=RecordingScheduler(),
+    )
+
+    with pytest.raises(RuntimeError, match="bridge did not become ready"):
+        await host.start()
+
+    # The failing channel is the one holding a subprocess, so it is the one that
+    # must be stopped; nothing else got as far as starting.
+    assert failing.bridge_running is False
+    assert failing.stopped is True
+    assert never_reached.started is False
+    assert agent.stopped is True
+    assert host.running is False
+
+
+async def test_failed_history_clear_leaves_the_conversation_where_it_was(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ArchiveAgent(failures=1)
+    config = _config(tmp_path)
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+
+    try:
+        await host.receive_message(channel, ChannelMessage("chat", "/reset-all-history"))
+
+        # The clear failed, so nothing may imply it succeeded: the chat keeps its thread
+        # id in memory and on disk, and the reply does not claim history was cleared.
+        assert host._agent_conversation_id("test:chat") == "test:chat"
+        assert json.loads(config.conversation_state_path.read_text()) == {}
+        assert channel.sent[-1][1] == (
+            "Could not finish clearing history. Some of it may already be deleted. "
+            "Send /reset-all-history to finish clearing."
+        )
+
+        # The retry the user is told to send starts from that unchanged state.
+        await host.receive_message(channel, ChannelMessage("chat", "/reset-all-history"))
+
+        assert agent.cleared == [("test", "chat")]
+        assert host._agent_conversation_id("test:chat") == "test:chat:talon-reset:1"
+        assert json.loads(config.conversation_state_path.read_text()) == {"test:chat": 1}
+        assert "Cleared all conversation history" in channel.sent[-1][1]
+    finally:
+        await host.stop()
+
+
+async def test_reset_counter_rollback_failure_is_logged_and_still_reverted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel = RecordingChannel()
+    agent = ArchiveAgent(failures=1)
+    config = _config(tmp_path)
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    original = _save_conversation_resets
+    writes = 0
+
+    def fail_the_rollback(path: Path, resets: object) -> None:
+        nonlocal writes
+        writes += 1
+        if writes > 1:
+            message = "disk full"
+            raise OSError(message)
+        original(path, cast("dict[str, int]", resets))
+
+    monkeypatch.setattr("deepagents_talon.host._save_conversation_resets", fail_the_rollback)
+    await host.start()
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="deepagents_talon.host"):
+            await host.receive_message(channel, ChannelMessage("chat", "/reset-all-history"))
+
+        # The file keeps the bumped counter, but this process does not act on it.
+        assert host._agent_conversation_id("test:chat") == "test:chat"
+        assert json.loads(config.conversation_state_path.read_text()) == {"test:chat": 1}
+        assert "Could not roll back the conversation reset counter" in caplog.text
     finally:
         await host.stop()

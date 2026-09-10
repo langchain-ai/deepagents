@@ -16,20 +16,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def load_async_subagents(
-    config_path: Path | None = None, *, strict: bool = False
-) -> list[AsyncSubAgent]:
+def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
     """Load async subagent definitions from `config.toml`.
 
     Reads the `[async_subagents]` section where each sub-table defines a remote
-    LangGraph deployment.
+    LangGraph deployment. Loading is fail-closed: one invalid definition rejects
+    the whole file rather than silently starting with fewer subagents. Each
+    rejection is logged before it is raised.
 
     Args:
         config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
-        strict: Reject an invalid configuration instead of returning a partial list.
 
     Returns:
-        List of async subagent specs, or an empty list when absent or invalid.
+        List of async subagent specs, or an empty list when the file is absent.
+
+    Raises:
+        ValueError: The file, the section, or any definition is invalid.
     """
     if config_path is None:
         config_path = Path.home() / ".deepagents" / "config.toml"
@@ -41,17 +43,15 @@ def load_async_subagents(
         with config_path.open("rb") as file:
             data = tomllib.load(file)
     except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        if strict:
-            msg = "Could not read async subagent configuration"
-            raise ValueError(msg) from None
         logger.warning(
             "Could not read async subagents from %s (%s)", config_path, type(exc).__name__
         )
-        return []
+        msg = "Could not read async subagent configuration"
+        raise ValueError(msg) from None
 
     section = data.get("async_subagents")
     if not isinstance(section, dict):
-        if strict and section is not None:
+        if section is not None:
             msg = "Async subagents must be a table"
             raise ValueError(msg)
         return []
@@ -59,11 +59,10 @@ def load_async_subagents(
     agents: list[AsyncSubAgent] = []
     for name, spec in section.items():
         agent = _parse_async_subagent(name, spec)
-        if strict and agent is None:
+        if agent is None:
             msg = "Invalid async subagent definition"
             raise ValueError(msg)
-        if agent is not None:
-            agents.append(agent)
+        agents.append(agent)
     return agents
 
 

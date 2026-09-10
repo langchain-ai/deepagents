@@ -118,7 +118,7 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         )
         subtitle = self._model_spec
         if self._current_effort is None and self._default_effort is None:
-            subtitle += "\nProvider default unknown — select an explicit effort"
+            subtitle = "Provider default unknown — select an explicit effort"
         with Vertical():
             yield Static("Select Reasoning Effort", classes="effort-selector-title")
             yield Static(subtitle, classes="effort-selector-subtitle")

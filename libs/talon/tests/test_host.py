@@ -1103,6 +1103,45 @@ async def test_second_cron_run_preempts_a_pending_background_turn(tmp_path: Path
         await host.stop()
 
 
+async def test_preempting_a_turn_blocked_on_the_conversation_lock_completes(
+    tmp_path: Path,
+) -> None:
+    """A run preempts a follow-up turn while holding the lock that turn is awaiting.
+
+    `_run_agent_turn` takes the conversation lock only to deliver, so a follow-up
+    turn can be parked on it at the moment a scheduled run acquires it and preempts.
+    Cancellation has to be what releases it; anything that waited for the turn to
+    make progress instead would deadlock the scheduler against its own thread.
+    """
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    cron_id = "job:talon-cron"
+    await host.start()
+    try:
+        parked = asyncio.Event()
+
+        async def blocked_turn() -> None:
+            parked.set()
+            async with host._conversation_lock(cron_id):
+                pass
+
+        async with host._conversation_lock(cron_id):
+            turn = asyncio.create_task(blocked_turn())
+            host._tasks[cron_id] = turn
+            await asyncio.wait_for(parked.wait(), 2)
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+            await asyncio.wait_for(host._preempt_scheduled_turn(cron_id), 2)
+
+        assert turn.cancelled()
+        assert agent.recoveries == [cron_id]
+        assert cron_id not in host._blocked
+    finally:
+        await host.stop()
+
+
 async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()

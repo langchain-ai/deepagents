@@ -25563,7 +25563,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(50)
+                for index in range(579)
             ],
             context_tokens=0,
             model_spec="",
@@ -25584,14 +25584,14 @@ class TestResumeScrollPosition:
             for _ in range(20):
                 await pilot.pause()
                 if (
-                    app._message_store.visible_count == 51
+                    app._message_store.visible_count == 580
                     and not app._history_prefetch_active
                     and chat.max_scroll_y > 0
                     and chat.scroll_y == chat.max_scroll_y
                 ):
                     break
 
-            assert app._message_store.visible_count == 51
+            assert app._message_store.visible_count == 580
             assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y

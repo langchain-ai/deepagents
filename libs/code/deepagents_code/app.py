@@ -9319,7 +9319,7 @@ class DeepAgentsApp(App):
             self._hydration_scheduled = False
 
         if hydrated_count == 0 and direction == "above":
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
         if hydrated_count or self._hydration_requests:
             self.call_after_refresh(lambda: self._continue_hydration(direction))
 
@@ -9339,7 +9339,7 @@ class DeepAgentsApp(App):
             ):
                 self._request_hydration("above")
                 return
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
             return
 
         if direction == "above":
@@ -9353,8 +9353,19 @@ class DeepAgentsApp(App):
             self._message_store.has_messages_above
             and self._message_store.visible_count < self._message_store.WINDOW_SIZE
         )
-        if self._history_prefetch_active:
-            self._request_hydration("above")
+        if not self._history_prefetch_active:
+            return
+        with suppress(NoMatches):
+            self.query_one("#chat", _ChatScroll).anchor()
+        self._request_hydration("above")
+
+    def _stop_history_prefetch(self) -> None:
+        """End resumed-history warming and its temporary bottom anchor."""
+        if not self._history_prefetch_active:
+            return
+        self._history_prefetch_active = False
+        with suppress(NoMatches):
+            self.query_one("#chat", _ChatScroll).anchor(False)
 
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
@@ -20705,6 +20716,8 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         self._hydration_requests.clear()
         self._history_prefetch_active = False
+        with suppress(NoMatches):
+            self.query_one("#chat", _ChatScroll).anchor(False)
         if self._transcript_prune_timer is not None:
             self._transcript_prune_timer.stop()
             self._transcript_prune_timer = None

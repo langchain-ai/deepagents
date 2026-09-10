@@ -373,6 +373,157 @@ class TestRuntimeDotenvReload:
             config_mod._dotenv_loaded_values.clear()
 
 
+class TestDotenvProvenance:
+    """Dotenv-injected config values identify the file that supplied them."""
+
+    def test_global_dotenv_source_is_rendered_in_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Text output names the global file without printing its value."""
+        from deepagents_code.client.commands.config import _run_get
+
+        name = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=0\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert _run_get("tracing.langsmith_redact", "text") == 0
+        output = capsys.readouterr().out
+        compact = "".join(output.splitlines())
+        assert f"env ({name}, {global_dotenv})" in compact
+        assert f"{name}=0" not in output
+
+    def test_project_dotenv_source_is_rendered_in_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """JSON output carries the project dotenv path in its source field."""
+        from deepagents_code.client.commands.config import _run_get
+
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        project = tmp_path / "project"
+        project.mkdir()
+        dotenv = project / ".env"
+        dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=project)
+
+        assert _run_get("display.show_header", "json") == 0
+        payload = json.loads(capsys.readouterr().out)["data"]
+        assert payload["source"] == f"env ({name}, {dotenv})"
+
+    def test_shell_env_source_stays_unattributed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A launch environment value remains a bare env source."""
+        from deepagents_code.client.commands.config import _attribute_env_source
+
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        monkeypatch.setenv(name, "true")
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert _attribute_env_source(f"env ({name})") == f"env ({name})"
+        assert name not in config_module._dotenv_provenance
+
+    def test_project_dotenv_provenance_wins_over_global(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """First-file-wins records the project file rather than the global file."""
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        project = tmp_path / "project"
+        project.mkdir()
+        project_dotenv = project / ".env"
+        project_dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=true\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=project)
+
+        assert config_module._dotenv_provenance[name] == project_dotenv
+
+    def test_denied_dotenv_key_has_no_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Denied values are neither injected nor attributed."""
+        name = "PYTHONPATH"
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(f"{name}=/tmp/forbidden\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert name not in config_module._dotenv_loaded_values
+        assert name not in config_module._dotenv_provenance
+
+    def test_whitespace_only_dotenv_value_is_attributed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An injected whitespace-only value retains its source path."""
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        (tmp_path / ".env").write_text(f"{name}=   \n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert config_module._dotenv_loaded_values.get(name) == ""
+        assert config_module._dotenv_provenance[name] == tmp_path / ".env"
+
+    def test_preview_does_not_replace_process_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Workspace previews leave process-level attribution untouched."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_SHOW_HEADER=false\n", encoding="utf-8"
+        )
+        existing = {"EXISTING": tmp_path / "existing.env"}
+        monkeypatch.setattr(config_module, "_dotenv_provenance", existing)
+
+        config_module._preview_dotenv_environ(start_path=project)
+
+        assert config_module._dotenv_provenance == existing
+
+    def test_missing_dotenv_leaves_source_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty provenance map preserves source labels byte-for-byte."""
+        from deepagents_code.client.commands.config import _attribute_env_source
+
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        source = "env (DEEPAGENTS_CODE_SHOW_HEADER)"
+        assert _attribute_env_source(source) == source
+
+
 class TestWorkspaceDotenvEnvironment:
     """Workspace previews stay isolated without replacing the process environment."""
 
@@ -500,9 +651,11 @@ class TestWorkspaceDotenvEnvironment:
         )
         monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
 
+        provenance: dict[str, Path] = {}
         from_dotenv = config_mod._dotenv_environment(
             start_path=tmp_path,
             environ={},
+            provenance=provenance,
         )
         from_shell = config_mod._dotenv_environment(
             start_path=tmp_path,
@@ -510,6 +663,7 @@ class TestWorkspaceDotenvEnvironment:
         )
 
         assert from_dotenv["OPENAI_API_KEY"] == "dotenv-key"
+        assert provenance["OPENAI_API_KEY"] == tmp_path / ".env"
         assert "openai_api_key" not in from_dotenv
         assert from_shell["OPENAI_API_KEY"] == "shell-key"
 

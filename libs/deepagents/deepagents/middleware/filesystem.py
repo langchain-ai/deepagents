@@ -987,9 +987,6 @@ READ_FILE_TRUNCATION_MSG = (
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
 
-_MIDLINE_FIELD_SOLVE_ROUNDS = 4
-"""Rounds allowed to settle the mid-line char count against its own header width."""
-
 
 def _midline_truncated_read(
     body: str,
@@ -1022,14 +1019,9 @@ def _midline_truncated_read(
     def fields(shown: int) -> list[str]:
         return [*_window_fields(clipped), "truncated mid-line", f"{shown} of {oversized} chars"]
 
-    # The count appears in the header it has to fit under, so solve for it:
-    # only its digit width feeds back, which settles within a couple of rounds.
-    shown = oversized
-    for _ in range(_MIDLINE_FIELD_SOLVE_ROUNDS):
-        settled = max(0, min(oversized, threshold - len(_assemble_read("", fields(shown), notices))))
-        if settled == shown:
-            break
-        shown = settled
+    # Budget for the widest count it could print; costs 0-2 shown chars, never overshoots.
+    reserved = len(_assemble_read("", fields(oversized), notices))
+    shown = max(0, min(oversized, threshold - reserved))
     return _assemble_read(body[:shown], fields(shown), notices)
 
 

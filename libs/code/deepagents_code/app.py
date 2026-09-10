@@ -107,7 +107,7 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_terminal_mapping as _resolve_terminal_mapping,
     resolve_theme_name as _resolve_theme_name,
 )
-from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.formatting import format_duration, format_message_timestamp
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
@@ -4344,6 +4344,9 @@ class DeepAgentsApp(App):
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this process."""
+
+        self._first_invocation_at: float | None = None
+        """Monotonic timestamp when the first agent invocation began."""
 
         self._thread_stats: SessionStats = SessionStats()
         """Usage observed since the active thread was loaded or created."""
@@ -18469,6 +18472,8 @@ class DeepAgentsApp(App):
         # this `False` and be mistaken for a worker that never ran. See
         # `_agent_turn_started`.
         self._agent_turn_started = True
+        if self._first_invocation_at is None:
+            self._first_invocation_at = time.monotonic()
 
         from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -25001,6 +25006,12 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _session_length() -> str:
+            started_at = self._first_invocation_at
+            if started_at is None:
+                return "not started"
+            return format_duration(max(0.0, time.monotonic() - started_at))
+
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks
             # whether a model is actually configured: the "(not configured)"
@@ -25081,6 +25092,7 @@ class DeepAgentsApp(App):
             _model_field(),
             _thread_field(),
             _safe("Messages", _messages),
+            _safe("Session length", _session_length),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(

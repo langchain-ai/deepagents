@@ -230,6 +230,106 @@ async def test_cancel_finished_subagent_preserves_result():
     assert not background.owners()
 
 
+async def test_invoke_reports_the_results_it_acknowledged(monkeypatch):
+    """The runtime hands back what it acknowledged so a host can undo it.
+
+    Acknowledgement records that the model consumed a result, which the runtime
+    knows; whether the user was told depends on the reply being delivered, which
+    only the host knows. The ids travel so the two can be reconciled.
+    """
+
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(
+        monkeypatch,
+        child,
+        [
+            _delegate(),
+            AIMessage(content="Working on it"),
+            AIMessage(content="Processed research"),
+        ],
+    )
+    await runtime.start()
+    try:
+        launched = await runtime.invoke(AgentRequest(conversation_id="chat", text="research"))
+        assert launched.background_results == ()
+
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        pending = set(runtime.background.results("chat"))
+        assert pending
+
+        processed = await runtime.invoke(AgentRequest(conversation_id="chat", text="anything else"))
+
+        assert set(processed.background_results) == pending
+        assert not runtime.background.results("chat")
+
+        runtime.background.requeue(processed.background_results)
+
+        assert set(runtime.background.results("chat")) == pending
+    finally:
+        await runtime.stop()
+
+
+async def test_requeue_returns_only_the_results_it_is_given():
+    """Re-queueing is scoped to one turn's ids, not to everything acknowledged.
+
+    A conversation can hold results from several turns. Only the turn whose reply
+    was discarded goes back to the queue; anything an earlier turn delivered stays
+    acknowledged, so it is never reported to the user twice.
+    """
+
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    for thread in ("one", "two"):
+        await background.awrap_tool_call(_request(thread, task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    first = background.results("one")
+    second = background.results("two")
+    background.acknowledge(first)
+    background.acknowledge(second)
+    assert not background.results("one")
+    assert not background.results("two")
+    assert not background.owners()
+
+    background.requeue(first)
+
+    assert background.results("one") == first
+    assert not background.results("two")
+    assert background.owners() == {"one"}
+
+
+async def test_requeue_skips_cancelled_and_unknown_results():
+    """Nothing is resurrected that the conversation has no use for.
+
+    `/stop` discards a thread's results deliberately, and a result already pruned
+    is gone. Re-queueing either would be an undelivered turn reviving work the user
+    stopped, so both are left alone.
+    """
+
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    results = background.results("one")
+    background.acknowledge(results)
+    assert await background.cancel("one")
+
+    background.requeue(results)
+    background.requeue(["subagent-never-existed"])
+
+    assert not background.results("one")
+    assert not background.owners()
+
+
 @pytest.mark.parametrize("owner", ["one", None])
 async def test_conversation_cancel_discards_finished_results(owner):
     @tool

@@ -161,10 +161,15 @@ class AgentResult:
         text: Text to deliver to the triggering channel. Empty text means the
             runtime has no message to send.
         metadata: Runtime metadata for future observability integrations.
+        background_results: Background result ids this turn consumed, which the
+            runtime has already acknowledged. A host that then discards the turn's
+            reply hands these back through `BackgroundSubagents.requeue`, so work
+            the user never heard about is offered to the next turn instead.
     """
 
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    background_results: tuple[str, ...] = ()
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]

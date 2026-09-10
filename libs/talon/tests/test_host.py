@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, cast
@@ -93,6 +94,7 @@ class FailingStopAgent(BlockingAgent):
 class StubBackground:
     def __init__(self) -> None:
         self.pending: set[str] = set()
+        self.requeued: list[str] = []
 
     def owners(self) -> set[str]:
         return set(self.pending)
@@ -103,6 +105,9 @@ class StubBackground:
     async def cancel(self, owner: str | None = None) -> bool:
         self.pending.discard(owner) if owner else self.pending.clear()
         return True
+
+    def requeue(self, results: object) -> None:
+        self.requeued.extend(results)  # type: ignore[arg-type]
 
 
 class ArchiveAgent(BlockingAgent):
@@ -1183,6 +1188,149 @@ async def test_channel_background_turn_keeps_its_operator_context(tmp_path: Path
         assert "trigger" not in follow_up.metadata
         assert follow_up.approval_handler is not None
         assert follow_up.authorization_handler is not None
+    finally:
+        await host.stop()
+
+
+class BackgroundResultAgent(BlockingAgent):
+    """Agent whose turn reports the background results it consumed."""
+
+    def __init__(self, *, text: str | None = None) -> None:
+        super().__init__()
+        self.background = StubBackground()
+        self.text = text
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        if request.text == "block":
+            await self.released.wait()
+        return AgentResult(
+            text=self.text if self.text is not None else f"reply:{request.text}",
+            background_results=("subagent-1",),
+        )
+
+
+async def _park_turn_at_delivery(agent: BlockingAgent) -> None:
+    """Let a blocked turn finish its model work while the delivery lock is held."""
+    agent.released.set()
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+
+async def test_superseded_turn_requeues_its_background_results(tmp_path: Path) -> None:
+    """A newer turn takes the thread while the previous reply waits to go out.
+
+    The runtime acknowledged those results when the model consumed them, but the
+    reply carrying them is dropped by the generation check, so nobody was told. The
+    ids go back to the queue rather than counting as delivered.
+    """
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await _wait_for_request(agent, "block")
+        turn = host._tasks["test:chat"]
+
+        async with host._conversation_lock("test:chat"):
+            await _park_turn_at_delivery(agent)
+            # Exactly what `_cancel_active` records before it cancels.
+            host._generations["test:chat"] += 1
+
+        await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ["subagent-1"]
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
+async def test_turn_cancelled_awaiting_delivery_requeues_its_background_results(
+    tmp_path: Path,
+) -> None:
+    """The same loss reached by cancellation instead of the generation check.
+
+    A scheduled run preempts a follow-up turn by cancelling it, and the turn can
+    already be past the model call and parked on the conversation lock the run
+    holds. Re-queueing has to happen while that cancellation is in flight.
+    """
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await _wait_for_request(agent, "block")
+        turn = host._tasks["test:chat"]
+
+        async with host._conversation_lock("test:chat"):
+            await _park_turn_at_delivery(agent)
+            turn.cancel()
+            for _ in range(50):
+                await asyncio.sleep(0)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ["subagent-1"]
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
+async def test_delivered_turn_does_not_requeue_its_background_results(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+
+        assert channel.sent == [("chat", "reply:hello")]
+        assert agent.background.requeued == []
+    finally:
+        await host.stop()
+
+
+async def test_deliberately_suppressed_turn_does_not_requeue(tmp_path: Path) -> None:
+    """Suppression the host chose is not a lost result.
+
+    A terminal authorization withholds the reply on purpose, and a silent scheduled
+    run does the same. The model still consumed the results, so they stay
+    acknowledged; re-queueing them would replay work the conversation has handled.
+    """
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+
+        assert channel.sent == []
+        assert agent.background.requeued == []
+    finally:
+        await host.stop()
+
+
+async def test_silent_scheduled_turn_does_not_requeue(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BackgroundResultAgent(text="[SILENT]")
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    job = _cron_job(tmp_path)
+    cron_id = f"{job.id}:talon-cron"
+    await host.start()
+    try:
+        agent.background.pending.add(cron_id)
+        await host.run_scheduled_job(job)
+        await host._dispatch_background_results()
+        await asyncio.wait_for(host._tasks[cron_id], 2)
+
+        assert channel.sent == []
+        assert agent.background.requeued == []
     finally:
         await host.stop()
 

@@ -750,13 +750,40 @@ class TalonHost:
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
             self._clear_authorization(agent_conversation_id)
-        async with self._conversation_lock(turn.conversation_root):
-            if (
-                self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
-                and self._generations[agent_conversation_id] == turn.generation
-                and not suppress_result
-            ):
-                await self._deliver_agent_result(channel, message.conversation_id, result)
+        try:
+            async with self._conversation_lock(turn.conversation_root):
+                superseded = (
+                    self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
+                    or self._generations[agent_conversation_id] != turn.generation
+                )
+                if superseded:
+                    # Not a deliberate silence: a newer turn took this thread, so a
+                    # reply nobody asked for any more is dropped. The background work
+                    # behind it was never reported, so it goes back to the queue.
+                    self._requeue_background_results(result)
+                elif not suppress_result:
+                    await self._deliver_agent_result(channel, message.conversation_id, result)
+        except asyncio.CancelledError:
+            # Cancelled between the model finishing and this reply going out -- the
+            # same loss, reached by the other route, and the reason this runs while
+            # the cancellation is in flight rather than after it.
+            self._requeue_background_results(result)
+            raise
+
+    def _requeue_background_results(self, result: AgentResult) -> None:
+        """Offer a discarded turn's background results to the next turn.
+
+        Args:
+            result: Turn output that never reached its conversation.
+        """
+        if not result.background_results or not isinstance(self.agent, BackgroundRuntime):
+            return
+        self.agent.background.requeue(result.background_results)
+        log_event(
+            logger,
+            "background.requeued",
+            result_count=len(result.background_results),
+        )
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.

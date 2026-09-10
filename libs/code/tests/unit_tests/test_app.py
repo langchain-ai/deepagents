@@ -5788,8 +5788,12 @@ class TestRunAgentTaskMediaTracker:
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
+                first_invocation_at = app._first_invocation_at
+                await app._run_agent_task("again")
 
-            mock_execute.assert_awaited_once()
+            assert first_invocation_at is not None
+            assert app._first_invocation_at == first_invocation_at
+            assert mock_execute.await_count == 2
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
             assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type

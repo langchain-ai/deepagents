@@ -266,7 +266,7 @@ def _load_local_pipeline(model: str, device: str, config: TalonConfig) -> _Local
         model=snapshot,
         device=device,
         trust_remote_code=False,
-        model_kwargs={"local_files_only": True},
+        local_files_only=True,
     )
     _local_pipelines[key] = loaded
     logger.info("Local voice transcription model %s ready on device=%s", model, device)

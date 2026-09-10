@@ -238,7 +238,7 @@ async def _run_host_with_agent(
         host.scheduler = PersistentCronScheduler(
             store=cron_store,
             run_job=host.run_scheduled_job,
-            deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
+            deliver_result=lambda job, text: _deliver_cron_result(host, job, text),
         )
     if args.once:
         await _run_once(host)
@@ -351,16 +351,12 @@ def _runtime_env(config: TalonConfig) -> dict[str, str]:
     return values
 
 
-async def _deliver_cron_result(
-    host: TalonHost,
-    channels: Sequence[ChannelAdapter],
-    job: CronJob,
-    text: str,
-) -> None:
-    for channel in channels:
-        if job.origin.channel is None or (await channel.status()).provider == job.origin.channel:
-            await host.deliver_scheduled_result(channel, job, text)
-            return
+async def _deliver_cron_result(host: TalonHost, job: CronJob, text: str) -> None:
+    channel = await host.origin_channel(job.origin)
+    if channel is None:
+        logger.warning("No channel serves cron job %s; dropping its result", job.id)
+        return
+    await host.deliver_scheduled_result(channel, job, text)
 
 
 if __name__ == "__main__":

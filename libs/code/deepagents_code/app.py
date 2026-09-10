@@ -2039,7 +2039,7 @@ Shared by every such command -- `/effort`, `/summarization-model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
 
-_UNKNOWN_EFFORT_LABEL = "effort?"
+_UNKNOWN_EFFORT_LABEL = "effort"
 
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:

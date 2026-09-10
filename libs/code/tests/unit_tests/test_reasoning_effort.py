@@ -80,7 +80,7 @@ def test_status_exposes_effort_when_default_is_unknown() -> None:
     app._sync_status_model()
 
     app._status_bar.set_model.assert_called_once_with(
-        provider="openai", model="gpt-6-astra", effort="effort?"
+        provider="openai", model="gpt-6-astra", effort="effort"
     )
 
 

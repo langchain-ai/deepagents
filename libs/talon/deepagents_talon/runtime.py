@@ -432,16 +432,23 @@ class DeepAgentRuntime:
         return graph
 
     async def stop(self) -> None:
-        """Release runtime resources."""
-        if not await self.background.cancel():
-            msg = "Background subagents did not stop; runtime resources remain open"
-            raise RuntimeError(msg)
-        self._graph = None
-        cleanup = getattr(self.checkpointer, "close", None)
-        if callable(cleanup):
-            result = cleanup()
-            if isinstance(result, Awaitable):
-                await result
+        """Release runtime resources.
+
+        Raises:
+            RuntimeError: If a background worker outlived its cancellation wait.
+                Graph and checkpointer teardown still runs before the raise.
+        """
+        try:
+            if not await self.background.cancel():
+                msg = "Background subagents did not stop; runtime resources remain open"
+                raise RuntimeError(msg)
+        finally:
+            self._graph = None
+            cleanup = getattr(self.checkpointer, "close", None)
+            if callable(cleanup):
+                result = cleanup()
+                if isinstance(result, Awaitable):
+                    await result
 
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Append an interruption marker after the latest committed checkpoint."""
@@ -496,6 +503,8 @@ class DeepAgentRuntime:
         except BaseException as error:
             if activity is not None:
                 activity.run_failed(error)
+            if not isinstance(error, asyncio.CancelledError):
+                self.background.record_delivery_failure(pending)
             raise
         finally:
             reset_authorization_handler(authorization_token)

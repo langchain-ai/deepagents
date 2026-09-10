@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -11,10 +13,17 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
-from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.archive import ArchiveScope
+from deepagents_talon.authorization import (
+    current_authorization_handler,
+    reset_authorization_handler,
+    set_authorization_handler,
+)
+from deepagents_talon.background import _IN_SUBAGENT, BackgroundSubagents
+from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.runtime import _CRON_ORIGIN, _HISTORY_SCOPE, DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import _config
 
@@ -350,3 +359,116 @@ async def test_interrupted_main_keeps_worker_and_retries_unprocessed_result(monk
     finally:
         release.set()
         await runtime.stop()
+
+
+async def test_background_worker_inherits_caller_context_and_isolates_its_own():
+    marker = contextvars.ContextVar("marker", default="unset")
+
+    @tool
+    async def task() -> str:
+        """Report the context the worker runs in."""
+        return f"{marker.get()}/{_IN_SUBAGENT.get()}"
+
+    background = BackgroundSubagents()
+    marker.set("main conversation")
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    assert [job.result for job in background._jobs.values()] == ["main conversation/True"]
+    assert _IN_SUBAGENT.get() is False
+
+
+async def test_background_failure_is_logged_and_reported_without_arguments(caplog):
+    @tool
+    async def task(credential: str) -> str:
+        """Fail while holding a credential."""
+        assert credential
+        msg = "upstream rejected the request"
+        raise RuntimeError(msg)
+
+    background = BackgroundSubagents()
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.background"):
+        await background.awrap_tool_call(
+            _request("one", task, credential="sk-not-a-real-key"), _unused_handler
+        )
+        await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    (job,) = background._jobs.values()
+    assert job.result == "Subagent failed before returning a result."
+    assert "RuntimeError: upstream rejected the request" in caplog.text
+    assert "sk-not-a-real-key" not in caplog.text
+
+
+async def test_background_timeout_is_reported_separately_from_failure(monkeypatch):
+    monkeypatch.setattr("deepagents_talon.background._TASK_TIMEOUT_SECONDS", 0.01)
+
+    @tool
+    async def task() -> str:
+        """Never return."""
+        await asyncio.Event().wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    (job,) = background._jobs.values()
+    assert job.result == "Subagent ran out of time before returning a result."
+    assert not job.cancelled
+
+
+async def test_repeatedly_failing_turns_drop_the_unprocessed_result(monkeypatch):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(monkeypatch, child, [_delegate(), AIMessage(content="Started")])
+    await runtime.start()
+    try:
+        assert (await runtime.invoke(AgentRequest("chat", "delegate"))).text == "Started"
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert runtime.background.results("chat")
+
+        async def fail(_request, _activity):
+            msg = "model failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(runtime, "_invoke_until_text", fail)
+        failures = 0
+        while runtime.background.results("chat") and failures < 8:
+            with pytest.raises(RuntimeError):
+                await runtime.invoke(AgentRequest("chat", "process results"))
+            failures += 1
+
+        assert failures == 3
+        assert "chat" not in runtime.background.owners()
+        (job,) = runtime.background._jobs.values()
+        assert "never reached the user" in job.result
+        assert "research result" in job.result
+    finally:
+        await runtime.stop()
+
+
+async def test_background_worker_keeps_scoped_state_but_not_the_authorization_handler():
+    async def authorize(_event):
+        return None
+
+    @tool
+    async def task() -> str:
+        """Report the scoped state this worker inherited."""
+        return f"{_HISTORY_SCOPE.get()}|{_CRON_ORIGIN.get()}|{current_authorization_handler()}"
+
+    scope = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
+    origin = CronOrigin("chat")
+    background = BackgroundSubagents()
+    _HISTORY_SCOPE.set(scope)
+    _CRON_ORIGIN.set(origin)
+    token = set_authorization_handler(authorize)
+    try:
+        await background.awrap_tool_call(_request("one", task), _unused_handler)
+        await asyncio.gather(*(job.worker for job in background._jobs.values()))
+        assert current_authorization_handler() is authorize
+    finally:
+        reset_authorization_handler(token)
+
+    (job,) = background._jobs.values()
+    assert job.result == f"{scope}|{origin}|None"

@@ -7,9 +7,11 @@ from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+from tests.archive_helpers import make_runtime, make_saver
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -101,3 +103,77 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name)
         assert "approval" in next(iter(results.values()))
     finally:
         await runtime.stop()
+
+
+async def test_background_subagent_keeps_the_hosts_history_scope(tmp_path, monkeypatch):
+    path = tmp_path / "agents" / "researcher" / "AGENTS.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\ndescription: Research\nmodel: test:child\n"
+        "tools: [search_conversations]\n---\nSearch this chat's history."
+    )
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "id": "launch",
+                        "args": {"subagent_type": "researcher", "description": "recall"},
+                    }
+                ],
+            ),
+            AIMessage(content="Started background work"),
+        ]
+    )
+    child = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "search_conversations", "id": "recall", "args": {"query": "orchard"}}
+                ],
+            ),
+            AIMessage(content="Reviewed the history"),
+        ]
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env",
+        lambda model, *_args, **_kwargs: child if model == "test:child" else parent,
+    )
+    monkeypatch.setattr(
+        "deepagents.graph.resolve_model", lambda model: child if model == "test:child" else model
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.subagents.create_agent",
+        lambda **kwargs: create_agent(**{**kwargs, "model": child}),
+    )
+
+    async with make_saver(str(tmp_path / "history.sqlite"), InMemorySaver) as saver:
+        scopes = []
+        search_page = saver.archive.search_page
+
+        async def record(scope, **kwargs: object):
+            scopes.append(scope)
+            return await search_page(scope, **kwargs)
+
+        monkeypatch.setattr(saver.archive, "search_page", record)
+        runtime = make_runtime(saver, tmp_path)
+        await runtime.start()
+        try:
+            result = await runtime.invoke(
+                AgentRequest(
+                    "chat",
+                    "recall the orchard",
+                    metadata={"history_channel": "whatsapp", "history_chat": "chat"},
+                )
+            )
+            assert result.text == "Started background work"
+            await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+            results = [job.result for job in runtime.background._jobs.values()]
+        finally:
+            await runtime.stop()
+
+    assert results == ["Reviewed the history"]
+    assert scopes == [{"talon_history_channel": "whatsapp", "talon_history_chat": "chat"}]

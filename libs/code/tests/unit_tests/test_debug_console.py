@@ -17,6 +17,7 @@ from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
     _DebugLogView,
+    _record_to_content,
 )
 
 if TYPE_CHECKING:
@@ -199,6 +200,22 @@ class TestDebugConsoleScreen:
             "debug2",
             "debug3",
         ]
+
+    async def test_log_wraps_at_scrollbar_edge_without_truncating(self) -> None:
+        app = _Harness()
+        async with app.run_test(size=(50, 30)) as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            prefix_width = _record_to_content(_log_record("")).cell_length
+            message = "x" * (log.scrollable_content_region.width - prefix_width) + "Z"
+
+            log.set_records([_log_record(message)], scroll_end=False)
+            await pilot.pause()
+
+            assert log.line_count == 2
+            assert "Z" in log.render_line(1).text
 
     async def test_notice_replaced_by_incoming_records(self) -> None:
         app = _Harness()

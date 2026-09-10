@@ -182,6 +182,12 @@ The existing metadata factory remains unchanged. Atlas mode requires MongoDB.
 a new search. Semantic errors and timeouts fall back to keyword matches. Unknown
 or pending indexing coverage means an empty page does not prove history is absent.
 
+When asked, the agent can use `delete_conversations` with one session ID or a list
+from `list_conversations` or `search_conversations`. This deletes those sessions'
+transcripts, search indexes, and checkpoints in the current chat. The active
+conversation is protected; use `/new` before asking to delete it. Failed batches
+may be partially deleted and can be retried with the same IDs.
+
 ## Interrupt and Continue
 
 A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.

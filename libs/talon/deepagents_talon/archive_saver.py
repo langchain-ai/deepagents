@@ -217,6 +217,41 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             for session in await self.archive.sessions(scope):
                 await self._delete_session(session)
 
+    async def delete_conversations(
+        self, scope: ArchiveScope, session_ids: Sequence[str], *, current_session: str
+    ) -> dict[str, list[str]]:
+        """Delete selected past sessions owned by this chat.
+
+        Failures may leave a partially deleted batch; retry the same IDs to finish.
+
+        Args:
+            scope: Trusted channel/chat pair from the host.
+            session_ids: Explicit session identifiers to erase.
+            current_session: Trusted active session to protect from deletion.
+
+        Returns:
+            Deleted IDs and IDs not found in this chat.
+
+        Raises:
+            ValueError: If IDs are empty or include the active session.
+        """
+        if not session_ids or any(not session.strip() for session in session_ids):
+            msg = "Provide one or more nonempty session IDs"
+            raise ValueError(msg)
+        if not current_session or current_session in session_ids:
+            msg = "Cannot delete the active conversation; use /new first"
+            raise ValueError(msg)
+        result: dict[str, list[str]] = {"deleted": [], "not_found": []}
+        async with self._lock:
+            owned = set(await self.archive.sessions(scope))
+            for session in dict.fromkeys(session_ids):
+                if session in owned:
+                    await self._delete_session(session)
+                    result["deleted"].append(session)
+                else:
+                    result["not_found"].append(session)
+        return result
+
     async def adelete_thread(self, thread_id: str) -> None:
         """Delete a backend thread and its archive, in retryable order.
 

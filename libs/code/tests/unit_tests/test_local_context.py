@@ -36,7 +36,7 @@ from deepagents_code.local_context import (
     _section_test_command,
     _section_tree,
 )
-from deepagents_code.mcp_tools import MCPServerInfo
+from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 
 
 class _SyncBackendFake:
@@ -643,6 +643,30 @@ class TestBuildMcpContext:
         # An auth-pending server has not failed and is not benignly empty.
         assert "FAILED TO LOAD" not in result
         assert "(no tools registered)" not in result
+
+    def test_mixed_server_statuses_scope_availability(self) -> None:
+        """A failed server does not obscure tools from a ready server."""
+        unauthenticated = MCPServerInfo(
+            name="langsmith",
+            transport="http",
+            tools=(),
+            status="unauthenticated",
+            error="OAuth login required",
+        )
+        ready = MCPServerInfo(
+            name="slack",
+            transport="http",
+            tools=(
+                MCPToolInfo(name="slack_send_message", description="Send a message"),
+                MCPToolInfo(name="slack_list_channels", description="List channels"),
+            ),
+        )
+
+        result = _build_mcp_context([ready, unauthenticated])
+
+        assert "**slack** (http): READY (2 tools):" in result
+        assert "**langsmith** specifically needs `/mcp` login" in result
+        assert "every other server listed in this block remains usable" in result
 
     def test_error_detail_is_sanitized_to_single_line(self) -> None:
         """Untrusted error text cannot inject newlines or invisible Unicode."""

@@ -145,18 +145,19 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
                 lines.append(
                     f"- **{server.name}** ({server.transport}): "
                     f"FAILED TO LOAD — <error>{detail}</error>. "
-                    "Treat this integration as temporarily unavailable; "
-                    "tell the user the server failed to load and suggest "
-                    "restarting the MCP server."
+                    "Only this server is affected; every other server listed "
+                    "in this block remains usable. Tell the user that "
+                    f"**{server.name}** failed to load and suggest restarting "
+                    "the MCP server."
                 )
             elif server.status == "unauthenticated":
                 detail = _sanitize_error_detail(server.error)
                 lines.append(
                     f"- **{server.name}** ({server.transport}): "
                     f"NEEDS LOGIN — <error>{detail}</error>. "
-                    "This integration requires authentication before its "
-                    "tools are available; tell the user and suggest running "
-                    "`/mcp` to log in."
+                    "Only this server is affected; every other server listed "
+                    "in this block remains usable. Tell the user that "
+                    f"**{server.name}** specifically needs `/mcp` login."
                 )
             elif server.status == "disabled":
                 lines.append(
@@ -178,11 +179,12 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
             remaining = len(names) - _TOOL_NAME_DISPLAY_LIMIT
             lines.append(
                 f"- **{server.name}** ({server.transport}): "
-                f"{shown}, and {remaining} more"
+                f"READY ({len(names)} tools): {shown}, and {remaining} more"
             )
         else:
             lines.append(
-                f"- **{server.name}** ({server.transport}): {', '.join(names)}"
+                f"- **{server.name}** ({server.transport}): "
+                f"READY ({len(names)} tools): {', '.join(names)}"
             )
 
     return "\n".join(lines)

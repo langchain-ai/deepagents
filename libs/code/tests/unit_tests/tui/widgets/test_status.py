@@ -434,6 +434,37 @@ class TestModelLabelClickTargets:
 
             assert app.opened_pickers == ["model"]
 
+    async def test_ctrl_click_copies_full_model_slug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+click copies the raw slug instead of opening the model picker."""
+        from deepagents_code import clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: App[None], text: str) -> tuple[bool, None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            label.styles.width = 12
+            await pilot.pause()
+
+            await pilot.click(
+                label,
+                offset=self._offset_for_target(label, "model"),
+                control=True,
+            )
+            await pilot.pause()
+
+            assert copied == ["fireworks:accounts/fireworks/models/kimi-k2p6"]
+            assert app.opened_pickers == []
+
     @classmethod
     async def _move(
         cls,

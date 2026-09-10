@@ -258,21 +258,28 @@ class ModelLabel(Widget):
         ):
             self.suppress_click()
 
-    async def on_click(self, event: events.Click) -> None:
-        """Open a picker for a left-click on a target span in the status bar.
+    def _copy_model_slug(self) -> None:
+        """Copy the unabridged model slug to the clipboard."""
+        from deepagents_code.clipboard import copy_text_with_feedback
 
-        Textual synthesizes `Click` for any button and posts one per release, so
-        filter on both: without the button check a right-click would open a picker,
-        and without the chain check a double-click would open two. A click that
-        restores terminal focus is consumed without opening anything.
-        """
+        slug = f"{self.provider}:{self.model}" if self.provider else self.model
+        copy_text_with_feedback(
+            self.app,
+            slug,
+            failure_noun="selection",
+            success_message="Model slug copied",
+        )
+
+    async def on_click(self, event: events.Click) -> None:
+        """Open a picker, or copy the model slug on Ctrl+left-click."""
         target = self._picker_target(event)
         if event.button != _LEFT_BUTTON or target is None:
             return
-        # Stop every target click so it cannot bubble to the app handler that
-        # refocuses the chat input behind a picker.
         event.stop()
         if event.chain > _SINGLE_CLICK_CHAIN:
+            return
+        if event.ctrl and target == "model":
+            self._copy_model_slug()
             return
         await self.run_action(_PICKER_ACTIONS[target])
 

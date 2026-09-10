@@ -11,10 +11,15 @@ from deepagents_talon.cron.jobs import (
     CronRepeat,
     CronSchedule,
 )
-from deepagents_talon.cron.scheduler import PersistentCronScheduler
+from deepagents_talon.cron.scheduler import (
+    SILENT_SENTINEL,
+    PersistentCronScheduler,
+    is_silent,
+)
 from deepagents_talon.cron.tools import CronTools
 
 __all__ = [
+    "SILENT_SENTINEL",
     "CronJob",
     "CronJobError",
     "CronJobStore",
@@ -23,4 +28,5 @@ __all__ = [
     "CronSchedule",
     "CronTools",
     "PersistentCronScheduler",
+    "is_silent",
 ]

@@ -21,7 +21,7 @@ from langgraph_sdk import get_client
 from deepagents_talon.authorization import set_authorization_handler
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 
     from deepagents import CompiledSubAgent, SubAgent
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -298,6 +298,27 @@ class BackgroundSubagents(AgentMiddleware):
             dropped.append(key)
             logger.warning("Dropped undelivered background subagent result %s", key)
         return dropped
+
+    def requeue(self, results: Iterable[str]) -> None:
+        """Return acknowledged results to the pending set after an undelivered turn.
+
+        A turn that completed its model work acknowledges the results it consumed,
+        but the host may then discard its reply because a newer turn superseded it.
+        The user therefore never heard about work that is already marked delivered.
+        Clearing the flag offers it to the next turn instead; re-injection is
+        idempotent, because the result is carried as a message keyed by its own id.
+
+        Only the ids handed back are touched, so a result delivered by some earlier
+        turn is never resurrected. An id already pruned or cancelled is skipped:
+        there is nothing left to offer.
+
+        Args:
+            results: Result IDs whose turn produced a reply that was discarded.
+        """
+        for key in results:
+            job = self._jobs.get(key)
+            if job is not None and not job.cancelled:
+                job.notified = False
 
     def acknowledge(self, results: dict[str, str]) -> None:
         """Mark results processed only after the main agent completes a turn.

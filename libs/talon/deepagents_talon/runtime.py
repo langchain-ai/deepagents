@@ -522,7 +522,10 @@ class DeepAgentRuntime:
         if activity is not None:
             activity.run_completed(text)
         self.background.acknowledge(pending)
-        return AgentResult(text=text)
+        # The ids travel with the result because acknowledgement records that the
+        # model consumed them, not that the user heard about them. Only the host
+        # knows whether the reply it is holding actually gets delivered.
+        return AgentResult(text=text, background_results=tuple(pending))
 
     @property
     def history_enabled(self) -> bool:

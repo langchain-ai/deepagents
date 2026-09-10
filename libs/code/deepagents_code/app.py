@@ -19523,13 +19523,8 @@ class DeepAgentsApp(App):
             return False
 
         if not had_agent_output:
-            # `info`, not `debug`, for the same reason as the store-failure
-            # branch below: the always-on ring buffer behind the Debug Console
-            # captures INFO and above, and at `debug` a vanished hint leaves no
-            # trace. Deliberately does not report a store count — by the time
-            # `_resume_thread` reaches here the store holds the *incoming*
-            # thread's history, so any count would describe the wrong thread.
-            logger.info(
+            # A thread with no output is normal and not worth surfacing at INFO.
+            logger.debug(
                 "Suppressing previous-thread hint for %s: no server-backed "
                 "output was recorded in it",
                 previous_thread_id,
@@ -19547,10 +19542,7 @@ class DeepAgentsApp(App):
             resumable = await thread_exists(previous_thread_id)
             owner = await get_thread_agent(previous_thread_id) if resumable else None
         except (sqlite3.Error, OSError):
-            # `info`, not `debug`: the always-on ring buffer behind the Debug
-            # Console captures INFO and above, and a store failure here is
-            # suspicious — callers have usually just read the same store
-            # successfully. At `debug` a vanished hint leaves no trace.
+            # Keep store failures visible because they are not routine suppression.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
                 previous_thread_id,

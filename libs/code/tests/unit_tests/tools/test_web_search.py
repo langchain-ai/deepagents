@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from deepagents_code.tools import (
+    _search_with_tavily,
     create_web_search_tool,
     is_web_search_tool,
     web_search,
@@ -79,3 +80,66 @@ class TestWorkspaceErrorTranslation:
             result = search.invoke({"query": "anything"})
 
         assert "error" in result
+
+
+class TestTavilyQueryHandling:
+    def test_rewritten_query_is_reported(self) -> None:
+        class _Client:
+            def search(self, *_args: Any, **_kwargs: Any) -> object:
+                return {"query": "LangChain security", "results": []}
+
+        result = _search_with_tavily(
+            _Client(),
+            query='site:docs.langchain.com "LangChain security"',
+            max_results=5,
+            topic="general",
+            include_raw_content=False,
+            include_domains=None,
+            exclude_domains=None,
+        )
+
+        assert result["query_rewritten"] == {
+            "requested": 'site:docs.langchain.com "LangChain security"',
+            "executed": "LangChain security",
+        }
+        assert result["warning"]
+
+    def test_domain_filters_are_forwarded(self) -> None:
+        class _Client:
+            def __init__(self) -> None:
+                self.kwargs: dict[str, Any] = {}
+
+            def search(self, *_args: Any, **kwargs: Any) -> object:
+                self.kwargs = kwargs
+                return {"query": "anything", "results": []}
+
+        client = _Client()
+        _search_with_tavily(
+            client,
+            query="anything",
+            max_results=5,
+            topic="general",
+            include_raw_content=False,
+            include_domains=["example.com"],
+            exclude_domains=["blocked.example"],
+        )
+
+        assert client.kwargs["include_domains"] == ["example.com"]
+        assert client.kwargs["exclude_domains"] == ["blocked.example"]
+
+    def test_unchanged_query_has_no_rewrite_marker(self) -> None:
+        class _Client:
+            def search(self, *_args: Any, **_kwargs: Any) -> object:
+                return {"query": "  anything   useful ", "results": []}
+
+        result = _search_with_tavily(
+            _Client(),
+            query="anything useful",
+            max_results=5,
+            topic="general",
+            include_raw_content=False,
+            include_domains=None,
+            exclude_domains=None,
+        )
+
+        assert "query_rewritten" not in result

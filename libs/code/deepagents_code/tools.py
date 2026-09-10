@@ -411,7 +411,15 @@ def get_current_thread_id() -> str:
 def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configuration
     query: Annotated[
         str,
-        Field(description="The search query (be specific and detailed)."),
+        Field(
+            description=(
+                "The search query (be specific and detailed). The search provider "
+                "does not support `site:`, `filetype:`, `inurl:`, `intitle:`, or "
+                "quoted exact-phrase operators; they are silently stripped before "
+                "the search executes. Use `include_domains` to scope results to a "
+                "specific domain."
+            )
+        ),
     ],
     max_results: Annotated[
         int,
@@ -435,6 +443,14 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
             )
         ),
     ] = False,
+    include_domains: Annotated[
+        list[str] | None,
+        Field(description="Domains to include in the search results."),
+    ] = None,
+    exclude_domains: Annotated[
+        list[str] | None,
+        Field(description="Domains to exclude from the search results."),
+    ] = None,
 ):
     """Search the web for current information.
 
@@ -450,6 +466,8 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         max_results=max_results,
         topic=topic,
         include_raw_content=include_raw_content,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
     )
 
 
@@ -460,6 +478,8 @@ def _search_with_tavily(
     max_results: int,
     topic: Literal["general", "news", "finance"],
     include_raw_content: bool,
+    include_domains: list[str] | None,
+    exclude_domains: list[str] | None,
 ) -> object:
     """Execute a Tavily search with the standard error translation.
 
@@ -479,12 +499,28 @@ def _search_with_tavily(
         return _missing_package_error(exc)
 
     try:
-        return client.search(
+        result = client.search(
             query,
             max_results=max_results,
             include_raw_content=include_raw_content,
             topic=topic,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
         )
+        if isinstance(result, dict) and isinstance(result.get("query"), str):
+            echoed_query = result["query"]
+            if " ".join(query.split()) != " ".join(echoed_query.split()):
+                result = {
+                    **result,
+                    "query_rewritten": {
+                        "requested": query,
+                        "executed": echoed_query,
+                    },
+                    "warning": (
+                        "The search provider rewrote the requested query before "
+                        "executing it."
+                    ),
+                }
     except (
         requests.exceptions.RequestException,
         ValueError,
@@ -498,6 +534,8 @@ def _search_with_tavily(
         UsageLimitExceededError,
     ) as e:
         return {"error": f"Web search error: {e!s}", "query": query}
+    else:
+        return result
 
 
 def fetch_url(

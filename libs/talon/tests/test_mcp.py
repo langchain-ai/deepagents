@@ -356,7 +356,10 @@ async def test_protocol_error_interceptor_reports_error_to_model() -> None:
             ErrorData(
                 code=-32602,
                 message="severity must be one of CRITICAL, HIGH, MEDIUM, LOW",
-                data={"internal_trace": "/srv/vanta/handler.py:81", "token": "do-not-leak-this-fixture"},
+                data={
+                    "internal_trace": "/srv/vanta/handler.py:81",
+                    "token": "do-not-leak-this-fixture",
+                },
             )
         )
 

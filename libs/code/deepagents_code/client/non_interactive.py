@@ -2510,16 +2510,23 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
+    import os
     import sys
+    from pathlib import Path
+
+    from deepagents_code.config import restore_user_langsmith_env
 
     if not quiet:
         console.print(Text(f"Running startup command: {command}", style="dim"))
 
     try:
+        shell_env = os.environ.copy()
+        restore_user_langsmith_env(shell_env, start_path=Path.cwd())
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=shell_env,
             start_new_session=(sys.platform != "win32"),
         )
     except OSError as e:

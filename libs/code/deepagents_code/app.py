@@ -2958,6 +2958,7 @@ class _ChatScroll(VerticalScroll):
         """
         super().__init__(*args, **kwargs)
         self._follow_bottom_when_scrollable = False
+        self._bottom_follow_generation = 0
 
     def anchor(self, anchor: bool = True) -> None:
         """Anchor only once the transcript is tall enough to scroll.
@@ -2974,6 +2975,8 @@ class _ChatScroll(VerticalScroll):
                 delegate to the base class.
         """
         self._follow_bottom_when_scrollable = anchor
+        if anchor:
+            self._bottom_follow_generation += 1
         if not anchor:
             super().anchor(False)
             return
@@ -4325,6 +4328,9 @@ class DeepAgentsApp(App):
 
         self._history_prefetch_active = False
         """Whether resumed history is warming toward the soft window size."""
+
+        self._history_prefetch_anchor_generation: int | None = None
+        """Bottom-follow generation owned by resumed-history prefetch."""
 
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
@@ -9355,8 +9361,11 @@ class DeepAgentsApp(App):
         )
         if not self._history_prefetch_active:
             return
+        self._history_prefetch_anchor_generation = None
         with suppress(NoMatches):
-            self.query_one("#chat", _ChatScroll).anchor()
+            chat = self.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            self._history_prefetch_anchor_generation = chat._bottom_follow_generation
         self._request_hydration("above")
 
     def _stop_history_prefetch(self) -> None:
@@ -9364,8 +9373,12 @@ class DeepAgentsApp(App):
         if not self._history_prefetch_active:
             return
         self._history_prefetch_active = False
+        generation = self._history_prefetch_anchor_generation
+        self._history_prefetch_anchor_generation = None
         with suppress(NoMatches):
-            self.query_one("#chat", _ChatScroll).anchor(False)
+            chat = self.query_one("#chat", _ChatScroll)
+            if generation == chat._bottom_follow_generation:
+                chat.anchor(False)
 
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
@@ -20716,6 +20729,7 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         self._hydration_requests.clear()
         self._history_prefetch_active = False
+        self._history_prefetch_anchor_generation = None
         with suppress(NoMatches):
             self.query_one("#chat", _ChatScroll).anchor(False)
         if self._transcript_prune_timer is not None:

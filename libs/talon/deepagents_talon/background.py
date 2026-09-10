@@ -19,6 +19,7 @@ from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from deepagents_talon.authorization import set_authorization_handler
+from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
@@ -195,6 +196,7 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the
         # tools a subagent may hold require. It must not carry the authorization handler:
         # a flow started once the originating turn has ended would outlive the host's

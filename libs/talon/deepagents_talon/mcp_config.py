@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MCP_CONFIG_AUTO_APPROVE_ENV = "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE"
 MCP_CONFIG_UPDATE_TOOL = "update_mcp_server"
 # Duplicated from runtime._WORKSPACE_ENV: importing it would pull the runtime, and the
 # public alias lives in channels, whose package imports every channel driver eagerly.
@@ -137,9 +136,7 @@ class MCPConfigStore:
             workspace; a path inside it is warned about, not rejected.
         on_update: Schedule a reload after a successful write.
         agent_root: Agent workspace root. Defaults to the process workspace.
-        auto_approve: Whether updates skip the approval interrupt. Defaults to
-            the process environment; pass the runtime's own value so this and
-            the interrupt cannot disagree.
+        auto_approve: Optional standalone override; otherwise use the invocation policy.
     """
 
     def __init__(
@@ -154,7 +151,7 @@ class MCPConfigStore:
         self._path = warn_agent_workspace_path(path, agent_root, subject="MCP configuration")
         self._on_update = on_update
         self._revision_key = secrets.token_bytes(32)
-        self._auto_approve = auto_approve_enabled() if auto_approve is None else auto_approve
+        self._auto_approve = auto_approve
 
     def tools(self) -> tuple[BaseTool, BaseTool]:
         """Return the read and single-server update capabilities."""
@@ -259,7 +256,7 @@ class MCPConfigStore:
         previous = servers.get(name)
         replacement = cast("dict[str, object]", _restore(server, previous))
         _validate_server(replacement)
-        if self._auto_approve:
+        if self._auto_approve if self._auto_approve is not None else _unapproved_update():
             _reject_unapproved_execution_change(server, replacement, previous)
         # Settings Talon does not manage are invisible to the model, so an edit
         # must put them back rather than drop them.
@@ -312,19 +309,11 @@ def locked_path(path: Path, *, timeout: float | None = None) -> Iterator[None]:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def auto_approve_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether MCP configuration updates skip the approval interrupt.
+def _unapproved_update() -> bool:
+    from deepagents_talon.tool_approvals import ACTIVE_APPROVALS  # noqa: PLC0415
 
-    Args:
-        env: Runtime environment to read. Falls back to the process environment.
-
-    Returns:
-        Whether the operator opted out of approving each update.
-    """
-    value = (env or {}).get(MCP_CONFIG_AUTO_APPROVE_ENV) or os.environ.get(
-        MCP_CONFIG_AUTO_APPROVE_ENV, ""
-    )
-    return value.strip().lower() == "true"
+    snapshot = ACTIVE_APPROVALS.get()
+    return snapshot is None or not snapshot.approvals.get(MCP_CONFIG_UPDATE_TOOL, False)
 
 
 def _unmanaged_fields(previous: object) -> dict[str, object]:

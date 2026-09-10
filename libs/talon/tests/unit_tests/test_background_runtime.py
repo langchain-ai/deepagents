@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.tool_approvals import ToolApprovalStore
 from tests.archive_helpers import make_runtime, make_saver
 
 
@@ -76,11 +77,14 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch, name)
         "deepagents_talon.subagents.create_agent",
         lambda **kwargs: create_agent(**{**kwargs, "model": child}),
     )
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    snapshot = store.ensure()
+    store.update({"sensitive_effect": True}, snapshot.revision)
     runtime = DeepAgentRuntime(
         model="test:parent",
         assistant_dir=tmp_path,
         tools=[sensitive_effect],
-        interrupt_on={"sensitive_effect": True},
+        approval_store=store,
         include_web_tools=False,
         skills=(),
         memory=(),

@@ -33,6 +33,26 @@ Cron records, downloaded inbound media, and channel session state persist under 
 
 The image installs the Talon package at build time. Rebuild after changing the Dockerfile, system packages, Node dependencies, or Talon Python dependencies.
 
+## Tool Approvals and Persistent Configuration
+
+The Docker image and Compose keep the assistant home and MCP configuration outside
+`/workspace`. `DEEPAGENTS_TALON_HOME=/root/.deepagents` is the base directory;
+each assistant's fixed policy is `TalonConfig.home/tools.json`, or
+`/root/.deepagents/<assistant-id>/tools.json` in this container. MCP configuration
+is `/root/.deepagents/.mcp.json`. Compose fixes these paths even if `.env` supplies
+host-local paths.
+
+The existing `~/.deepagents:/root/.deepagents` bind mount persists the whole parent
+directory, including each assistant's `tools.json`. Keep this directory mount:
+do not mount a single `tools.json` or `.mcp.json`, because updates replace files
+with an atomic rename. For `docker run`, use
+`-v "$HOME/.deepagents:/root/.deepagents" -v "$HOME/talon-workspace:/workspace"`.
+
+See the [tool approval policy](../../libs/talon/README.md#tool-approvals) for
+defaults, operator authorization, and next-invocation activation, and
+[MCP configuration guidance](../../libs/talon/README.md#mcp-tools) for credential
+restrictions. Out-of-workspace placement is not a same-UID shell isolation boundary.
+
 ## Local Run Without Docker
 
 ```bash

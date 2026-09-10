@@ -14,13 +14,13 @@ from langchain_core.messages import AIMessage
 
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_config import (
-    MCP_CONFIG_AUTO_APPROVE_ENV,
     WORKSPACE_ENV,
     MCPConfigStore,
     agent_workspace_root,
     locked_path,
 )
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
     from deepagents_talon.interfaces import ToolApprovalDecision, ToolApprovalRequest
@@ -201,18 +201,18 @@ class ToolCallingModel(FakeMessagesListChatModel):
 
 
 @pytest.mark.parametrize(
-    ("decision", "auto_approve", "trigger", "writes"),
+    ("decision", "requires_approval", "trigger", "writes"),
     [
-        ("approve", None, "channel", True),
-        ("reject", None, "channel", False),
-        (None, None, "channel", False),
-        ("approve", None, "cron", False),
-        (None, "true", "channel", True),
-        (None, "typo", "channel", False),
+        ("approve", True, "channel", True),
+        ("reject", True, "channel", False),
+        (None, True, "channel", False),
+        ("approve", True, "cron", False),
+        (None, False, "channel", True),
+        (None, False, "cron", True),
     ],
 )
 async def test_runtime_gates_real_config_writes(
-    config_tools, decision, auto_approve, trigger, writes
+    config_tools, decision, requires_approval, trigger, writes
 ):
     path, view, update, _ = config_tools
     arguments = {
@@ -239,13 +239,15 @@ async def test_runtime_gates_real_config_writes(
     async def reload_tools():
         return [view, update]
 
+    store = ToolApprovalStore(path.parent.parent / "tools.json")
+    snapshot = store.ensure()
+    store.update({"update_mcp_server": requires_approval}, snapshot.revision)
     runtime = DeepAgentRuntime(
         model=model,
         tools=[],
         reload_tools=reload_tools,
         backend=StateBackend(),
-        env={} if auto_approve is None else {MCP_CONFIG_AUTO_APPROVE_ENV: auto_approve},
-        interrupt_on={"update_mcp_server": False},
+        approval_store=store,
         include_web_tools=False,
         skills=(),
         memory=(),
@@ -304,7 +306,10 @@ def test_agent_workspace_root_prefers_the_configured_workspace(
     assert agent_workspace_root({}) == Path.cwd().resolve()
 
 
-def test_auto_approve_refuses_an_execution_swap_that_reuses_a_stored_secret(tmp_path: Path):
+@pytest.mark.parametrize("auto_approve", [True, None])
+def test_auto_approve_refuses_an_execution_swap_that_reuses_a_stored_secret(
+    tmp_path: Path, *, auto_approve: bool | None
+):
     """Redacted values restore path-wise, so command/args can change under them."""
     path = tmp_path / "private" / ".mcp.json"
     path.parent.mkdir()
@@ -320,7 +325,7 @@ def test_auto_approve_refuses_an_execution_swap_that_reuses_a_stored_secret(tmp_
             }
         )
     )
-    view, update = MCPConfigStore(path, lambda: None, auto_approve=True).tools()
+    view, update = MCPConfigStore(path, lambda: None, auto_approve=auto_approve).tools()
     stored = view.invoke({})
 
     result = update.invoke(

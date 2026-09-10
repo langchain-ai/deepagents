@@ -42,6 +42,7 @@ from deepagents_talon.authorization import (
 )
 from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.clock import current_time
+from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -50,7 +51,6 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
-from deepagents_talon.mcp_config import MCP_CONFIG_AUTO_APPROVE_ENV, MCP_CONFIG_UPDATE_TOOL
 from deepagents_talon.observability import (
     AgentActivityCallback,
     agent_activity_logging_enabled,
@@ -64,12 +64,18 @@ from deepagents_talon.subagents import (
     _tool_map,
     prepare_subagents,
 )
+from deepagents_talon.tool_approvals import (
+    ACTIVE_APPROVALS,
+    APPROVAL_OPERATOR,
+    ApprovalSnapshot,
+    ToolApprovalStore,
+)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-    from langchain.agents.middleware import AgentState, InterruptOnConfig
+    from langchain.agents.middleware import AgentState
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -82,10 +88,6 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
-INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
-# Every other async task tool is stripped from the model's tools by
-# `BackgroundSubagents.awrap_model_call`, so gating them would never fire.
-_ASYNC_SUBAGENT_TOOL_NAMES = frozenset({"start_async_task"})
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -255,8 +257,7 @@ class DeepAgentRuntime:
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
         middleware: Optional middleware to pass through to `create_deep_agent`.
-        interrupt_on: Optional human-in-the-loop tool approval configuration
-            to pass through to `create_deep_agent`.
+        approval_store: Fixed per-assistant tool approval configuration store.
         memory: Optional explicit memory file paths. When omitted, paths are
             loaded from manifest metadata, memory path environment vars, or an
             assistant-local memory file.
@@ -287,7 +288,7 @@ class DeepAgentRuntime:
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
         middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
-        interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None,
+        approval_store: ToolApprovalStore | None = None,
         memory: Sequence[str] | None = None,
         checkpointer: Checkpointer | None = None,
         include_web_tools: bool = True,
@@ -323,7 +324,10 @@ class DeepAgentRuntime:
         self.backend = backend if backend is not None else _default_backend(self.env)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
-        self.interrupt_on = interrupt_on_with_env_overlay(interrupt_on, self.env)
+        self.approval_store = approval_store or ToolApprovalStore(
+            (assistant_dir or TalonConfig.from_env(self.env).home) / "tools.json"
+        )
+        self._active_approvals: ApprovalSnapshot | None = None
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
@@ -346,19 +350,24 @@ class DeepAgentRuntime:
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
         self._resolved_subagents = self._resolve_subagents()
-        self._graph = self._create_graph()
+        snapshot = self.approval_store.ensure()
+        self._graph = self._create_graph(approvals=snapshot)
+        self._active_approvals = snapshot
 
     def _create_graph(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
         *,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+        approvals: ApprovalSnapshot | None = None,
     ) -> object:
         resolved = [
             spec.copy() for spec in (self._resolved_subagents if subagents is None else subagents)
         ]
+        snapshot = self._approval_snapshot(approvals)
         tools = self._build_tools(runtime_tools)
-        interrupt_on = _interrupt_on_with_mcp_config(self.interrupt_on, self.env, tools)
+        tools.extend(self.approval_store.tools(snapshot))
+        interrupt_on = snapshot.interrupt_on
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         for spec in resolved:
@@ -396,9 +405,6 @@ class DeepAgentRuntime:
         )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
-        interrupt_on = _interrupt_on_with_async_subagents(
-            interrupt_on, has_async_subagents=_has_async_subagents(resolved)
-        )
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         graph = create_deep_agent(
@@ -437,6 +443,13 @@ class DeepAgentRuntime:
         )
         self._attachments = attachments
         return graph
+
+    def _approval_snapshot(self, snapshot: ApprovalSnapshot | None) -> ApprovalSnapshot:
+        resolved = snapshot or self._active_approvals
+        if resolved is None:
+            msg = "Tool approvals have not been loaded"
+            raise RuntimeError(msg)
+        return resolved
 
     async def stop(self) -> None:
         """Release runtime resources once no worker can still be writing.
@@ -499,7 +512,19 @@ class DeepAgentRuntime:
             raise RuntimeError(msg)
 
         await self._refresh_runtime_tools()
-        graph_token = self._invocation_graph.set(self._graph)
+        async with self._tools_lock:
+            snapshot = self.approval_store.read()
+            if snapshot != self._active_approvals:
+                graph = self._create_graph(approvals=snapshot)
+                self._graph = graph
+                self._active_approvals = snapshot
+            graph_token = self._invocation_graph.set(self._graph)
+            policy_token = ACTIVE_APPROVALS.set(snapshot)
+        operator_token = APPROVAL_OPERATOR.set(
+            request.metadata.get("tool_approval_operator") is True
+            and request.metadata.get("trigger") != "cron"
+            and request.metadata.get("background_delivery") is not True
+        )
         pending = self.background.results(request.conversation_id)
         pending_token = self._pending_results.set(pending)
         activity = self._activity_callback(request)
@@ -518,6 +543,8 @@ class DeepAgentRuntime:
                 self.background.record_delivery_failure(pending)
             raise
         finally:
+            APPROVAL_OPERATOR.reset(operator_token)
+            ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
             _HISTORY_SCOPE.reset(history_token)
             _HISTORY_SESSION.reset(session_token)
@@ -938,7 +965,7 @@ async def _approval_decision(
         return "reject", _CRON_AUTO_DENY_MESSAGE, "cron_auto_deny"
 
     handler = _approval_handler_from_request(request)
-    if handler is None:
+    if handler is None or request.metadata.get("background_delivery") is True:
         logger.warning(
             "Auto-denying %d tool approval request(s) for conversation %s without approval handler",
             len(action_requests),
@@ -1033,77 +1060,6 @@ def _decision_payload(
     if reject_message:
         return [{"type": "reject", "message": reject_message} for _ in range(count)]
     return [{"type": "reject"} for _ in range(count)]
-
-
-def interrupt_on_with_env_overlay(
-    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
-    env: Mapping[str, str],
-) -> dict[str, bool | InterruptOnConfig] | None:
-    """Merge Talon's local tool approval env overlay into an `interrupt_on` mapping.
-
-    Args:
-        interrupt_on: Base human-in-the-loop tool approval configuration.
-        env: Environment values to inspect for Talon approval overrides.
-
-    Returns:
-        Merged approval configuration, or `None` when neither source configures
-        approval.
-    """
-    overlay = _interrupt_on_tools_from_env(env)
-    if interrupt_on is None and not overlay:
-        return None
-
-    merged: dict[str, bool | InterruptOnConfig] = {}
-    if interrupt_on is not None:
-        merged.update(interrupt_on)
-    merged.update(overlay)
-    return merged
-
-
-def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
-    raw = env.get(INTERRUPT_ON_TOOLS_ENV_KEY)
-    if raw is None or not raw.strip():
-        return {}
-    return {name: True for name in (part.strip() for part in raw.split(",")) if name}
-
-
-def _interrupt_on_with_mcp_config(
-    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
-    env: Mapping[str, str],
-    tools: Sequence[BaseTool | Callable[..., object]],
-) -> Mapping[str, bool | InterruptOnConfig] | None:
-    if not any(getattr(tool, "name", None) == MCP_CONFIG_UPDATE_TOOL for tool in tools):
-        return interrupt_on
-    if env.get(MCP_CONFIG_AUTO_APPROVE_ENV, "").strip().lower() == "true":
-        return interrupt_on
-    return {
-        **(interrupt_on or {}),
-        MCP_CONFIG_UPDATE_TOOL: {"allowed_decisions": ["approve", "reject"]},
-    }
-
-
-def _interrupt_on_with_async_subagents(
-    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
-    *,
-    has_async_subagents: bool,
-) -> dict[str, bool | InterruptOnConfig] | None:
-    if not has_async_subagents:
-        return dict(interrupt_on) if interrupt_on is not None else None
-
-    merged: dict[str, bool | InterruptOnConfig] = {}
-    if interrupt_on is not None:
-        merged.update(interrupt_on)
-    for tool_name in _ASYNC_SUBAGENT_TOOL_NAMES:
-        merged.setdefault(tool_name, True)
-    return merged
-
-
-def _has_async_subagents(
-    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None,
-) -> bool:
-    return any(
-        isinstance(subagent, Mapping) and "graph_id" in subagent for subagent in subagents or ()
-    )
 
 
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:

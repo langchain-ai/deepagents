@@ -877,9 +877,8 @@ def _read_header(fields: Sequence[str]) -> str:
 def _assemble_read(body: str, fields: Sequence[str], notices: Sequence[str]) -> str:
     """Compose a read result from its notices, status header, and source body.
 
-    Notices sit above the header so everything below it is verbatim file
-    content, leaving no harness-authored text below for a crafted source line
-    to imitate.
+    Notices sit above the header, so every line below it is verbatim file
+    content and consumers can tell the two apart by position.
 
     Args:
         body: Verbatim source lines for the window, newline-joined.

@@ -131,6 +131,21 @@ class NemotronToolCallShim(AgentMiddleware):
         return self._normalize(await handler(fixed))
 
 
+_MAX_READ_NOTICE_LINES = 2
+"""Most explanation lines `read_file` places above its status header.
+
+A size-truncation disclosure and an offset-clamp disclosure, one line each.
+"""
+
+_READ_STATUS_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+)(?: of \d+)?(?: \| .*)? @@$")
+"""Match the status header of a `read_file` result, capturing its line range.
+
+Anchored, and matched only against the rows a header can occupy: the same
+shape can occur in ordinary file content, so position decides which line is
+the header.
+"""
+
+
 class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     """Append a continuation notice to exactly-at-limit `read_file` results."""
 
@@ -173,9 +188,10 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             limit = _DEFAULT_READ_LIMIT
 
-        # A truncation explanation can precede the header, so search line
-        # starts rather than anchoring at the start of the result.
-        range_match = re.search(r"^@@ lines (\d+)-(\d+)\b", content, re.MULTILINE)
+        # A truncation explanation can precede the header, so scan the rows a
+        # header can occupy. The `maxsplit` remainder is dropped, not matched.
+        header_rows = content.split("\n", _MAX_READ_NOTICE_LINES + 1)[: _MAX_READ_NOTICE_LINES + 1]
+        range_match = next(filter(None, map(_READ_STATUS_HEADER_RE.match, header_rows)), None)
         if range_match:
             n_lines = int(range_match.group(2)) - int(range_match.group(1)) + 1
         else:

@@ -328,8 +328,8 @@ _MAX_READ_NOTICE_LINES = 2
 """Most explanation lines `read_file` can place above its status header.
 
 A truncation disclosure and an offset-clamp disclosure, one line each. Bounding
-the search keeps a header-shaped line deeper in the file's own source from
-being mistaken for the header.
+the search keeps a matching line further down in the source from being read as
+the header.
 """
 
 

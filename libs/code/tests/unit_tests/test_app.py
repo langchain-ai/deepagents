@@ -25563,7 +25563,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(50)
+                for index in range(579)
             ],
             context_tokens=0,
             model_spec="",
@@ -25584,14 +25584,14 @@ class TestResumeScrollPosition:
             for _ in range(20):
                 await pilot.pause()
                 if (
-                    app._message_store.visible_count == 51
+                    app._message_store.visible_count == 580
                     and not app._history_prefetch_active
                     and chat.max_scroll_y > 0
                     and chat.scroll_y == chat.max_scroll_y
                 ):
                     break
 
-            assert app._message_store.visible_count == 51
+            assert app._message_store.visible_count == 580
             assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
@@ -25599,6 +25599,24 @@ class TestResumeScrollPosition:
             # initial tail load and prefetch, not bottom-follow (see
             # `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
+
+    async def test_prefetch_teardown_preserves_new_bottom_follow(self) -> None:
+        """A live bottom-follow request should outlive resumed-history prefetch."""
+        app = DeepAgentsApp()
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            await chat.mount(Static("\n".join(f"line {index}" for index in range(20))))
+            await pilot.pause()
+
+            app._history_prefetch_active = True
+            chat.anchor()
+            app._history_prefetch_anchor_generation = chat._bottom_follow_generation
+            chat.anchor()
+            app._stop_history_prefetch()
+
+            assert chat.is_anchored
+            assert chat._follow_bottom_when_scrollable
 
 
 class TestWelcomeBannerLiveUpdates:

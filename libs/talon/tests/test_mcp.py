@@ -34,7 +34,6 @@ from deepagents_talon.mcp import (
     MCPToolProvider,
     _connection,
     _normalize_mcp_arguments,
-    _protocol_error_interceptor,
     _run_authorized,
     load_mcp_tools,
     login_mcp_server,

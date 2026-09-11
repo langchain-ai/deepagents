@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
+from mcp.shared.exceptions import MCPError
 
 from deepagents_talon.authorization import current_authorization_invocation
 from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY, talon_mcp_middleware
@@ -60,3 +62,32 @@ async def test_middleware_ignores_unmarked_tools() -> None:
         return ToolMessage(content="ok", tool_call_id="call-7")
 
     await talon_mcp_middleware().awrap_tool_call(request, handler)
+
+
+async def test_protocol_error_reaches_model_without_error_data() -> None:
+    tool = SimpleNamespace(metadata={MCP_TOOL_METADATA_KEY: True})
+    request = Request(tool, {"id": "call-8", "name": "remote_search", "args": {}})
+
+    async def handler(_request: Request) -> ToolMessage:
+        raise MCPError(-32602, "Invalid query", data={"private": "response-body"})
+
+    message = await talon_mcp_middleware().awrap_tool_call(request, handler)
+
+    assert message.status == "error"
+    assert message.tool_call_id == "call-8"
+    assert message.content == "MCP protocol error -32602: Invalid query"
+    assert message.artifact is None
+    assert current_authorization_invocation() is None
+
+
+async def test_non_protocol_error_propagates() -> None:
+    tool = SimpleNamespace(metadata={MCP_TOOL_METADATA_KEY: True})
+    request = Request(tool, {"id": "call-8", "name": "remote_search", "args": {}})
+
+    async def handler(_request: Request) -> ToolMessage:
+        msg = "transport failed"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        await talon_mcp_middleware().awrap_tool_call(request, handler)
+    assert current_authorization_invocation() is None

@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import wrap_tool_call
+from langchain_core.messages import ToolMessage
+from mcp.shared.exceptions import MCPError
 
 from deepagents_talon.mcp import _normalize_mcp_arguments, _run_authorized
 
@@ -12,7 +14,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
-    from langchain_core.messages import ToolMessage
 
 MCP_TOOL_METADATA_KEY = "_deepagents_talon_mcp"
 MCP_SERVER_METADATA_KEY = "_deepagents_talon_mcp_server"
@@ -36,10 +37,18 @@ def talon_mcp_middleware() -> AgentMiddleware:
             getattr(tool, "args_schema", None),
         )
         request = request.override(tool_call={**request.tool_call, "args": arguments})
-        return await _run_authorized(
-            request.tool_call["id"],
-            lambda: handler(request),
-        )
+        try:
+            return await _run_authorized(
+                request.tool_call["id"],
+                lambda: handler(request),
+            )
+        except MCPError as exc:
+            return ToolMessage(
+                content=f"MCP protocol error {exc.code}: {exc.message}",
+                name=request.tool_call["name"],
+                tool_call_id=request.tool_call["id"],
+                status="error",
+            )
 
     return _wrap
 

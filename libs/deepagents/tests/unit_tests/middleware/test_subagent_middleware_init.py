@@ -309,7 +309,7 @@ class TestSubagentMiddlewareInit:
 
         inherited = worker_model.call_history[0]["messages"]
         assert not any(isinstance(m, AIMessage) and any(c["name"] == "task" for c in m.tool_calls) for m in inherited)
-        assert not any(isinstance(m, ToolMessage) and "was cancelled" in str(m.content) for m in inherited)
+        assert not any(isinstance(m, ToolMessage) and "did not complete" in str(m.content) for m in inherited)
         assert inherited[-1].text.startswith(_FORK_TASK_PREAMBLE)
 
     def test_forked_subagent_tool_order_matches_parent(self) -> None:

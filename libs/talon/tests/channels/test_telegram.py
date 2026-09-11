@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -824,6 +825,29 @@ async def test_send_message_uses_plain_text(tmp_path: Path) -> None:
     assert params["chat_id"] == "123"
 
 
+async def test_send_message_debug_logs_are_payload_safe(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = RecordingTransport()
+    channel = TelegramChannel(
+        _make_config(tmp_path),
+        transport=cast("_TelegramTransport", transport),
+    )
+    conversation_id = "private-chat-123"
+    text = "private message contents"
+
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.telegram"):
+        await channel.send_message(conversation_id, text)
+
+    assert "telegram.outbound.text.started" in caplog.text
+    assert "telegram.outbound.text.completed" in caplog.text
+    assert '"chunk_count": 1' in caplog.text
+    assert f'"text_chars": {len(text)}' in caplog.text
+    assert conversation_id not in caplog.text
+    assert text not in caplog.text
+
+
 async def test_send_message_chunks_long_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
@@ -855,6 +879,26 @@ async def test_transport_rejects_bot_api_error_envelopes(
 
     with pytest.raises(_TelegramError, match="bad request"):
         await transport.call("sendMessage", chat_id="123", text="hello")
+
+
+async def test_transport_wraps_connection_interruptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        msg = "connection lost during sleep"
+        raise ConnectionResetError(msg)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _TelegramTransport(
+        api_base="https://api.telegram.org",
+        token="test-token",  # noqa: S106  # inert test token
+        timeout=1,
+    )
+
+    with pytest.raises(_TelegramError, match="request failed") as exc_info:
+        await transport.call("getUpdates", offset=0)
+
+    assert isinstance(exc_info.value.__cause__, ConnectionResetError)
 
 
 async def test_transport_rejects_upload_error_envelopes(

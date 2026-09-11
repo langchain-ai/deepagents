@@ -374,6 +374,29 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         return None
 
 
+def is_media_path(path: pathlib.Path) -> bool:
+    """Return whether a path's extension is a known image or video extension.
+
+    This is a cheap, extension-only check (no file read or decode). Use it to
+    classify a dropped file path as media without loading it, e.g. to reject a
+    dragged image in a text-only input.
+
+    It is a heuristic, not a support check, and disagrees with the loaders in
+    both directions: `get_image_from_path` accepts anything Pillow can decode
+    regardless of extension, while `get_video_from_path` additionally requires a
+    recognized magic-byte signature. Call `get_media_from_path` when the answer
+    must match what can actually be attached.
+
+    Args:
+        path: Path whose suffix is inspected.
+
+    Returns:
+        `True` when the suffix is a known image or video extension.
+    """
+    suffix = path.suffix.lower()
+    return suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS
+
+
 def get_media_from_path(path: pathlib.Path) -> ImageData | VideoData | None:
     """Try to load a file as an image first, then as a video.
 

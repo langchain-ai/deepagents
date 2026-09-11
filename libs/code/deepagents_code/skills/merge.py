@@ -12,20 +12,22 @@ makes each replacement observable in debug logs.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, TypeVar
+
+# Runtime (not TYPE_CHECKING) import: PEP 695 type-parameter bounds are lazy but
+# are evaluated on access, so a TYPE_CHECKING-only `Mapping` raises `NameError`.
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, MutableMapping
+    from collections.abc import MutableMapping
 
 logger = logging.getLogger(__name__)
 
-_SkillT = TypeVar("_SkillT", bound="Mapping[str, object]")
 
-
-def merge_skill(
-    merged: MutableMapping[str, _SkillT],
+def merge_skill[SkillT: Mapping[str, object]](
+    merged: MutableMapping[str, SkillT],
     source_labels: MutableMapping[str, str | None],
-    skill: _SkillT,
+    skill: SkillT,
     *,
     source_label: str | None = None,
 ) -> None:

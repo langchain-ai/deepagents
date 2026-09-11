@@ -23,12 +23,14 @@ if TYPE_CHECKING:
     from deepagents_code.extras_info import ExtraDependencyStatus
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
 )
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +165,14 @@ class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
             options.highlighted = 0
             yield options
             yield Static(
-                "You can change this at any time in ~/.deepagents/config.toml "
+                "You can change this at any time in "
+                f"{PATHS.display(PATHS.profile.config_file)} "
                 "or with DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA.",
                 classes="launch-init-note",
+                markup=False,
             )
             yield Static(
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+                f"{modal_navigation_hint(glyphs)}"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Esc review",
                 classes="launch-init-help",

@@ -8,6 +8,33 @@ from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
+async def test_store_backend_aread_non_positive_limit_returns_empty_read():
+    """`aread` is a separate method body from `read`, so it needs its own case."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "one\ntwo\nthree")
+
+    result = await be.aread("/notes.txt", offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+async def test_store_backend_aread_negative_offset_starts_at_first_line():
+    """A negative offset is clamped on the async path too."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "one\ntwo\nthree")
+
+    result = await be.aread("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
+
+
 async def test_store_backend_async_crud_and_search():
     """Test async CRUD and search operations."""
     mem_store = InMemoryStore()
@@ -35,12 +62,13 @@ async def test_store_backend_async_crud_and_search():
     matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # aglob
+    # aglob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = (await be.aglob("*.md", path="/")).matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
 async def test_store_backend_aread_supports_legacy_list_content() -> None:

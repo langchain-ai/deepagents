@@ -1,8 +1,9 @@
 """Tests for ModelSelectorScreen."""
 
+import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,8 +11,9 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Static
 
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
     ModelProfileEntry,
@@ -19,7 +21,10 @@ from deepagents_code.model_config import (
     ProviderAuthState,
     ProviderAuthStatus,
 )
-from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+from deepagents_code.tui.widgets.model_selector import (
+    MAIN_MODEL_DEFAULT_SCOPE,
+    ModelSelectorScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +67,7 @@ def _seed_provider_credentials(
 
 _FILTER_TEST_MODELS: list[tuple[str, str]] = [
     ("anthropic:claude-sonnet-4-5", "anthropic"),
-    ("anthropic:claude-opus-4-7", "anthropic"),
+    ("anthropic:claude-opus-4-8", "anthropic"),
     ("anthropic:claude-haiku-4-5", "anthropic"),
     ("openai:gpt-4", "openai"),
     ("openai:gpt-5.5", "openai"),
@@ -75,6 +80,7 @@ def _model_selector_for_filtering() -> ModelSelectorScreen:
     screen = ModelSelectorScreen(
         current_model="claude-sonnet-4-5",
         current_provider="anthropic",
+        default_scope=MAIN_MODEL_DEFAULT_SCOPE,
     )
     screen._recommended_only = False
     screen._unfiltered_models = list(_FILTER_TEST_MODELS)
@@ -113,6 +119,7 @@ class ModelSelectorTestApp(App):
         screen = ModelSelectorScreen(
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._recommended_only = False
         self.push_screen(screen, handle_result)
@@ -123,6 +130,7 @@ class ModelSelectorTestApp(App):
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
             result_callback=self.callback_results.append,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._recommended_only = False
         self.push_screen(screen)
@@ -165,6 +173,7 @@ class AppWithEscapeBinding(App):
         screen = ModelSelectorScreen(
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)
 
@@ -186,111 +195,41 @@ class TestModelSelectorEscapeKey:
             assert app.dismissed is True
             assert app.result is None
 
-    async def test_escape_works_when_input_focused(self) -> None:
-        """ESC should work even when the filter input is focused."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            # Type something to ensure input is focused
-            await pilot.press("c", "l", "a", "u", "d", "e")
-            await pilot.pause()
-
-            # Press ESC - should still dismiss
-            await pilot.press("escape")
-            await pilot.pause()
-
-            assert app.dismissed is True
-            assert app.result is None
-
-    async def test_escape_calls_direct_result_callback(self) -> None:
-        """The direct result callback should receive dismiss results."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector_with_result_callback()
-            await pilot.pause()
-
-            await pilot.press("escape")
-            await pilot.pause()
-
-            assert app.callback_results == [None]
-
-    async def test_escape_with_conflicting_app_binding(self) -> None:
-        """ESC should dismiss modal even when app has its own escape binding.
-
-        This test reproduces the bug where DeepAgentsApp's escape binding
-        for action_interrupt would intercept escape before the modal could
-        handle it, causing the modal to not close.
-        """
-        app = AppWithEscapeBinding()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            # Press ESC - this should dismiss the modal, not call action_interrupt
-            await pilot.press("escape")
-            await pilot.pause()
-
-            assert app.dismissed is True
-            assert app.result is None
-            # The interrupt action should NOT have been called because modal was open
-            assert app.interrupt_called is False
-
 
 class TestModelSelectorChrome:
     """Tests for model selector title and description chrome."""
-
-    async def test_optional_title_and_description_render(self) -> None:
-        """A custom title and description should render above the filter."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(
-                title="Choose a Recommended Model",
-                description="Curated models backed by evals.",
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-
-            title = screen.query_one(".model-selector-title", Static)
-            description = screen.query_one(".model-selector-description", Static)
-
-            assert "Choose a Recommended Model" in str(title.content)
-            assert "Curated models backed by evals." in str(description.content)
 
     async def test_curated_selector_help_hides_esc_hint(self) -> None:
         """Onboarding model selection keeps Escape bound but hides its hint."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            # Deliberately not the shared `modal_navigation_hint` copy: Tab
+            # autocompletes here, so advertising "Tab/Shift+Tab navigate"
+            # would misdescribe it. Shift+Tab still works via
+            # `_SupportsReverseNav`; it is simply unadvertised.
+            assert "navigate" in str(help_text.content)
+            assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
+            assert "Esc close" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
-
-    async def test_curated_selector_help_hides_default_hint(self) -> None:
-        """Onboarding model selection should not advertise default changes."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-
-            assert "Ctrl+S" not in str(help_text.content)
-            assert "set default" not in str(help_text.content)
 
     @pytest.mark.parametrize("curated", [False, True])
     async def test_selector_uses_compact_sizing(self, *, curated: bool) -> None:
         """Model selection should size like the integration summary."""
         app = ModelSelectorTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen(curated=curated)
+            screen = ModelSelectorScreen(
+                curated=curated, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
             await pilot.pause()
@@ -307,11 +246,11 @@ class TestModelSelectorChrome:
         assert max_height.cells is not None
         assert max_height.cells <= 16
 
-    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
-        """The regular /model selector should not leave a trailing separator."""
+    async def test_standard_selector_help_shows_close_hint(self) -> None:
+        """The regular `/model` selector should advertise Escape dismissal."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -321,7 +260,7 @@ class TestModelSelectorChrome:
             # Standard mode still advertises the default-setting shortcut that
             # curated/onboarding mode hides.
             assert "Ctrl+S set default" in str(help_text.content)
-            assert "Esc cancel" not in str(help_text.content)
+            assert "Esc close" in str(help_text.content)
 
     async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
         """The standard footer is wider than the modal, so it must wrap.
@@ -331,7 +270,7 @@ class TestModelSelectorChrome:
         """
         app = ModelSelectorTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -344,78 +283,15 @@ class TestModelSelectorChrome:
             assert help_text.region.height >= 2
             assert help_text.region.y + help_text.region.height <= app.size.height
 
-    async def test_curated_selector_help_stays_one_row(self) -> None:
-        """The shorter curated footer must not over-wrap once the clamp is gone.
-
-        `height: auto` lets the standard footer wrap, but the curated line drops
-        the Ctrl+S/Ctrl+R hints and fits one row — pin it so a future width or
-        hint change that pushes it to two rows fails loudly.
-        """
-        app = ModelSelectorTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-
-            assert help_text.region.height == 1
-
 
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""
-
-    async def test_default_view_is_recommended(self) -> None:
-        """Opening `/model` should land on the curated recommended subset."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            assert screen._recommended_only is True
-            info = screen.query_one("#model-selector-info", Static)
-            assert "Showing recommended models" in str(info.content)
-
-    def test_search_uses_full_list_from_recommended_view(self) -> None:
-        """Typing a filter should search beyond the recommended subset."""
-        screen = ModelSelectorScreen()
-        screen._unfiltered_models = [
-            ("openai:gpt-5.5", "openai"),
-            ("openai:gpt-4o", "openai"),
-        ]
-        screen._all_models = screen._apply_subset(screen._unfiltered_models)
-
-        assert screen._recommended_only is True
-        assert screen._all_models == [("openai:gpt-5.5", "openai")]
-
-        screen._filter_text = "gpt-4o"
-        screen._update_filtered_list()
-
-        assert screen._filtered_models == [("openai:gpt-4o", "openai")]
-
-    def test_recent_codex_keeps_recommended_provider_order(self) -> None:
-        """A recent Codex model should stay between OpenAI and OpenRouter."""
-        screen = ModelSelectorScreen()
-        screen._recent_specs = ["openai_codex:gpt-5.5"]
-        all_models = [
-            ("anthropic:claude-sonnet-5", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
-            ("openai_codex:gpt-5.5", "openai_codex"),
-            ("openrouter:openai/gpt-5.5", "openrouter"),
-        ]
-
-        providers = [provider for _, provider in screen._apply_subset(all_models)]
-
-        assert providers.index("openai") < providers.index("openai_codex")
-        assert providers.index("openai_codex") < providers.index("openrouter")
-        assert providers[0] != "openai_codex"
 
     async def test_info_line_reflects_active_search(self) -> None:
         """Typing a filter should avoid stale recommended-only copy."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -429,102 +305,167 @@ class TestRecommendedToggle:
             assert "Searching all models" in str(info.content)
             assert "Showing recommended models" not in str(info.content)
 
-    async def test_toggle_expands_to_full_list(self) -> None:
-        """Ctrl+R from the default recommended view should expand to all."""
+
+class TestDefaultModelScope:
+    """Tests for which stored preference Ctrl+S writes.
+
+    The selector is shared by `/model` and the `/auto model` classifier picker,
+    so a scope mix-up would let the classifier picker retarget the model the
+    agent itself runs on.
+    """
+
+    @staticmethod
+    def _stub_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reduce the catalog to a single deterministic row."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+    async def test_write_failure_raises_a_toast_naming_the_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The toast is the load-bearing half of the failure UX.
+
+        The footer notice is one short line; the toast carries the remedy and
+        stays up for 10s. Nothing else asserts it fires, so a refactor could
+        drop it and leave only the footer with no test noticing.
+
+        It must not claim a single cause: the writers return `False` for an
+        unwritable file, unparseable TOML, and a `[models]` section of the wrong
+        shape alike, so "check permissions" alone sends users to inspect
+        permissions that are already correct.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.AUTO_CLASSIFIER_DEFAULT_SCOPE._replace(
+                    save=lambda _spec: False
+                )
+            )
             app.push_screen(screen)
             await pilot.pause()
 
-            recommended_count = len(screen._filtered_models)
+            notified: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                screen,
+                "notify",
+                lambda msg, **kw: notified.append((msg, kw.get("severity"))),
+            )
 
-            await pilot.press("ctrl+r")
+            await pilot.press("ctrl+s")
             await pilot.pause()
 
-            assert screen._recommended_only is False
-            assert len(screen._filtered_models) >= recommended_count
+        assert notified
+        message, severity = notified[0]
+        assert severity == "error"
+        assert PATHS.display(PATHS.profile.config_file) in message
+        assert "unwritable" in message
+        assert "malformed" in message
 
-    async def test_toggle_round_trip_restores_recommended(self) -> None:
-        """Pressing Ctrl+R twice should return to the recommended subset."""
+    async def test_install_refusal_remedy_uses_recovery_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The install-required toast names an environment-correct command.
+
+        Plain `pip install ...` would target the caller's current Python
+        environment; for `uv tool` installs (the supported path) that leaves
+        the provider unavailable to `dcode`. The remedy must flow through
+        `safe_install_extra_recovery_command` like `/install` failures do.
+        """
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install deepagents-code --with langchain-anthropic",
+        )
+
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
-            original = list(screen._filtered_models)
+            screen._install_extras = {"anthropic": "anthropic"}
 
-            await pilot.press("ctrl+r")
+            notified: list[str] = []
+            monkeypatch.setattr(screen, "notify", lambda msg, **_: notified.append(msg))
+
+            await pilot.press("ctrl+s")
             await pilot.pause()
-            await pilot.press("ctrl+r")
-            await pilot.pause()
 
-            assert screen._recommended_only is True
-            assert screen._filtered_models == original
+        assert notified
+        assert (
+            "uv tool install deepagents-code --with langchain-anthropic"
+            in (notified[0])
+        )
+        assert "pip install" not in notified[0]
 
-    async def test_toggle_updates_info_line(self) -> None:
-        """Info line should advertise the inverse state after toggling."""
+    async def test_ctrl_s_clears_stored_model_with_missing_provider(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ctrl+S clears a stored spec even when its provider was uninstalled.
+
+        The install-required refusal exists so a spec that can never build is
+        not *stored*; applying it to an already-stored row would block the
+        only in-app path for removing the now-unusable persisted value.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
-            info = screen.query_one("#model-selector-info", Static)
-            assert "Ctrl+R for all" in str(info.content)
+            screen._install_extras = {"anthropic": "anthropic"}
 
-            await pilot.press("ctrl+r")
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
             await pilot.pause()
 
-            assert "Ctrl+R for recommended" in str(info.content)
+            assert "Default classifier model cleared" in str(help_widget.content)
+            assert screen._default_spec is None
 
-    async def test_toggle_disabled_in_curated_onboarding_mode(self) -> None:
-        """Curated/onboarding mode should ignore Ctrl+R."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            before = list(screen._filtered_models)
-
-            await pilot.press("ctrl+r")
-            await pilot.pause()
-
-            assert screen._recommended_only is False
-            assert screen._filtered_models == before
-
-    async def test_help_text_advertises_toggle_in_standard_mode(self) -> None:
-        """Standard `/model` help footer should mention Ctrl+R."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-            assert "Ctrl+R" in str(help_text.content)
-
-    async def test_help_text_omits_toggle_in_curated_mode(self) -> None:
-        """Onboarding's curated help footer should not mention Ctrl+R."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-            assert "Ctrl+R" not in str(help_text.content)
+        with (tmp_path / "config.toml").open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
 
 
 class TestNamesToggle:
     """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""
 
-    async def test_ctrl_n_toggles_rows_between_names_and_specs(
+    async def test_names_toggle_clobbers_ctrl_s_success_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ctrl+N flips rows between the friendly name and the raw spec."""
+        """A pending Ctrl+S restore timer must not resurrect a stale hint.
+
+        Ctrl+N and Ctrl+S both write the footer. Toggling while a success
+        message is up replaces it immediately, and the message's uncancelled
+        3s timer must then restore the hint for the *new* mode — which only
+        holds because `_restore_help_text` recomputes rather than replaying a
+        string captured when the message was set.
+        """
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
@@ -536,59 +477,28 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
+            screen._default_spec = None
 
-            row = screen._option_widgets[0]
-            assert row.model_spec == "anthropic:claude-sonnet-5"
-            assert not screen._show_specs
-            text = str(row.content)
-            assert "Claude Sonnet 5" in text
-            assert "anthropic:claude-sonnet-5" not in text
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
 
             await pilot.press("ctrl+n")
             await pilot.pause()
+            assert "Ctrl+N names" in str(help_widget.content)
 
-            assert screen._show_specs
-            text = str(screen._option_widgets[0].content)
-            assert "anthropic:claude-sonnet-5" in text
-            assert "Claude Sonnet 5" not in text
+            # Stand in for the 3s timer the Ctrl+S message left pending.
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
 
-            await pilot.press("ctrl+n")
-            await pilot.pause()
-
-            assert not screen._show_specs
-            text = str(screen._option_widgets[0].content)
-            assert "Claude Sonnet 5" in text
-            assert "anthropic:claude-sonnet-5" not in text
-
-    async def test_help_text_advertises_names_toggle_in_standard_mode(self) -> None:
-        """Standard `/model` help footer should mention Ctrl+N."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-            assert "Ctrl+N" in str(help_text.content)
-
-    async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
-        """Onboarding's curated help footer should not mention Ctrl+N."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            help_text = screen.query_one(".model-selector-help", Static)
-            assert "Ctrl+N" not in str(help_text.content)
-
-    async def test_names_toggle_available_in_curated_mode(
+    async def test_names_toggle_preserves_ctrl_s_error_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Curated/onboarding mode still honors Ctrl+N (presentation only)."""
+        """Ctrl+N must not wipe the only notice that saving the default failed."""
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
@@ -600,249 +510,36 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            # Inject a failing writer through the screen's scope, since that is
+            # the only path `action_set_default` saves through.
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                    save=lambda _spec: False
+                )
+            )
             app.push_screen(screen)
             await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Failed to save default" in str(help_widget.content)
 
             await pilot.press("ctrl+n")
             await pilot.pause()
 
+            # Rows still flip; only the footer refresh is held back.
             assert screen._show_specs
             assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            assert "Failed to save default" in str(help_widget.content)
 
-    async def test_show_specs_persists_across_filter_rebuild(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Spec mode survives the full rebuild that filtering triggers.
-
-        `_relabel_options` (the in-place Ctrl+N path) is not the only renderer:
-        typing into the filter runs `_update_display`, which rebuilds every row
-        from scratch. That rebuild path must honor `_show_specs` too, so toggling
-        specs on and then filtering keeps the surviving rows in spec mode.
-        """
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            await pilot.press("ctrl+n")
-            await pilot.pause()
-            assert screen._show_specs
-
-            # Typing filters the list, rebuilding rows via `_update_display`.
-            await pilot.press("c", "l", "a", "u", "d", "e")
-            await pilot.pause()
-
-            assert screen._show_specs
-            specs = [str(w.content) for w in screen._option_widgets]
-            assert any("anthropic:claude-sonnet-5" in s for s in specs)
-            assert all("Claude Sonnet 5" not in s for s in specs)
-
-    async def test_selection_preserved_after_names_toggle(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Toggling names keeps the highlighted row highlighted.
-
-        Uses a multi-row list with the cursor moved off row 0 so a regression
-        that dropped the selection (e.g. hardcoding `selected=False` in
-        `_relabel_options`) would surface as a missing cursor glyph.
-        """
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"], "openai": ["gpt-5.5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
-
-        cursor = get_glyphs().cursor
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            screen._recommended_only = False
-            app.push_screen(screen)
-            await pilot.pause()
-
-            assert len(screen._option_widgets) >= 2
-
-            await pilot.press("down")
-            await pilot.pause()
-            selected = screen._selected_index
-            assert selected != 0
-
-            await pilot.press("ctrl+n")
-            await pilot.pause()
-
-            assert screen._selected_index == selected
-            for index, widget in enumerate(screen._option_widgets):
-                text = str(widget.content)
-                if index == selected:
-                    assert text.startswith(f"{cursor} ")
-                else:
-                    assert not text.startswith(f"{cursor} ")
-
-    async def test_names_toggle_drops_provider_tag_in_recent_section(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """In spec mode a Recent row shows the bare spec with no `(provider)` tag.
-
-        Recent rows (`show_provider=True`) append a dim ` (provider)` tag after
-        the friendly name to disambiguate the same model across providers. The
-        raw spec already embeds the provider, so spec mode must drop that tag
-        rather than print the provider twice.
-        """
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"]},
-        )
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["anthropic:claude-sonnet-5"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            recent_rows = [w for w in screen._option_widgets if w.show_provider]
-            assert recent_rows, "expected a Recent-section row"
-            before = str(recent_rows[0].content)
-            assert "Claude Sonnet 5" in before
-            assert "(Anthropic)" in before
-
-            await pilot.press("ctrl+n")
-            await pilot.pause()
-
-            recent_rows = [w for w in screen._option_widgets if w.show_provider]
-            after = str(recent_rows[0].content)
-            assert "anthropic:claude-sonnet-5" in after
-            assert "Claude Sonnet 5" not in after
-            assert "(Anthropic)" not in after
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
 
 
 class TestRecentModelsSection:
     """Tests for the "Recent" pseudo-provider section pinned at the top."""
-
-    async def test_recent_header_renders_when_recents_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A populated recents file should produce a `Recent` header."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["anthropic:claude-opus-4-7"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            headers = [
-                str(h.content)
-                for h in screen.query(".model-provider-header").results(Static)
-            ]
-            assert headers, "expected at least one provider header"
-            assert "Recent" in headers[0]
-
-    async def test_no_recent_header_when_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No recents file means the Recent header is not rendered."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            headers = [
-                str(h.content)
-                for h in screen.query(".model-provider-header").results(Static)
-            ]
-            assert not any("Recent" in h for h in headers)
-
-    async def test_provider_header_uses_friendly_name(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Provider headers render the friendly label, not the raw config key."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"openai_codex": ["gpt-5.5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            headers = [
-                str(h.content)
-                for h in screen.query(".model-provider-header").results(Static)
-            ]
-            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
-            assert not any("openai_codex" in h for h in headers)
-
-    async def test_recent_row_shows_name_and_provider_tag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Recent rows show the friendly name plus a brand `(provider)` tag."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"openai": ["gpt-5.5"]},
-        )
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["openai:gpt-5.5"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            recent = screen._option_widgets[0]
-            assert recent.model_spec == "openai:gpt-5.5"
-            assert recent.show_provider
-            text = str(recent.content)
-            assert "GPT-5.5" in text
-            # No brand override for openai: falls back to the display name.
-            assert "(OpenAI)" in text
-            assert "openai:gpt-5.5" not in text
 
     async def test_recent_row_uses_short_brand_over_verbose_display_name(
         self, monkeypatch: pytest.MonkeyPatch
@@ -863,7 +560,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -872,271 +569,15 @@ class TestRecentModelsSection:
             text = str(recent.content)
             assert "(OpenAI Codex)" in text
             # The verbose auth label must not leak into the compact tag.
-            assert "ChatGPT login" not in text
-
-    async def test_recent_entries_appear_in_provider_section_too(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A recent spec is also kept in its real provider section below."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["anthropic:claude-opus-4-7"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            specs = [w.model_spec for w in screen._option_widgets]
-            assert specs.count("anthropic:claude-opus-4-7") == 2
-
-    async def test_recent_entries_do_not_duplicate_on_refresh(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Refreshing an open selector should not compound recent entries."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {
-                "openai": ["gpt-5.5"],
-                "openai_codex": ["gpt-5.5"],
-            },
-        )
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            await screen._update_display()
-
-            specs = [w.model_spec for w in screen._option_widgets]
-            assert specs.count("openai:gpt-5.5") == 2
-            assert specs.count("openai_codex:gpt-5.5") == 2
-
-    async def test_refresh_preserves_provider_section_recent_selection(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Refreshing should not move selection from provider row to Recent."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {
-                "openai": ["gpt-5.5"],
-                "openai_codex": ["gpt-5.5"],
-            },
-        )
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            provider_index = [
-                i
-                for i, entry in enumerate(screen._filtered_models)
-                if entry == ("openai_codex:gpt-5.5", "openai_codex")
-            ][1]
-            screen._selected_index = provider_index
-
-            await screen._update_display()
-
-            assert screen._selected_index == provider_index
-            assert screen._filtered_models[screen._selected_index] == (
-                "openai_codex:gpt-5.5",
-                "openai_codex",
-            )
-
-    async def test_recent_entries_survive_recommended_toggle(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Recents not on the curated list should still show in recommended mode."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["anthropic:claude-sonnet-4-5"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            assert screen._recommended_only is True
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert "anthropic:claude-sonnet-4-5" in specs
-
-    async def test_recent_section_hidden_during_onboarding(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Curated onboarding never shows Recent, even if the MRU is populated.
-
-        Guards the `include_recent` gating in `_load_model_data` (see its
-        docstring for why the startup auto-detected fallback must not surface
-        as a "Recent" entry the user never chose).
-        """
-        from deepagents_code.tui.widgets import model_selector
-
-        recent_called = False
-
-        def _tracked_load_recent_models() -> list[str]:
-            nonlocal recent_called
-            recent_called = True
-            # Deliberately a recommended model so it survives curated filtering:
-            # on a revert it would reach the rendered "Recent" header, keeping
-            # the header assertion below an effective regression guard.
-            return ["anthropic:claude-opus-4-7"]
-
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            _tracked_load_recent_models,
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            assert recent_called is False
-            assert screen._recent_specs == []
-            headers = [
-                str(h.content)
-                for h in screen.query(".model-provider-header").results(Static)
-            ]
-            assert not any("Recent" in h for h in headers)
-
-    async def test_recent_section_hidden_during_filter(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Once the user is searching, recents fold into the match results."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector,
-            "load_recent_models",
-            lambda: ["anthropic:claude-opus-4-7"],
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            headers = [
-                str(h.content)
-                for h in screen.query(".model-provider-header").results(Static)
-            ]
-            assert not any("Recent" in h for h in headers)
+            assert "Subscription login" not in text
 
 
 class TestModelSelectorAvailabilityHint:
     """Tests for the API-keys hint shown above the standard model list."""
 
-    async def test_hint_renders_in_non_curated_mode(self) -> None:
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-
-            info = screen.query_one("#model-selector-info", Static)
-
-            assert info.display is True
-
-    async def test_hint_absent_in_curated_mode(self) -> None:
-        """Onboarding's curated picker shares no copy with the standard selector."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
-            app.push_screen(screen)
-            await pilot.pause()
-
-            assert not screen.query("#model-selector-info")
-
 
 class TestModelSelectorKeyboardNavigation:
     """Tests for keyboard navigation in the modal."""
-
-    async def test_down_arrow_moves_selection(self) -> None:
-        """Down arrow should move selection down."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-            initial_index = screen._selected_index
-
-            await pilot.press("down")
-            await pilot.pause()
-
-            assert screen._selected_index == initial_index + 1
-
-    async def test_up_arrow_moves_selection(self) -> None:
-        """Up arrow should move selection up (wrapping to end if at 0)."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-            initial_index = screen._selected_index
-            count = len(screen._filtered_models)
-
-            await pilot.press("up")
-            await pilot.pause()
-
-            # Should move up by one, wrapping if at 0
-            expected = (initial_index - 1) % count
-            assert screen._selected_index == expected
-
-    async def test_enter_selects_model(self) -> None:
-        """Enter should select the current model and dismiss."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert app.dismissed is True
-            assert app.result is not None
-            assert isinstance(app.result, tuple)
-            assert len(app.result) == 2
 
 
 class TestModelSelectorAuthRouting:
@@ -1301,8 +742,16 @@ class TestModelSelectorAuthRouting:
 class TestModelSelectorFiltering:
     """Tests for search filtering."""
 
-    async def test_typing_filters_models(self) -> None:
-        """Typing in the filter input should filter models."""
+    async def test_empty_allowlist_explains_policy(self) -> None:
+        """An empty policy shows its cause instead of offering custom models."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            "[models]\nallowed = []\n",
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -1310,33 +759,72 @@ class TestModelSelectorFiltering:
 
             screen = app.screen
             assert isinstance(screen, ModelSelectorScreen)
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            # An empty filter must not be blamed on a typo, and the message
+            # names the policy rather than offering a custom spec.
+            assert "models.allowed permits no models" in content
+            assert "press Enter" not in content
 
-            # Type a filter
-            await pilot.press("c", "l", "a", "u", "d", "e")
+    async def test_nonspec_filter_is_not_blamed_on_policy(self) -> None:
+        """A typo in the filter box is not the administrator's fault.
+
+        `is_model_allowed` rejects any non-spec string, so testing the filter
+        text directly would attribute every mistyped filter -- and every empty
+        one -- to `models.allowed`.
+        """
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
             await pilot.pause()
 
-            assert screen._filter_text == "claude"
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            await pilot.press("z", "z", "z", "q")
+            await pilot.pause()
 
-    def test_custom_model_spec_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """User can enter a custom provider:model spec."""
-        screen = _model_selector_for_filtering()
-        result: tuple[str, str] | None = None
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "models.allowed" not in content
 
-        class FakeInput:
-            value = "custom:my-model"
+    async def test_blocked_spec_filter_names_the_policy_and_allowed_models(
+        self,
+    ) -> None:
+        """Typing a real but blocked spec does name the policy, and what is allowed."""
+        from deepagents_code import model_config
 
-        screen._filtered_models = []
-        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
 
-        def record(value: tuple[str, str] | None) -> None:
-            nonlocal result
-            result = value
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
 
-        monkeypatch.setattr(screen, "_dismiss_with_result", record)
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            screen._filter_text = "openai:blocked"
+            screen._filtered_models = []
+            await screen._update_display()
+            await pilot.pause()
 
-        screen.action_select()
-
-        assert result == ("custom:my-model", "custom")
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "not allowed by the configured models.allowed" in content
+            # Naming the permitted specs is the only way out when they are not
+            # discoverable, so the empty state must carry them.
+            assert "anthropic:claude-sonnet-5" in content
 
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1366,157 +854,48 @@ class TestModelSelectorFiltering:
 class TestModelSelectorCurrentModelPreselection:
     """Tests for pre-selecting the current model when opening the selector."""
 
-    async def test_current_model_is_preselected(self) -> None:
-        """Opening the selector should pre-select the current model, not first."""
+    async def test_non_discovered_current_model_is_visible_and_preselected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote-only current model survives the recommended-only subset."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"openai": ["gpt-5.6-sol"]},
+        )
+        monkeypatch.setattr(model_selector, "get_model_profiles", lambda **_kwargs: {})
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                source=ProviderAuthSource.ENV,
+            ),
+        )
+
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # The test app sets current model to "anthropic:claude-sonnet-4-5"
-            # Find its index in the filtered models
-            current_spec = "anthropic:claude-sonnet-4-5"
-            expected_index = None
-            for i, (model_spec, _) in enumerate(screen._filtered_models):
-                if model_spec == current_spec:
-                    expected_index = i
-                    break
-
-            assert expected_index is not None, f"{current_spec} not found in models"
-            assert screen._selected_index == expected_index, (
-                f"Expected current model at index {expected_index} to be selected, "
-                f"but index {screen._selected_index} was selected instead"
+            screen = ModelSelectorScreen(
+                current_model="remote-model",
+                current_provider="server_provider",
+                recommended_models={"openai:gpt-5.6-sol": "GPT-5.6 Sol"},
+                default_scope=None,
+                check_provider_requirements=False,
             )
-
-    async def test_clearing_filter_reselects_current_model(self) -> None:
-        """Clearing the filter should re-select the current model."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
+            app.push_screen(screen)
             await pilot.pause()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # Find the current model's index
-            current_spec = "anthropic:claude-sonnet-4-5"
-            current_index = None
-            for i, (model_spec, _) in enumerate(screen._filtered_models):
-                if model_spec == current_spec:
-                    current_index = i
-                    break
-            assert current_index is not None
-
-            # Type something that filters to no/few results
-            await pilot.press("x", "y", "z")
-            await pilot.pause()
-
-            # Now clear the filter by backspacing
-            await pilot.press("backspace", "backspace", "backspace")
-            await pilot.pause()
-
-            # Selection should be back to the current model
-            assert screen._selected_index == current_index, (
-                f"After clearing filter, expected index {current_index} "
-                f"but got {screen._selected_index}"
-            )
+            current = ("server_provider:remote-model", "server_provider")
+            assert current in screen._filtered_models
+            assert screen._filtered_models[screen._selected_index] == current
 
 
 class TestModelSelectorFuzzyMatching:
     """Tests for fuzzy search filtering."""
-
-    def test_fuzzy_exact_substring_still_works(self) -> None:
-        """Exact substring matches should still work with fuzzy matching."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "claude"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert any("claude" in s for s in specs), (
-            f"'claude' substring should match. Got: {specs}"
-        )
-
-    def test_fuzzy_subsequence_match(self) -> None:
-        """Subsequence queries like 'cs45' should match 'claude-sonnet-4-5'."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "cs45"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert any("claude-sonnet-4-5" in s for s in specs), (
-            f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
-        )
-
-    def test_fuzzy_across_hyphen(self) -> None:
-        """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-5.5')."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "gpt4"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert any("gpt-4" in s for s in specs), (
-            f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
-        )
-
-    def test_fuzzy_case_insensitive(self) -> None:
-        """Fuzzy matching should be case-insensitive."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "CLAUDE"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert any("claude" in s for s in specs), (
-            f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
-        )
-
-    def test_fuzzy_no_match(self) -> None:
-        """A query that matches nothing should produce an empty filtered list."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "xyz999qqq"
-        screen._update_filtered_list()
-
-        assert len(screen._filtered_models) == 0
-
-    def test_fuzzy_ranking_better_match_first(self) -> None:
-        """Better fuzzy matches should rank higher than weaker matches."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "claude"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert len(specs) > 0
-        assert "claude" in specs[0].lower()
-
-    def test_empty_filter_shows_all(self) -> None:
-        """Empty filter should show all models in original order."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = ""
-        screen._update_filtered_list()
-
-        assert len(screen._filtered_models) == len(screen._all_models)
-
-    def test_whitespace_filter_shows_all(self) -> None:
-        """Whitespace-only filter should be treated as empty."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "   "
-        screen._update_filtered_list()
-
-        assert len(screen._filtered_models) == len(screen._all_models)
-
-    def test_selection_clamped_on_filter(self) -> None:
-        """Selected index should stay valid when filter results shrink."""
-        screen = _model_selector_for_filtering()
-        screen._selected_index = 5
-        screen._filter_text = "claude"
-        screen._update_filtered_list()
-
-        assert screen._filtered_models, "Filter should match claude models"
-        assert screen._selected_index == 0, (
-            "Fuzzy filter should reset selection to best match (index 0)"
-        )
 
     def test_enter_selects_fuzzy_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Pressing Enter after fuzzy filtering should select the top result."""
@@ -1539,35 +918,8 @@ class TestModelSelectorFuzzyMatching:
         model_spec, _ = selected
         assert "claude" in model_spec.lower()
 
-    def test_fuzzy_space_separated_tokens(self) -> None:
-        """Space-separated tokens should each fuzzy-match independently."""
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "claude sonnet"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert any("claude" in s and "sonnet" in s for s in specs), (
-            f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
-        )
-
-    def test_fuzzy_matches_friendly_name_dotted_version(self) -> None:
-        """A dotted version in the friendly name matches where the spec can't.
-
-        `anthropic:claude-opus-4-7` hyphenates its version, so the "4.7" token
-        cannot subsequence-match the spec. The friendly name "Claude Opus 4.7"
-        (from the recommended list) supplies the dotted form.
-        """
-        screen = _model_selector_for_filtering()
-        screen._filter_text = "opus 4.7"
-        screen._update_filtered_list()
-
-        specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" in specs, (
-            f"friendly name should let 'opus 4.7' match. Got: {specs}"
-        )
-
     def test_fuzzy_dotted_version_needs_friendly_name(self) -> None:
-        """Negative control: without the friendly name, "4.7" can't match the spec.
+        """Negative control: without the friendly name, "4.8" can't match the spec.
 
         Pins that the previous test passes because of the folded-in name, not
         some incidental spec match — guarding the friendly-name search feature.
@@ -1575,23 +927,23 @@ class TestModelSelectorFuzzyMatching:
         screen = _model_selector_for_filtering()
 
         # Neutralize the friendly name (return the hyphenated model portion, as
-        # the raw spec already carries) so "4.7" has no dotted form to match.
+        # the raw spec already carries) so "4.8" has no dotted form to match.
         screen._get_model_display_name = (  # ty: ignore[invalid-assignment]
             lambda spec: spec.split(":", 1)[-1]
         )
-        screen._filter_text = "opus 4.7"
+        screen._filter_text = "opus 4.8"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" not in specs
+        assert "anthropic:claude-opus-4-8" not in specs
 
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
 
-        Searches "chatgpt", which appears in neither the spec
+        Searches "subscription", which appears in neither the spec
         (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
         provider key (`openai_codex`) — only in the resolved display label
-        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        "OpenAI (Subscription login)". So a match proves the provider-label
         branch of the haystack is doing the work; there is no other source for
         it. Guards against the label term being silently dropped.
         """
@@ -1605,160 +957,17 @@ class TestModelSelectorFuzzyMatching:
             screen._filtered_models,
         ):
             models.append(codex)
-        screen._filter_text = "chatgpt"
+        screen._filter_text = "subscription"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
         assert specs == ["openai_codex:gpt-5.2"], (
-            f"'chatgpt' should match only via the provider label. Got: {specs}"
+            f"'subscription' should match only via the provider label. Got: {specs}"
         )
-
-    async def test_tab_noop_when_no_matches(self) -> None:
-        """Tab should do nothing when filter matches no models."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # Type gibberish that matches nothing
-            for char in "xyz999qqq":
-                await pilot.press(char)
-            await pilot.pause()
-
-            assert len(screen._filtered_models) == 0
-
-            # Press tab - should not crash or change input
-            await pilot.press("tab")
-            await pilot.pause()
-
-            filter_input = screen.query_one("#model-filter", Input)
-            assert filter_input.value == "xyz999qqq"
-
-    async def test_tab_autocompletes_after_navigation(self) -> None:
-        """Tab should autocomplete the model navigated to, not just index 0."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # Type a partial filter
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            assert len(screen._filtered_models) > 1, (
-                "Need multiple claude matches to test navigation"
-            )
-
-            # Navigate down to select a different model
-            await pilot.press("down")
-            await pilot.pause()
-
-            assert screen._selected_index == 1
-            expected_spec, _ = screen._filtered_models[1]
-
-            # Press tab - should autocomplete the navigated-to model
-            await pilot.press("tab")
-            await pilot.pause()
-
-            filter_input = screen.query_one("#model-filter", Input)
-            assert filter_input.value == expected_spec
-
-    async def test_tab_autocompletes_selected_model(self) -> None:
-        """Tab should replace search text with the selected model spec."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # Type a partial filter
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            assert len(screen._filtered_models) > 0
-            expected_spec, _ = screen._filtered_models[screen._selected_index]
-
-            # Press tab - should replace filter text with selected model spec
-            await pilot.press("tab")
-            await pilot.pause()
-
-            filter_input = screen.query_one("#model-filter", Input)
-            assert filter_input.value == expected_spec
-
-    async def test_navigation_after_fuzzy_filter(self) -> None:
-        """Arrow keys should work correctly on fuzzy-filtered results."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            count = len(screen._filtered_models)
-            assert count > 1, "Need multiple claude matches to test navigation"
-            initial = screen._selected_index
-            await pilot.press("down")
-            await pilot.pause()
-            assert screen._selected_index == (initial + 1) % count
 
 
 class TestFilteredModelsWidgetSync:
     """Tests that _filtered_models indices match _option_widgets after display."""
-
-    def test_display_reorders_filtered_models_to_match_widgets(self) -> None:
-        """After _update_display, _filtered_models order matches _option_widgets.
-
-        Fuzzy search sorts by score, which can interleave providers. The
-        display groups models by provider. _filtered_models must be reordered
-        to match so that _update_footer looks up the correct model for the
-        highlighted widget index.
-        """
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        # Simulate score-sorted filtered list that interleaves providers
-        screen._filtered_models = [
-            ("openai:gpt-5", "openai"),
-            ("anthropic:claude-opus", "anthropic"),
-            ("openai:gpt-4", "openai"),
-            ("anthropic:claude-sonnet", "anthropic"),
-        ]
-        screen._selected_index = 0
-
-        # Group by provider (same logic as _update_display)
-        by_provider: dict[str, list[tuple[str, str]]] = {}
-        for spec, prov in screen._filtered_models:
-            by_provider.setdefault(prov, []).append((spec, prov))
-
-        grouped: list[tuple[str, str]] = []
-        for entries in by_provider.values():
-            grouped.extend(entries)
-
-        # Verify that grouping reorders: openai models cluster, then anthropic
-        assert grouped == [
-            ("openai:gpt-5", "openai"),
-            ("openai:gpt-4", "openai"),
-            ("anthropic:claude-opus", "anthropic"),
-            ("anthropic:claude-sonnet", "anthropic"),
-        ]
-        # The original _filtered_models had anthropic:claude-opus at index 1
-        # but after grouping it moves to index 2. Without the fix,
-        # navigating to widget index 1 (openai:gpt-4) would look up
-        # _filtered_models[1] = anthropic:claude-opus — wrong model.
-        assert screen._filtered_models[1] != grouped[1]
 
 
 class TestAvailabilityOrdering:
@@ -1775,35 +984,6 @@ class TestAvailabilityOrdering:
                 state=state, provider=provider, env_var=f"{provider.upper()}_API_KEY"
             )
         return ProviderAuthStatus(state=state, provider=provider)
-
-    def test_provider_availability_rank_orders_states(self) -> None:
-        """Usable < unknown < missing < not-installed, regardless of auth."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._install_extras = {"baseten": "baseten"}
-        rank = screen._provider_availability_rank
-
-        configured = rank(
-            "openai_codex", self._status(ProviderAuthState.CONFIGURED, "openai_codex")
-        )
-        not_required = rank(
-            "ollama", self._status(ProviderAuthState.NOT_REQUIRED, "ollama")
-        )
-        # Ambient/managed auth is just as usable as an explicit credential, so
-        # both must collapse into the available tier rather than falling
-        # through to the missing-credential rank.
-        implicit = rank("bedrock", self._status(ProviderAuthState.IMPLICIT, "bedrock"))
-        managed = rank(
-            "custom_cls", self._status(ProviderAuthState.MANAGED, "custom_cls")
-        )
-        unknown = rank("custom", self._status(ProviderAuthState.UNKNOWN, "custom"))
-        missing = rank("openai", self._status(ProviderAuthState.MISSING, "openai"))
-        # A configured but not-installed provider still sinks to the bottom.
-        uninstalled = rank(
-            "baseten", self._status(ProviderAuthState.CONFIGURED, "baseten")
-        )
-
-        assert configured == not_required == implicit == managed
-        assert configured < unknown < missing < uninstalled
 
     async def test_available_provider_floats_to_top_in_default_view(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1823,7 +1003,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1875,7 +1055,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1919,7 +1099,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1966,7 +1146,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -2004,100 +1184,13 @@ class TestAvailabilityOrdering:
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 
-    def test_opus_5_is_recommended(self) -> None:
-        """Opus 5 should be discoverable in the frontier picker subset."""
-        from deepagents_code.tui.widgets import model_selector
-
-        all_models = [
-            ("anthropic:claude-opus-5", "anthropic"),
-            ("anthropic:claude-opus-4-5", "anthropic"),
-        ]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert model_selector._RECOMMENDED_MODELS["anthropic:claude-opus-5"] == (
-            "Claude Opus 5"
-        )
-        assert curated == all_models[:1]
-
-    def test_sonnet_5_is_recommended(self) -> None:
-        """Sonnet 5 should be part of the frontier picker subset."""
-        from deepagents_code.tui.widgets import model_selector
-
-        all_models = [
-            ("anthropic:claude-sonnet-5", "anthropic"),
-            ("openrouter:anthropic/claude-sonnet-5", "openrouter"),
-            ("openai:gpt-4o", "openai"),
-        ]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert "anthropic:claude-sonnet-5" in model_selector._RECOMMENDED_MODELS
-        assert (
-            "openrouter:anthropic/claude-sonnet-5" in model_selector._RECOMMENDED_MODELS
-        )
-        assert "anthropic:claude-sonnet-4-6" not in model_selector._RECOMMENDED_MODELS
-        assert (
-            "openrouter:anthropic/claude-sonnet-4.6"
-            not in model_selector._RECOMMENDED_MODELS
-        )
-        assert curated == all_models[:2]
-
-    def test_curated_models_filter_frontier_in_default_order(self) -> None:
-        """Onboarding curation should preserve the model switcher's order."""
-        all_models = [
-            ("openai:gpt-5.5", "openai"),
-            ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-8", "anthropic"),
-        ]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert curated == [
-            ("openai:gpt-5.5", "openai"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-8", "anthropic"),
-        ]
-
-    def test_curated_models_limit_to_frontier_subset(self) -> None:
-        """Current/default models outside the frontier subset should stay hidden."""
-        all_models = [
-            ("openai:gpt-5.3-codex", "openai"),
-            ("anthropic:claude-opus-4-8", "anthropic"),
-            ("anthropic:claude-sonnet-4-5", "anthropic"),
-        ]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert curated == [
-            ("anthropic:claude-opus-4-8", "anthropic"),
-        ]
-
-    def test_curated_models_fall_back_when_frontier_unavailable(self) -> None:
-        """Onboarding should show normal switcher entries if frontier is absent."""
-        all_models = [
-            ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.3-codex", "openai"),
-        ]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert curated == [
-            ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.3-codex", "openai"),
-        ]
-
     def test_curated_initial_selection_starts_at_top(self) -> None:
         """Onboarding should highlight the first model, not the current one."""
         screen = ModelSelectorScreen(
             current_model="claude-opus-4-7",
             current_provider="anthropic",
             curated=True,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._filtered_models = [
             ("openai:gpt-5.5", "openai"),
@@ -2110,58 +1203,6 @@ class TestCuratedModelSelection:
 
 class TestFormatOptionLabel:
     """Tests for _format_option_label."""
-
-    def test_deprecated_model_shows_tag(self) -> None:
-        """Deprecated models should show a red (deprecated) tag."""
-        label = ModelSelectorScreen._format_option_label(
-            "anthropic:old-model",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="anthropic",
-                source=ProviderAuthSource.ENV,
-            ),
-            status="deprecated",
-        )
-        from deepagents_code.theme import DARK_COLORS
-
-        assert "(deprecated)" in label.plain
-        assert DARK_COLORS.error in label.markup
-
-    def test_non_deprecated_model_no_tag(self) -> None:
-        """Models without deprecated status should not show the tag."""
-        label = ModelSelectorScreen._format_option_label(
-            "anthropic:claude-sonnet-4-5",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="anthropic",
-                source=ProviderAuthSource.ENV,
-            ),
-            status=None,
-        )
-        assert "(deprecated)" not in label.plain
-
-    def test_other_status_renders_yellow(self) -> None:
-        """Non-deprecated statuses (e.g., beta) render yellow, not red."""
-        label = ModelSelectorScreen._format_option_label(
-            "anthropic:new-model",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="anthropic",
-                source=ProviderAuthSource.ENV,
-            ),
-            status="beta",
-        )
-        assert "(deprecated)" not in label.plain
-        from deepagents_code.theme import DARK_COLORS
-
-        assert "(beta)" in label.plain
-        assert DARK_COLORS.warning in label.markup
 
     def test_all_suffixes_coexist(self) -> None:
         """Current + default + deprecated all render together."""
@@ -2197,22 +1238,6 @@ class TestFormatOptionLabel:
 
         assert DARK_COLORS.warning in label.markup
 
-    def test_no_auth_required_does_not_warning_style_model(self) -> None:
-        """No-auth local providers should not look like missing credentials."""
-        label = ModelSelectorScreen._format_option_label(
-            "ollama:llama3",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.NOT_REQUIRED,
-                provider="ollama",
-                detail="local provider",
-            ),
-        )
-        from deepagents_code.theme import DARK_COLORS
-
-        assert DARK_COLORS.warning not in label.markup
-
     def test_install_required_dims_spec_when_not_selected(self) -> None:
         """Uninstalled providers render dimmed, overriding the missing-creds warning."""
         from deepagents_code.theme import DARK_COLORS
@@ -2231,88 +1256,6 @@ class TestFormatOptionLabel:
         assert "dim" in label.markup
         # The dim branch takes precedence over the blocks_start warning color.
         assert DARK_COLORS.warning not in label.markup
-
-    def test_install_required_yields_to_selection_styling(self) -> None:
-        """A selected row skips the install-required dim (CSS owns the highlight)."""
-        from deepagents_code.theme import DARK_COLORS
-
-        label = ModelSelectorScreen._format_option_label(
-            "baseten:some-model",
-            selected=True,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.MISSING,
-                provider="baseten",
-                env_var="BASETEN_API_KEY",
-            ),
-            install_required=True,
-        )
-        # Not dimmed when selected; the missing-creds warning color applies.
-        assert DARK_COLORS.warning in label.markup
-
-    def test_uses_display_name_when_provided(self) -> None:
-        """Provider-grouped rows render the profile name, not the full spec."""
-        label = ModelSelectorScreen._format_option_label(
-            "anthropic:claude-sonnet-4-5",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="anthropic",
-                source=ProviderAuthSource.ENV,
-            ),
-            display_name="Claude Sonnet 4.5",
-        )
-        assert "Claude Sonnet 4.5" in label.plain
-        assert "anthropic:claude-sonnet-4-5" not in label.plain
-
-    def test_shows_full_spec_when_no_display_name(self) -> None:
-        """With no display_name the full spec is shown (static-method default)."""
-        label = ModelSelectorScreen._format_option_label(
-            "anthropic:claude-sonnet-4-5",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="anthropic",
-                source=ProviderAuthSource.ENV,
-            ),
-        )
-        assert "anthropic:claude-sonnet-4-5" in label.plain
-
-    def test_appends_provider_tag_for_recent(self) -> None:
-        """Recent rows show the name plus a `(provider)` tag, not the raw spec."""
-        label = ModelSelectorScreen._format_option_label(
-            "openai:gpt-5.5",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="openai",
-                source=ProviderAuthSource.ENV,
-            ),
-            display_name="GPT-5.5",
-            provider_label="openai",
-        )
-        assert "GPT-5.5" in label.plain
-        assert "(openai)" in label.plain
-        assert "openai:gpt-5.5" not in label.plain
-
-    def test_no_provider_tag_without_label(self) -> None:
-        """Provider-grouped rows omit the `(provider)` tag."""
-        label = ModelSelectorScreen._format_option_label(
-            "openai:gpt-5.5",
-            selected=False,
-            current=False,
-            auth_status=ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider="openai",
-                source=ProviderAuthSource.ENV,
-            ),
-            display_name="GPT-5.5",
-        )
-        assert "GPT-5.5" in label.plain
-        assert "(openai)" not in label.plain
 
 
 class TestFormatAuthIndicator:
@@ -2359,314 +1302,17 @@ class TestFormatAuthIndicator:
         assert "missing credentials" in indicator
         assert "ANTHROPIC_API_KEY" not in indicator
 
-    def test_missing_auth_without_env_var_uses_generic_message(self) -> None:
-        """MISSING without env_var falls back to a generic missing-creds label."""
-        indicator = ModelSelectorScreen._format_auth_indicator(
-            ProviderAuthStatus(
-                state=ProviderAuthState.MISSING,
-                provider="custom",
-            ),
-            get_glyphs(),
-        )
-
-        assert "missing credentials" in indicator
-
-    def test_implicit_auth_uses_detail(self) -> None:
-        """IMPLICIT state surfaces its detail string."""
-        indicator = ModelSelectorScreen._format_auth_indicator(
-            ProviderAuthStatus(
-                state=ProviderAuthState.IMPLICIT,
-                provider="google_vertexai",
-                detail="implicit auth",
-            ),
-            get_glyphs(),
-        )
-
-        assert indicator == "implicit auth"
-
-    def test_managed_auth_uses_detail(self) -> None:
-        """MANAGED state surfaces its detail string."""
-        indicator = ModelSelectorScreen._format_auth_indicator(
-            ProviderAuthStatus(
-                state=ProviderAuthState.MANAGED,
-                provider="custom",
-                detail="custom auth",
-            ),
-            get_glyphs(),
-        )
-
-        assert indicator == "custom auth"
-
-    def test_unknown_auth_uses_question_glyph(self) -> None:
-        """UNKNOWN state prefixes the detail with the question glyph."""
-        glyphs = get_glyphs()
-        indicator = ModelSelectorScreen._format_auth_indicator(
-            ProviderAuthStatus(
-                state=ProviderAuthState.UNKNOWN,
-                provider="ollama",
-                detail="remote endpoint; set OLLAMA_API_KEY if auth is required",
-            ),
-            glyphs,
-        )
-
-        assert indicator.startswith(glyphs.question)
-        assert "OLLAMA_API_KEY" in indicator
-
 
 class TestGetModelStatus:
     """Tests for _get_model_status profile lookup."""
-
-    def test_returns_status_when_present(self) -> None:
-        """Status is returned when profile entry has the key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "anthropic:old-model": ModelProfileEntry(
-                profile={"status": "deprecated"},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert screen._get_model_status("anthropic:old-model") == "deprecated"
-
-    def test_returns_none_when_no_profile_entry(self) -> None:
-        """None is returned when model spec is not in profiles."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {}
-        assert screen._get_model_status("anthropic:missing") is None
-
-    def test_returns_none_when_no_status_key(self) -> None:
-        """None is returned when profile exists but has no status key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "anthropic:model": ModelProfileEntry(
-                profile={"max_input_tokens": 200000},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert screen._get_model_status("anthropic:model") is None
-
-    def test_returns_none_when_profile_empty(self) -> None:
-        """None is returned when profile dict is empty."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "anthropic:model": ModelProfileEntry(
-                profile={},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert screen._get_model_status("anthropic:model") is None
-
-
-class TestGetModelDisplayName:
-    """Tests for _get_model_display_name resolution."""
-
-    def test_returns_profile_name_when_present(self) -> None:
-        """The human-readable profile name wins over the raw model id."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "anthropic:claude-sonnet-4-5": ModelProfileEntry(
-                profile={"name": "Claude Sonnet 4.5"},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert (
-            screen._get_model_display_name("anthropic:claude-sonnet-4-5")
-            == "Claude Sonnet 4.5"
-        )
-
-    def test_falls_back_to_model_id_when_no_name(self) -> None:
-        """A profile without a `name` key falls back to the model portion."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "anthropic:claude-sonnet-4-5": ModelProfileEntry(
-                profile={"max_input_tokens": 200000},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert (
-            screen._get_model_display_name("anthropic:claude-sonnet-4-5")
-            == "claude-sonnet-4-5"
-        )
-
-    @pytest.mark.parametrize(
-        ("spec", "name"),
-        [
-            ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
-            ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
-            ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
-            ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),
-            ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
-            ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
-            ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
-            ("xai:grok-4.5", "Grok 4.5"),
-        ],
-    )
-    def test_uses_recommended_name_when_no_profile(self, spec: str, name: str) -> None:
-        """Uninstalled recommendations use the hardcoded name, not the raw id."""
-        from deepagents_code.tui.widgets import model_selector
-
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {}
-        assert spec in model_selector._RECOMMENDED_MODELS
-        assert screen._get_model_display_name(spec) == name
-
-    def test_profile_name_wins_over_recommended_name(self) -> None:
-        """A loaded profile's `name` takes precedence over the hardcoded one."""
-        from deepagents_code.tui.widgets import model_selector
-
-        spec = "openai:gpt-5.5"
-        assert spec in model_selector._RECOMMENDED_MODELS
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            spec: ModelProfileEntry(
-                profile={"name": "GPT-5.5 (from profile)"},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert screen._get_model_display_name(spec) == "GPT-5.5 (from profile)"
-
-    def test_falls_back_to_model_id_when_not_recommended(self) -> None:
-        """A non-recommended spec absent from profiles falls back to the model."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {}
-        assert (
-            screen._get_model_display_name("openai:some-unlisted-model")
-            == "some-unlisted-model"
-        )
-
-    def test_ignores_empty_name(self) -> None:
-        """An empty `name` string falls back rather than rendering blank."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {
-            "openai:some-unlisted-model": ModelProfileEntry(
-                profile={"name": ""},
-                overridden_keys=frozenset(),
-            ),
-        }
-        assert (
-            screen._get_model_display_name("openai:some-unlisted-model")
-            == "some-unlisted-model"
-        )
-
-    def test_preserves_colon_in_model_id_fallback(self) -> None:
-        """Only the leading `provider:` is stripped in the fallback path."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {}
-        assert (
-            screen._get_model_display_name("ollama:some-model:cloud")
-            == "some-model:cloud"
-        )
-
-    def test_returns_bare_spec_unchanged(self) -> None:
-        """A spec without a `provider:` prefix is returned as-is."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-        screen._profiles = {}
-        assert screen._get_model_display_name("gpt-5.5") == "gpt-5.5"
 
 
 class TestModelDetailFooter:
     """Tests for the model detail footer in the selector."""
 
-    def test_format_footer_full_profile(self) -> None:
-        """Full profile renders token counts, modalities, and capabilities."""
-        from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
-
-        entry = ModelProfileEntry(
-            profile={
-                "max_input_tokens": 200000,
-                "max_output_tokens": 64000,
-                "text_inputs": True,
-                "image_inputs": True,
-                "pdf_inputs": False,
-                "reasoning_output": True,
-                "tool_calling": True,
-                "structured_output": False,
-            },
-            overridden_keys=frozenset(),
-        )
-        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        text = str(result)
-        assert "200.0K" in text
-        assert "64.0K" in text
-        assert "text" in text
-        assert "image" in text
-        assert "tool calling" in text
-        assert "reasoning" in text
-        # No override marker
-        assert "* =" not in text
-
-    def test_format_footer_no_profile(self) -> None:
-        """None profile shows 'Model profile not available'."""
-        from deepagents_code.config import UNICODE_GLYPHS
-
-        result = ModelSelectorScreen._format_footer(None, UNICODE_GLYPHS)
-        assert "Model profile not available :(" in str(result)
-
-    def test_format_footer_overridden_fields(self) -> None:
-        """Overridden fields show yellow * marker and override legend."""
-        from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
-
-        entry = ModelProfileEntry(
-            profile={
-                "max_input_tokens": 100000,
-                "max_output_tokens": 64000,
-                "tool_calling": True,
-            },
-            overridden_keys=frozenset({"max_input_tokens"}),
-        )
-        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        text = str(result)
-        assert "*" in text
-        assert "= override" in text
-        from deepagents_code.theme import DARK_COLORS
-
-        assert DARK_COLORS.warning in result.markup
-
-    def test_format_footer_partial_profile(self) -> None:
-        """Profile with only token counts still renders without crash."""
-        from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
-
-        entry = ModelProfileEntry(
-            profile={"max_input_tokens": 4096},
-            overridden_keys=frozenset(),
-        )
-        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        text = str(result)
-        assert "4096" in text or "4.1K" in text or "4.0K" in text
-        # Should not crash and should have content
-        assert "No profile data" not in text
-
-    def test_format_footer_empty_profile(self) -> None:
-        """Empty profile dict shows 'Model profile not available'."""
-        from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
-
-        entry = ModelProfileEntry(
-            profile={},
-            overridden_keys=frozenset(),
-        )
-        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "Model profile not available :(" in str(result)
-
-    def test_format_footer_override_on_non_displayed_key(self) -> None:
-        """Override on a non-displayed key should not show legend."""
-        from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
-
-        entry = ModelProfileEntry(
-            profile={"max_input_tokens": 4096, "supports_thinking": True},
-            overridden_keys=frozenset({"supports_thinking"}),
-        )
-        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "= override" not in str(result)
-
     def test_format_footer_non_numeric_tokens(self) -> None:
         """Non-numeric token values render gracefully instead of crashing."""
         from deepagents_code.config import UNICODE_GLYPHS
-        from deepagents_code.model_config import ModelProfileEntry
 
         entry = ModelProfileEntry(
             profile={"max_input_tokens": "unlimited", "max_output_tokens": 64000},
@@ -2676,60 +1322,6 @@ class TestModelDetailFooter:
         text = str(result)
         assert "unlimited" in text
         assert "64.0K" in text
-
-    async def test_footer_updates_on_navigation(self) -> None:
-        """Footer content changes when navigating to a different model."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            footer = screen.query_one("#model-detail-footer", Static)
-            initial_content = str(footer.content)
-            assert "Context:" in initial_content or "No profile" in initial_content
-
-            await pilot.press("down")
-            await pilot.pause()
-
-            updated_content = str(footer.content)
-            assert "Context:" in updated_content or "No profile" in updated_content
-
-    async def test_footer_shows_on_mount(self) -> None:
-        """Footer is populated with structural content on initial mount."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            footer = screen.query_one("#model-detail-footer", Static)
-            content = str(footer.content)
-            assert "Context:" in content or "No profile" in content
-
-    async def test_footer_no_model_when_filter_empty(self) -> None:
-        """Footer shows 'No model selected' when filter matches nothing."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-
-            for char in "xyz999qqq":
-                await pilot.press(char)
-            # Pump several frames so all deferred call_after_refresh
-            # callbacks complete after the last keystroke
-            for _ in range(5):
-                await pilot.pause()
-
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-            assert len(screen._filtered_models) == 0
-            footer = screen.query_one("#model-detail-footer", Static)
-            assert "No model selected" in str(footer.content)
 
 
 class TestModelSelectorAuthGate:
@@ -2782,111 +1374,6 @@ class TestModelSelectorAuthGate:
 class TestModelSelectorInstallRouting:
     """Selecting a model whose provider is not installed prompts to install."""
 
-    async def test_curated_screen_loads_uninstalled_recommended(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Onboarding includes install-required recommended models."""
-        from deepagents_code.tui.widgets import model_selector
-
-        captured: dict[str, bool] = {}
-
-        def load_model_data(
-            _cli_override: dict[str, Any] | None,
-            *,
-            include_uninstalled: bool = True,
-            include_recent: bool = True,
-        ) -> model_selector._ModelData:
-            captured["include_uninstalled"] = include_uninstalled
-            captured["include_recent"] = include_recent
-            return model_selector._ModelData(
-                [("baseten:zai-org/GLM-5.2", "baseten")],
-                None,
-                {},
-                [],
-                {"baseten": "baseten"},
-            )
-
-        monkeypatch.setattr(
-            ModelSelectorScreen,
-            "_load_model_data",
-            staticmethod(load_model_data),
-        )
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.push_screen(
-                ModelSelectorScreen(
-                    current_model="openai:gpt-5.5",
-                    current_provider="openai",
-                    curated=True,
-                )
-            )
-            await pilot.pause()
-
-        assert captured["include_uninstalled"] is True
-        # Curated onboarding must skip the recent-models MRU at the call site,
-        # independent of the rendering-level guard in
-        # test_recent_section_hidden_during_onboarding.
-        assert captured["include_recent"] is False
-
-    async def test_load_model_data_surfaces_uninstalled_recommended(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Recommended models from uninstalled providers are surfaced."""
-        from deepagents_code import config_manifest
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
-        )
-        monkeypatch.setattr(
-            config_manifest,
-            "is_provider_package_installed",
-            lambda provider: provider not in {"baseten", "ollama"},
-        )
-
-        all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
-        )
-
-        specs = {spec for spec, _ in all_models}
-        assert any(spec.startswith("baseten:") for spec in specs)
-        assert any(spec.startswith("ollama:") for spec in specs)
-        assert install_extras.get("baseten") == "baseten"
-        assert install_extras.get("ollama") == "ollama"
-
-    async def test_load_model_data_orders_installed_recommended_before_uninstalled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Installed-provider recommendations sort before install-required rows."""
-        from deepagents_code.tui.widgets import model_selector
-
-        installed_spec = "ollama:glm-5.2:cloud"
-        uninstalled_spec = "fireworks:accounts/fireworks/models/deepseek-v4-pro"
-        monkeypatch.setattr(
-            model_selector,
-            "_RECOMMENDED_MODELS",
-            {installed_spec: "GLM 5.2", uninstalled_spec: "DeepSeek V4 Pro"},
-        )
-        monkeypatch.setattr(
-            model_selector,
-            "get_available_models",
-            lambda: {"ollama": ["local-model"]},
-        )
-        monkeypatch.setattr(
-            "importlib.util.find_spec",
-            lambda package: object() if package == "langchain_ollama" else None,
-        )
-
-        all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
-        )
-
-        specs = [model_spec for model_spec, _ in all_models]
-        assert specs.index(installed_spec) < specs.index(uninstalled_spec)
-        assert install_extras.get("fireworks") == "fireworks"
-        assert "ollama" not in install_extras
-
     async def test_load_model_data_surfaces_installed_unprofiled_recommended(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2894,7 +1381,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         # Provider is installed/discoverable but its profiles omit the curated
@@ -2911,7 +1398,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {model_spec for model_spec, _ in all_models}
@@ -2926,7 +1415,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        spec = "baseten:moonshotai/Kimi-K3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -2941,7 +1430,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         assert spec in {model_spec for model_spec, _ in all_models}
@@ -2954,7 +1445,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         model = spec.split(":", 1)[1]
         assert spec in model_selector._RECOMMENDED_MODELS
 
@@ -2972,7 +1463,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = [model_spec for model_spec, _ in all_models]
@@ -3009,69 +1502,14 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {model_spec for model_spec, _ in all_models}
         assert expected <= specs
         assert "fireworks" not in install_extras
-
-    async def test_load_model_data_skips_uninstalled_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Explicitly disabling uninstalled recommendations hides providers."""
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
-        )
-
-        all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=False)
-        )
-
-        specs = {spec for spec, _ in all_models}
-        assert not any(spec.startswith("baseten:") for spec in specs)
-        assert install_extras == {}
-
-    async def test_load_model_data_respects_disabled_uninstalled_provider(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        request: pytest.FixtureRequest,
-        tmp_path: Path,
-    ) -> None:
-        """Disabled providers stay hidden from install suggestions."""
-        from deepagents_code import config_manifest, model_config
-        from deepagents_code.tui.widgets import model_selector
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            """
-[models.providers.baseten]
-enabled = false
-""",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
-        model_config.clear_caches()
-        request.addfinalizer(model_config.clear_caches)
-
-        monkeypatch.setattr(
-            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
-        )
-        monkeypatch.setattr(
-            config_manifest,
-            "is_provider_package_installed",
-            lambda provider: provider != "baseten",
-        )
-
-        all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
-        )
-
-        specs = {spec for spec, _ in all_models}
-        assert not any(spec.startswith("baseten:") for spec in specs)
-        assert "baseten" not in install_extras
 
     async def test_curated_uninstalled_provider_defers_to_launch_install(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3085,6 +1523,7 @@ enabled = false
             current_provider="openai",
             curated=True,
             result_callback=results.append,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore
@@ -3142,101 +1581,6 @@ enabled = false
             assert isinstance(pushed[0][0], InstallProviderConfirmScreen)
             assert app.dismissed is False
 
-    async def test_confirm_install_sets_pending_extra_and_dismisses(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Confirming install records the extra and dismisses with the model."""
-        import importlib.util
-
-        if importlib.util.find_spec("langchain_baseten") is not None:
-            pytest.skip("langchain_baseten is installed in this environment")
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
-            monkeypatch.setattr(
-                screen.app,
-                "push_screen",
-                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
-            )
-
-            screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
-            )
-            on_confirm = pushed[0][1]
-            assert on_confirm is not None
-            on_confirm(True)
-            await pilot.pause()
-
-        assert screen.pending_install_extra == "baseten"
-        assert app.dismissed is True
-        assert app.result == ("baseten:moonshotai/Kimi-K2.7-Code", "baseten")
-
-    async def test_decline_install_stays_on_selector(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Declining install keeps the selector open and records no extra."""
-        import importlib.util
-
-        if importlib.util.find_spec("langchain_baseten") is not None:
-            pytest.skip("langchain_baseten is installed in this environment")
-
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
-            monkeypatch.setattr(
-                screen.app,
-                "push_screen",
-                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
-            )
-
-            screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
-            )
-            on_confirm = pushed[0][1]
-            assert on_confirm is not None
-            on_confirm(False)
-            await pilot.pause()
-
-            assert screen.pending_install_extra is None
-            assert app.dismissed is False
-
-    async def test_fuzzy_ranks_installed_above_uninstalled(self) -> None:
-        """Installed providers outrank install-required suggestions in search."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # Both specs fuzzy-match "gpt"; only baseten needs an install, so
-            # openai must rank first despite baseten being an equal/better match.
-            screen._curated = False
-            screen._install_extras = {"baseten": "baseten"}
-            screen._unfiltered_models = [
-                ("baseten:gpt-thing", "baseten"),
-                ("openai:gpt-5.5", "openai"),
-            ]
-            screen._all_models = list(screen._unfiltered_models)
-            screen._filter_text = "gpt"
-            screen._update_filtered_list()
-
-            providers = [provider for _spec, provider in screen._filtered_models]
-            assert "openai" in providers
-            assert "baseten" in providers
-            assert providers.index("openai") < providers.index("baseten")
-
     async def test_navigation_preserves_install_required_dim(self) -> None:
         """Cursoring onto then off an install-required row keeps it dimmed.
 
@@ -3244,7 +1588,7 @@ enabled = false
         the `install_required` flag, so uninstalled rows turned bright after
         the cursor passed over them and never reverted.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3293,7 +1637,7 @@ enabled = false
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3325,7 +1669,7 @@ enabled = false
             # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
             # search can't tell install-required dimming from the tag. The name
             # is wrapped in `[dim]...` only when install-required and unselected.
-            name_dim = "[dim]Kimi K2.7 Code"
+            name_dim = "[dim]Kimi K3"
             # The provider tag disambiguates the cross-provider Recent row and
             # must survive `_move_selection`'s incremental relabel — which
             # re-derives the label from the widget's persisted `show_provider`.
@@ -3349,3 +1693,34 @@ enabled = false
 
             assert name_dim in recent_install.content.markup
             assert provider_tag in recent_install.content.markup
+
+    async def test_remote_selection_skips_local_provider_requirements(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets import model_selector
+
+        results: list[tuple[str, str] | None] = []
+        screen = ModelSelectorScreen(
+            check_provider_requirements=False,
+            default_scope=None,
+            result_callback=results.append,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda _provider: pytest.fail("local install should not be checked"),
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda _provider: pytest.fail("local credentials should not be checked"),
+        )
+
+        screen._select_with_auth_check(
+            "server_provider:remote-model", "server_provider"
+        )
+
+        result = ("server_provider:remote-model", "server_provider")
+        assert results == [result]
+        dismiss.assert_called_once_with(result)

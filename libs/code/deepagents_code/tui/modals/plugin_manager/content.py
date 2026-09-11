@@ -64,7 +64,7 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
         meta_parts.append(Content.styled(f"{glyphs.checkmark} connected", "dim"))
     if status:
         meta_parts.append(Content.styled(status, "dim"))
-    separator = Content.styled(" · ", "dim")
+    separator = Content.styled(f" {glyphs.separator} ", "dim")
     return Content.assemble(
         row.label,
         separator,
@@ -106,6 +106,8 @@ def _component_summary_lines(row: _PluginRow) -> list[str]:
         lines.append(f"Skills: {row.skill_count}")
     if row.mcp_server_names:
         lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
+    if row.hook_events:
+        lines.append(f"Hooks: {', '.join(row.hook_events)}")
     if row.unsupported_components:
         names = ", ".join(f"{name}/" for name in row.unsupported_components)
         lines.append(f"Unsupported (not loaded): {names}")
@@ -118,33 +120,32 @@ def _unsupported_summary(components: tuple[str, ...]) -> str:
 
 def _will_install_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
-    if row.skill_names or row.mcp_server_names or row.skill_count:
+    if row.has_supported_components or row.skill_count:
         return lines
     if row.unsupported_components:
         return [
-            "No supported components (skills/MCP).",
+            "No supported components (skills/MCP/hooks).",
             _unsupported_summary(row.unsupported_components),
         ]
     if row.skill_count is None:
         return [
             (
-                "Skills and MCP servers if present "
-                "(agents/, commands/, and hooks/ are not loaded)."
+                "Skills, MCP servers, and hooks if present "
+                "(agents/ and commands/ are not loaded)."
             )
         ]
     return [
-        "No supported components (skills/MCP).",
-        "agents/, commands/, and hooks/ are not loaded by deepagents-code.",
+        "No supported components (skills/MCP/hooks).",
+        "agents/ and commands/ are not loaded by deepagents-code.",
     ]
 
 
 def _installed_component_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
     if lines:
-        has_supported = bool(row.skill_names or row.mcp_server_names)
-        if not has_supported and row.unsupported_components:
+        if not row.has_supported_components and row.unsupported_components:
             return [
-                "No supported components (skills/MCP).",
+                "No supported components (skills/MCP/hooks).",
                 _unsupported_summary(row.unsupported_components),
             ]
         return lines
@@ -167,13 +168,17 @@ def _status_lines(row: _PluginRow) -> list[Content]:
     if row.load_state == "pending_reload":
         if row.enabled:
             return [
-                Content.styled("Status: Installed · pending /reload", "dim"),
+                Content.styled(
+                    f"Status: Installed {glyphs.separator} pending /reload", "dim"
+                ),
                 Content.styled(
                     "Run /reload to load this plugin into the current session.", "dim"
                 ),
             ]
         return [
-            Content.styled("Status: Disabled · pending /reload", "dim"),
+            Content.styled(
+                f"Status: Disabled {glyphs.separator} pending /reload", "dim"
+            ),
             Content.styled(
                 "Run /reload to unload this plugin from the current session.", "dim"
             ),

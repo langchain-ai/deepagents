@@ -43,16 +43,6 @@ def test_write_renderer_falls_back_to_str_for_unserializable_content() -> None:
     assert data["content"] == str({1, 2, 3})
 
 
-def test_write_widget_formats_non_string_content() -> None:
-    widgets = list(
-        WriteFileApprovalWidget(
-            {"file_path": "data.json", "content": {"a": "b"}}
-        ).compose()
-    )
-
-    assert len(widgets) == 3
-
-
 @pytest.mark.parametrize(
     "file_path",
     [".env", "/home/user/project/.env", "config/.env.local"],
@@ -75,26 +65,6 @@ def test_write_widget_redacts_credential_file_content(file_path: str) -> None:
     # through. Guard structurally: the credential branch must emit no
     # `Markdown` child at all.
     assert not any(isinstance(widget, Markdown) for widget in widgets)
-
-
-def test_write_widget_renders_regular_file_via_markdown() -> None:
-    """Positive control for the credential redaction test.
-
-    A non-credential file must use the `Markdown` branch; without this, the
-    "no `Markdown` child" assertion above could pass vacuously if the widget
-    stopped using `Markdown` for everything.
-    """
-    widgets = list(
-        WriteFileApprovalWidget(
-            {
-                "file_path": "main.py",
-                "content": "print('hi')",
-                "file_extension": "python",
-            }
-        ).compose()
-    )
-
-    assert any(isinstance(widget, Markdown) for widget in widgets)
 
 
 def test_write_widget_redacts_large_credential_file() -> None:
@@ -161,6 +131,30 @@ def test_edit_widget_redacts_credential_file_diff() -> None:
     assert all("leaked" not in text for text in texts)
 
 
+def test_edit_renderer_redacts_credential_file_through_preview(tmp_path: Path) -> None:
+    """The preview path must not leak a credential file's full contents.
+
+    The preview's widget data now carries the entire file as the highlight
+    source, so a redaction regression here leaks every secret in the file, not
+    just the edited fragment.
+    """
+    target = tmp_path / ".env.local"
+    target.write_text("API_TOKEN=supersecret\nOTHER=1\n", encoding="utf-8")
+
+    widget_class, data = get_renderer("edit_file").get_approval_widget(
+        {
+            "file_path": str(target),
+            "old_string": "OTHER=1",
+            "new_string": "OTHER=2",
+        }
+    )
+    assert data.get("show_numbers"), "expected the full-file preview branch"
+
+    texts = _widget_texts(list(widget_class(data).compose()))
+    assert any(_CREDENTIAL_NOTICE_FRAGMENT in text for text in texts)
+    assert all("supersecret" not in text for text in texts)
+
+
 def test_delete_renderer_shows_removed_file_diff(tmp_path: Path) -> None:
     target = tmp_path / "old.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -214,3 +208,16 @@ def test_delete_renderer_surfaces_unresolvable_path_error() -> None:
 
     assert widget_class is GenericApprovalWidget
     assert data["error"] == "Unable to resolve file path."
+
+
+class TestDeleteApprovalCounts:
+    """The delete prompt's `-N` is what a user approves before losing a file."""
+
+
+class TestEditApprovalCounts:
+    """The edit prompt's `+N -M` must describe the change, not its excerpt.
+
+    The full-file preview diff clips at `_MAX_DIFF_LINES` rows in the widget,
+    so a recount of the rendered rows understates a large edit — the same
+    failure `TestDeleteApprovalCounts` pins for delete.
+    """

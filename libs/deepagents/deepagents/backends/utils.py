@@ -6,6 +6,7 @@ enable composition without fragile string parsing.
 """
 
 import functools
+import logging
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -17,7 +18,23 @@ import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
+logger = logging.getLogger(__name__)
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
+
+
+class InvalidGlobPatternError(ValueError):
+    """A glob pattern the shared matcher refuses to compile.
+
+    Subclasses `ValueError` so existing `except ValueError` handlers keep
+    working. Callers that catch this specific type can label the failure a
+    *pattern* problem truthfully -- a bare `ValueError` from the same call also
+    covers path normalization, and mislabeling one as the other sends the model
+    off rewriting a glob that was fine.
+    """
+
+
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
 """Maximum raw video payload size accepted by `read_file` frame extraction."""
 
@@ -97,9 +114,17 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 
         Example: `/*.py` matches `top.py` but not `src/app/main.py`.
 
+    Leading-dot names match only when the pattern segment itself starts with
+    `.` (no `DOTMATCH`), and `**` will not descend into dot-directories. A bare
+    pattern is therefore *broader* than its `**/` form: `*.yml` matches
+    `.github/workflows/ci.yml`, while `**/*.yml` does not.
+
     Exclusion/negation patterns (a leading `!`) are not supported: the `!` is
     treated literally rather than inverting the match, so results for such
     patterns can diverge from `rg --glob '!...'`.
+
+    This is the single source of truth for both `grep(..., glob=...)` and
+    backend `glob()`.
 
     Args:
         pattern: Glob include pattern.
@@ -107,14 +132,38 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
     Returns:
         Predicate accepting a search-root-relative POSIX path; returns True when
         the path is included by `pattern`.
+
+    Raises:
+        InvalidGlobPatternError: If the pattern contains a `..` segment, or if
+            `wcmatch` refuses it (e.g. brace expansion past its limit). Note
+            most malformed patterns (`*.{py`, `[a-`) do not raise -- they
+            compile and simply match nothing.
     """
+    # Reject traversal here rather than per-backend: every backend routes
+    # through this function, so a single check keeps `../*.py` from being an
+    # exception in one backend and a silent empty result in another.
+    if ".." in pattern.replace("\\", "/").split("/"):
+        msg = f"Path traversal not allowed in glob pattern {pattern!r}"
+        raise InvalidGlobPatternError(msg)
+
     flags = wcglob.BRACE | wcglob.GLOBSTAR
     # A leading `/` anchors to the search root: strip it so it matches against
     # the (slash-less) relative path, but decide anchoring from the original
     # pattern so `/*.py` stays root-anchored instead of collapsing to a
     # basename-at-any-depth match.
     anchored = "/" in pattern
-    compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+    try:
+        compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+    except Exception as exc:
+        # `wcmatch` only raises private types (`wcmatch._wcparse.PatternLimitException`),
+        # so catch broadly and re-raise a public type: every backend can then catch
+        # one public type instead of importing from a private module. Log first --
+        # the breadth also swallows genuine bugs (a non-`str` pattern, a wcmatch
+        # version bump), which would otherwise reach the user as "invalid pattern"
+        # for a pattern that is perfectly valid.
+        logger.warning("wcmatch refused glob pattern %r (%s): %s", pattern, type(exc).__name__, exc)
+        msg = f"Invalid glob pattern {pattern!r}: {exc}"
+        raise InvalidGlobPatternError(msg) from exc
 
     if anchored:
 
@@ -124,38 +173,6 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 
         def matcher(rel_path: str) -> bool:
             return bool(compiled.match(PurePosixPath(rel_path).name))
-
-    return matcher
-
-
-def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
-    """Compile a `glob` pattern into a per-entry matcher for a recursive walk.
-
-    `Path.rglob(pattern)` is equivalent to `Path.glob("**/" + pattern)`, so the
-    pattern matches at any depth (e.g. `*.py` matches `src/app/main.py`). Prefix
-    the pattern with `**/` and compile it with globstar support so a matcher can
-    be applied to each visited entry while walking the tree, letting the caller
-    enforce a deadline on every entry instead of only on matched paths.
-
-    Depth (`GLOBSTAR`) and dotfile matching (`DOTMATCH`) mirror `Path.rglob`:
-    `DOTMATCH` is required because `wcmatch` excludes dotfiles by default whereas
-    stdlib `rglob` includes them. Brace expansion (`BRACE`) is an intentional
-    *divergence* from `rglob` — `{a,b}.py` expands here but `Path.rglob` treats
-    the braces literally — chosen so `glob` matches the include-glob semantics of
-    `compile_grep_include_glob`.
-
-    Args:
-        pattern: Glob pattern (a leading `/` is stripped).
-
-    Returns:
-        Predicate accepting a search-root-relative POSIX path; returns True when
-        the path matches `pattern` under recursive-glob semantics.
-    """
-    flags = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTMATCH
-    compiled = wcglob.compile("**/" + pattern.lstrip("/"), flags=flags)
-
-    def matcher(rel_path: str) -> bool:
-        return bool(compiled.match(rel_path))
 
     return matcher
 
@@ -389,6 +406,44 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
     return sliced_fd
 
 
+def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
+    """Floor a requested read window at a zero offset and zero lines.
+
+    Models occasionally emit degenerate `read_file` arguments (`offset=-1`,
+    `limit=0`). Clamping `offset` keeps backends from reporting a line range
+    that starts before line 1, which `ReadResult` rejects.
+
+    Clamping `limit` is *not* sufficient on its own: flooring a negative limit
+    at `0` produces a zero-length window, which still has no valid
+    `start_line`/`end_line` pair. Callers must additionally treat a returned
+    `limit` of `0` as an empty read — see `slice_read_response` below, or the
+    equivalent short-circuits in the sandbox and LangSmith backends, which
+    flag the result with `ReadResult.no_lines_requested`.
+
+    The `int()` coercion is deliberate and load-bearing, not redundant with the
+    annotations: `offset` and `limit` originate from model-supplied tool
+    arguments, and the sandbox backend interpolates them into the source of a
+    script it executes (`_READ_COMMAND_TEMPLATE`). Do not remove it.
+
+    Args:
+        offset: Requested 0-indexed line offset.
+        limit: Requested maximum number of lines.
+
+    Returns:
+        Tuple of `(offset, limit)`, each coerced to `int` and floored at `0`.
+    """
+    normalized_offset, normalized_limit = max(int(offset), 0), max(int(limit), 0)
+    if (normalized_offset, normalized_limit) != (offset, limit):
+        logger.debug(
+            "Clamped degenerate read window: offset %r -> %d, limit %r -> %d",
+            offset,
+            normalized_offset,
+            limit,
+            normalized_limit,
+        )
+    return normalized_offset, normalized_limit
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
@@ -405,17 +460,35 @@ def slice_read_response(
         offset: Line offset (0-indexed).
         limit: Maximum number of lines.
 
+    Both bounds are clamped through `normalize_read_bounds` before slicing, so
+    a negative `offset` reads from the first line and a negative `limit` is
+    treated as `0`.
+
     Returns:
         `ReadResult` with the sliced raw content and pagination metadata
             (`total_lines`, `start_line`, `end_line`, `next_offset`). The
             pagination fields are left unset for empty or whitespace-only
-            content. `error` is set instead when the offset exceeds the file
+            content, and when the clamped `limit` is `0`; the zero-`limit`
+            result additionally sets `no_lines_requested` so the middleware
+            can tell the never-inspected window apart from a genuinely empty
+            file. `error` is set instead when the offset exceeds the file
             length.
     """
     content = file_data_to_string(file_data)
+    offset, limit = normalize_read_bounds(offset, limit)
 
+    # Ordering note: blank content is reported before the zero-limit check, so a
+    # whitespace-only file returns its content (which the middleware maps to the
+    # empty-file reminder) rather than `""`, regardless of `limit`.
     if not content or content.strip() == "":
         return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
+
+    # Nothing was requested: flag the window as never inspected so the
+    # middleware can tell it apart from a genuinely empty file, which arrives
+    # via the blank-content branch above (its `ReadResult` is otherwise
+    # identical: empty content, no pagination metadata).
+    if limit == 0:
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, ""), no_lines_requested=True)
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
@@ -462,6 +535,9 @@ def perform_string_replacement(
     Returns:
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
+    if not old_string:
+        return EMPTY_OLD_STRING_ERROR
+
     occurrences = content.count(old_string)
 
     if occurrences == 0:
@@ -512,14 +588,19 @@ def truncate_if_too_long(result: str) -> str: ...
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     """Truncate list or string result if it exceeds token limit (rough estimate: 4 chars/token)."""
+    limit = TOOL_RESULT_TOKEN_LIMIT * 4
     if isinstance(result, list):
-        total_chars = sum(len(item) for item in result)
-        if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
+        # Callers render the list with `str()`, so each item costs its repr plus ", ".
+        budget = limit - len(repr(TRUNCATION_GUIDANCE)) - 2
+        used = 0
+        for kept, item in enumerate(result):
+            used += len(repr(item)) + 2
+            if used > budget:
+                return result[:kept] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
-    if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
-        return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
+    if len(result) > limit:
+        return result[: limit - len(TRUNCATION_GUIDANCE) - 1] + "\n" + TRUNCATION_GUIDANCE
     return result
 
 
@@ -744,15 +825,26 @@ def _glob_search_files(
 ) -> str:
     r"""Search files dict for paths matching glob pattern.
 
+    Uses the shared backend contract from `compile_grep_include_glob`:
+
+    - Patterns without `/` match the basename at any depth under `path`.
+    - Patterns containing `/` match paths relative to `path`, with `**` support.
+    - A leading `/` anchors to the search root (narrows, does not widen).
+
     Args:
         files: Dictionary of file paths to FileData.
-        pattern: Glob pattern (e.g., `"*.py"`, `"**/*.ts"`).
+        pattern: Glob pattern (e.g., `"*.py"`, `"**/*.ts"`, `"src/**/*.py"`).
         path: Base path to search from. `None` defaults to root.
 
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).
 
             `"No files found"` if no matches.
+
+    Raises:
+        InvalidGlobPatternError: If the matcher refuses `pattern` (see
+            `compile_grep_include_glob`). Note an unparseable `path` is *not*
+            raised -- it returns `"No files found"`.
 
     Example:
         ```python
@@ -767,30 +859,18 @@ def _glob_search_files(
         return "No files found"
 
     filtered = _filter_files_by_path(files, normalized_path)
-
-    # Respect standard glob semantics:
-    # - Patterns without path separators (e.g., "*.py") match only in the current
-    #   directory (non-recursive) relative to `path`.
-    # - Use "**" explicitly for recursive matching.
-    # Strip leading "/" from pattern since matching is done against relative paths.
-    effective_pattern = pattern.lstrip("/")
+    matcher = compile_grep_include_glob(pattern)
 
     matches = []
     for file_path, file_data in filtered.items():
         # Compute relative path for glob matching
         # If normalized_path is "/dir", we want "/dir/file.txt" -> "file.txt"
         # If normalized_path is "/dir/file.txt" (exact file), we want "file.txt"
-        if normalized_path == "/":
-            relative = file_path[1:]  # Remove leading slash
-        elif file_path == normalized_path:
-            # Exact file match - use just the filename
-            relative = file_path.split("/")[-1]
-        else:
-            # Directory prefix - strip the directory path
-            relative = file_path[len(normalized_path) + 1 :]  # +1 for the slash
+        relative = _relative_to_root(file_path, normalized_path)
 
-        if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
-            matches.append((file_path, file_data["modified_at"]))
+        if matcher(relative):
+            # `modified_at` is NotRequired on `FileData`; undated files sort last.
+            matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 
@@ -850,7 +930,8 @@ def grep_matches_from_files(
     dropped is reported complete (`truncated=False`).
 
     We deliberately do not raise here to keep backends non-throwing in tool
-    contexts and preserve user-facing error messages.
+    contexts and preserve user-facing error messages: a refused `glob` filter
+    is returned as `GrepResult(error=...)`, not raised.
     """
     try:
         normalized_path = _normalize_path(path)
@@ -860,7 +941,10 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = compile_grep_include_glob(glob)
+        try:
+            matcher = compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as exc:
+            return GrepResult(error=str(exc))
         filtered = {fp: fd for fp, fd in filtered.items() if matcher(_relative_to_root(fp, normalized_path))}
 
     matches: list[GrepMatch] = []

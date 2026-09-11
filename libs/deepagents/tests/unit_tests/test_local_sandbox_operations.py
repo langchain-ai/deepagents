@@ -22,11 +22,13 @@ import os
 import re
 import stat
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool
 
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import _map_exception_to_standard_error
@@ -1374,8 +1376,8 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
         assert not any(".py" in p for p in paths)
 
     def test_glob_recursive_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -1405,7 +1407,7 @@ class TestLocalSandboxOperations:
         assert result == []
 
     def test_glob_with_directories(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that glob includes directories in results."""
+        """Glob filters out directories and only returns regular files."""
         base_dir = "/tmp/test_sandbox_ops/glob_dirs"
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
         sandbox.write(f"{base_dir}/file.txt", "content")
@@ -1413,12 +1415,11 @@ class TestLocalSandboxOperations:
         result = sandbox.glob("*", path=base_dir).matches
 
         assert result is not None
-        assert len(result) == 3
-        # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
+        assert len(result) == 1
+        # All results must be regular files
         file_count = sum(1 for info in result if not info["is_dir"])
-        assert dir_count == 2
         assert file_count == 1
+        assert result[0]["path"] == f"{base_dir}/file.txt"
 
     def test_glob_specific_extension(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with specific file extension pattern."""
@@ -1447,7 +1448,7 @@ class TestLocalSandboxOperations:
         assert result is not None
         # Should only match hidden files
         paths = [info["path"] for info in result]
-        assert ".hidden1" in paths or ".hidden2" in paths
+        assert f"{base_dir}/.hidden1" in paths or f"{base_dir}/.hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
 
@@ -1465,10 +1466,10 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
-        assert "file3.txt" not in paths
-        assert "fileA.txt" not in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
+        assert f"{base_dir}/file3.txt" not in paths
+        assert f"{base_dir}/fileA.txt" not in paths
 
     def test_glob_with_question_mark(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with single character wildcard (?)."""
@@ -1647,13 +1648,32 @@ class TestExecuteCaptureOffload:
             config={},
         )
 
+    @pytest.fixture(params=["sync", "async"])
+    def invoke(self, request: pytest.FixtureRequest) -> Callable[[BaseTool, dict], Awaitable[ToolMessage]]:
+        """Drive a tool through either `invoke` or `ainvoke`.
+
+        The execute tool forks on sync/async well before the backend does:
+        `sync_execute` calls `execute_with_offload` while `async_execute` calls
+        `aexecute_with_offload`, so each branch builds its own `ToolMessage` and
+        neither covers the other. Running every case both ways closes that gap
+        for free -- `BaseSandbox.aexecute` delegates to `execute` in a thread,
+        so the async path needs no extra backend support.
+        """
+        if request.param == "async":
+            return lambda tool, payload: tool.ainvoke(payload)
+
+        async def invoke_sync(tool: BaseTool, payload: dict) -> ToolMessage:
+            return tool.invoke(payload)
+
+        return invoke_sync
+
     @staticmethod
     def _capture_path(tool_call_id: str) -> str:
         return f"{VIRTUAL_SANDBOX_ROOT}/large_tool_results/{tool_call_id}"
 
-    def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+    async def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox, invoke: Callable) -> None:
         execute_tool, _ = tools
-        result = execute_tool.invoke({"command": "echo hello", "runtime": self._runtime("c_small")})
+        result = await invoke(execute_tool, {"command": "echo hello", "runtime": self._runtime("c_small")})
 
         assert "hello" in result.content
         assert "exit code 0" in result.content
@@ -1662,10 +1682,10 @@ class TestExecuteCaptureOffload:
         listing = sandbox.execute(f"ls {VIRTUAL_SANDBOX_ROOT}/large_tool_results/ 2>/dev/null | wc -l")
         assert listing.output.strip() == "0"
 
-    def test_large_output_offloads_and_full_content_roundtrips(self, tools: tuple) -> None:
+    async def test_large_output_offloads_and_full_content_roundtrips(self, tools: tuple, invoke: Callable) -> None:
         execute_tool, read_tool = tools
         rt = self._runtime("c_large")
-        result = execute_tool.invoke({"command": _BIG_OUTPUT_CMD, "runtime": rt})
+        result = await invoke(execute_tool, {"command": _BIG_OUTPUT_CMD, "runtime": rt})
 
         capture_path = self._capture_path("c_large")
         # Preview + pointer, not the full output inline.
@@ -1682,14 +1702,31 @@ class TestExecuteCaptureOffload:
         read = read_tool.invoke({"file_path": capture_path, "offset": 2499, "limit": 3, "runtime": rt})
         assert "line 2500:" in read.content
 
-    def test_nonzero_exit_code_preserved(self, tools: tuple) -> None:
+    async def test_nonzero_exit_code_preserved(self, tools: tuple, invoke: Callable) -> None:
         execute_tool, _ = tools
-        result = execute_tool.invoke({"command": "echo oops; exit 3", "runtime": self._runtime("c_ec")})
+        result = await invoke(execute_tool, {"command": "echo oops; exit 3", "runtime": self._runtime("c_ec")})
 
         assert "oops" in result.content
         assert "exit code 3" in result.content
+        assert result.artifact == {"exit_code": 3}
 
-    def test_runaway_output_is_capped_and_flagged(self, tools: tuple, sandbox: LocalSubprocessSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_offloaded_result_carries_exit_code_artifact(self, tools: tuple, invoke: Callable) -> None:
+        # When the output is offloaded, `_interpret_capture_output` replaces the
+        # plain `[Command ... exit code N]` formatting with a `read_file` pointer,
+        # so the artifact is the only structured channel for the exit code.
+        execute_tool, _ = tools
+        result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 3", "runtime": self._runtime("c_off_ec")})
+
+        assert self._capture_path("c_off_ec") in result.content  # actually offloaded
+        assert result.artifact == {"exit_code": 3}
+
+    async def test_runaway_output_is_capped_and_flagged(
+        self,
+        tools: tuple,
+        sandbox: LocalSubprocessSandbox,
+        monkeypatch: pytest.MonkeyPatch,
+        invoke: Callable,
+    ) -> None:
         # Cap must exceed the eviction budget so a capped result still offloads
         # (rather than fitting inline). Default budget is ~80 KB.
         cap = 100_000
@@ -1701,10 +1738,11 @@ class TestExecuteCaptureOffload:
         # the excess instead of SIGPIPE-killing the producer, so the command's real
         # exit code survives -- a regression guard: closing the pipe early would
         # report this successful command as failed.
-        result = execute_tool.invoke({"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
+        result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
 
         assert "exceeded the capture size limit" in result.content
         assert "succeeded with exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)

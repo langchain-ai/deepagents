@@ -1,0 +1,9 @@
+# No task directory is committed. All 100 are generated from upstream's configs at the
+# commit pinned in harbor_adapters/drbench/adapter.py (`UPSTREAM_SHA`), which is what
+# keeps the gold `solution/solve.sh` answer keys out of this repository.
+#
+# Build them with `make dataset` from libs/evals, or
+# `python -m harbor_adapters.drbench.main --populate datasets/drbench-evals`. CI runs the
+# same command in every research shard before `harbor run --path`.
+DR*/
+SANITY*/

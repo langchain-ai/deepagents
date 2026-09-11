@@ -105,13 +105,17 @@ async def run_command_handler(
         return _failure(handler.id, "launch_failed", f"Could not launch hook: {exc}")
 
     timeout = handler.timeout if handler.timeout is not None else default_timeout
+    communication = asyncio.create_task(
+        _communicate_bounded(process, payload, max_output_bytes)
+    )
     try:
         stdout, stderr, stdout_truncated, stderr_truncated = await asyncio.wait_for(
-            _communicate_bounded(process, payload, max_output_bytes),
+            asyncio.shield(communication),
             timeout=timeout,
         )
     except TimeoutError:
         await _terminate(process)
+        await _finish_communication(communication)
         return _failure(
             handler.id,
             "timeout",
@@ -119,9 +123,11 @@ async def run_command_handler(
         )
     except asyncio.CancelledError:
         await _terminate(process)
+        await _finish_communication(communication)
         raise
     except (BrokenPipeError, ConnectionResetError) as exc:
         await _terminate(process)
+        await _finish_communication(communication)
         return _failure(handler.id, "io_failed", f"Hook communication failed: {exc}")
 
     diagnostics: list[HookDiagnostic] = []
@@ -189,6 +195,20 @@ async def run_command_handler(
         output=output,
         diagnostics=tuple(diagnostics),
     )
+
+
+async def _finish_communication(
+    task: asyncio.Task[tuple[bytes, bytes, bool, bool]],
+) -> None:
+    completion = asyncio.gather(task, return_exceptions=True)
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(completion),
+            timeout=_TERMINATE_WAIT_TIMEOUT,
+        )
+    except TimeoutError:
+        task.cancel()
+        await completion
 
 
 async def _communicate_bounded(

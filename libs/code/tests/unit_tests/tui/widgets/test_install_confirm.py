@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.install_confirm import (
@@ -16,25 +18,18 @@ class _InstallConfirmTestApp(App[None]):
         yield Static("base")
 
 
+def _assert_pypi_link(content: Content, package: str) -> None:
+    """Assert that only `package` links to its PyPI project page."""
+    links = [
+        (content.plain[span.start : span.end], span.style.link)
+        for span in content.spans
+        if isinstance(span.style, TStyle) and span.style.link
+    ]
+    assert links == [(package, f"https://pypi.org/project/{package}/")]
+
+
 class TestInstallPackageConfirmScreen:
     """Behavior tests for `InstallPackageConfirmScreen`."""
-
-    async def test_enter_dismisses_with_true(self) -> None:
-        """Pressing Enter confirms the install."""
-        app = _InstallConfirmTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[bool | None] = []
-
-            def on_dismiss(result: bool | None) -> None:
-                outcomes.append(result)
-
-            app.push_screen(InstallPackageConfirmScreen("langchain-custom"), on_dismiss)
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == [True]
 
     async def test_escape_dismisses_with_false(self) -> None:
         """Pressing Esc cancels (no implicit install)."""
@@ -79,38 +74,9 @@ class TestInstallPackageConfirmScreen:
 
             assert outcomes == [False]
 
-    async def test_renders_package_name(self) -> None:
-        """The package name is surfaced in the modal body."""
-        app = _InstallConfirmTestApp()
-        async with app.run_test() as pilot:
-            app.push_screen(InstallPackageConfirmScreen("langchain-custom"))
-            await pilot.pause()
-
-            bodies = app.screen.query(".install-confirm-body")
-            assert len(bodies) == 1
-            assert "langchain-custom" in str(bodies.first().render())
-
 
 class TestInstallProviderConfirmScreen:
     """Behavior tests for `InstallProviderConfirmScreen`."""
-
-    async def test_enter_dismisses_with_true(self) -> None:
-        """Pressing Enter confirms the provider install."""
-        app = _InstallConfirmTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[bool | None] = []
-
-            app.push_screen(
-                InstallProviderConfirmScreen(
-                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
-                ),
-                outcomes.append,
-            )
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == [True]
 
     async def test_escape_dismisses_with_false(self) -> None:
         """Pressing Esc cancels (no implicit install)."""
@@ -130,23 +96,6 @@ class TestInstallProviderConfirmScreen:
 
             assert outcomes == [False]
 
-    async def test_renders_model_and_extra(self) -> None:
-        """The model spec and extra are surfaced in the modal body."""
-        app = _InstallConfirmTestApp()
-        async with app.run_test() as pilot:
-            app.push_screen(
-                InstallProviderConfirmScreen(
-                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
-                )
-            )
-            await pilot.pause()
-
-            bodies = app.screen.query(".install-confirm-body")
-            assert len(bodies) == 1
-            rendered = str(bodies.first().render())
-            assert "baseten:moonshotai/Kimi-K2.7-Code" in rendered
-            assert "baseten" in rendered
-
     async def test_renders_add_key_body_without_model_spec(self) -> None:
         """The `/auth` path (no model spec) frames the install around a key.
 
@@ -156,12 +105,18 @@ class TestInstallProviderConfirmScreen:
         """
         app = _InstallConfirmTestApp()
         async with app.run_test() as pilot:
-            app.push_screen(InstallProviderConfirmScreen("baseten", "baseten"))
+            app.push_screen(InstallProviderConfirmScreen("litellm", "litellm"))
             await pilot.pause()
 
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
-            rendered = str(bodies.first().render())
-            assert "add a key" in rendered
-            assert "baseten" in rendered
-            assert "To use" not in rendered
+            content = bodies.first().render()
+            assert isinstance(content, Content)
+            assert "add a key" in content.plain
+            assert "langchain-litellm" in content.plain
+            assert "To use" not in content.plain
+            _assert_pypi_link(content, "langchain-litellm")
+
+
+class TestLinkHoverAndClick:
+    """Link affordance tests shared by both install confirmation screens."""

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents_code.config import settings
+from deepagents_code.config import runtime_state
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -25,19 +25,19 @@ _MODEL_IDENTITY_FIELDS = (
 
 
 @pytest.fixture(autouse=True)
-def _restore_model_identity_settings() -> Iterator[None]:
-    """Snapshot/restore dcode's `settings` model-identity fields.
+def _restore_model_identity_state() -> Iterator[None]:
+    """Snapshot and restore dcode's process-wide model identity.
 
     `make_graph` writes these process-level singleton fields (so the system
     prompt's Model Identity section is populated). Without restoring them, a
     test that runs `make_graph` would leak the model identity into later tests.
     """
-    saved = {field: getattr(settings, field) for field in _MODEL_IDENTITY_FIELDS}
+    saved = {field: getattr(runtime_state, field) for field in _MODEL_IDENTITY_FIELDS}
     try:
         yield
     finally:
         for field, value in saved.items():
-            setattr(settings, field, value)
+            setattr(runtime_state, field, value)
 
 
 def test_langgraph_config_points_to_deepagent_factory() -> None:
@@ -52,6 +52,113 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
         "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
+
+
+def test_langgraph_config_declares_tavily_for_web_search() -> None:
+    # `_web_search_tool` imports tavily at call time; the bare graph depends on it
+    # directly, so it must be declared rather than relied on transitively via
+    # deepagents-code.
+    dependencies = json.loads(
+        Path("deepagents_harbor/langgraph_project/langgraph.json").read_text()
+    )["dependencies"]
+    assert any(dep.startswith("tavily-python") for dep in dependencies)
+
+
+@pytest.fixture
+def _untraced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `tool.invoke` from reaching the LangSmith tracer.
+
+    Invoking a LangChain tool starts a run, so a developer or runner with tracing
+    configured in its environment would have these tests attempt real egress.
+    """
+    for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
+        monkeypatch.setenv(name, "false")
+    for name in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT", "LANGSMITH_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_web_search_tool_absent_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every category except research runs without the key, and their tool lists must be
+    # unchanged by this feature existing.
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    assert langgraph_agent._web_search_tool() is None
+
+
+def test_web_search_tool_present_with_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    assert tool.name == "web_search"
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_bounds_and_renders_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    captured: dict[str, object] = {}
+
+    def fake_search(query: str, max_results: int) -> dict:
+        captured["query"] = query
+        captured["max_results"] = max_results
+        return {
+            "results": [{"title": "A title", "url": "https://example.com/a", "content": "A body"}]
+        }
+
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", fake_search)
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+
+    # max_results is clamped, so a model asking for 500 cannot flood the context.
+    rendered = tool.invoke({"query": "fsma 204", "max_results": 500})
+    assert captured["max_results"] == langgraph_agent._WEB_SEARCH_MAX_RESULTS
+    assert captured["query"] == "fsma 204"
+    assert "A title" in rendered
+    assert "https://example.com/a" in rendered
+    assert "A body" in rendered
+    # The key reaches the client but never the tool's output.
+    assert "test-key" not in rendered
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_truncates_an_oversized_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "_tavily_search",
+        lambda _query, _max_results: {
+            "results": [
+                {"title": "t", "url": "u", "content": "z" * langgraph_agent._WEB_SEARCH_MAX_CHARS}
+            ]
+        },
+    )
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    rendered = tool.invoke({"query": "x"})
+    assert "[truncated at" in rendered
+    assert len(rendered) < langgraph_agent._WEB_SEARCH_MAX_CHARS + 100
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_reports_no_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", lambda _q, _n: {"results": []})
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    assert "No results" in tool.invoke({"query": "nothing"})
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_reports_failure_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+
+    def failing_search(_query: str, _max_results: int) -> dict:
+        msg = "upstream down"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", failing_search)
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    # A search outage must not end a multi-hour research run.
+    assert "web_search failed" in tool.invoke({"query": "x"})
 
 
 def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
@@ -221,13 +328,13 @@ def test_make_graph_builds_headless_local_deepagent(
     assert "system_prompt" not in captured_create[0]
 
 
-def test_make_graph_populates_model_identity_settings(
+def test_make_graph_populates_runtime_model_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`make_graph` must feed `configurable.model` into dcode `settings`.
+    """`make_graph` feeds `configurable.model` into dcode runtime state.
 
     create_cli_agent -> get_system_prompt renders the prompt's Model Identity
-    section from these settings, so without this wiring the eval agent's prompt
+    section from this state, so without this wiring the eval agent's prompt
     would omit which model it is running as.
     """
 
@@ -258,17 +365,17 @@ def test_make_graph_populates_model_identity_settings(
         }
     )
 
-    assert settings.model_name == "claude-sonnet-4-5"
-    assert settings.model_provider == "anthropic"
-    assert settings.model_context_limit == 200_000
-    assert settings.model_unsupported_modalities == frozenset({"audio", "video"})
+    assert runtime_state.model_name == "claude-sonnet-4-5"
+    assert runtime_state.model_provider == "anthropic"
+    assert runtime_state.model_context_limit == 200_000
+    assert runtime_state.model_unsupported_modalities == frozenset({"audio", "video"})
 
 
 def test_make_graph_resets_model_identity_for_model_without_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    settings.model_context_limit = 200_000
-    settings.model_unsupported_modalities = frozenset({"audio", "video"})
+    runtime_state.model_context_limit = 200_000
+    runtime_state.model_unsupported_modalities = frozenset({"audio", "video"})
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
     monkeypatch.setattr(
@@ -287,8 +394,8 @@ def test_make_graph_resets_model_identity_for_model_without_profile(
         }
     )
 
-    assert settings.model_context_limit is None
-    assert settings.model_unsupported_modalities == frozenset()
+    assert runtime_state.model_context_limit is None
+    assert runtime_state.model_unsupported_modalities == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -328,8 +435,8 @@ def test_make_graph_derives_identity_for_bare_model_name(
         }
     )
 
-    assert settings.model_name == expected_name
-    assert settings.model_provider == expected_provider
+    assert runtime_state.model_name == expected_name
+    assert runtime_state.model_provider == expected_provider
 
 
 @pytest.mark.parametrize(
@@ -515,7 +622,9 @@ def test_make_graph_leaves_non_glm_model_kwargs_untouched(
     assert captured_kwargs[0] == {"temperature": 0.0}
 
 
-def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_make_graph_defaults_to_task_workdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured_create: list[dict[str, object]] = []
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
@@ -525,6 +634,7 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
         lambda **kwargs: (captured_create.append(kwargs) or object(), object()),
     )
     monkeypatch.delenv("HARBOR_SESSION_ID", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     langgraph_agent.make_graph(
         {
@@ -534,8 +644,13 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
         }
     )
 
-    assert captured_create[0]["cwd"] == Path("/app")
+    assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["assistant_id"]
+
+
+def test_workdir_rejects_non_path_value() -> None:
+    with pytest.raises(TypeError, match="must be a string path"):
+        langgraph_agent._workdir({"cwd": 123})
 
 
 def test_make_graph_openai_defaults_to_responses_api(
@@ -728,3 +843,51 @@ def test_mcp_connections_rejects_stdio_servers() -> None:
 def test_mcp_connections_requires_forwarded_servers() -> None:
     with pytest.raises(ValueError, match="mcp_servers"):
         langgraph_agent._mcp_connections({})
+
+
+def test_make_graph_offers_dcode_the_web_search_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`research` advertises both harnesses, so dcode needs the tool the prompt assumes.
+
+    Every DRBench prompt tells the agent to research the open web, and part of each task's
+    ground truth exists only there. The research preflight hard-fails on a missing
+    TAVILY_API_KEY for exactly this reason -- which handing dcode the key and not the tool
+    would have defeated silently.
+    """
+    captured: list[object] = []
+
+    def fake_create_cli_agent(**kwargs: object) -> tuple[object, object]:
+        captured.append(kwargs.get("tools"))
+        return object(), object()
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:test-model")
+    monkeypatch.setenv("TAVILY_API_KEY", "present")
+
+    langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
+
+    tools = captured[0]
+    assert isinstance(tools, list)
+    assert [getattr(t, "name", None) for t in tools] == ["web_search"]
+
+
+def test_make_graph_passes_no_tools_when_the_search_key_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without a key the tool cannot work, and an unusable tool is worse than none."""
+    captured: list[object] = []
+
+    def fake_create_cli_agent(**kwargs: object) -> tuple[object, object]:
+        captured.append(kwargs.get("tools"))
+        return object(), object()
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:test-model")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
+
+    assert captured[0] is None

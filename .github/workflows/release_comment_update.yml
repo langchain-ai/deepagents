@@ -1,0 +1,440 @@
+# Posts the release outcome as a new comment on the merged release PR once the
+# whole release pipeline finishes.
+#
+# Why this exists:
+#   release-please.yml's `trigger-releases` job comments on a merged release PR
+#   with a link to each release.yml run it dispatched ("Follow the linked run
+#   for build, test, and publish status."). That link requires following the
+#   run to learn the outcome. Once the pipeline concludes, this workflow adds a
+#   result comment, so anyone reading the merged release PR sees the outcome
+#   without opening the run.
+#
+# Trigger — `workflow_run` of release-please.yml, completed, any conclusion:
+#   release-please.yml's run is normally the last thing to finish in the
+#   release pipeline. Its `update-lockfiles` and `dispatch-release-notes-check`
+#   jobs are gated on `guard-pending-release`, which waits out the in-flight
+#   release.yml publish — so when the run concludes, publishing is normally
+#   done and the post-publish housekeeping (lockfile updates on release-please
+#   branches, curated-notes re-check dispatch) has been kicked off. Listening
+#   to release.yml directly would report "published" while those follow-ups
+#   were still running.
+#
+#   "Normally" is load-bearing. `guard-pending-release` waits on the
+#   `autorelease: pending` label, which release.yml flips in `mark-release`,
+#   not on the release run concluding — sibling jobs (`bump-code-sdk-pin`)
+#   can still be running after the label clears. The guard also gives up
+#   after its own MAX_WAIT and defers on release commits, both of which end
+#   the release-please run green with a publish still in flight. Hence the
+#   poll in "Waiting" below.
+#
+#   Every conclusion is reported, not just success: failure and cancellation
+#   are exactly when a reader of the release PR needs a nudge, and the
+#   original "has started" comment never resolves on its own.
+#
+# Matching:
+#   The release PR is found by listing the merged PRs attached to the
+#   release-please run's head SHA (the release-PR squash-merge commit on
+#   main). To name the published artifacts, the release.yml runs dispatched by
+#   the pipeline are re-discovered on the same correlation key
+#   `trigger-releases` uses for the original comment: release.yml's
+#   `run-name`, which renders exactly `release(<package>): <version>` (parsed
+#   here from the release-please run's own title), restricted to
+#   `workflow_dispatch` runs created at or after the release-please run
+#   started. It diverges from `find_run_url` in one deliberate way: that
+#   helper takes only the most recent match, while this keeps every match.
+#
+#   The run's `display_title` normally carries the head commit's subject, but
+#   GitHub intermittently serves the workflow name instead (observed on the
+#   merged release PR run for `release(deepagents): 0.7.7`, whose title came
+#   back as `⚠️ (Automated) Release Please`). When the display title fails
+#   the release-title pattern and equals the workflow name exactly, the gate
+#   below retries the match against the head commit's subject line instead.
+#
+#   Runs are NOT matched on head SHA: `trigger-releases` dispatches with
+#   `gh workflow run --ref main`, so a dispatched run's head SHA is whatever
+#   main resolves to at dispatch time, which can drift from the merge commit
+#   if another PR lands in between. The exact per-version title is the
+#   correlation key; a manual re-release of the same package+version in the
+#   window is reported alongside the pipeline's own run, which is the
+#   outcome a reader of the release PR wants anyway.
+#
+#   That title is a lock-step coupling to release.yml's `run-name`: if the
+#   template changes, or a `package-override` whose value differs from the
+#   release-please component is ever dispatched, the match silently
+#   always-misses. release-please.yml's `find_run_url` carries the same
+#   warning; both have to be updated together.
+#
+# Waiting:
+#   Per the trigger note above, a dispatched release run can still be in
+#   progress when this workflow starts. Rather than render a null conclusion
+#   as "failed", the job polls until every matched run has concluded, bounded
+#   by the 420s deadline in the poll loop — deliberately kept well under this
+#   job's `timeout-minutes` so the graceful skip wins the race against a hard
+#   job cancellation, which produces no annotation at all. On timeout it skips
+#   with a notice so the outcome can be backfilled later.
+#
+# Idempotency:
+#   Before posting, the PR's comments are scanned for one whose body is
+#   byte-identical to the body about to be posted — rerunning this workflow
+#   (or a manual backfill after a partial run) will not double-post, while a
+#   genuinely different outcome still gets its own comment.
+#
+# Manual backfill:
+#   `workflow_dispatch` accepts a release-please.yml run URL or ID, e.g. to
+#   post the outcome after this workflow itself was skipped.
+#
+# Not a merge gate. This posts a comment; it never blocks anything.
+
+name: "💬 Release comment update"
+
+on:
+  workflow_run:
+    workflows: ["⚠️ (Automated) Release Please"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run:
+        required: true
+        type: string
+        description:
+          "release-please.yml run URL or run ID whose release outcome should
+          be commented on the release PR"
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  # `/commits/{sha}/pulls` needs read access; posting the outcome comment on the
+  # release PR needs write access, matching `trigger-releases` in release-please.yml.
+  pull-requests: write
+
+concurrency:
+  # One comment attempt per completed release-please run; a rerun of this
+  # workflow replaces any queued duplicate for the same run.
+  group: release-comment-update-${{ github.event.workflow_run.id || github.event.inputs.run }}
+  cancel-in-progress: true
+
+jobs:
+  comment:
+    name: "comment release outcome on the release PR"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "Resolve release-please run"
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RUN: ${{ github.event.inputs.run }}
+          WR_URL: ${{ github.event.workflow_run.html_url }}
+          WR_DISPLAY: ${{ github.event.workflow_run.display_title }}
+          WR_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_CREATED: ${{ github.event.workflow_run.created_at }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # Accept a full run URL or a bare numeric run ID. Anchor on
+            # `/runs/<id>` rather than taking the last path segment: that
+            # would yield the job ID from a `.../runs/123/job/456` URL, or the
+            # attempt number from `.../runs/123/attempts/2`, both of which pass
+            # a bare numeric check and resolve to the wrong run (or 404).
+            if [[ "$INPUT_RUN" =~ /runs/([0-9]+) ]]; then
+              run_id="${BASH_REMATCH[1]}"
+            elif [[ "$INPUT_RUN" =~ ^[0-9]+$ ]]; then
+              run_id="$INPUT_RUN"
+            else
+              echo "::error::input \`run\` must be a release-please.yml run URL or numeric ID, got: $INPUT_RUN"
+              exit 1
+            fi
+            run_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")
+            run_url=$(printf '%s' "$run_json" | jq -r '.html_url')
+            run_display=$(printf '%s' "$run_json" | jq -r '.display_title // .name')
+            run_sha=$(printf '%s' "$run_json" | jq -r '.head_sha')
+            run_created=$(printf '%s' "$run_json" | jq -r '.created_at')
+            # `// ""` so an in-progress run yields an empty string rather than
+            # the literal "null", which the outcome note below would print.
+            conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion // ""')
+            workflow=$(printf '%s' "$run_json" | jq -r '.name')
+            if [ "$workflow" != "⚠️ (Automated) Release Please" ]; then
+              echo "::error::Run $run_url is '$workflow', not the release-please workflow."
+              exit 1
+            fi
+          else
+            run_url="$WR_URL"
+            run_display="$WR_DISPLAY"
+            run_sha="$WR_SHA"
+            run_created="$WR_CREATED"
+            conclusion="$WR_CONCLUSION"
+          fi
+
+          # Only runs that processed a merged release PR could have produced a
+          # dispatch comment to follow up on. The display title for those is
+          # "release(<component>): <version> (#<pr>)"; maintenance runs that
+          # merely opened/updated release PRs carry their triggering commit's
+          # subject, which does not match.
+          # The pattern lives in a variable because `[[ =~ ]]` word-splits an
+          # unquoted operand: the space and parens in this pattern are a bash
+          # syntax error written inline, and quoting it inline would match it
+          # verbatim instead of as a regex.
+          title_re='^(release\([^)]+\): .+) \(#[0-9]+\)$'
+          if ! [[ "$run_display" =~ $title_re ]] && [ "$run_display" = "⚠️ (Automated) Release Please" ]; then
+            # GitHub intermittently serves the workflow name as
+            # `display_title` instead of the head commit's subject (see the
+            # header's "Matching" note). Fall back to the commit message,
+            # which is what `display_title` was supposed to render.
+            echo "::notice::display_title is the workflow name; falling back to the head commit subject for $run_sha."
+            run_display=$(
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${run_sha}" \
+                --jq '.commit.message' | head -n 1
+            )
+            echo "Resolved title from commit: $run_display"
+          fi
+          if ! [[ "$run_display" =~ $title_re ]]; then
+            echo "::notice::Run title '$run_display' is not a merged release PR run; nothing to comment on."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # e.g. "release(deepagents-code): 0.5.0" — the exact title
+          # release.yml's run-name renders for each dispatched run.
+          release_title="${BASH_REMATCH[1]}"
+
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$run_sha" >> "$GITHUB_OUTPUT"
+          echo "created_at=$run_created" >> "$GITHUB_OUTPUT"
+          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
+          echo "release_title=$release_title" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Resolved release-please run: $run_url"
+            echo "Title: \`$run_display\`, conclusion: \`$conclusion\`, head SHA: \`$run_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Re-discover dispatched release.yml runs"
+        id: releases
+        if: steps.run.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TITLE: ${{ steps.run.outputs.release_title }}
+          CREATED_AT: ${{ steps.run.outputs.created_at }}
+        run: |
+          set -euo pipefail
+
+          # trigger-releases dispatches release.yml seconds before it posts
+          # the comment, inside this same release-please run — so the
+          # dispatched runs are created at or after this run started.
+          # `date -d` is GNU-only, but this job runs on ubuntu-latest.
+          #
+          # No clock-skew backdate, unlike find_run_url's 60s allowance: that
+          # helper queries for runs it is about to create, whereas this window
+          # opens at a timestamp GitHub itself assigned to a run that has
+          # already finished.
+          created=$(date -u -d "$CREATED_AT" +%Y-%m-%dT%H:%M:%SZ)
+
+          # Match on the exact run title ("release(<package>): <version>", the
+          # release.yml run-name), the same correlation key find_run_url uses,
+          # and on `event=workflow_dispatch` for the same reason it does: to
+          # keep an unrelated run that happens to share a title from being
+          # mistaken for the release publish.
+          # head_sha is deliberately NOT matched: the dispatch resolves
+          # `--ref main` at dispatch time, so the run's head SHA can differ
+          # from the release-PR merge commit if another PR lands in between.
+          # The RELEASE_TITLE env var is read from jq's `env` — `gh api
+          # --jq` does not accept jq's `--arg` flag.
+          query_runs() {
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?event=workflow_dispatch&created=>=${created}&per_page=100" \
+              --jq '.workflow_runs[]
+                | select(.display_title == env.RELEASE_TITLE)
+                | [.display_title, (.conclusion // ""), .html_url] | @tsv'
+          }
+
+          runs=$(query_runs)
+          if [ -z "$runs" ]; then
+            echo "::warning::No release.yml runs titled '$RELEASE_TITLE' at/after $created; nothing to comment on."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Poll until every matched run concludes so the outcome comment
+          # never reports an in-flight release as "failed" (a null conclusion
+          # renders as an empty field above). See the "Waiting" header note
+          # for why a run can still be in flight here.
+          #
+          # 420s leaves headroom under this job's `timeout-minutes: 10`: the
+          # deadline is checked before the sleep, so the loop can run ~450s,
+          # and the graceful skip must win over a hard job cancellation, which
+          # produces no annotation. Raise both together or not at all.
+          deadline=$((SECONDS + 420))
+          while printf '%s\n' "$runs" | awk -F '\t' 'NF > 0 && $2 == "" { found=1 } END { exit !found }'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::notice::Some release.yml runs are still in progress; skipping so the outcome can be backfilled once they conclude."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Waiting for in-flight release run(s) to conclude..."
+            sleep 30
+            runs=$(query_runs)
+            # An empty re-fetch is not "still in progress": without this the
+            # blank line would parse as a row with an empty conclusion and the
+            # loop would spin to the deadline, then emit a misleading notice.
+            if [ -z "$runs" ]; then
+              echo "::warning::Previously-matched release.yml runs titled '$RELEASE_TITLE' vanished from the listing; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "Found dispatched release run(s), all concluded:"
+          printf '%s\n' "$runs"
+
+          # Random heredoc delimiter: these rows carry release.yml run titles,
+          # which interpolate free-form workflow_dispatch inputs, so a fixed
+          # `EOF` is injectable by a crafted title.
+          delim="runs_$(openssl rand -hex 16)"
+          {
+            echo "runs<<${delim}"
+            printf '%s\n' "$runs"
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: "Comment the outcome on the release PR"
+        if: steps.releases.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
+          RUNS: ${{ steps.releases.outputs.runs }}
+          RUN_URL: ${{ steps.run.outputs.run_url }}
+          RUN_CONCLUSION: ${{ steps.run.outputs.conclusion }}
+        run: |
+          set -euo pipefail
+
+          # Build one line per dispatched run, e.g.
+          #   - ✅ `release(deepagents-acp): 0.0.10` — published to PyPI (<url>)
+          #   - ⏹️ `release(deepagents): 0.5.0` — cancelled before publish (<url>)
+          #   - ❌ `release(deepagents-code): 0.5.0` — failed (conclusion: `failure`) (<url>)
+          #
+          # RUNS rows are TSV: name <tab> conclusion <tab> url. The
+          # re-discovery step polls until every run concludes, so the
+          # conclusion is never empty here — the script asserts that rather
+          # than trusting it, because rendering an empty conclusion would
+          # report a live release to the PR as a failed one.
+          #
+          # The program's top level MUST stay at this `run:` block's base
+          # indentation, so YAML dedents it to column 0: CPython only learned
+          # to dedent `-c` source in 3.14, and ubuntu-latest ships 3.12, where
+          # any residual indent is an IndentationError. Indenting it to nest
+          # under the shell breaks every run of this workflow.
+          export RUNS
+          lines=$(python3 -c '
+          import os
+          import sys
+
+          rows = [r.split("\t") for r in os.environ["RUNS"].splitlines() if r.strip()]
+          out = []
+          for name, conclusion, url in rows:
+              if not conclusion:
+                  sys.exit(f"::error::run {url} has no conclusion; the poll loop exited early")
+              if conclusion == "success":
+                  out.append(f"- ✅ `{name}` — published to PyPI (<{url}>)")
+              elif conclusion == "cancelled":
+                  out.append(f"- ⏹️ `{name}` — cancelled before publish (<{url}>)")
+              else:
+                  out.append(f"- ❌ `{name}` — failed (conclusion: `{conclusion}`) (<{url}>)")
+          print("\n".join(out))
+          ')
+
+          # The release-please workflow can conclude successfully even when a
+          # dispatched release.yml run failed: its release-commit guard skips
+          # follow-up work in that case. Base the outcome summary on the
+          # release runs themselves rather than the enclosing workflow.
+          if printf '%s\n' "$RUNS" | awk -F '\t' 'NF == 0 { next } $2 != "success" { exit 1 }'; then
+            header="All dispatched package releases published successfully:"
+          else
+            header="One or more dispatched package releases did not complete successfully:"
+          fi
+          body="${header}"$'\n\n'"${lines}"
+
+          # The reverse case: the release runs above are only the publish
+          # outcome, while the enclosing release-please run also carries the
+          # post-publish housekeeping. Report that when it did not succeed, so
+          # "published successfully" is never the last word on a pipeline that
+          # went red after the publish.
+          if [ "$RUN_CONCLUSION" != "success" ]; then
+            body="${body}"$'\n\n'"⚠️ The release-please run concluded \`${RUN_CONCLUSION:-unknown}\` — post-publish housekeeping (lockfile updates, curated-notes re-check) may be incomplete: <${RUN_URL}>"
+          fi
+
+          # Locate the merged release PR whose merge commit produced this
+          # run. Release-please squash-merges, so the run's head SHA is the
+          # merge commit on main. `/commits/{sha}/pulls` lists every PR
+          # associated with the commit; filter to the merged one — the same
+          # strategy as release-please.yml's resolve_release_pr_number.
+          # Resolved after the body is composed so the outcome can still be
+          # written to the step summary if no PR is found.
+          pr_number=$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+              --jq 'map(select(.merged_at != null)) | .[0].number // empty'
+          )
+          if [ -z "$pr_number" ]; then
+            echo "::warning::No merged release PR found for $HEAD_SHA; cannot comment."
+            {
+              echo "### Release outcome (no release PR found)"
+              echo
+              echo "No merged PR is attached to \`${HEAD_SHA}\`, so this outcome was not commented:"
+              echo
+              printf '%s\n' "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Resolved release PR: #$pr_number"
+
+          # Idempotency: skip if an earlier run of this workflow already posted
+          # a byte-identical body (workflow rerun, or a manual backfill after a
+          # partial run). Whole-body jq equality, not a grep for the package
+          # and version: a fixed-string grep matches substrings, so an outcome
+          # whose text is a subset of an earlier comment's would be wrongly
+          # suppressed. jq reads the wanted body from the environment because
+          # `gh api --jq` takes no `--arg`, and embedding the body in the
+          # filter would break on quotes and backticks.
+          #
+          # The author filter must track the identity used to post below: if
+          # this ever moves to a GitHub App token, the filter stops matching
+          # and the workflow double-posts.
+          #
+          # The filter emits one id per match instead of a `| length` count:
+          # `--paginate` applies `--jq` per page, so an aggregate returns one
+          # number per page ("0\n0") and the numeric test below would fail —
+          # inside an `if` condition, where `set -e` does not fire — silently
+          # posting a duplicate on any PR past 100 comments.
+          export WANTED_BODY="$body"
+          duplicate=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
+            --jq '.[]
+              | select(.user.login == "github-actions[bot]")
+              | select(.body == env.WANTED_BODY)
+              | .id' \
+            | wc -l | tr -d '[:space:]')
+          if [ "$duplicate" -gt 0 ]; then
+            echo "An identical outcome comment already exists on PR #$pr_number; skipping."
+            exit 0
+          fi
+
+          comment_url=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments" \
+            --raw-field body="$body" \
+            --jq '.html_url')
+          echo "Commented on PR #$pr_number: $comment_url"
+
+          {
+            echo "### Release outcome commented"
+            echo
+            echo "- PR: #${pr_number}"
+            echo "- Comment: ${comment_url}"
+            echo
+            printf '%s\n' "$body"
+          } >> "$GITHUB_STEP_SUMMARY"

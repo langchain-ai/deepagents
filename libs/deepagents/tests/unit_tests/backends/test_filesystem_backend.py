@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,31 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
+
+
+def require_ripgrep() -> None:
+    """Skip when ripgrep is absent, or fail when the runner promised it.
+
+    CI installs ripgrep and exports `DEEPAGENTS_RIPGREP_EXPECTED=1` on every
+    runner where the install is required to have succeeded. On those runners a
+    missing `rg` means the install silently regressed, so the tests below must
+    fail rather than skip: they are the only coverage of the *real binary*
+    contract (the rest of the ripgrep tests patch `subprocess.Popen`), and one
+    of them guards symlink containment. A skip would let a containment
+    regression merge with a green build.
+
+    Locally, and on runners where the install was allowed to fail, a missing
+    `rg` is expected and still skips. CI allows the failure in two cases: the
+    bounded install on an ordinary PR hit its two-minute timeout, or the
+    unbounded strict install on a release PR failed and was bypassed under the
+    `bypass-ripgrep-check` label.
+    """
+    if shutil.which("rg") is not None:
+        return
+    if os.environ.get("DEEPAGENTS_RIPGREP_EXPECTED") == "1":
+        msg = "CI installed ripgrep on this runner but `rg` is not on PATH"
+        pytest.fail(msg)
+    pytest.skip("ripgrep not installed")
 
 
 def write_file(p: Path, content: str):
@@ -87,21 +113,35 @@ def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) ->
     assert str(outside_root) not in omitted_paths
 
 
-def test_filesystem_backend_glob_matches_hidden_paths(tmp_path: Path) -> None:
+def test_filesystem_backend_glob_hidden_paths_require_explicit_dot_patterns(tmp_path: Path) -> None:
+    """Leading-dot names are not matched by bare `*` (shared grep include contract).
+
+    Hidden files remain reachable with explicit dot patterns (`.*`, `.github/**`).
+    This mirrors `compile_grep_include_glob` / bash without `dotglob`, not
+    pathlib `rglob` which does surface dotfiles under `*`.
+    """
     root = tmp_path
     write_file(root / ".env", "TOKEN=value")
     write_file(root / ".hidden.py", "print('hidden')")
+    write_file(root / "visible.py", "print('visible')")
     write_file(root / ".github" / "workflows" / "ci.yml", "name: ci")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_matches = {info["path"] for info in be.glob("*", path="/").matches or []}
-    py_matches = {info["path"] for info in be.glob("*.py", path="/").matches or []}
-    yml_matches = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    bare_root = {info["path"] for info in be.glob("*", path="/").matches or []}
+    bare_py = {info["path"] for info in be.glob("*.py", path="/").matches or []}
+    bare_yml = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    assert "/.env" not in bare_root
+    assert "/.hidden.py" not in bare_py
+    assert "/visible.py" in bare_py
+    assert "/.github/workflows/ci.yml" not in bare_yml
 
-    assert "/.env" in root_matches
-    assert "/.hidden.py" in py_matches
-    assert "/.github/workflows/ci.yml" in yml_matches
+    explicit_dot = {info["path"] for info in be.glob(".*", path="/").matches or []}
+    explicit_py = {info["path"] for info in be.glob(".*.py", path="/").matches or []}
+    explicit_yml = {info["path"] for info in be.glob(".github/**/*.yml", path="/").matches or []}
+    assert "/.env" in explicit_dot
+    assert "/.hidden.py" in explicit_py
+    assert "/.github/workflows/ci.yml" in explicit_yml
 
 
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -328,6 +368,67 @@ def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Pa
     assert result.start_line is None
     assert result.end_line is None
     assert result.next_offset is None
+
+
+@pytest.mark.parametrize("limit", [0, -3])
+def test_filesystem_backend_read_non_positive_limit_returns_empty_read(tmp_path: Path, limit: int) -> None:
+    """A degenerate `limit` returns an empty read, not a line-range error."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_negative_offset_starts_at_first_line(tmp_path: Path) -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "one\ntwo\n"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
+def test_filesystem_backend_read_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:
+    """The empty-file check precedes the slice, so the reminder wins over the limit."""
+    target = tmp_path / "blank.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_filesystem_backend_read_zero_limit_on_binary_returns_full_payload(tmp_path: Path) -> None:
+    """`limit` does not apply to binary reads, so a zero limit is not an empty read."""
+    target = tmp_path / "clip.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert result.file_data["content"] != ""
 
 
 def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
@@ -699,8 +800,7 @@ def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch:
     ripgrep `--glob` patterns with a directory component (e.g. `docs/*.md`)
     must still match when the process cwd differs from the search root.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -726,8 +826,7 @@ def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.Monk
     Exercises the relative-path re-anchoring through `_to_virtual_path` so a
     regression in path handling can't silently drop results.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -753,8 +852,7 @@ def test_grep_on_single_file_path(tmp_path: Path) -> None:
     Before #2732's fix, ripgrep was given the file path directly. Naively
     threading `cwd=base_full` would raise NotADirectoryError for file paths.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     target = tmp_path / "single.txt"
     target.write_text("hello single\n")
@@ -774,8 +872,7 @@ def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pyt
     `.resolve()` was applied — so users saw the symlinked path they searched
     under. The fix must preserve that behavior.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     real = tmp_path / "real"
     real.mkdir()
@@ -809,8 +906,7 @@ def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypa
     access to files beyond the intended search boundary. The containment check
     must drop those results so they never surface to callers.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -1828,6 +1924,29 @@ class TestGrepPythonFallbackTimeout:
         assert partial_error is None
         assert results.get("/cr.txt") == [(1, "hit me")]
 
+    def test_grep_returns_error_for_refused_include_glob(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `..` include glob becomes `GrepResult.error`, never a raise.
+
+        The shared matcher raises `InvalidGlobPatternError` on traversal and the
+        Python fallback compiles the glob outside any error handling, so `grep`
+        validates the glob before choosing a search path. The check holds with
+        and without ripgrep.
+        """
+        (tmp_path / "f.txt").write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        for forced_fallback in (True, False):
+            if not forced_fallback:
+                monkeypatch.undo()
+            result = be.grep("needle", path="/", glob="../*.py")
+            assert result.matches == []
+            assert result.error is not None
+            assert "Path traversal" in result.error
+
     def test_grep_fallback_treats_pattern_literally(
         self,
         tmp_path: Path,
@@ -2474,6 +2593,18 @@ class TestReadTrailingNewlineRoundtrip:
         assert result.error is not None
         assert "old_string ends with a newline" in result.error
         assert target.read_text() == "# Agent Role:\nyou are an assistant"
+
+    def test_edit_empty_old_string_leaves_file_unchanged(self, tmp_path: Path) -> None:
+        """Empty `old_string` must error and never modify the file on disk."""
+        target = tmp_path / "a.txt"
+        target.write_text("hello world")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.edit(str(target), "", "x", replace_all=True)
+
+        assert result.error is not None
+        assert "old_string cannot be empty" in result.error
+        assert target.read_text() == "hello world"
 
 
 class TestFilesystemDelete:

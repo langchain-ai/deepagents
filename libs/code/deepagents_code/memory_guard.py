@@ -31,7 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
 from langchain_core.messages import ToolMessage
 
 from deepagents_code.onboarding import (
@@ -103,6 +103,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
     the file holds a managed block or exists but cannot be read. If the restore
     itself fails, an error is still returned so the failure is never silent.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
         """Initialize the guard with the memory files to protect.

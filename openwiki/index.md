@@ -1,13 +1,16 @@
 ---
-okf_version: "0.1"
+okf_version: "0.2"
 ---
 
 # Files
 
-- [Deep Agents monorepo quickstart](quickstart.md) - Entry point for engineers working on the Deep Agents Python monorepo: package roles, runtime boundaries, validation, and change-sensitive areas.
+- [Repository Quickstart](quickstart.md) - Route Deep Agents maintainer work to the SDK, dcode product, ACP bridge, Talon host, evaluation suite, partner integrations, and their focused architecture, workflow, operations, and test guides.
 
 # Directories
 
 - [architecture](architecture/)
-- [engineering](engineering/)
+- [concepts](concepts/)
+- [integrations](integrations/)
+- [operations](operations/)
+- [testing](testing/)
 - [workflows](workflows/)

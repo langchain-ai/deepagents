@@ -113,14 +113,14 @@ def _load_module_by_path(name: str, path: Path) -> Any:
 
 
 def _import_models_module() -> Any:
-    """Import the registry module from `.github/scripts/models.py` lazily.
+    """Import the registry module from `.github/scripts/evals/models.py` lazily.
 
     Kept lazy because the module isn't installable as a package and importing
     it requires a `spec_from_file_location` dance — we only pay the cost when
     `list models` is actually invoked.
     """
     return _load_module_by_path(
-        "_deepagents_evals_models", _REPO_ROOT / ".github" / "scripts" / "models.py"
+        "_deepagents_evals_models", _REPO_ROOT / ".github" / "scripts" / "evals" / "models.py"
     )
 
 
@@ -209,7 +209,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             models = _list_known_models()
         except Exception as exc:  # noqa: BLE001
             print(
-                f"error: failed to load model registry from .github/scripts/models.py: {exc}",
+                f"error: failed to load model registry from .github/scripts/evals/models.py: {exc}",
                 file=sys.stderr,
             )
             return EXIT_CONFIG
@@ -297,7 +297,7 @@ def _validate_model(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         sample_groups = all_groups[:8]
     except Exception as exc:  # noqa: BLE001
         # Discovery is best-effort, but a failing registry probe is itself
-        # worth surfacing — silent regressions in `.github/scripts/models.py`
+        # worth surfacing — silent regressions in `.github/scripts/evals/models.py`
         # would otherwise rot until someone runs `list models` directly.
         print(
             f"warning: could not enumerate model groups for help text: {exc}",

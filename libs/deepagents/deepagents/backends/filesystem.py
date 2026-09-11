@@ -40,11 +40,12 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     MAX_VIDEO_INPUT_BYTES,
+    InvalidGlobPatternError,
     _get_backend_read_file_type,
     check_empty_content,
     compile_grep_include_glob,
-    compile_recursive_glob,
     perform_string_replacement,
+    slice_read_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -421,7 +422,15 @@ class FilesystemBackend(BackendProtocol):
         Args:
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
+
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to read.
+
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty and
+                whitespace-only files return the empty-file reminder regardless
+                of `limit`, and binary files return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -456,39 +465,19 @@ class FilesystemBackend(BackendProtocol):
                 if fd >= 0:
                     os.close(fd)
 
-            total_lines: int | None = None
-            start_line: int | None = None
-            end_line: int | None = None
-            next_offset: int | None = None
             if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # `splitlines(keepends=True)` preserves whether the final line
-                    # has a terminator; joining with `""` round-trips the file's
-                    # trailing-newline state. Required so `edit()` can detect
-                    # EOF-newline mismatches in the model's `old_string`.
-                    lines = content.splitlines(keepends=True)
-                    start_idx = offset
-                    end_idx = min(start_idx + limit, len(lines))
-                    total_lines = len(lines)
+                    # Reuse the shared slicer so local reads paginate, clamp
+                    # degenerate bounds, and preserve trailing-newline state
+                    # exactly like the state and store backends. `edit()`
+                    # depends on that last property to detect EOF-newline
+                    # mismatches in the model's `old_string`.
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
-                    if start_idx >= total_lines:
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
-
-                    file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
-                    start_line = start_idx + 1
-                    end_line = end_idx
-                    next_offset = end_idx if end_idx < total_lines else None
-
-            return ReadResult(
-                file_data=file_data,
-                total_lines=total_lines,
-                start_line=start_line,
-                end_line=end_line,
-                next_offset=next_offset,
-            )
+            return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
@@ -625,7 +614,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
-    def grep(
+    def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
         pattern: str,
         path: str | None = None,
@@ -662,6 +651,16 @@ class FilesystemBackend(BackendProtocol):
         if context_lines < 0:
             msg = "context_lines must be non-negative"
             raise ValueError(msg)
+
+        # Validate the include glob before choosing a search path: the shared
+        # matcher refuses some patterns (e.g. any `..` segment) by raising, and
+        # the Python fallback compiles it outside any error handling. Reporting
+        # a refusal here keeps `grep` non-throwing on both paths -- and
+        # consistent, since ripgrep would otherwise treat it as a silent
+        # no-match.
+        glob_refusal = self._refused_grep_glob_error(glob)
+        if glob_refusal is not None:
+            return GrepResult(error=glob_refusal, matches=[])
 
         # Resolve base path
         try:
@@ -701,6 +700,25 @@ class FilesystemBackend(BackendProtocol):
                 newline=context_newline,
             )
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
+
+    @staticmethod
+    def _refused_grep_glob_error(glob: str | None) -> str | None:
+        """Return the refusal message for an include glob the shared matcher rejects.
+
+        `grep` validates the glob before choosing a search path: the shared
+        matcher refuses some patterns (e.g. any `..` segment) by raising
+        `InvalidGlobPatternError`, and the Python fallback compiles it outside
+        any error handling. Reporting a refusal up front keeps `grep`
+        non-throwing on both paths -- and consistent, since ripgrep would
+        otherwise treat the same glob as a silent no-match.
+        """
+        if glob is None:
+            return None
+        try:
+            compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as e:
+            return str(e)
+        return None
 
     def _apply_grep_context(
         self,
@@ -1283,22 +1301,40 @@ class FilesystemBackend(BackendProtocol):
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
+        Pattern matching uses the shared backend contract (same as grep
+        include-glob):
+
+        - Patterns without `/` match the basename at any depth under `path`
+          (e.g. `'*.py'` matches nested files).
+        - Patterns containing `/` match paths relative to `path`, with `**`
+          support. A leading `/` anchors to the search root.
+        - Leading-dot names need an explicit leading `.` in the pattern segment.
+          `**` does not descend into dot-directories, so `'*.yml'` matches
+          `.github/workflows/ci.yml` while `'**/*.yml'` does not.
+
         Args:
-            pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
+            pattern: Glob pattern to match files against (e.g., `'*.py'`,
+                `'**/*.txt'`, `'src/**/*.py'`).
             path: Base directory to search from.
 
                 Defaults to `root_dir` / `cwd`.
 
         Returns:
             `GlobResult` with matching files. `truncated` is `True` (and
-            `matches` is partial) when the walk exceeded its wall-clock budget.
+            `matches` is partial) when the walk exceeded its wall-clock budget;
+            `truncation_reason` is then `"budget"`. A pattern the matcher
+            refuses (including one containing `..`) is returned as
+            `GlobResult(error=..., matches=None)`, never raised.
         """
-        if pattern.startswith("/"):
-            pattern = pattern.lstrip("/")
-
-        if self.virtual_mode and ".." in Path(pattern).parts:
-            msg = "Path traversal not allowed in glob pattern"
-            raise ValueError(msg)
+        # Compile before touching the filesystem: a refused pattern -- brace
+        # expansion past its limit, or a `..` segment -- is a property of the
+        # pattern alone, and reporting it here keeps it distinguishable from the
+        # mid-walk aborts handled far below. `..` rejection lives in the shared
+        # matcher so every backend agrees; see `compile_grep_include_glob`.
+        try:
+            matches_pattern = compile_grep_include_glob(pattern)
+        except InvalidGlobPatternError as e:
+            return GlobResult(error=str(e), matches=None)
 
         try:
             search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
@@ -1318,12 +1354,10 @@ class FilesystemBackend(BackendProtocol):
         # than `rglob(pattern)`: `rglob(pattern)` only surfaces matches, so a
         # sparse or zero-match search over a huge tree traverses the whole tree
         # without ever checking the deadline. `rglob("*")` yields on every entry,
-        # letting us honour the deadline while matching with `rglob` semantics.
+        # letting us honour the deadline while applying the shared glob contract
+        # ourselves -- which is deliberately *not* `rglob` semantics: bare
+        # patterns are basename-scoped and dotfiles need an explicit leading `.`.
         try:
-            # Compiled inside the try so a malformed pattern (e.g. an unbalanced
-            # brace, now that brace expansion is enabled) returns a
-            # `GlobResult(error=...)` instead of raising to a direct caller.
-            matches_pattern = compile_recursive_glob(pattern)
             for matched_path in search_path.rglob("*"):
                 if time.monotonic() > deadline:
                     logger.warning(
@@ -1388,9 +1422,10 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
         except (OSError, RuntimeError, ValueError) as e:
-            # The pattern failed to compile, or `rglob()` raised mid-iteration.
-            # Return whatever was accumulated but as an error so callers don't
-            # trust it as complete.
+            # `rglob()` raised mid-iteration. Return whatever was accumulated but
+            # as an error so callers don't trust it as complete. Pattern refusals
+            # are handled before the walk starts, so "aborted partway" is now
+            # only ever said about a genuine mid-walk failure.
             display_path = path if path is not None else "<default>"
             msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
@@ -1398,7 +1433,11 @@ class FilesystemBackend(BackendProtocol):
             return GlobResult(error=msg, matches=results)
 
         results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results, truncated=truncated)
+        return GlobResult(
+            matches=results,
+            truncated=truncated,
+            truncation_reason="budget" if truncated else None,
+        )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.

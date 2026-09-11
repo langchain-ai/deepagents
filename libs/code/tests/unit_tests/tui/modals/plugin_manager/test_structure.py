@@ -1,10 +1,10 @@
 """Tests for the plugin manager modal structure."""
 
 import asyncio
-import inspect
+import contextlib
 import re
+import time
 from pathlib import Path
-from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,19 +26,10 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _status_lines,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
-    PluginTab,
     _ManagerState,
     _MarketplaceRow,
     _PluginRow,
 )
-from deepagents_code.tui.modals.plugin_manager.tabs import TAB_LABELS
-
-
-def test_plugin_manager_css_is_colocated_with_screen() -> None:
-    screen_file = Path(inspect.getfile(PluginManagerScreen))
-    css_path = screen_file.parent / PluginManagerScreen.CSS_PATH
-    assert PluginManagerScreen.CSS_PATH == "plugin_manager.tcss"
-    assert css_path.is_file(), f"expected colocated CSS at {css_path}"
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
@@ -105,6 +96,221 @@ async def test_plugin_manager_closes_without_mcp_reconnect() -> None:
         await pilot.pause()
 
     on_close.assert_called_once_with(None)
+
+
+async def test_plugin_manager_keeps_modal_mounted_through_reload_prompt() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def check_reload_required() -> bool:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    on_close = MagicMock()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, on_close)
+        await pilot.pause()
+        await pilot.press("escape")
+        await started.wait()
+
+        assert app.screen is screen
+        # The manager keeps its normal content painted while the check runs.
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Plugins"
+        )
+        await pilot.press("escape")
+        assert app.screen is screen
+
+        release.set()
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+        assert "plugin skills and MCP tools" in str(
+            screen.query_one("#plugin-manager-status", Static).render()
+        )
+        # The browsing chrome is gone, so no live plugin list sits under the
+        # prompt while its bindings own enter and escape.
+        assert not screen.query_one("#plugin-manager-options", OptionList).display
+        assert not screen.query_one("#plugin-manager-search", Input).display
+        assert not screen.query_one("#plugin-manager-tabs").display
+
+        # Type-to-search must not focus the hidden filter from the prompt.
+        await pilot.press("r")
+        await pilot.pause()
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+    # The second escape during the check neither restarted nor cancelled it.
+    assert calls == 1
+    on_close.assert_called_once_with("reload")
+
+
+async def test_plugin_manager_reload_prompt_escape_defers() -> None:
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is screen
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == ["later"]
+
+
+@pytest.mark.parametrize(
+    ("reload_required", "outcome"),
+    [(False, None), (None, "check_failed")],
+)
+async def test_plugin_manager_check_close_outcome(
+    *, reload_required: bool | None, outcome: str | None
+) -> None:
+    async def check_reload_required() -> bool | None:
+        await asyncio.sleep(0)
+        return reload_required
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == [outcome]
+
+
+async def test_plugin_manager_check_raise_closes_with_check_failed() -> None:
+    """A raising checker still closes the manager instead of latching it."""
+
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        msg = "snapshot exploded"
+        raise RuntimeError(msg)
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == ["check_failed"]
+
+
+async def test_plugin_manager_check_timeout_closes_with_check_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled check cannot hold the manager open with its keys locked out."""
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._CLOSE_CHECK_TIMEOUT_SECONDS",
+        0.01,
+    )
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        await release.wait()
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await asyncio.sleep(0.05)
+        await pilot.pause()
+
+        assert outcomes == ["check_failed"]
+        release.set()
+
+
+async def test_plugin_manager_reload_prompt_survives_resize() -> None:
+    """Resizing must not repaint the browsing chrome under the reload prompt."""
+
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, MagicMock())
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.resize_terminal(100, 30)
+        await pilot.pause()
+
+        # A repaint from any source (resize refits the marketplace divider, and
+        # background state refreshes land the same way) must not restore the
+        # browsing chrome under the prompt's bindings.
+        screen._refresh_view()
+        await pilot.pause()
+
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+        assert not screen.query_one("#plugin-manager-options", OptionList).display
+        assert not screen.query_one("#plugin-manager-tabs").display
+
+
+async def test_plugin_manager_details_escape_does_not_start_close_check() -> None:
+    """Backing out of a details view returns to the list without closing."""
+    calls = 0
+
+    async def check_reload_required() -> bool:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, MagicMock())
+        await pilot.pause()
+        screen._mode = "plugin_details"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert screen._mode == "list"
+        assert app.screen is screen
+
+    assert calls == 0
 
 
 async def test_plugin_search_filters_and_clears() -> None:
@@ -289,6 +495,8 @@ async def test_plugin_search_and_footer_fit_standard_terminal() -> None:
         assert search.display is True
         assert options.region.height >= 5
         assert options.region.bottom <= container.content_region.bottom
+        assert "Left/Right or Tab/Shift+Tab tabs" in str(help_text.content)
+        assert "Esc close" in str(help_text.content)
         assert help_text.region.height >= 1
         assert help_text.region.bottom <= container.content_region.bottom
 
@@ -388,32 +596,6 @@ async def test_plugin_tabs_are_mouse_clickable() -> None:
         assert screen._tab == "installed"
         assert screen.query_one("#plugin-tab-installed", Static).has_class("active")
         assert not screen.query_one("#plugin-tab-discover", Static).has_class("active")
-
-
-async def test_plugin_tabs_fit_and_are_clickable_in_narrow_terminal() -> None:
-    """Every tab remains inside the modal when horizontal space is limited."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(50, 30)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        tabs = screen.query_one("#plugin-manager-tabs")
-        tab_labels = list(tabs.query(".plugin-manager-tab"))
-
-        assert tab_labels
-        assert all(
-            label.region.x >= tabs.region.x and label.region.right <= tabs.region.right
-            for label in tab_labels
-        )
-
-        await pilot.click("#plugin-tab-marketplaces")
-        await pilot.pause()
-        assert screen._tab == "marketplaces"
-
-        await pilot.click("#plugin-tab-errors")
-        await pilot.pause()
-        assert screen._tab == "errors"
 
 
 async def test_installed_plugin_search_filters_and_handles_no_match() -> None:
@@ -662,25 +844,6 @@ async def test_tab_click_from_details_returns_to_list() -> None:
         assert screen._selected_marketplace is None
 
 
-def test_tab_labels_cover_every_plugin_tab() -> None:
-    """TAB_LABELS must stay in sync with the PluginTab literal.
-
-    `dict[PluginTab, str]` only constrains keys, not completeness, so a new tab
-    could otherwise KeyError at compose time.
-    """
-    assert set(TAB_LABELS) == set(get_args(PluginTab))
-
-
-def test_rendered_tabs_cover_every_plugin_tab() -> None:
-    """`_tabs` must stay in sync with the PluginTab literal.
-
-    The tab set is duplicated across PluginTab, TAB_LABELS, and `_tabs`. A tab
-    missing from `_tabs` would silently never render (compose iterates `_tabs`),
-    and one absent from TAB_LABELS would KeyError at compose time.
-    """
-    assert set(PluginManagerScreen._tabs) == set(get_args(PluginTab))
-
-
 async def test_refresh_state_clears_search_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -734,21 +897,227 @@ async def test_refresh_state_clears_search_query(
         assert {"detail:docs@official", "detail:tests@official"} <= ids
 
 
-async def test_tab_switch_ignored_during_add_marketplace() -> None:
-    """Switching tabs must not discard an in-progress marketplace source entry."""
+async def test_connection_refresh_preserves_search_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled MCP update leaves an in-progress plugin search intact."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
+    screen = PluginManagerScreen(mcp_connecting=True)
+    fresh = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Read/write documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
+        errors=(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+        lambda _info, **_kwargs: fresh,
+    )
 
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(screen)
         await pilot.pause()
-        screen._mode = "add_marketplace"
-        screen._refresh_view()
+        # Ensure the initial, search-clearing load has completed before this
+        # test exercises the later connection-only refresh.
+        await screen._refresh_state()
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        search = screen.query_one("#plugin-manager-search", Input)
+
+        await pilot.press("/", "d", "o", "c", "s")
+        await pilot.pause()
+        assert screen._search_query == "docs"
+        screen.update_connection_state([], mcp_connecting=False)
         await pilot.pause()
 
-        screen._select_tab("installed")
-        assert screen._mode == "add_marketplace"
-        assert screen._tab == "discover"
+        assert screen._search_query == "docs"
+        assert search.value == "docs"
+        assert options.option_count == 1
+
+
+async def test_connection_refresh_waits_for_initial_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled snapshot cannot be overwritten by the initial loading one."""
+    screen = PluginManagerScreen(mcp_connecting=True)
+    loop = asyncio.get_running_loop()
+    # `asyncio.Event`s set via `call_soon_threadsafe` (thread-safe on every
+    # supported Python), rather than `threading.Event`s awaited via `to_thread`:
+    # the await side must not depend on the default executor, which the blocked
+    # initial load can starve on a loaded CI runner.
+    initial_started = asyncio.Event()
+    # Read from the load thread and written once on the event loop; a one-element
+    # list acts as the cross-thread release cell (item assignment is atomic).
+    release_initial: list[bool] = []
+    snapshots: list[bool] = []
+    loading_state = _ManagerState((), (), (), ("loading",))
+    settled_state = _ManagerState((), (), (), ("settled",))
+
+    def load_state(
+        _info: object,
+        *,
+        mcp_connecting: bool,
+        loaded_plugin_ids: frozenset[str],  # noqa: ARG001
+    ) -> _ManagerState:
+        snapshots.append(mcp_connecting)
+        if mcp_connecting:
+            loop.call_soon_threadsafe(initial_started.set)
+            # Block the initial load (not a fixed sleep) so the ordering under
+            # test — connection refresh queued behind it — holds no matter how
+            # long CI takes to schedule the next await.
+            while not release_initial:
+                time.sleep(0.005)
+            return loading_state
+        return settled_state
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state", load_state
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
+        lambda: (False, "default"),
+    )
+    monkeypatch.setattr(screen, "_refresh_view", MagicMock())
+
+    async def wait_for(event: asyncio.Event, what: str) -> None:
+        """Await `event`, failing with context instead of hanging on a bug."""
+        try:
+            async with asyncio.timeout(10):
+                await event.wait()
+        except TimeoutError:
+            msg = f"timed out waiting for {what}; snapshots so far: {snapshots}"
+            raise AssertionError(msg) from None
+
+    initial_refresh = asyncio.create_task(screen._refresh_state())
+    try:
+        # The initial load has entered `load_state` and is holding the refresh lock.
+        await wait_for(initial_started, "the initial load to start")
+        # Queue the settled connection refresh behind the initial load's lock.
+        screen.update_connection_state([], mcp_connecting=False)
+        # Release the initial load; once it finishes, the queued settled refresh runs.
+        release_initial.append(True)
+        await initial_refresh
+        # Await the connection refresh task itself rather than polling `_state`:
+        # a `sleep(0)` spin can out-poll the resumed `to_thread` continuation on
+        # a starved CI executor, failing even though the refresh would have
+        # applied the settled snapshot moments later.
+        (connection_refresh,) = screen._refresh_tasks
+        try:
+            async with asyncio.timeout(10):
+                await connection_refresh
+        except TimeoutError:
+            msg = (
+                "timed out waiting for the settled refresh; "
+                f"snapshots so far: {snapshots}"
+            )
+            raise AssertionError(msg) from None
+        if screen._state != settled_state:
+            msg = (
+                f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
+            )
+            raise AssertionError(msg)
+    finally:
+        # Release the load thread even when a wait above timed out: a running
+        # `to_thread` callable cannot be cancelled, and an un-released worker
+        # would spin in `load_state` forever, hanging interpreter teardown on
+        # the executor instead of surfacing the assertion.
+        release_initial.append(True)
+        if not initial_refresh.done():
+            initial_refresh.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await initial_refresh
+
+    assert snapshots == [True, False]
+    assert screen._state == settled_state
+
+
+async def test_connection_refresh_failure_is_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed connection refresh tells the user instead of only logging.
+
+    A bare log would leave the manager on the pre-settle snapshot with no
+    on-screen signal — indistinguishable from the stale state the refresh
+    exists to clear.
+    """
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert screen._error is not None
+        assert "Reopen /plugins" in screen._error
+        # The error widget exists and `_refresh_view` ran, so the message
+        # reached the screen's error surface rather than only the log.
+        assert screen.query_one("#plugin-manager-error", Static) is not None
+
+
+async def test_connection_refresh_retires_its_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovered refresh clears its banner but leaves other errors alone."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+    empty = _ManagerState((), (), (), ())
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is not None
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+            lambda _info, **_kwargs: empty,
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is None
+
+        # An error from another source must survive a connection refresh.
+        screen._error = "Marketplace add failed."
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error == "Marketplace add failed."
 
 
 async def test_marketplace_add_stays_locked_during_state_refresh(
@@ -798,47 +1167,6 @@ async def test_marketplace_add_stays_locked_during_state_refresh(
         assert source.disabled is False
 
 
-async def test_search_hidden_without_filterable_plugins() -> None:
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        search = screen.query_one("#plugin-manager-search", Input)
-
-        screen._state = _ManagerState((), (), (), ())
-        screen._refresh_view()
-        assert search.display is False
-
-        screen._state = _ManagerState(
-            (), (), (_MarketplaceRow("official", "owner/official", 0, 0),), ()
-        )
-        screen._refresh_view()
-        assert search.display is False
-
-        screen._tab = "installed"
-        screen._refresh_view()
-        assert search.display is False
-
-        # Marketplaces and errors tabs never filter, even when populated.
-        screen._state = _ManagerState(
-            available_plugins=(),
-            installed_plugins=(),
-            marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
-            errors=("boom",),
-        )
-        screen._tab = "marketplaces"
-        screen._refresh_view()
-        assert search.display is False
-        assert screen.check_action("focus_search", ()) is False
-
-        screen._tab = "errors"
-        screen._refresh_view()
-        assert search.display is False
-        assert screen.check_action("focus_search", ()) is False
-
-
 def test_focus_search_binding_enabled_only_when_filter_visible() -> None:
     """`check_action` enables `/` only when the search filter is shown."""
     screen = PluginManagerScreen()
@@ -872,49 +1200,6 @@ def test_focus_search_binding_enabled_only_when_filter_visible() -> None:
     screen._state = _ManagerState((), (), (), ())
     assert screen.check_action("focus_search", ()) is False
     assert screen.check_action("cancel", ()) is True
-
-
-async def test_slash_does_not_focus_hidden_search() -> None:
-    """`/` must not steal focus when the filter is hidden (empty discover)."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        screen._state = _ManagerState((), (), (), ())
-        screen._refresh_view()
-        search = screen.query_one("#plugin-manager-search", Input)
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        assert search.display is False
-        assert options.has_focus
-
-        await pilot.press("/")
-        assert options.has_focus
-        assert not search.has_focus
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert screen._mode == "add_marketplace"
-
-
-async def test_slash_remains_typeable_in_add_marketplace_source() -> None:
-    """`/` must reach the marketplace source field (owner/repo, urls, paths)."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        screen._mode = "add_marketplace"
-        screen._refresh_view()
-        await pilot.pause()
-
-        source = screen.query_one("#plugin-marketplace-source", Input)
-        assert source.has_focus
-
-        await pilot.press("o", "w", "n", "e", "r", "/", "r", "e", "p", "o")
-        assert source.value == "owner/repo"
 
 
 def test_filtered_plugins_matches_display_label() -> None:
@@ -1006,41 +1291,6 @@ def test_marketplace_options_omit_divider_when_empty() -> None:
     assert [option.id for option in options] == ["add-marketplace"]
 
 
-def test_marketplace_options_pad_between_entries() -> None:
-    """Marketplace entries are separated by disabled spacers, like the plugins list."""
-    screen = PluginManagerScreen()
-    screen._tab = "marketplaces"
-    screen._state = _ManagerState(
-        available_plugins=(),
-        installed_plugins=(),
-        marketplaces=(
-            _MarketplaceRow("first", "owner/first", 1, 0),
-            _MarketplaceRow("second", "owner/second", 1, 0),
-            _MarketplaceRow("third", "owner/third", 1, 0),
-        ),
-        errors=(),
-    )
-
-    options = screen._current_options()
-
-    ids = [option.id for option in options]
-    assert ids == [
-        "add-marketplace",
-        "marketplace-divider",
-        "marketplace:first",
-        "marketplace-spacer:1",
-        "marketplace:second",
-        "marketplace-spacer:2",
-        "marketplace:third",
-    ]
-    spacers = [
-        option
-        for option in options
-        if option.id is not None and option.id.startswith("marketplace-spacer:")
-    ]
-    assert all(spacer.disabled for spacer in spacers)
-
-
 def test_healthy_marketplace_label_shows_available_plugins() -> None:
     row = _MarketplaceRow("healthy", "owner/healthy", 3, 0)
 
@@ -1086,7 +1336,7 @@ def test_installed_details_explain_unsupported_components() -> None:
     content = str(_installed_plugin_details_content(row))
 
     assert f"Status: {get_glyphs().checkmark} Enabled" in content
-    assert "No supported components (skills/MCP)." in content
+    assert "No supported components (skills/MCP/hooks)." in content
     assert "agents/" in content
     assert "commands/" in content
     assert "No components discovered." not in content
@@ -1106,7 +1356,7 @@ def test_installed_details_pending_reload_not_enabled() -> None:
 
     content = str(_installed_plugin_details_content(row))
 
-    assert "Status: Installed · pending /reload" in content
+    assert f"Status: Installed {get_glyphs().separator} pending /reload" in content
     assert "Run /reload" in content
     assert f"{get_glyphs().checkmark} Enabled" not in content
 

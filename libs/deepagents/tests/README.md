@@ -8,7 +8,7 @@
 
 ### Optional
 
-- **`LANGSMITH_API_KEY`** or **`LANGCHAIN_API_KEY`** - Enables LangSmith tracing for test runs
+- **`LANGSMITH_API_KEY`** - Enables LangSmith tracing for test runs
 
 ## Test Utilities
 

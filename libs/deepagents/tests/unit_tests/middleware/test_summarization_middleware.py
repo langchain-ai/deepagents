@@ -6,10 +6,9 @@ import hashlib
 import inspect
 import re
 import time
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
@@ -207,12 +206,7 @@ class MockBackend(BackendProtocol):
 
 
 def make_mock_runtime() -> MagicMock:
-    """Create a mock `Runtime`.
-
-    Note: `Runtime` does not have a `config` attribute. Config is accessed
-    via `get_config()` from langgraph's contextvar. Use `mock_get_config()`
-    to control thread_id in tests.
-    """
+    """Create a mock `Runtime`."""
     runtime = MagicMock()
     runtime.context = {}
     runtime.stream_writer = MagicMock()
@@ -220,22 +214,6 @@ def make_mock_runtime() -> MagicMock:
     # Explicitly don't set runtime.config - it doesn't exist on real Runtime
     del runtime.config
     return runtime
-
-
-@contextmanager
-def mock_get_config(thread_id: str | None = "test-thread-123") -> Generator[None, None, None]:
-    """Context manager to mock `get_config()` with a specific `thread_id`.
-
-    Args:
-        thread_id: The `thread_id` to return, or `None` to simulate missing config.
-
-    Yields:
-        `None` - use as a context manager around test code.
-    """
-    config = {"configurable": {"thread_id": thread_id}} if thread_id is not None else {"configurable": {}}
-
-    with patch("deepagents.middleware.summarization.get_config", return_value=config):
-        yield
 
 
 def make_mock_model(summary_response: str = "This is a test summary.") -> MagicMock:
@@ -246,6 +224,13 @@ def make_mock_model(summary_response: str = "This is a test summary.") -> MagicM
     """
     model = MagicMock()
     model.invoke.return_value = MagicMock(text=summary_response)
+    # `SummarizationMiddleware` wraps the model in `.with_retry()` before calling
+    # it (langchain #39268). Delegate the wrapper back to this mock so the
+    # configured `invoke`/`ainvoke` return values and call assertions still apply.
+    model.with_retry.return_value = model
+    # Async summary calls `await model.ainvoke(...)`, so the async path must be
+    # awaitable. `AsyncMock` returns the configured value from an awaitable.
+    model.ainvoke = AsyncMock(return_value=MagicMock(text=summary_response))
     model._llm_type = "test-model"
     model.profile = {"max_input_tokens": 100000}
     model._get_ls_params.return_value = {"ls_provider": "test"}
@@ -396,8 +381,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            result, _ = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should have triggered summarization
         assert isinstance(result, ExtendedModelResponse)
@@ -407,7 +391,7 @@ class TestOffloadingBasic:
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
-        assert path == "/conversation_history/test-thread-123.md"
+        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", path)
 
         assert "## Summarized at" in content
         assert '<message type="human">' in content or '<message type="ai">' in content
@@ -442,8 +426,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         assert len(backend.write_calls) == 1
         _, content = backend.write_calls[0]
@@ -486,8 +469,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert media_uploads == [(expected_path, "<binary>")]
@@ -547,8 +529,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         # Identical images are deduped — only one upload despite three messages.
         image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
@@ -589,15 +570,14 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         image_uploads = [(p, c) for p, c in mock_backend.write_calls if p.startswith("/custom/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path
 
         archive_write = next((p, c) for p, c in mock_backend.write_calls if p.endswith(".md"))
-        assert archive_write[0] == "/custom/conversation_history/test-thread-123.md"
+        assert re.fullmatch(r"/custom/conversation_history/session_[0-9a-f]{32}\.md", archive_write[0])
         assert expected_path in archive_write[1]
 
     def test_offload_per_block_upload_failure(self) -> None:
@@ -655,7 +635,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+        with pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         # Only image A was uploaded — B's upload raised.
@@ -714,7 +694,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+        with pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
@@ -756,7 +736,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+        with pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
@@ -794,8 +774,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert image_uploads == [(expected_path, "<binary>")]
@@ -832,7 +811,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+        with pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         # Nothing was uploaded (decode failed before any upload).
@@ -873,8 +852,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert media_uploads == [(expected_path, "<binary>")]
@@ -940,8 +918,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert media_uploads == [(expected_path, "<binary>")]
@@ -985,8 +962,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
+        call_wrap_model_call(middleware, state, runtime)
 
         # upload_files is called exactly once even though both offload and
         # summary consume the result.
@@ -1191,20 +1167,21 @@ class TestSummaryMessageFormat:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(thread_id="test-thread"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
         assert result.command.update is not None
         assert modified_request is not None
 
+        session_id = result.command.update["_summarization_session_id"]
+
         # Get the summary message (first in modified messages list)
         summary_msg = modified_request.messages[0]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
-        assert "/conversation_history/test-thread.md" in summary_msg.content
+        assert f"/conversation_history/{session_id}.md" in summary_msg.content
 
         # Should include the summary in XML tags
         assert "<summary>" in summary_msg.content
@@ -1300,20 +1277,21 @@ class TestSummaryMessageFormat:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(thread_id="multi-summarize-thread"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
         assert result.command.update is not None
         assert modified_request is not None
 
+        session_id = result.command.update["_summarization_session_id"]
+
         # The summary message should be the first message
         summary_msg = modified_request.messages[0]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
-        assert "/conversation_history/multi-summarize-thread.md" in summary_msg.content
+        assert f"/conversation_history/{session_id}.md" in summary_msg.content
 
         # Should include the summary in XML tags
         assert "<summary>" in summary_msg.content
@@ -1382,8 +1360,7 @@ def test_system_message_counts_for_trigger_only() -> None:
         captured_request = req
         return AIMessage(content="Mock response")
 
-    with mock_get_config():
-        result = middleware.wrap_model_call(request, handler)
+    result = middleware.wrap_model_call(request, handler)
 
     assert isinstance(result, ExtendedModelResponse)
     assert seen_system["counted"] is True
@@ -1397,7 +1374,7 @@ def test_system_message_counts_for_trigger_only() -> None:
 async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     seen = {"tools": False, "system": False}
 
     def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
@@ -1434,8 +1411,7 @@ async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
         captured_request = req
         return AIMessage(content="Mock response")
 
-    with mock_get_config():
-        result = await middleware.awrap_model_call(request, handler)
+    result = await middleware.awrap_model_call(request, handler)
 
     assert isinstance(result, ExtendedModelResponse)
     assert seen["tools"]
@@ -1448,7 +1424,7 @@ async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
 async def test_async_system_message_counts_for_truncate_trigger() -> None:
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
     def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
         if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -1570,55 +1546,72 @@ class TestBackendFailureHandling:
         assert event["file_path"] is None
 
 
-class TestThreadIdExtraction:
-    """Tests for thread ID extraction via `get_config()`."""
+class TestSessionIdResolution:
+    """Tests for the internal session id that names the offload history file."""
 
-    def test_thread_id_from_config(self) -> None:
-        """Test that `thread_id` is correctly extracted from `get_config()`."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
+    def _make_middleware(self, backend: MockBackend) -> SummarizationMiddleware:
+        return SummarizationMiddleware(
+            model=make_mock_model(),
             backend=backend,
             trigger=("messages", 5),
             keep=("messages", 2),
         )
 
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        with mock_get_config(thread_id="custom-thread-456"):
-            call_wrap_model_call(middleware, state, runtime)
-
-        path, _ = backend.write_calls[0]
-        assert path == "/conversation_history/custom-thread-456.md"
-
-    def test_fallback_thread_id_when_missing(self) -> None:
-        """Test that a fallback ID is generated when `thread_id` is not in config."""
+    def test_generates_and_persists_session_id(self) -> None:
+        """With no id in state, a fresh session id is generated and persisted."""
         backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
+        middleware = self._make_middleware(backend)
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(thread_id=None):
-            call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         path, _ = backend.write_calls[0]
+        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", path)
+        # The id is persisted so later turns append to the same file.
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        persisted = result.command.update["_summarization_session_id"]
+        assert path == f"/conversation_history/{persisted}.md"
 
-        # Should have a generated session ID in the path
-        assert "session_" in path
-        assert path.endswith(".md")
+    def test_reuses_persisted_session_id(self) -> None:
+        """An id already in state is reused so history appends to one file."""
+        backend = MockBackend()
+        middleware = self._make_middleware(backend)
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast(
+            "AgentState[Any]",
+            {"messages": messages, "_summarization_session_id": "session_deadbeef"},
+        )
+        runtime = make_mock_runtime()
+
+        call_wrap_model_call(middleware, state, runtime)
+
+        path, _ = backend.write_calls[0]
+        assert path == "/conversation_history/session_deadbeef.md"
+
+    def test_independent_invocations_do_not_share_history_file(self) -> None:
+        """Independent invocations over one backend each get their own history file.
+
+        A parent and its sub-agents share a backend but have isolated state, so
+        each mints its own session id rather than overwriting a shared file.
+        """
+        backend = MockBackend()
+
+        # Two invocations, each with its own state and no session id in it --
+        # exactly the parent/sub-agent situation once private state is stripped.
+        for _ in range(2):
+            middleware = self._make_middleware(backend)
+            state = cast("AgentState[Any]", {"messages": make_conversation_messages(num_old=6, num_recent=2)})
+            call_wrap_model_call(middleware, state, make_mock_runtime())
+
+        paths = [p for p, _ in backend.write_calls]
+        assert len(paths) == 2
+        assert len(set(paths)) == 2, f"history files collided: {paths}"
+        assert all(re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", p) for p in paths)
 
 
 class TestAsyncBehavior:
@@ -1630,7 +1623,7 @@ class TestAsyncBehavior:
         backend = MockBackend()
         mock_model = make_mock_model()
         # Mock the async create summary
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1655,7 +1648,7 @@ class TestAsyncBehavior:
         """Test that async summarization warns on backend failure but still summarizes."""
         backend = MockBackend(should_fail=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1746,7 +1739,7 @@ class TestDownloadFilesException:
         """Test that async summarization continues when adownload_files raises."""
         backend = MockBackend(download_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1808,7 +1801,7 @@ class TestWriteEditException:
         """
         backend = MockBackend(write_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1868,7 +1861,7 @@ class TestWriteEditException:
         existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"
         backend = MockBackend(existing_content=existing, write_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1951,7 +1944,7 @@ class TestCutoffIndexEdgeCases:
         """Test that async `abefore_model` returns `None` when `cutoff_index <= 0`."""
         backend = MockBackend()
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -2396,8 +2389,7 @@ def test_truncate_before_summarization() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    with mock_get_config(thread_id="test-thread"):
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     assert isinstance(result, ExtendedModelResponse)
     assert result.command is not None
@@ -2752,8 +2744,7 @@ def test_chained_summarization_cutoff_index() -> None:
 
     # --- Round 1: first summarization, no previous event ---
     state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     assert isinstance(result, ExtendedModelResponse)
     event_1 = result.command.update["_summarization_event"]
@@ -2768,8 +2759,7 @@ def test_chained_summarization_cutoff_index() -> None:
         "AgentState[Any]",
         {"messages": make_state_messages(14), "_summarization_event": event_1},
     )
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     assert isinstance(result, ExtendedModelResponse)
     event_2 = result.command.update["_summarization_event"]
@@ -2784,8 +2774,7 @@ def test_chained_summarization_cutoff_index() -> None:
         "AgentState[Any]",
         {"messages": make_state_messages(20), "_summarization_event": event_2},
     )
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     assert isinstance(result, ExtendedModelResponse)
     event_3 = result.command.update["_summarization_event"]
@@ -2830,8 +2819,7 @@ def test_context_overflow_triggers_summarization() -> None:
 
     request = make_model_request(state, runtime)
 
-    with mock_get_config():
-        result = middleware.wrap_model_call(request, handler_with_overflow)
+    result = middleware.wrap_model_call(request, handler_with_overflow)
 
     # Should have triggered summarization as fallback
     assert isinstance(result, ExtendedModelResponse)
@@ -2851,7 +2839,7 @@ async def test_async_context_overflow_triggers_summarization() -> None:
     """Test that ContextOverflowError triggers fallback to summarization (async)."""
     backend = MockBackend()
     mock_model = make_mock_model(summary_response="Fallback summary")
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async fallback summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async fallback summary"))
 
     middleware = SummarizationMiddleware(
         model=mock_model,
@@ -2877,8 +2865,7 @@ async def test_async_context_overflow_triggers_summarization() -> None:
 
     request = make_model_request(state, runtime)
 
-    with mock_get_config():
-        result = await middleware.awrap_model_call(request, handler_with_overflow)
+    result = await middleware.awrap_model_call(request, handler_with_overflow)
 
     # Should have triggered summarization as fallback
     assert isinstance(result, ExtendedModelResponse)
@@ -2926,8 +2913,7 @@ def test_profile_inference_triggers_summary() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
-        result, _ = call_wrap_model_call(middleware, state, runtime)
+    result, _ = call_wrap_model_call(middleware, state, runtime)
 
     # Should not trigger summarization
     assert not isinstance(result, ExtendedModelResponse)
@@ -2945,8 +2931,7 @@ def test_profile_inference_triggers_summary() -> None:
         token_counter=token_counter,
     )
 
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     # Should trigger summarization
     assert isinstance(result, ExtendedModelResponse)
@@ -2978,8 +2963,7 @@ def test_profile_inference_triggers_summary() -> None:
         token_counter=token_counter,
     )
 
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     assert isinstance(result, ExtendedModelResponse)
     assert modified_request is not None
@@ -2998,8 +2982,7 @@ def test_profile_inference_triggers_summary() -> None:
         token_counter=token_counter,
     )
 
-    with mock_get_config():
-        result, _ = call_wrap_model_call(middleware, state, runtime)
+    result, _ = call_wrap_model_call(middleware, state, runtime)
 
     # Should not trigger summarization since we'd keep everything anyway
     assert not isinstance(result, ExtendedModelResponse)
@@ -3065,8 +3048,7 @@ def test_usage_metadata_trigger() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
-        result, _ = call_wrap_model_call(middleware, state, runtime)
+    result, _ = call_wrap_model_call(middleware, state, runtime)
 
     # Should trigger summarization because usage_metadata shows we exceeded 10k tokens
     assert isinstance(result, ExtendedModelResponse)
@@ -3095,9 +3077,10 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
     async def slow_offload(
         be: Any,  # noqa: ANN401
         msgs: Any,  # noqa: ANN401
+        session_id: str,
     ) -> str | None:
         await asyncio.sleep(delay)
-        return await original_offload(be, msgs)
+        return await original_offload(be, msgs, session_id)
 
     async def slow_summary(
         msgs: Any,  # noqa: ANN401
@@ -3112,10 +3095,9 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
-        start = time.monotonic()
-        result, _ = await call_awrap_model_call(middleware, state, runtime)
-        elapsed = time.monotonic() - start
+    start = time.monotonic()
+    result, _ = await call_awrap_model_call(middleware, state, runtime)
+    elapsed = time.monotonic() - start
 
     assert isinstance(result, ExtendedModelResponse)
     # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay.
@@ -3419,7 +3401,7 @@ async def test_async_offloads_base64_images() -> None:
 
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
     middleware = SummarizationMiddleware(
         model=mock_model,
@@ -3449,8 +3431,7 @@ async def test_async_offloads_base64_images() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
-        await call_awrap_model_call(middleware, state, runtime)
+    await call_awrap_model_call(middleware, state, runtime)
 
     # aupload_files delegates to upload_files in MockBackend, so write_calls captures it.
     # Identical images are deduped — only one upload despite three messages.
@@ -3495,7 +3476,7 @@ async def test_async_upload_response_error_writes_placeholder() -> None:
 
     backend = ResponseErrorBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     middleware = SummarizationMiddleware(
         model=mock_model,
         backend=backend,
@@ -3511,7 +3492,7 @@ async def test_async_upload_response_error_writes_placeholder() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+    with pytest.warns(UserWarning, match="could not be offloaded"):
         await call_awrap_model_call(middleware, state, runtime)
 
     image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
@@ -3539,7 +3520,7 @@ async def test_async_all_uploads_raise_writes_placeholders() -> None:
 
     backend = RaisingUploadBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     middleware = SummarizationMiddleware(
         model=mock_model,
         backend=backend,
@@ -3554,7 +3535,7 @@ async def test_async_all_uploads_raise_writes_placeholders() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+    with pytest.warns(UserWarning, match="could not be offloaded"):
         await call_awrap_model_call(middleware, state, runtime)
 
     archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -59,7 +59,10 @@ class CommandHandlerSpec(_ConfigModel):
             raise ValueError(msg)
 
 
-HandlerSpec: TypeAlias = CommandHandlerSpec
+# Extension point for future handler kinds, kept as a plain assignment rather
+# than a `type` alias: a `type` alias becomes the schema identity and renames
+# the generated `$defs` entry from `CommandHandlerSpec` to `HandlerSpec`.
+HandlerSpec = CommandHandlerSpec
 
 
 class MatcherGroup(_ConfigModel):

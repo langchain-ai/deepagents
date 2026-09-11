@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from deepagents_code.plugins.models import PluginInstance
 
 logger = logging.getLogger(__name__)
 
-SkillPath: TypeAlias = str
-SkillLabel: TypeAlias = str
-SkillNamespace: TypeAlias = str
-DirectorySkillSource: TypeAlias = tuple[SkillPath, SkillLabel]
-PluginSkillSource: TypeAlias = tuple[SkillPath, SkillLabel, SkillNamespace]
-CodeSkillSource: TypeAlias = DirectorySkillSource | PluginSkillSource
+# Documentation aliases: these name the role each `str` plays in the source
+# tuples below, but they are plain aliases, not `NewType`s. Any `str` satisfies
+# all three, so swapping a label for a namespace still type-checks.
+type SkillPath = str
+type SkillLabel = str
+type SkillNamespace = str
+type DirectorySkillSource = tuple[SkillPath, SkillLabel]
+type PluginSkillSource = tuple[SkillPath, SkillLabel, SkillNamespace]
+type CodeSkillSource = DirectorySkillSource | PluginSkillSource
 
 
 def namespaced_skill_name(

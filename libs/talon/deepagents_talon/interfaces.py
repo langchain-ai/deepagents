@@ -12,6 +12,9 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_talon.authorization import AuthorizationHandler
+    from deepagents_talon.background import BackgroundSubagents
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelMessage:
@@ -129,12 +132,20 @@ class AgentRequest:
         metadata: Runtime context supplied by the triggering component.
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
+        authorization_handler: Optional callback used for authorization events
+            that must be handled outside model context.
     """
 
     conversation_id: str
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
     approval_handler: ToolApprovalHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+    authorization_handler: AuthorizationHandler | None = field(
         default=None,
         kw_only=True,
         repr=False,
@@ -150,10 +161,15 @@ class AgentResult:
         text: Text to deliver to the triggering channel. Empty text means the
             runtime has no message to send.
         metadata: Runtime metadata for future observability integrations.
+        background_results: Background result ids this turn consumed, which the
+            runtime has already acknowledged. A host that then discards the turn's
+            reply hands these back through `BackgroundSubagents.requeue`, so work
+            the user never heard about is offered to the next turn instead.
     """
 
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    background_results: tuple[str, ...] = ()
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]
@@ -260,4 +276,41 @@ class AgentRuntime(Protocol):
 
         Returns:
             Agent output for the host to route back to the trigger.
+        """
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Record an interrupted turn after its latest committed checkpoint."""
+
+
+@runtime_checkable
+class MCPReloadableRuntime(Protocol):
+    """Optional runtime capability for reloading MCP configuration."""
+
+    async def reload_mcp_configuration(self) -> None:
+        """Reload MCP tools without restarting the runtime."""
+
+
+@runtime_checkable
+class BackgroundRuntime(Protocol):
+    """Optional runtime capability for expendable background subagents."""
+
+    @property
+    def background(self) -> BackgroundSubagents:
+        """Workers whose results need a main-agent turn."""
+
+
+@runtime_checkable
+class ConversationHistoryRuntime(Protocol):
+    """Optional runtime support for erasing conversation history."""
+
+    @property
+    def history_enabled(self) -> bool:
+        """Whether persistent conversation archiving is configured."""
+
+    async def clear_history(self, channel: str, chat: str) -> None:
+        """Delete all sessions for a trusted channel/chat pair.
+
+        Args:
+            channel: Channel provider identifier.
+            chat: Channel-specific conversation identifier.
         """

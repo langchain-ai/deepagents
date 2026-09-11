@@ -2,29 +2,67 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from collections import Counter
+from typing import TYPE_CHECKING, Any
 
+from textual.containers import Horizontal
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    import asyncio
+    from pathlib import Path
 
     from textual import events
+    from textual.app import ComposeResult
     from textual.widget import Widget
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
-ResultT = TypeVar("ResultT")
+logger = logging.getLogger(__name__)
 
 _UNSET: Any = object()
 
+MEDIA_UNSUPPORTED_TOAST_PREFIX = "Only text is supported here"
+"""Leading clause of the toast shown when media is dropped on an inline prompt.
 
-class InlinePromptCompletion(Generic[ResultT]):
+Public so tests can assert on the toast without duplicating the whole message,
+which names the discarded files (see `_media_unsupported_toast`).
+"""
+
+
+def _media_unsupported_toast(paths: list[Path]) -> str:
+    """Build the toast for a rejected media drop.
+
+    Names each discarded file rather than only the media ones, because the whole
+    payload is swallowed — a mixed drop otherwise loses its non-media paths with
+    nothing to explain where they went. Paths are identified by name, falling
+    back to the full path when two drops share a basename, so the listing always
+    distinguishes every file it counts.
+
+    Args:
+        paths: All resolved paths in the rejected payload. Never empty — the
+            caller only builds a toast once it has found media.
+
+    Returns:
+        Toast text naming the files that were not inserted.
+    """
+    unique = list(dict.fromkeys(paths))
+    name_counts = Counter(path.name for path in unique)
+    labels = [
+        path.name if name_counts[path.name] == 1 else str(path) for path in unique
+    ]
+    noun = "file" if len(labels) == 1 else "files"
+    listing = ", ".join(labels)
+    return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {listing}."
+
+
+class InlinePromptCompletion[ResultT]:
     """Resolve an inline prompt result at most once.
 
     `set_future` and `resolve` may be called in either order: a result
@@ -123,21 +161,13 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         now = time.monotonic()
 
         # Drive the shared paste-burst state machine so a paste replayed as rapid
-        # key events (no bracketed paste) stays grouped and can be collapsed.
+        # key events (no bracketed paste) stays grouped without delaying typing.
         if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        self._track_burst_run(event, now)
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()
@@ -167,9 +197,121 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
 
         await super()._on_key(event)
 
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
+        self._check_burst_run_for_promotion()
 
-class InlinePromptOption(Static):
-    """Render a selectable inline-prompt option with a cursor."""
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Reject a dragged media file, else defer to shared paste handling."""
+        # Flush first, matching the base handler: a rejection returns early, and
+        # leaving a pending burst behind would let its timer insert the buffered
+        # keystrokes after the paste was already refused.
+        if self._paste_burst_buffer:
+            await self._flush_paste_burst()
+
+        if await self._reject_dropped_media(event.text):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Don't call super() here — Textual dispatches a message to *every*
+        # class in the MRO that defines `_on_paste`, in order, so the base
+        # handlers already run after this one returns and super() would invoke
+        # them a second time. The `prevent_default()` above is what stops that
+        # walk on the rejection path.
+
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Reject a media file replayed as a key burst, else defer to the base."""
+        if await self._reject_dropped_media(payload):
+            return
+        await super()._dispatch_burst_payload(payload)
+
+    async def _reject_dropped_media(self, text: str) -> bool:
+        """Toast and swallow a dropped payload containing an image or video.
+
+        Free-text prompts accept only text, so a dragged media file is rejected
+        here instead of inserting its path. Detection requires the payload to
+        resolve to files that exist on disk in the shape a terminal emits for a
+        drop, so free-form prose is unaffected (see `dropped_payload_paths`).
+
+        The whole payload is swallowed when any path is media, so a mixed drop
+        does not half-insert; the toast names each discarded file to make that
+        visible.
+
+        Args:
+            text: Raw pasted/dropped text payload.
+
+        Returns:
+            `True` when a media payload was detected and swallowed.
+        """
+        from deepagents_code.input import (
+            dropped_payload_paths,
+            looks_like_dropped_payload,
+        )
+        from deepagents_code.media_utils import is_media_path
+
+        # Screen with the pure string guard before hopping to a thread: the
+        # thread hop is an `await`, and `_dispatch_burst_payload` runs from the
+        # burst flush timer's own task rather than the widget message queue, so
+        # yielding there lets a concurrent keystroke land ahead of the buffered
+        # payload. Ordinary typing and pasting never pays that cost now.
+        if not looks_like_dropped_payload(text):
+            return False
+
+        try:
+            paths = await asyncio.to_thread(dropped_payload_paths, text)
+        except Exception:
+            # The parser guards its own filesystem probes, but
+            # `_resolve_with_unicode_space_variants` calls `expanduser()` and
+            # `Path.cwd()` unguarded, so a deleted working directory or an
+            # unresolvable home still surfaces here. Log at warning (not debug)
+            # so it survives without DEEPAGENTS_CODE_DEBUG, since falling
+            # through re-inserts the path this method exists to reject. The
+            # message never includes the payload, though an OSError traceback
+            # may name a path.
+            logger.warning(
+                "Media-payload detection failed; treating paste as text",
+                exc_info=True,
+            )
+            return False
+        if not any(is_media_path(path) for path in paths):
+            return False
+        if not self.is_mounted:
+            # The prompt was resolved while the probe was in flight; `self.app`
+            # still resolves via the active-app ContextVar, so notifying here
+            # would toast about a field the user can no longer see.
+            return True
+        self.app.notify(
+            _media_unsupported_toast(paths),
+            severity="warning",
+            timeout=5,
+            markup=False,
+        )
+        return True
+
+
+class InlinePromptOption(Horizontal):
+    """Render a selectable inline-prompt option with a cursor gutter."""
+
+    DEFAULT_CSS = """
+    InlinePromptOption {
+        height: auto;
+    }
+
+    InlinePromptOption > .inline-prompt-option-cursor {
+        width: 2;
+        height: 1;
+    }
+
+    InlinePromptOption > .inline-prompt-option-label {
+        width: 1fr;
+        height: auto;
+    }
+
+    InlinePromptOption.inline-prompt-option-selected > .inline-prompt-option-label {
+        color: $primary;
+    }
+    """
 
     def __init__(
         self,
@@ -177,7 +319,7 @@ class InlinePromptOption(Static):
         index: int,
         *,
         selected: bool = False,
-        selected_class: str | None = None,
+        selected_class: str | None = "inline-prompt-option-selected",
         **kwargs: Any,
     ) -> None:
         """Initialize an option.
@@ -187,15 +329,32 @@ class InlinePromptOption(Static):
             index: Position in its owning prompt's option list.
             selected: Whether to render the option selected initially.
             selected_class: CSS class applied while the option is highlighted.
-            **kwargs: Additional `Static` arguments.
+            **kwargs: Additional `Horizontal` arguments.
         """
         self.option_index = index
         self._cursor_visible = selected
         self._highlighted = selected
         self._text = text
         self._selected_class = selected_class
-        super().__init__(self._render(), **kwargs)
+        self._cursor_widget: Static | None = None
+        super().__init__(**kwargs)
         self._sync_selected_class()
+
+    def compose(self) -> ComposeResult:
+        """Compose the cursor gutter and independently wrapping label.
+
+        Yields:
+            The fixed cursor gutter followed by the wrapping label.
+        """
+        self._cursor_widget = Static(
+            self._cursor_content(),
+            classes="inline-prompt-option-cursor",
+        )
+        yield self._cursor_widget
+        yield Static(
+            Content.from_markup("$text", text=self._text),
+            classes="inline-prompt-option-label",
+        )
 
     @property
     def selected(self) -> bool:
@@ -219,13 +378,19 @@ class InlinePromptOption(Static):
         """
         self._cursor_visible = cursor
         self._highlighted = highlighted
-        self.update(self._render())
+        if self._cursor_widget is not None:
+            self._cursor_widget.update(self._cursor_content())
         self._sync_selected_class()
 
-    def _render(self) -> Content:
+    def _cursor_content(self) -> Content:
         glyphs = get_glyphs()
-        prefix = f"{glyphs.cursor} " if self._cursor_visible else "  "
-        return Content.from_markup("$prefix$text", prefix=prefix, text=self._text)
+        marker = glyphs.cursor if self._cursor_visible else self._unselected_marker
+        return Content(f"{marker} ")
+
+    @property
+    def _unselected_marker(self) -> str:
+        """Marker shown in the cursor gutter when this option is not selected."""
+        return " "
 
     def _sync_selected_class(self) -> None:
         if self._selected_class is None:

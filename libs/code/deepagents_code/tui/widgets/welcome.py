@@ -29,13 +29,15 @@ from deepagents_code._env_vars import (
 )
 from deepagents_code._version import __version__
 from deepagents_code.config import (
-    _get_editable_install_path,
+    _assemble_langsmith_thread_url,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_glyphs,
     get_langsmith_project_name,
     get_langsmith_replica_project,
+    is_ascii_mode,
 )
+from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,9 @@ rather than by the app, so link styles use bold instead of a parsed color."""
 
 _LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
 """UTM source tag appended to LangSmith project URLs in the welcome banner."""
+
+_THREAD_COPY_LABEL: Final[str] = "Thread ID"
+"""Label used to word the toast shown after copying the thread ID."""
 
 
 def _langsmith_project_link(project_url: str) -> str:
@@ -170,8 +175,9 @@ class WelcomeBanner(Static):
     active model
     (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
     opt-in), LangSmith tracing project and its replica (each clickable once its
-    URL resolves), thread ID (debug mode only), and the MCP tool count. MCP
-    server warnings and the editable-install path follow.
+    URL resolves), thread ID (debug mode only; click to copy, with an
+    `(open in langsmith)` trace link once the project URL resolves), and the MCP
+    tool count. MCP server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -183,7 +189,7 @@ class WelcomeBanner(Static):
     DEFAULT_CSS = """
     WelcomeBanner {
         height: auto;
-        border: round $primary;
+        border: solid $primary;
         padding: 0 2;
         margin-bottom: 1;
     }
@@ -229,6 +235,7 @@ class WelcomeBanner(Static):
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        self._version = __version__
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id = thread_id
         self._mcp_tool_count = mcp_tool_count
@@ -257,12 +264,19 @@ class WelcomeBanner(Static):
     def on_mount(self) -> None:
         """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
+        self._update_border()
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
+        self._update_border()
         self.update(self._build_banner())
+
+    def _update_border(self) -> None:
+        """Apply the current theme color to the ASCII border."""
+        if is_ascii_mode():
+            self.styles.border = ("ascii", theme.get_theme_colors(self).primary)
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""
@@ -301,6 +315,23 @@ class WelcomeBanner(Static):
             return None
         return self._project_urls.get(project)
 
+    def _thread_url(self) -> str | None:
+        """Return the LangSmith trace URL for the current thread.
+
+        Reuses the project URL already resolved for the tracing row, so no extra
+        lookup is made.
+
+        Returns:
+            Thread trace URL, or `None` when the thread ID or project URL is
+                unavailable.
+        """
+        if not self._cli_thread_id:
+            return None
+        project_url = self._project_url(self._project_name)
+        if not project_url:
+            return None
+        return _assemble_langsmith_thread_url(project_url, self._cli_thread_id)
+
     def update_model(self, *, provider: str, model: str) -> None:
         """Track a new model and re-render when it is displayed.
 
@@ -333,6 +364,21 @@ class WelcomeBanner(Static):
         if self._show_thread_id:
             self.update(self._build_banner())
 
+    def update_version(self, version: str) -> None:
+        """Track a new version and re-render when it is displayed.
+
+        The banner then advertises a version installed on disk rather than the
+        one this process is running, until the user relaunches.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        # Tracked even when hidden, so the value stays truthful if the row is
+        # ever re-enabled — matching the other `update_*` methods above.
+        self._version = version
+        if not self._hide_version:
+            self.update(self._build_banner())
+
     def set_connected(
         self,
         mcp_tool_count: int = 0,
@@ -355,13 +401,42 @@ class WelcomeBanner(Static):
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self.update(self._build_banner())
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open style-embedded hyperlinks on single click."""
+    def on_click(self, event: Click) -> None:
+        """Copy a marked span (e.g. the thread ID), else open a link span.
+
+        Copy spans never carry a link, so the two branches cannot both apply.
+        """
+        target = copy_span_target(event.style)
+        if target is not None:
+            event.stop()
+            self._copy_span_text(*target)
+            return
         open_style_link(event)
 
+    def _copy_span_text(self, text: str, label: str) -> None:
+        """Copy a clicked span's text to the clipboard with a toast.
+
+        Args:
+            text: The span text to copy.
+            label: The field label used to word the success toast.
+        """
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self.app, text)
+        if success:
+            self.app.notify(
+                f"{label} copied", severity="information", timeout=2, markup=False
+            )
+            return
+        suffix = f": {error}" if error else ""
+        self.app.notify(
+            f"Failed to copy{suffix}", severity="warning", timeout=3, markup=False
+        )
+
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a hand pointer over link spans and reset it elsewhere."""
-        self.styles.pointer = "pointer" if event.style.link else "default"
+        """Show a hand pointer over clickable spans and reset it elsewhere."""
+        clickable = bool(event.style.link) or copy_span_target(event.style) is not None
+        self.styles.pointer = "pointer" if clickable else "default"
 
     def on_leave(self) -> None:
         """Reset the pointer shape when the mouse leaves the banner."""
@@ -377,7 +452,8 @@ class WelcomeBanner(Static):
             installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
-            resolves), thread ID (debug only), MCP tool count, MCP server
+            resolves), thread ID (debug only; click-to-copy plus a trace link
+            once the project URL resolves), MCP tool count, MCP server
             warnings, and the editable-install path.
         """
         colors = theme.get_theme_colors(self)
@@ -395,7 +471,7 @@ class WelcomeBanner(Static):
             ("dcode", "bold"),
         ]
         if not self._hide_version:
-            parts.append((f"  v{__version__}", "dim"))
+            parts.append((f"  v{self._version}", "dim"))
         if self._debug_enabled:
             parts.append(
                 (
@@ -466,7 +542,20 @@ class WelcomeBanner(Static):
                     [("replica:   ", "dim"), (f"'{self._replica_project}'", accent)]
                 )
         if self._show_thread_id and self._cli_thread_id:
-            rows.append([("thread:    ", "dim"), (self._cli_thread_id, "dim")])
+            thread_row: list[tuple[str, str | TStyle]] = [
+                ("thread:    ", "dim"),
+                (
+                    self._cli_thread_id,
+                    TStyle(dim=True)
+                    + copy_span_style(self._cli_thread_id, _THREAD_COPY_LABEL),
+                ),
+            ]
+            thread_url = self._thread_url()
+            if thread_url:
+                thread_row.extend(
+                    [("  ", "dim"), ("(open in langsmith)", TStyle(link=thread_url))]
+                )
+            rows.append(thread_row)
         if self._mcp_tool_count > 0:
             label = "tool" if self._mcp_tool_count == 1 else "tools"
             rows.append(
@@ -526,12 +615,5 @@ class WelcomeBanner(Static):
         for line in warning_lines:
             parts.append("\n")
             parts.extend(line)
-
-        # Editable-install path for local development visibility.
-        if not self._hide_version and not self._hide_cwd:
-            editable_path = _get_editable_install_path()
-            if editable_path:
-                parts.append("\n")
-                parts.extend([("installed: ", "dim"), (editable_path, "dim")])
 
         return Content.assemble(*parts)

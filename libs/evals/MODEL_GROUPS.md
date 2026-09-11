@@ -3,7 +3,7 @@
 
 Quick reference for the model sets available in the
 [evals workflow](../../.github/workflows/evals.yml).
-Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
+Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals/models.py).
 
 ## Model groups
 

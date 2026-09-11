@@ -223,6 +223,28 @@ class TestContractValueSemantics:
         assert isinstance(metadata["turn_number"], int)
 
 
+@pytest.mark.usefixtures("known_env")
+class TestDiagnosticKeysDoNotBreakContract:
+    """Non-contract `dcode_*` keys coexist with the contract on every run type.
+
+    Value-level behavior of these keys is covered by `TestBuildStreamConfig` in
+    `tui/test_textual_adapter.py`; what matters here is only that stamping them
+    trace-wide keeps the metadata block contract-valid. Without an explicit
+    `TERM_PROGRAM` this would depend on the developer's or CI runner's shell.
+    """
+
+    def test_term_program_does_not_break_validation(self, contract: dict) -> None:
+        with patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}):
+            config = build_stream_config(
+                "thread-123", assistant_id="agent", turn_id="turn-abc", turn_number=2
+            )
+        metadata = config["metadata"]
+        assert metadata["dcode_term_program"] == "iTerm.app"
+        for run_type in _TRACE_WIDE_RUN_TYPES:
+            errors, _ = _validate(metadata, run_type, contract)
+            assert errors == [], f"{run_type}: {errors}"
+
+
 class TestUnknownKeysOmitted:
     """Keys with unknown values are omitted regardless of environment."""
 

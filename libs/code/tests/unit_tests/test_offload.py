@@ -2,27 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import stat
 import tempfile
+import time
 from contextlib import nullcontext
-from pathlib import Path, PureWindowsPath
-from typing import Any
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
 import pytest
-from deepagents.backends.utils import validate_path
+from langgraph.runtime import Runtime
+from textual.worker import WorkerCancelled
 
 from deepagents_code import offload
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.command_registry import get_slash_commands
+from deepagents_code.configuration.types import TomlSnapshot
 from deepagents_code.offload import (
     _artifacts_root,
-    _filesystem_tool_path,
     _offload_fallback_root,
     delete_offloaded_history,
+    sweep_offloaded_history,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -45,48 +55,30 @@ def _make_dict_messages(n: int) -> list[dict[str, Any]]:
     return messages
 
 
-def _make_dict_summary_message() -> dict[str, Any]:
-    """Create a serialized summary message payload from remote state."""
+def _compacted_result() -> dict[str, Any]:
+    """Build a successful server-owned offload result."""
     return {
-        "content": "Old summary.",
-        "additional_kwargs": {"lc_source": "summarization"},
-        "response_metadata": {},
-        "type": "human",
-        "name": None,
-        "id": "summary-1",
+        "status": "compacted",
+        "messages_offloaded": 6,
+        "messages_kept": 4,
+        "tokens_before": 1000,
+        "tokens_after": 250,
+        "archive_path": "/conversation_history/test-thread.md",
+        "archive_ephemeral": False,
+        "error": None,
     }
-
-
-def _summary_event(
-    cutoff: int, *, file_path: str | None = "/conversation_history/test-thread.md"
-) -> dict[str, Any]:
-    """Build a persisted `_summarization_event` mapping for server-state tests."""
-    return {
-        "cutoff_index": cutoff,
-        "summary_message": _make_dict_summary_message(),
-        "file_path": file_path,
-    }
-
-
-def _state_values(
-    messages: list[Any], event: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """Build a thread state-values dict (as returned by _get_thread_state_values)."""
-    values: dict[str, Any] = {"messages": messages}
-    if event is not None:
-        values["_summarization_event"] = event
-    return values
 
 
 def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
-    """Configure a `DeepAgentsApp` for server-side offload unit tests.
+    """Configure a `DeepAgentsApp` as a server-backed agent for offload tests.
 
-    The server-side path reads state via `_get_thread_state_values` and drives
-    the tool via `_drive_server_side_compaction`; tests patch those seams
-    directly, so only the plain identity/flags are set here.
+    The agent is specced as a `RemoteAgent` so `_remote_agent()` narrows to it.
     """
-    agent = MagicMock()
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    agent = MagicMock(spec=RemoteAgent)
     agent.aupdate_state = AsyncMock()
+    agent.aoffload = AsyncMock()
     app._agent = agent
     app._backend = None
     app._lc_thread_id = "test-thread"
@@ -97,913 +89,438 @@ def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
 class TestOffloadInAutocomplete:
     """Verify /offload is registered in the autocomplete system."""
 
-    def test_offload_in_slash_commands(self) -> None:
-        """The /offload command should be in the get_slash_commands() list."""
-        labels = [entry.name for entry in get_slash_commands()]
-        assert "/offload" in labels
 
-    def test_offload_sorted_alphabetically(self) -> None:
-        """The /offload entry should appear between /model and /quit."""
-        labels = [entry.name for entry in get_slash_commands()]
-        model_idx = labels.index("/model")
-        offload_idx = labels.index("/offload")
-        quit_idx = labels.index("/quit")
-        assert model_idx < offload_idx < quit_idx
+class TestOffloadCommand:
+    """The TUI requests a typed operation and does not manage server state."""
 
-
-class TestOffloadGuards:
-    """Test guard conditions that prevent offloading."""
-
-    async def test_no_agent_shows_error(self) -> None:
-        """Should show error when there is no active agent."""
+    async def test_offload_while_busy_queues_instead_of_overlapping(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._agent = None
-            app._lc_thread_id = None
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+            drive_calls = 0
 
-            await app._handle_offload()
-            await pilot.pause()
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                nonlocal drive_calls
+                drive_calls += 1
+                drive_started.set()
+                if drive_calls == 1:
+                    await release_drive.wait()
+                return _compacted_result()
 
-            msgs = app.query(AppMessage)
-            assert any("Nothing to offload" in str(w._content) for w in msgs)
-
-    async def test_agent_running_shows_error(self) -> None:
-        """Should show error when agent is currently running."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = True
-
-            await app._handle_offload()
-            await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any(
-                "Cannot offload while agent is running" in str(w._content) for w in msgs
-            )
-
-    async def test_nothing_to_compact_noop(self) -> None:
-        """Show a no-op message when server-side compaction changed nothing.
-
-        With `force=True` the eligibility gate is bypassed, so the only no-op
-        left is "cutoff == 0" — the persisted event is unchanged.
-        """
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(3))
-            after = _state_values(_make_dict_messages(3))
-
+            remote.aoffload = AsyncMock(side_effect=block_offload)
             with (
                 patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
                 ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
+                patch.object(app, "_run_session_start_hook", new=AsyncMock()),
             ):
-                await app._handle_offload()
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                assert drive_calls == 1
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
                 await pilot.pause()
 
-            msgs = app.query(AppMessage)
-            assert any(
-                "the conversation is already compact" in str(w._content) for w in msgs
-            )
-
-    async def test_empty_state_shows_error(self) -> None:
-        """Should show error when state has no values."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = False
-
-            mock_state = MagicMock()
-            mock_state.values = {}
-            app._agent.aget_state = AsyncMock(return_value=mock_state)
-
-            await app._handle_offload()
-            await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Nothing to offload" in str(w._content) for w in msgs)
-
-    async def test_state_read_failure_shows_error(self) -> None:
-        """Should show error when reading state raises an exception."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = False
-
-            app._agent.aget_state = AsyncMock(
-                side_effect=RuntimeError("connection lost")
-            )
-
-            await app._handle_offload()
-            await pilot.pause()
-
-            msgs = app.query(ErrorMessage)
-            assert any("Failed to read state" in str(w._content) for w in msgs)
-
-
-class TestOffloadSuccess:
-    """Test successful offload flow."""
-
-    async def test_successful_offload_drives_server_tool(self) -> None:
-        """Should trigger server-side compaction and render persisted state."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(
-                _make_dict_messages(12),
-                _summary_event(6),
-            )
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ) as mock_drive,
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            # The client drives the server-side tool exactly once and never
-            # writes `_summarization_event` itself — the tool owns that write.
-            mock_drive.assert_awaited_once()
-
-            msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of six minus a prior cutoff of zero.
-            assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
-
-    async def test_committed_offload_survives_stream_failure(self) -> None:
-        """A checkpointed tool update wins over a later stream failure."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(4))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("stream unavailable"),
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            assert any(
-                "Offloaded 4 older messages" in str(widget._content)
-                for widget in app.query(AppMessage)
-            )
-            assert not any(
-                "Offload failed" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
-
-    async def test_offload_shows_feedback_message(self) -> None:
-        """Should display feedback with message count and token change."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(4))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of four minus a prior cutoff of zero.
-            assert any("Offloaded 4 older messages" in str(w._content) for w in msgs)
-            # Kept count is the ten before-messages minus the new cutoff of four.
-            assert any("6 messages kept" in str(w._content) for w in msgs)
-
-    async def test_offload_updates_context_tokens(self) -> None:
-        """Should update `_context_tokens` to the post-compaction count.
-
-        The count is taken from the pre-seed conversation plus the new event, so
-        it excludes the tool's own machinery (the seeded call, the tool result,
-        and the trailing model turn) that the post-run state carries. Using
-        distinct before/after message lists guards against regressing to the
-        post-run state, which would understate the reduction.
-        """
-        from langchain_core.messages.utils import count_tokens_approximately
-
-        from deepagents_code.app import _effective_conversation
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before_messages = _make_dict_messages(10)
-            after_messages = _make_dict_messages(12)
-            after_event = _summary_event(4)
-            before = _state_values(before_messages)
-            after = _state_values(after_messages, after_event)
-
-            expected = count_tokens_approximately(
-                _effective_conversation(before_messages, after_event)
-            )
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            assert app._context_tokens == expected
-
-    async def test_no_ui_clear_reload(self) -> None:
-        """Should NOT clear/reload UI since messages stay in state."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(4))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch.object(
-                    app, "_clear_messages", new_callable=AsyncMock
-                ) as mock_clear,
-                patch.object(
-                    app, "_load_thread_history", new_callable=AsyncMock
-                ) as mock_load,
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            mock_clear.assert_not_called()
-            mock_load.assert_not_called()
-
-
-class TestOffloadEdgeCases:
-    """Test edge cases in the offload logic."""
-
-    async def test_noop_does_not_report_offloaded(self) -> None:
-        """A no-op restores history and shows the no-op message, not success."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent = _setup_server_offload_app(app)
-
-            # Prior event present; after-state cutoff unchanged -> nothing moved.
-            event = _summary_event(6)
-            messages = _make_dict_messages(8)
-            artifacts = [
-                {
-                    "type": "ai",
-                    "content": "",
-                    "id": "offload-seed-test",
-                    "tool_calls": [
-                        {
-                            "name": "compact_conversation",
-                            "args": {"force": True},
-                            "id": "seed-call",
-                        }
-                    ],
-                },
-                {
-                    "type": "tool",
-                    "content": "Nothing to compact yet.",
-                    "id": "offload-result-test",
-                    "tool_call_id": "seed-call",
-                },
-                {
-                    "type": "ai",
-                    "content": "Trailing response",
-                    "id": "offload-trailing-test",
-                    "tool_calls": [],
-                },
-            ]
-            before = _state_values(messages, event)
-            after = _state_values([*messages, *artifacts], event)
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any(
-                "the conversation is already compact" in str(w._content) for w in msgs
-            )
-            assert not any("Offloaded " in str(w._content) for w in msgs)
-            agent.aupdate_state.assert_awaited_once()
-            update = agent.aupdate_state.call_args.args[1]
-            assert [message.id for message in update["messages"]] == [
-                "offload-seed-test",
-                "offload-result-test",
-                "offload-trailing-test",
-            ]
-
-    async def test_cutoff_one_offloads_single_message(self) -> None:
-        """A cutoff of 1 reports a single offloaded message."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(7))
-            after = _state_values(_make_dict_messages(9), _summary_event(1))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Offloaded 1 older messages" in str(w._content) for w in msgs)
-
-
-class TestReOffload:
-    """Test offload when a prior _summarization_event already exists."""
-
-    async def test_reoffload_uses_absolute_cutoff_delta(self) -> None:
-        """Re-offload counts only the newly offloaded messages.
-
-        With a prior cutoff of 5 and a new absolute cutoff of 7, exactly two
-        additional messages were offloaded this run.
-        """
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            prior_event = _summary_event(5, file_path=None)
-            before = _state_values(_make_dict_messages(15), prior_event)
-            after = _state_values(_make_dict_messages(17), _summary_event(7))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of seven minus a prior cutoff of five.
-            assert any("Offloaded 2 older messages" in str(w._content) for w in msgs)
-
-    async def test_reoffload_noop_restores_prior_summary(self) -> None:
-        """A summary-only re-offload restores the prior summarization event."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent = _setup_server_offload_app(app)
-
-            prior_event = _summary_event(5, file_path=None)
-            replacement_event = _summary_event(5)
-            replacement_event["summary_message"]["content"] = "Replacement summary."
-            before_messages = _make_dict_messages(11)
-            after_messages = [*before_messages, *_make_dict_messages(2)]
-            after_messages[-2]["id"] = "offload-seed"
-            after_messages[-1]["id"] = "offload-result"
-            before = _state_values(before_messages, prior_event)
-            after = _state_values(after_messages, replacement_event)
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            agent.aupdate_state.assert_awaited_once()
-            update = agent.aupdate_state.call_args.args[1]
-            assert update["_summarization_event"] is prior_event
-            assert [message.id for message in update["messages"]] == [
-                "offload-seed",
-                "offload-result",
-            ]
-            assert any(
-                "Nothing to offload" in str(widget._content)
-                for widget in app.query(AppMessage)
-            )
-
-
-class TestAgentRunningGuard:
-    """Test that _handle_offload sets _agent_running to prevent races."""
-
-    async def test_agent_running_set_during_offload(self) -> None:
-        """Should set _agent_running=True during offload and reset after."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(4))
-
-            running_during_offload: list[bool] = []
-            quiescent_during_offload: list[bool] = []
-
-            def capture_running(_config: object, _seed_id: object = None) -> None:
-                running_during_offload.append(app._agent_running)
-                quiescent_during_offload.append(app._agent_quiescent.is_set())
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=capture_running,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            # _agent_running should have been True while the tool ran
-            assert running_during_offload == [True]
-            assert quiescent_during_offload == [False]
-            # And reset after completion
+            assert drive_calls == 2
             assert app._agent_running is False
-            assert app._agent_quiescent.is_set()
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
-    async def test_agent_running_reset_after_failure(self) -> None:
-        """Should reset _agent_running=False even when offload fails."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("stream down"),
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            assert app._agent_running is False
-
-
-class TestOffloadErrorHandling:
-    """Test error handling during offload."""
-
-    async def test_missing_archive_path_warns_about_unrecoverable_history(
+    async def test_server_result_is_rendered_without_reading_checkpoint_state(
         self,
     ) -> None:
-        """A failed backend write surfaces in a single, non-contradictory message.
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new=AsyncMock(side_effect=AssertionError("client state read")),
+                ),
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(app, "_run_session_start_hook", new=AsyncMock()),
+            ):
+                await app._handle_offload()
+                text = "\n".join(str(w._content) for w in app.query(AppMessage))
+                assert "Offloaded 6 older messages" in text
+                assert "4 messages kept" in text
 
-        The reduction and the unrecoverable-archive warning are combined into one
-        `ErrorMessage` rather than a warning immediately followed by a separate
-        success line.
+            remote.aoffload.assert_awaited_once()
+            await_args = remote.aoffload.await_args
+            assert await_args is not None
+            kwargs = await_args.kwargs
+            assert kwargs["config"] == {"configurable": {"thread_id": "test-thread"}}
+            assert "messages" not in kwargs["context"]
+
+    async def test_context_carries_the_session_approval_mode(self) -> None:
+        """Hooks must see the session's real mode during `/offload`.
+
+        The server defaults a missing `approval_mode` to `manual`, so omitting
+        it would show a configured `PreCompact`/`PreToolUse` hook Manual even in
+        YOLO -- a different mode than the same hook sees on every interactive
+        turn.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        result = {
+            "status": "noop",
+            "messages_offloaded": 0,
+            "messages_kept": 1,
+            "tokens_before": 10,
+            "tokens_after": 10,
+            "archive_path": None,
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            app._approval_mode = ApprovalMode.YOLO
+            app._auto_approve = True
+            with patch.object(
+                app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+            ):
+                await app._handle_offload()
+
+            await_args = remote.aoffload.await_args
+            assert await_args is not None
+            context = await_args.kwargs["context"]
+            assert context["approval_mode"] == "yolo"
+            assert context["auto_approve"] is True
+
+    async def test_failing_session_start_hook_does_not_erase_the_result(self) -> None:
+        """A hook raising after a committed compaction must not hide the outcome.
+
+        The compaction is already durable server-side by this point, so letting
+        the hook's exception reach the generic handler would leave the user with
+        only "Offload failed" while their conversation really was compacted and
+        the status bar kept pre-offload counts.
+        """
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            tokens = MagicMock()
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(
+                    app,
+                    "_run_session_start_hook",
+                    new=AsyncMock(side_effect=RuntimeError("hook spawn failed")),
+                ),
+                patch.object(app, "_on_tokens_update", new=tokens),
+            ):
+                await app._handle_offload()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Offloaded 6 older messages" in text
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "SessionStart hook failed" in errors
+            assert "Offload failed" not in errors
+            tokens.assert_called_once_with(250, approximate=True)
+
+    async def test_failing_report_does_not_report_a_committed_offload_as_failed(
+        self,
+    ) -> None:
+        """A rendering failure after the commit must not say "Offload failed".
+
+        Everything between `aoffload` returning and the SessionStart hook is
+        local reporting over a conversation the server has already compacted.
+        Routing a failure there into the generic handler would tell the user to
+        offload again, compacting an already-compacted conversation.
+        """
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(
+                    app,
+                    "_on_tokens_update",
+                    new=MagicMock(side_effect=RuntimeError("status bar exploded")),
+                ),
+            ):
+                await app._handle_offload()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "could not be displayed" in errors
+            assert "Offload failed" not in errors
+
+    async def test_session_start_hook_fires_after_a_committed_offload(self) -> None:
+        """The `COMPACT` lifecycle event still reaches configured hooks."""
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 2,
+            "messages_kept": 1,
+            "tokens_before": 100,
+            "tokens_after": 50,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            hook = AsyncMock()
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(app, "_run_session_start_hook", new=hook),
+            ):
+                await app._handle_offload()
+
+            hook.assert_awaited_once_with(SessionStartCause.COMPACT)
+
+    async def test_server_failure_is_rendered_from_typed_result(self) -> None:
+        app = DeepAgentsApp()
+        result = {
+            "status": "failed",
+            "messages_offloaded": 0,
+            "messages_kept": 4,
+            "tokens_before": 100,
+            "tokens_after": 100,
+            "archive_path": None,
+            "archive_ephemeral": False,
+            "error": "summary unavailable",
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+            ):
+                await app._handle_offload()
+                assert any(
+                    "summary unavailable" in str(w._content)
+                    for w in app.query(ErrorMessage)
+                )
+
+
+class TestServerOffloadReporting:
+    """The server path reports its estimates with explicit metric labels."""
+
+    @staticmethod
+    def _result(**overrides: object) -> dict[str, object]:
+        """Build a `compacted` server result."""
+        return {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        } | overrides
+
+    async def _render(self, app: DeepAgentsApp, result: dict[str, object]) -> str:
+        """Drive `/offload` against a server result and return the rendered text."""
+        remote = _setup_server_offload_app(app)
+        remote.aoffload = AsyncMock(return_value=result)
+        with (
+            patch.object(app, "_sync_session_cost_from_checkpoint", new=AsyncMock()),
+            patch.object(app, "_run_session_start_hook", new=AsyncMock()),
+        ):
+            await app._handle_offload()
+        return "\n".join(str(w._content) for w in app.query(AppMessage)) + "\n".join(
+            str(w._content) for w in app.query(ErrorMessage)
+        )
+
+    async def test_a_failed_archive_write_reports_unrecoverable_messages(self) -> None:
+        """Context was freed but the history is gone; both facts must be said.
+
+        This is data-loss messaging: reporting plain success here would tell the
+        user their conversation is archived when it is not.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(app, self._result(archive_path=None))
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
 
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(
-                _make_dict_messages(12), _summary_event(4, file_path=None)
-            )
+        assert "not recoverable" in text
+        # An error, not a success message: the offload did not fully succeed.
+        assert errors
+        assert "not recoverable" in "\n".join(errors)
 
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
 
-            # Both the reduction and the archive-failure warning land in one
-            # ErrorMessage.
-            assert any(
-                "Offloaded 4 older messages" in str(widget._content)
-                and "could not be saved to storage" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
-            # No separate success line is emitted alongside the warning.
-            assert not any(
-                "Offloaded" in str(widget._content) for widget in app.query(AppMessage)
-            )
+class TestOffloadInterrupt:
+    """Test that Escape can cancel `/offload` through the real App dispatch."""
 
-    async def test_tool_reported_compaction_failure_shows_error(self) -> None:
-        """A "Compaction failed" ToolMessage surfaces as an `ErrorMessage`."""
+    async def test_command_reserves_turn_before_worker_starts(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            worker = MagicMock()
+            scheduled: list[Coroutine[Any, Any, None]] = []
 
-            before = _state_values(_make_dict_messages(10))
-            tool_error = (
-                "Compaction failed: an error occurred while generating the "
-                "summary (RuntimeError: model unavailable)."
-            )
+            def defer_worker(
+                work: Coroutine[Any, Any, None], **_kwargs: object
+            ) -> MagicMock:
+                scheduled.append(work)
+                return worker
 
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=tool_error,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
+            with patch.object(app, "run_worker", side_effect=defer_worker):
+                await app._handle_command("/offload")
 
-            error_msgs = app.query(ErrorMessage)
-            assert any("Compaction failed" in str(w._content) for w in error_msgs)
-            # A no-success guarantee: the offloaded feedback is not shown.
-            assert not any(
-                "Offloaded " in str(w._content) for w in app.query(AppMessage)
-            )
+            assert app._agent_running is True
+            assert app._offload_worker is worker
+            assert app._offload_task_started is False
+            assert len(scheduled) == 1
 
-    async def test_stale_compaction_failure_is_not_reported(self) -> None:
-        """A no-op ignores failure messages committed by an earlier run."""
+            coroutine = scheduled[0]
+            try:
+                await app._submit_input("hello", "normal")
+                assert len(app._pending_messages) == 1
+                app._cancel_worker(worker)
+            finally:
+                coroutine.close()
+
+            worker.cancel.assert_called_once_with()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_cancels_server_owned_offload(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
 
-            messages = [
-                *_make_dict_messages(3),
-                {
-                    "type": "tool",
-                    "content": "Compaction failed: old failure",
-                    "tool_call_id": "old-call",
-                },
-            ]
-            before = _state_values(messages)
-            after = _state_values([*messages, *_make_dict_messages(1)])
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+                return _compacted_result()
 
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
+            remote.aoffload = AsyncMock(side_effect=block_offload)
+            app.post_message(ChatInput.Submitted("/offload", "command"))
+            await asyncio.wait_for(drive_started.wait(), timeout=1)
 
-            assert not any(
-                "old failure" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
-            assert any(
-                "the conversation is already compact" in str(widget._content)
-                for widget in app.query(AppMessage)
-            )
+            worker = app._offload_worker
+            assert worker is not None
+            assert app._agent_running is True
 
-    async def test_current_durable_compaction_failure_is_reported(self) -> None:
-        """A failure appended by this invocation survives a missed stream event."""
+            await pilot.press("escape")
+            await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+            with pytest.raises(WorkerCancelled):
+                await worker.wait()
+
+            assert worker.is_cancelled
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
+            assert app._loading_widget is None
+
+    async def test_offload_blocks_queued_prompt_until_done(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
 
-            messages = _make_dict_messages(3)
-            before = _state_values(messages)
-            after = _state_values(
-                [
-                    *messages,
-                    {
-                        "type": "tool",
-                        "content": "Compaction failed: current failure",
-                        "tool_call_id": "current-call",
-                    },
-                ]
-            )
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                drive_started.set()
+                await release_drive.wait()
+                return _compacted_result()
 
+            remote.aoffload = AsyncMock(side_effect=block_offload)
+            dispatch = AsyncMock()
             with (
                 patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
                 ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
+                patch.object(app, "_run_session_start_hook", new=AsyncMock()),
             ):
-                await app._handle_offload()
-                await pilot.pause()
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
 
-            assert any(
-                "current failure" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
+                with patch.object(app, "_dispatch_queued_message", new=dispatch):
+                    app.post_message(ChatInput.Submitted("hello", "prompt"))
+                    await pilot.pause()
+                    assert app._agent_running is True
+                    assert len(app._pending_messages) == 1
+                    dispatch.assert_not_awaited()
 
-    async def test_failed_run_removes_dangling_seed(self) -> None:
-        """A raising run cleans up the committed seed before surfacing failure.
+                    release_drive.set()
+                    worker = app._offload_worker
+                    assert worker is not None
+                    await worker.wait()
+                    await pilot.pause()
 
-        When the drive raises and the committed cutoff has not advanced, the
-        seeded (and now unanswered) tool call must be removed so it does not
-        wedge the next turn; the failure is still surfaced to the user.
-        """
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(6))
-            reconciled = _state_values(_make_dict_messages(6))  # cutoff unchanged
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, reconciled],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("stream boom"),
-                ),
-                patch.object(
-                    app,
-                    "_remove_unanswered_offload_seed",
-                    new_callable=AsyncMock,
-                ) as cleanup,
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            cleanup.assert_awaited_once()
-            assert any(
-                "Offload failed" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
-
-    async def test_double_failure_warns_thread_may_be_inconsistent(self) -> None:
-        """Stream failure + failed reconcile + failed cleanup warns the user.
-
-        When the drive raises, the reconcile state-read also fails, and the
-        best-effort seed cleanup cannot confirm removal (returns False), the
-        user is warned the thread may be inconsistent -- in addition to the
-        surfaced "Offload failed" error -- so a later cryptic `tool_use`
-        rejection is not their only signal.
-        """
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(6))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, RuntimeError("reconcile read boom")],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("stream boom"),
-                ),
-                patch.object(
-                    app,
-                    "_remove_unanswered_offload_seed",
-                    new_callable=AsyncMock,
-                    return_value=False,
-                ) as cleanup,
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            cleanup.assert_awaited_once()
-            error_text = " ".join(
-                str(widget._content) for widget in app.query(ErrorMessage)
-            )
-            assert "inconsistent state" in error_text
-            assert "Offload failed" in error_text
-
-    async def test_compaction_run_failure_shows_error(self) -> None:
-        """Should show error and leave state untouched when the run raises."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("stream unavailable"),
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            error_msgs = app.query(ErrorMessage)
-            assert any("Offload failed" in str(w._content) for w in error_msgs)
-
-    async def test_spinner_hidden_after_failure(self) -> None:
-        """Should hide spinner even when offload fails."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("backend down"),
-                ),
-                patch.object(
-                    app, "_set_spinner", new_callable=AsyncMock
-                ) as mock_spinner,
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            # Spinner should be shown then hidden
-            assert mock_spinner.call_count == 2
-            mock_spinner.assert_any_call("Offloading")
-            mock_spinner.assert_any_call(None)
+            dispatch.assert_awaited_once()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
 
 class TestOffloadFallbackRoot:
@@ -1021,7 +538,7 @@ class TestOffloadFallbackRoot:
         root = tmp_path / ".deepagents"
         root.mkdir(mode=0o755)
         root.chmod(0o755)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
 
         assert _offload_fallback_root() == root
         # The shared config root's permissions are left untouched.
@@ -1030,6 +547,16 @@ class TestOffloadFallbackRoot:
         archive_dir = root / "conversation_history"
         assert archive_dir.is_dir()
         assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
+
+    def test_fallback_root_uses_launch_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persistent history follows the captured launch profile."""
+        root = tmp_path / "custom-home"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
+
+        assert _offload_fallback_root() == root
+        assert (root / "conversation_history").is_dir()
 
     def test_fallback_root_uses_temp_when_home_is_read_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1044,7 +571,7 @@ class TestOffloadFallbackRoot:
         getuid = getattr(os, "getuid", None)
         uid = getuid() if getuid is not None else os.getpid()
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
 
@@ -1076,7 +603,7 @@ class TestOffloadFallbackRoot:
             side_effect=[PermissionError("read-only home"), nullcontext()]
         )
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
@@ -1096,8 +623,6 @@ class TestOffloadFallbackRoot:
         report a foreign owner for the predictable per-user dir only, so it is
         rejected while the freshly-created unique dir (real ownership) passes.
         """
-        from types import SimpleNamespace
-
         getuid = getattr(os, "getuid", None)
         if getuid is None:
             pytest.skip("uid ownership check requires os.getuid")
@@ -1122,7 +647,7 @@ class TestOffloadFallbackRoot:
                 return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
             return info
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(Path, "lstat", fake_lstat)
@@ -1156,7 +681,7 @@ class TestOffloadFallbackRoot:
         # subdir is rejected by S_ISDIR before the user dir is probed.
         probe = MagicMock(return_value=nullcontext())
 
-        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: base)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
 
@@ -1183,7 +708,7 @@ class TestOffloadFallbackRoot:
         archive_dir = root / "conversation_history"
         archive_dir.mkdir(mode=0o755)
         archive_dir.chmod(0o755)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: root)
 
         assert _offload_fallback_root() == root
         assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
@@ -1200,8 +725,9 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The per-thread archive under `~/.deepagents` is removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
+        archive_dir = profile_root / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread-1.md"
         archive.write_text("history")
@@ -1228,7 +754,7 @@ class TestDeleteOffloadedHistory:
             side_effect=[PermissionError("read-only home"), nullcontext()]
         )
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: home_root)
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
@@ -1246,7 +772,8 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Deleting a thread with no archive reports nothing removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
 
         assert delete_offloaded_history("thread-1") is False
 
@@ -1254,7 +781,8 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An empty thread id never touches the filesystem."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
 
         assert delete_offloaded_history("") is False
 
@@ -1262,9 +790,10 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failing `unlink` is logged and reported as nothing removed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
         monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
-        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir = profile_root / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread-1.md"
         archive.write_text("history")
@@ -1292,11 +821,12 @@ class TestDeleteOffloadedHistory:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A crafted thread id cannot escape the archive directory."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".deepagents" / "conversation_history").mkdir(parents=True)
+        profile_root = tmp_path / ".deepagents"
+        monkeypatch.setattr(offload, "get_deepagents_home", lambda: profile_root)
+        (profile_root / "conversation_history").mkdir(parents=True)
         # A relative escape resolves to `.deepagents/config.md`, so a decoy there
         # is load-bearing: were the guard removed, `unlink` would delete it.
-        relative_decoy = tmp_path / ".deepagents" / "config.md"
+        relative_decoy = profile_root / "config.md"
         relative_decoy.write_text("secret")
         # An absolute thread id resets the join, escaping the archive tree
         # entirely; place its decoy where that reset lands.
@@ -1309,6 +839,182 @@ class TestDeleteOffloadedHistory:
         assert delete_offloaded_history("sub/thread") is False
         assert relative_decoy.exists()
         assert outside.exists()
+
+
+class TestSweepOffloadedHistory:
+    """Cover startup cleanup of expired conversation-history archives."""
+
+    @staticmethod
+    def _setup(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: str = ""
+    ) -> Path:
+        root = tmp_path / "offload"
+        archive_dir = root / offload.CONVERSATION_HISTORY_DIRNAME
+        archive_dir.mkdir(parents=True)
+        config_path = tmp_path / "config.toml"
+        if config:
+            config_path.write_text(config)
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: root)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        # Isolate from the developer's shell: resolution must see only the
+        # test's config.toml, never a real managed snapshot or exported env var.
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
+        return archive_dir
+
+    def test_deletes_old_file_and_keeps_fresh_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only archives older than the configured retention are removed."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        old = archive_dir / "old.md"
+        fresh = archive_dir / "fresh.md"
+        old.write_text("old")
+        fresh.write_text("fresh")
+        old_time = time.time() - 31 * 86_400
+        os.utime(old, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not old.exists()
+        assert fresh.exists()
+
+    def test_nonzero_retention_override_is_applied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A valid config value replaces the default retention window."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 1\n"
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not archive.exists()
+
+    def test_ignores_non_markdown_and_non_regular_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep ignores non-markdown files and markdown directories."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        text_file = archive_dir / "old.txt"
+        markdown_dir = archive_dir / "old.md"
+        text_file.write_text("keep")
+        markdown_dir.mkdir()
+        old_time = time.time() - 31 * 86_400
+        os.utime(text_file, (old_time, old_time))
+        os.utime(markdown_dir, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 0
+        assert text_file.exists()
+        assert markdown_dir.exists()
+
+    def test_missing_archive_directory_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing archive directory does not raise."""
+        root = tmp_path / "offload"
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: root)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
+
+        assert sweep_offloaded_history() == 0
+
+    def test_zero_retention_disables_sweep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zero-day retention setting avoids resolving archive storage."""
+        self._setup(tmp_path, monkeypatch, "[history]\nretention_days = 0\n")
+        resolver = MagicMock(side_effect=AssertionError("storage should not resolve"))
+        monkeypatch.setattr(offload, "_offload_fallback_root", resolver)
+
+        assert sweep_offloaded_history() == 0
+        resolver.assert_not_called()
+
+    def test_invalid_retention_uses_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Invalid retention config warns and falls back to 30 days."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, '[history]\nretention_days = "forever"\n'
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 31 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert "retention_days" in caplog.text
+
+    def test_env_var_overrides_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var wins over `[history].retention_days` in config.toml."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 30\n"
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", "1")
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 1
+        assert not archive.exists()
+
+    def test_managed_config_takes_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A managed `retention_days` outranks env var and config.toml."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, "[history]\nretention_days = 1\n"
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", "1")
+        monkeypatch.setattr(
+            "deepagents_code.configuration.service.get_managed_snapshot",
+            lambda **_: TomlSnapshot.from_table(
+                "managed config", {"history": {"retention_days": 30}}
+            ),
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 2 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
+
+    def test_unlink_failure_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unlink failure leaves the archive and does not raise."""
+        archive_dir = self._setup(tmp_path, monkeypatch)
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 31 * 86_400
+        os.utime(archive, (old_time, old_time))
+        monkeypatch.setattr(
+            Path, "unlink", MagicMock(side_effect=PermissionError("read-only mount"))
+        )
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
 
 
 class TestArtifactsRoot:
@@ -1334,835 +1040,9 @@ class TestArtifactsRoot:
         # Stable across calls (paths embedded in resumed threads stay resolvable).
         assert _artifacts_root() == storage
 
-    def test_windows_artifacts_root_is_accepted_by_filesystem_tools(self) -> None:
-        """A Windows temp path retains its drive without a rejected drive prefix."""
-        disk_root = PureWindowsPath(
-            "C:/Users/test/AppData/Local/Temp/dcode-artifacts-123"
-        )
-
-        root = _filesystem_tool_path(disk_root)
-        result_path = f"{root}/large_tool_results/tool-call-id"
-
-        assert root == "//?/C:/Users/test/AppData/Local/Temp/dcode-artifacts-123"
-        assert PureWindowsPath(root).is_absolute()
-        assert validate_path(result_path) == result_path
-
-    def test_artifacts_root_falls_back_when_predictable_path_foreign_owned(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A predictable dir owned by another user is rejected for a unique one."""
-        from types import SimpleNamespace
-
-        getuid = getattr(os, "getuid", None)
-        if getuid is None:
-            pytest.skip("uid ownership check requires os.getuid")
-
-        temp_dir = tmp_path / "tmp"
-        temp_dir.mkdir()
-        uid = getuid()
-        reserved = temp_dir / f"dcode-artifacts-{uid}"
-        reserved.mkdir()  # a real, us-owned directory; lstat is faked below
-
-        real_lstat = Path.lstat
-
-        def fake_lstat(self: Path) -> Any:  # noqa: ANN401
-            info = real_lstat(self)
-            if self == reserved:
-                return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
-            return info
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
-        monkeypatch.setattr(Path, "lstat", fake_lstat)
-
-        storage = _artifacts_root()
-        next_storage = _artifacts_root()
-
-        assert storage.root == "/dcode-artifacts-fallback"
-        assert next_storage.root == storage.root
-        assert storage.large_results_dir is not None
-        assert next_storage.large_results_dir is not None
-        assert not storage.large_results_dir.samefile(reserved)
-        assert storage.large_results_dir.name.startswith(f"dcode-artifacts-{uid}-")
-        assert stat.S_IMODE(storage.large_results_dir.stat().st_mode) == 0o700
-        assert next_storage.large_results_dir != storage.large_results_dir
-
-
-class TestOffloadStorageCaveat:
-    """Surface the persistence caveat when offload uses ephemeral storage."""
-
-    async def test_ephemeral_storage_appends_caveat_to_success(self) -> None:
-        """A successful offload into temp storage warns it may not persist."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(6))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    "deepagents_code.offload.offload_storage_is_ephemeral",
-                    return_value=True,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
-            assert any("may not survive a restart" in str(w._content) for w in msgs)
-
-    async def test_persistent_storage_omits_caveat(self) -> None:
-        """A successful offload into persistent storage adds no caveat."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-
-            before = _state_values(_make_dict_messages(10))
-            after = _state_values(_make_dict_messages(12), _summary_event(6))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    "deepagents_code.offload.offload_storage_is_ephemeral",
-                    return_value=False,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
-            assert not any("may not survive a restart" in str(w._content) for w in msgs)
-
-
-class TestNoopArtifactCleanup:
-    """A failed no-op restoration must not be reported as an offload failure."""
-
-    async def test_cleanup_failure_keeps_noop_report(self) -> None:
-        """When restoration fails, still report the no-op — not "Offload failed"."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent = _setup_server_offload_app(app)
-            # The no-op branch restores state via aupdate_state; make it fail.
-            agent.aupdate_state = AsyncMock(side_effect=RuntimeError("write failed"))
-
-            before = _state_values(_make_dict_messages(4))
-            after = _state_values(_make_dict_messages(6))
-
-            with (
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    new_callable=AsyncMock,
-                    side_effect=[before, after],
-                ),
-                patch.object(
-                    app,
-                    "_drive_server_side_compaction",
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-            ):
-                await app._handle_offload()
-                await pilot.pause()
-
-            assert any(
-                "the conversation is already compact" in str(w._content)
-                for w in app.query(AppMessage)
-            )
-            assert not any(
-                "Offload failed" in str(w._content) for w in app.query(ErrorMessage)
-            )
-
 
 class TestOffloadRouting:
     """Test that /offload is routed through _handle_command."""
-
-    async def test_offload_routed_from_handle_command(self) -> None:
-        """'/offload' should be correctly routed through _handle_command."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = None
-            app._lc_thread_id = None
-
-            await app._handle_command("/offload")
-            await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Nothing to offload" in str(w._content) for w in msgs)
-
-    async def test_compact_alias_routed_from_handle_command(self) -> None:
-        """'/compact' should still route through _handle_command for backward compat."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = None
-            app._lc_thread_id = None
-
-            await app._handle_command("/compact")
-            await pilot.pause()
-
-            msgs = app.query(AppMessage)
-            assert any("Nothing to offload" in str(w._content) for w in msgs)
-
-
-class TestOffloadToolGuard:
-    """Server-side tool execution guard for hidden `/offload` turns."""
-
-    @pytest.mark.parametrize(
-        "tool_call",
-        [
-            {"name": "write_file", "args": {"path": "x"}, "id": "model-call"},
-            {
-                "name": "compact_conversation",
-                "args": {"force": True},
-                # Even reusing the authorized ID cannot turn a later model
-                # message into the one server-seeded call.
-                "id": "seed-call",
-            },
-        ],
-    )
-    async def test_blocks_every_call_except_seed(
-        self, tool_call: dict[str, Any]
-    ) -> None:
-        """Unrelated and repeated tools never reach their execution handler."""
-        from langchain_core.messages import ToolMessage
-
-        from deepagents_code.offload_middleware import CLICompactionMiddleware
-
-        middleware = object.__new__(CLICompactionMiddleware)
-        request = MagicMock()
-        request.runtime.context = {"offload_tool_call_id": "seed-call"}
-        request.tool_call = tool_call
-        request.state = {"messages": [{"id": "model-generated-message"}]}
-        handler = AsyncMock()
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
-        assert result.status == "error"
-        handler.assert_not_awaited()
-
-    async def test_allows_exact_seeded_compaction(self) -> None:
-        """The one forced call seeded by `/offload` reaches the tool handler."""
-        from langchain_core.messages import ToolMessage
-
-        from deepagents_code.offload_middleware import CLICompactionMiddleware
-
-        middleware = object.__new__(CLICompactionMiddleware)
-        request = MagicMock()
-        request.runtime.context = {"offload_tool_call_id": "seed-call"}
-        request.tool_call = {
-            "name": "compact_conversation",
-            "args": {"force": True},
-            "id": "seed-call",
-        }
-        request.state = {"messages": [{"id": "offload-seed-seed-call"}]}
-        expected = ToolMessage(content="done", tool_call_id="seed-call")
-        handler = AsyncMock(return_value=expected)
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        assert result is expected
-        handler.assert_awaited_once_with(request)
-
-    async def test_ordinary_runs_are_unchanged(self) -> None:
-        """Without `/offload` context, normal tools pass through the guard."""
-        from langchain_core.messages import ToolMessage
-
-        from deepagents_code.offload_middleware import CLICompactionMiddleware
-
-        middleware = object.__new__(CLICompactionMiddleware)
-        request = MagicMock()
-        request.runtime.context = {}
-        request.tool_call = {"name": "write_file", "args": {}, "id": "normal-call"}
-        expected = ToolMessage(content="done", tool_call_id="normal-call")
-        handler = AsyncMock(return_value=expected)
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        assert result is expected
-        handler.assert_awaited_once_with(request)
-
-
-class TestDriveServerSideCompaction:
-    """Unit-test the server-side `compact_conversation` trigger mechanism."""
-
-    @staticmethod
-    def _fake_remote_agent(
-        tool_content: str,
-    ) -> tuple[Any, list[Any], list[object]]:
-        """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
-
-        First `astream(None)` surfaces a HITL approval interrupt; the resume
-        stream (`Command(resume=...)`) yields a `ToolMessage` with the supplied
-        content so callers can exercise both the success and failure branches.
-        """
-        from langchain_core.messages import ToolMessage
-
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        astream_inputs: list[Any] = []
-        astream_contexts: list[object] = []
-
-        class _Interrupt:
-            id = "interrupt-1"
-            value = {  # noqa: RUF012  # test stub; immutability irrelevant
-                "action_requests": [
-                    {"name": "compact_conversation", "args": {"force": True}}
-                ]
-            }
-
-        async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
-            astream_inputs.append(stream_input)
-            astream_contexts.append(kwargs.get("context"))
-            if stream_input is None:
-                yield ((), "updates", {"__interrupt__": [_Interrupt()]})
-            else:
-                yield (
-                    (),
-                    "messages",
-                    (ToolMessage(content=tool_content, tool_call_id="x"), {}),
-                )
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
-        return agent, astream_inputs, astream_contexts
-
-    async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
-        """Seeds a forced `compact_conversation` call and approves the interrupt."""
-        from langgraph.types import Command
-
-        from deepagents_code.config import settings
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages into a concise summary."
-            )
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-            app._model_override = "provider:active-model"
-            app._model_params_override = {"temperature": 0}
-            app._profile_override = {"max_input_tokens": 4096}
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            with patch.object(settings, "model_context_limit", 4096):
-                result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-            assert result is None
-
-            # Seed is attributed to the model node so the tool-call routing
-            # reaches the ToolNode.
-            agent.aupdate_state.assert_awaited_once()
-            seed_values = agent.aupdate_state.call_args.args[1]
-            (seed_msg,) = seed_values["messages"]
-            (tool_call,) = seed_msg.tool_calls
-            assert tool_call["name"] == "compact_conversation"
-            assert tool_call["args"] == {"force": True}
-            assert agent.aupdate_state.call_args.kwargs["as_node"] == "model"
-
-            # Stream is advanced with None, then resumed after the interrupt.
-            assert astream_inputs[0] is None
-            assert isinstance(astream_inputs[1], Command)
-            resume = astream_inputs[1].resume
-            assert "interrupt-1" in resume
-            assert astream_contexts == [
-                {
-                    "model": "provider:active-model",
-                    "model_params": {"temperature": 0},
-                    "profile_overrides": {"max_input_tokens": 4096},
-                    "model_context_limit": 4096,
-                    "thread_id": "test-thread",
-                    "offload_tool_call_id": tool_call["id"],
-                },
-                {
-                    "model": "provider:active-model",
-                    "model_params": {"temperature": 0},
-                    "profile_overrides": {"max_input_tokens": 4096},
-                    "model_context_limit": 4096,
-                    "thread_id": "test-thread",
-                    "offload_tool_call_id": tool_call["id"],
-                },
-            ]
-
-    async def test_reports_tool_failure(self) -> None:
-        """Returns the tool's error text when compaction fails."""
-        from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent, _inputs, _contexts = self._fake_remote_agent(
-                f"{COMPACTION_FAILURE_PREFIX}: an error occurred during compaction."
-            )
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-            assert result is not None
-            assert result.startswith(COMPACTION_FAILURE_PREFIX)
-
-    async def test_forwards_startup_model_profile_to_compaction(self) -> None:
-        """Profile data is usable even without a session `/model` override."""
-        from deepagents_code.config import settings
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            agent, _inputs, contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages."
-            )
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-            app._model_override = None
-            app._profile_override = {"max_input_tokens": 4096}
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            with (
-                patch.object(settings, "model_provider", "provider"),
-                patch.object(settings, "model_name", "startup-model"),
-                patch.object(settings, "model_context_limit", 4096),
-            ):
-                await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-        assert contexts
-        seed_values = agent.aupdate_state.call_args.args[1]
-        (seed_msg,) = seed_values["messages"]
-        (tool_call,) = seed_msg.tool_calls
-        assert all(
-            context
-            == {
-                "model": "provider:startup-model",
-                "model_params": {},
-                "profile_overrides": {"max_input_tokens": 4096},
-                "model_context_limit": 4096,
-                "thread_id": "test-thread",
-                "offload_tool_call_id": tool_call["id"],
-            }
-            for context in contexts
-        )
-
-    async def test_rejects_interrupt_without_identifiable_action(self) -> None:
-        """Malformed interrupt payloads fail closed instead of being approved."""
-        from langgraph.types import Command
-
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        astream_inputs: list[Any] = []
-
-        class _Interrupt:
-            id = "interrupt-unknown"
-            value: dict[str, Any] = {}  # noqa: RUF012  # test stub
-
-        async def _astream(  # noqa: RUF029, ANN202
-            stream_input: object, **_kwargs: object
-        ):
-            astream_inputs.append(stream_input)
-            if stream_input is None:
-                yield ((), "updates", {"__interrupt__": [_Interrupt()]})
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-        assert result is None
-        assert len(astream_inputs) == 2
-        assert isinstance(astream_inputs[1], Command)
-        decision = astream_inputs[1].resume["interrupt-unknown"]["decisions"][0]
-        assert decision["type"] == "reject"
-
-    async def test_approves_only_first_forced_compaction(self) -> None:
-        """A repeated forced compaction request is rejected, not approved."""
-        from langchain_core.messages import ToolMessage
-        from langgraph.types import Command
-
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        astream_inputs: list[Any] = []
-        guard_ids: list[object] = []
-
-        class _Interrupt:
-            def __init__(self, iid: str, tool_name: str, args: dict[str, Any]) -> None:
-                self.id = iid
-                self.value = {"action_requests": [{"name": tool_name, "args": args}]}
-
-        async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
-            idx = len(astream_inputs)
-            astream_inputs.append(stream_input)
-            context = kwargs.get("context")
-            guard_ids.append(
-                context.get("offload_tool_call_id")
-                if isinstance(context, dict)
-                else None
-            )
-            if idx == 0:
-                compact = _Interrupt(
-                    "i-compact", "compact_conversation", {"force": True}
-                )
-                yield ((), "updates", {"__interrupt__": [compact]})
-            elif idx == 1:
-                # Model a trailing turn that asks to compact again.
-                repeated = _Interrupt(
-                    "i-repeated", "compact_conversation", {"force": True}
-                )
-                yield ((), "updates", {"__interrupt__": [repeated]})
-            else:
-                yield (
-                    (),
-                    "messages",
-                    (
-                        ToolMessage(
-                            content="Conversation compacted. Summarized 2 messages "
-                            "into a concise summary.",
-                            tool_call_id="x",
-                        ),
-                        {},
-                    ),
-                )
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-        assert result is None
-        # Initial drain + two resumes (compaction, then trailing tool).
-        assert len(astream_inputs) == 3
-        assert isinstance(astream_inputs[1], Command)
-        assert isinstance(astream_inputs[2], Command)
-        assert len(set(guard_ids)) == 1
-        assert isinstance(guard_ids[0], str)
-        # Compaction was approved.
-        compact_decision = astream_inputs[1].resume["i-compact"]["decisions"][0]
-        assert compact_decision["type"] == "approve"
-        # A second compaction request is not the seeded call and is rejected.
-        repeated_decision = astream_inputs[2].resume["i-repeated"]["decisions"][0]
-        assert repeated_decision["type"] == "reject"
-
-    async def test_sets_tool_guard_context_without_hitl(self) -> None:
-        """The per-run tool guard is set even when no HITL interrupt exists."""
-        from langchain_core.messages import ToolMessage
-
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        guard_ids: list[object] = []
-
-        async def _astream(_stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
-            context = kwargs.get("context")
-            guard_ids.append(
-                context.get("offload_tool_call_id")
-                if isinstance(context, dict)
-                else None
-            )
-            yield (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="Conversation compacted. Summarized 2 messages.",
-                        tool_call_id="x",
-                    ),
-                    {},
-                ),
-            )
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-        assert result is None
-        seed_values = agent.aupdate_state.call_args.args[1]
-        (seed_msg,) = seed_values["messages"]
-        (tool_call,) = seed_msg.tool_calls
-        assert guard_ids == [tool_call["id"]]
-
-    async def test_bounds_resume_loop_and_reports_abandoned_drain(self) -> None:
-        """A model that keeps requesting tools cannot spin `/offload` forever.
-
-        Every stream yields a fresh gated interrupt, so the resume loop never
-        drains cleanly. It must stop at the `max_resume_rounds` cap (initial
-        drain + 10 resumes = 11 streams) and surface a user-visible notice that
-        the run was left paused, rather than looping indefinitely.
-        """
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        astream_inputs: list[Any] = []
-
-        class _Interrupt:
-            def __init__(self, iid: str) -> None:
-                self.id = iid
-                self.value = {"action_requests": [{"name": "write_file", "args": {}}]}
-
-        async def _astream(stream_input: object, **_kwargs: object):  # noqa: RUF029, ANN202
-            idx = len(astream_inputs)
-            astream_inputs.append(stream_input)
-            # Never terminate: each round surfaces another gated interrupt.
-            yield ((), "updates", {"__interrupt__": [_Interrupt(f"i-{idx}")]})
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = agent
-            app._lc_thread_id = "test-thread"
-
-            config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
-            await pilot.pause()
-
-            # No compaction failure was reported, so the run returns cleanly.
-            assert result is None
-            # Initial drain + exactly 10 resume rounds, then the cap breaks.
-            assert len(astream_inputs) == 11
-            assert any(
-                "could not be fully drained" in str(widget._content)
-                for widget in app.query(ErrorMessage)
-            )
-
-
-class TestRemoveUnansweredOffloadSeed:
-    """Cleanup of a committed-but-unanswered `/offload` seed after a failure."""
-
-    @staticmethod
-    def _seed_message(tool_call_id: str) -> dict[str, Any]:
-        """Serialized seed AIMessage carrying the forced compaction tool call."""
-        return {
-            "type": "ai",
-            "content": "",
-            "id": f"offload-seed-{tool_call_id}",
-            "tool_calls": [
-                {
-                    "name": "compact_conversation",
-                    "args": {"force": True},
-                    "id": tool_call_id,
-                }
-            ],
-        }
-
-    async def test_removes_dangling_seed(self) -> None:
-        """An unanswered seed is removed so it cannot wedge the next turn."""
-        from langchain_core.messages import RemoveMessage
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock()
-            app._agent = agent
-            state = _state_values(
-                [*_make_dict_messages(2), self._seed_message("seed-call")]
-            )
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                return_value=state,
-            ):
-                await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            agent.aupdate_state.assert_awaited_once()
-            update = agent.aupdate_state.call_args.args[1]
-            (removal,) = update["messages"]
-            assert isinstance(removal, RemoveMessage)
-            assert removal.id == "offload-seed-seed-call"
-
-    async def test_keeps_answered_seed(self) -> None:
-        """A seed answered by a ToolMessage is a valid pair and is left intact."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock()
-            app._agent = agent
-            answered = {
-                "type": "tool",
-                "content": "Nothing to compact yet.",
-                "tool_call_id": "seed-call",
-            }
-            state = _state_values(
-                [*_make_dict_messages(2), self._seed_message("seed-call"), answered]
-            )
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                return_value=state,
-            ):
-                await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            agent.aupdate_state.assert_not_awaited()
-
-    async def test_noop_when_seed_absent(self) -> None:
-        """Nothing is removed when no seed with the id is present."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock()
-            app._agent = agent
-            state = _state_values(_make_dict_messages(2))
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                return_value=state,
-            ):
-                await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            agent.aupdate_state.assert_not_awaited()
-
-    async def test_returns_true_when_seed_removed(self) -> None:
-        """Successful removal reports the thread is clean."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock()
-            app._agent = agent
-            state = _state_values(
-                [*_make_dict_messages(2), self._seed_message("seed-call")]
-            )
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                return_value=state,
-            ):
-                cleaned = await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            assert cleaned is True
-
-    async def test_returns_false_when_state_read_fails(self) -> None:
-        """A failed state read cannot confirm cleanup, so it reports unclean."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock()
-            app._agent = agent
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("state read boom"),
-            ):
-                cleaned = await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            assert cleaned is False
-            # The dangling seed could not be removed, so nothing was written.
-            agent.aupdate_state.assert_not_awaited()
-
-    async def test_returns_false_when_removal_write_fails(self) -> None:
-        """A failed removal write leaves the seed and reports unclean."""
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            _setup_server_offload_app(app)
-            agent = MagicMock()
-            agent.aupdate_state = AsyncMock(side_effect=RuntimeError("write boom"))
-            app._agent = agent
-            state = _state_values(
-                [*_make_dict_messages(2), self._seed_message("seed-call")]
-            )
-            with patch.object(
-                app,
-                "_get_thread_state_values",
-                new_callable=AsyncMock,
-                return_value=state,
-            ):
-                cleaned = await app._remove_unanswered_offload_seed(
-                    {"configurable": {"thread_id": "test-thread"}}, "seed-call"
-                )
-
-            assert cleaned is False
 
 
 class TestFormatTokenCount:
@@ -2190,21 +1070,17 @@ class TestFormatTokenCount:
         assert format_token_count(2_500_000) == "2.5M"
 
 
+class TestEventCutoff:
+    """`_event_cutoff` feeds the offloaded/kept counts, so it must not guess.
+
+    A wrong cutoff shifts `messages_offloaded`/`messages_kept` and the
+    already-compacted short circuit, so every malformed shape has to read as
+    zero rather than as a plausible index.
+    """
+
+
 class TestOffloadHelpers:
-    """Pure helpers backing `/offload` accounting and failure detection."""
-
-    def test_summarization_cutoff_reads_int(self) -> None:
-        from deepagents_code.app import _summarization_cutoff
-
-        assert _summarization_cutoff({"cutoff_index": 4}) == 4
-
-    def test_summarization_cutoff_defaults_zero_on_malformed(self) -> None:
-        from deepagents_code.app import _summarization_cutoff
-
-        assert _summarization_cutoff(None) == 0
-        assert _summarization_cutoff({"cutoff_index": "x"}) == 0
-        assert _summarization_cutoff({}) == 0
-        assert _summarization_cutoff("not-a-dict") == 0
+    """Pure helpers for effective-conversation reconstruction."""
 
     def test_effective_conversation_applies_event(self) -> None:
         from deepagents_code.app import _effective_conversation
@@ -2223,46 +1099,179 @@ class TestOffloadHelpers:
         assert _effective_conversation(messages, "x") == messages
         assert _effective_conversation(messages, {"cutoff_index": 1}) == messages
         assert _effective_conversation(messages, {"summary_message": "S"}) == messages
+        assert (
+            _effective_conversation(
+                messages,
+                {"summary_message": "S", "cutoff_index": -1},
+            )
+            == messages
+        )
+
+    def test_effective_conversation_logs_a_discarded_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Dropping the event drops the summary, so it must not be silent.
+
+        The middleware already logs this. The client is the side that reads
+        possibly-malformed remote snapshot dicts, so it meets a corrupt event
+        sooner, and the next request silently re-sends the whole untrimmed
+        history.
+        """
+        from deepagents_code.app import _effective_conversation
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            assert _effective_conversation(["m0", "m1"], {"cutoff_index": "x"}) == [
+                "m0",
+                "m1",
+            ]
+
+        assert "Discarding malformed `_summarization_event`" in caplog.text
 
     def test_effective_conversation_cutoff_past_end(self) -> None:
+        """An out-of-bounds cutoff deliberately diverges from the SDK.
+
+        `_apply_event_to_messages` reads a cutoff past the end as "everything
+        was summarized" and returns `[summary]`. A shorter list than the cutoff
+        means messages were removed after the summary was written, so the
+        survivors are live turns; returning `[summary]` would hide them from
+        the context sizing and dangling-tool-call checks that call this.
+        """
         from deepagents_code.app import _effective_conversation
 
         event = {"summary_message": "S", "cutoff_index": 9}
-        assert _effective_conversation(["m0"], event) == ["S"]
+        assert _effective_conversation(["m0"], event) == ["m0"]
+        # Not the SDK's reading, which would be `["S"]`.
+        assert _effective_conversation(["m0"], event) != ["S"]
 
-    def test_message_text_handles_str_and_block_list(self) -> None:
-        from deepagents_code.app import _message_text
 
-        assert _message_text(MagicMock(content="hello")) == "hello"
-        # A block-list content is concatenated, not stringified to "[{...}]".
-        blocks = [
-            {"type": "text", "text": "Compaction "},
-            {"type": "text", "text": "failed"},
-        ]
-        assert _message_text({"content": blocks}) == "Compaction failed"
-        assert _message_text({"content": None}) == ""
+class TestOffloadOperation:
+    """The server service owns checkpoint state and compaction policy."""
 
-    def test_find_compaction_failure_scans_durable_state(self) -> None:
-        from langchain_core.messages import HumanMessage, ToolMessage
+    @staticmethod
+    def _runtime() -> Runtime[CLIContextSchema]:
+        return Runtime(context=CLIContextSchema())
 
-        from deepagents_code.app import _find_compaction_failure
-        from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
+    @staticmethod
+    def _middleware(
+        *, hook_update: dict[str, object] | None = None
+    ) -> tuple[Any, MagicMock, MagicMock]:
+        from deepagents_code.offload_middleware import OffloadOperation
 
-        failing = ToolMessage(
-            content=f"{COMPACTION_FAILURE_PREFIX}: boom",
-            tool_call_id="tc",
+        compaction = MagicMock()
+        compaction._aplan_forced_compaction_update = AsyncMock()
+        compaction._summarization._apply_event_to_messages.side_effect = (
+            lambda messages, _event: messages
         )
-        messages = [HumanMessage("hi"), failing]
-        assert (
-            _find_compaction_failure(messages) == f"{COMPACTION_FAILURE_PREFIX}: boom"
+        hooks = MagicMock()
+        # Default to the shape `ServerHooksMiddleware._after_model` really
+        # returns: every one of its return paths carries the pre-tool channel,
+        # including the "no hook events enabled" path. The operation fails closed
+        # when the channel is absent, so a mock returning a bare `{}` would
+        # assert a contract the middleware never produces.
+        from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
+
+        hooks.aafter_model = AsyncMock(
+            return_value=hook_update
+            if hook_update is not None
+            else {_PRE_TOOL_STATE_KEY: {}}
+        )
+        return OffloadOperation(compaction, hooks), compaction, hooks
+
+    @staticmethod
+    def _plan(update: dict[str, object]) -> SimpleNamespace:
+        """Build the narrow compaction-plan shape consumed by the operation."""
+        return SimpleNamespace(update=lambda _path: update, archive=MagicMock())
+
+    async def test_a_hook_interrupt_propagates_instead_of_failing(self) -> None:
+        """A hook request must reach the client, not become a `failed` result.
+
+        Two independent mechanisms protect this: the `BaseException` base, which
+        the compaction chain's broad `except Exception` handlers cannot catch,
+        and the explicit re-raise in `execute`. Either alone is sufficient, so
+        this asserts the outcome rather than a mechanism -- losing *both* turns
+        every interrupt into "Compaction failed:
+        HookTransportInterruptError", silently breaking `/offload` for hook
+        users only. Verified by mutating both. The boundary test mocks the whole
+        operation, so it cannot cover this.
+        """
+        from uuid import uuid4
+
+        from deepagents_code.hooks.server_middleware import (
+            HookTransportInterruptError,
         )
 
-    def test_find_compaction_failure_ignores_success(self) -> None:
-        from langchain_core.messages import ToolMessage
+        middleware, compaction, _hooks = self._middleware()
+        request = SimpleNamespace(invocation_id=uuid4())
+        compaction._aplan_forced_compaction_update = AsyncMock(
+            side_effect=HookTransportInterruptError(cast("Any", request))
+        )
 
-        from deepagents_code.app import _find_compaction_failure
+        with pytest.raises(HookTransportInterruptError) as raised:
+            await middleware.execute(
+                {"messages": _make_dict_messages(4)}, self._runtime()
+            )
 
-        ok = ToolMessage(content="Conversation compacted.", tool_call_id="tc")
-        assert _find_compaction_failure([ok]) is None
-        # Serialized-dict tool message form is handled too.
-        assert _find_compaction_failure([{"type": "tool", "content": "ok"}]) is None
+        assert raised.value.request is request
+
+
+class TestForcedOffloadCallId:
+    """The hook dispatch's call id must be stable across a run's resumes."""
+
+    def test_missing_checkpoint_namespace_is_logged_not_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A run without a usable `checkpoint_ns` breaks hook resumes.
+
+        The random fallback makes the id differ between the request and the
+        resume, which `parse_hook_resume_value` rejects as fatal — so `/offload`
+        dies with "the client answered a different request", but only for users
+        with hooks configured. Without a log line there is nothing to point at.
+        """
+        from deepagents_code import offload_middleware
+
+        with (
+            patch.object(
+                offload_middleware,
+                "get_config",
+                return_value={"configurable": {}},
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            call_id = offload_middleware._forced_offload_call_id()
+
+        assert call_id.startswith("offload-precompact-")
+        assert "checkpoint_ns" in caplog.text
+
+    def test_no_runnable_context_is_not_warned_about(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A direct call outside a graph is expected, not a misconfiguration.
+
+        Nothing can interrupt or resume such a call, so the random id is
+        correct there and must not be reported as a problem.
+        """
+        from deepagents_code import offload_middleware
+
+        with (
+            patch.object(
+                offload_middleware, "get_config", side_effect=RuntimeError("no context")
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            call_id = offload_middleware._forced_offload_call_id()
+
+        assert call_id.startswith("offload-precompact-")
+        assert "checkpoint_ns" not in caplog.text
+
+    def test_same_namespace_yields_the_same_id(self) -> None:
+        """Answering a hook interrupt replays the node from the top."""
+        from deepagents_code import offload_middleware
+
+        config = {"configurable": {"checkpoint_ns": "force_compact:abc123"}}
+        with patch.object(offload_middleware, "get_config", return_value=config):
+            first = offload_middleware._forced_offload_call_id()
+            second = offload_middleware._forced_offload_call_id()
+
+        assert first == second

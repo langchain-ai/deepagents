@@ -26,6 +26,17 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
+YOLO_WARNING_KEY = "yolo"
+"""`[warnings].suppress` key that mutes the recurring "YOLO is active" toast.
+
+Suppression is cosmetic: YOLO still requires an explicit acknowledgement to
+enter (a modal in the TUI, a console prompt for `--yolo`), still honors the
+`startup.yolo_switcher` setting, and still shows a persistent `YOLO`
+status-bar indicator the whole time it is active. Because the acknowledgement
+is once per policy version, that indicator is the only remaining in-session
+signal for a returning user who has muted the toast.
+"""
+
 AUTO_NOTICE_VERSION = "2026-07-24"
 """Version of the first-run Auto mode education notice.
 
@@ -381,9 +392,11 @@ def _load_approval_state(path: Path) -> dict[str, object]:
     """Load the install-local approval state file, or an empty dict.
 
     A missing file is the normal first-run case and returns `{}` silently.
-    Unreadable, corrupt, or non-object state also returns `{}` (so callers fail
-    closed and re-prompt) but is logged: the next save overwrites the file, so
-    this warning is the only surviving evidence of the corruption.
+    Unreadable, corrupt, or non-object state also returns `{}` but is logged:
+    the next save overwrites the file, so this warning is the only surviving
+    evidence of the corruption. Callers fail closed on `{}`. Most re-prompt;
+    `has_auto_mode_notice` callers may instead decline to restore Auto, so the
+    log must not promise a prompt.
 
     Args:
         path: Path to `approval.json`.
@@ -397,16 +410,16 @@ def _load_approval_state(path: Path) -> dict[str, object]:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning(
-            "Ignoring unreadable or corrupt approval state at %s; a re-prompt "
-            "may follow and the file will be overwritten on the next save",
+            "Ignoring unreadable or corrupt approval state at %s; callers fail "
+            "closed and the file will be overwritten on the next save",
             path,
             exc_info=True,
         )
         return {}
     if not isinstance(data, dict):
         logger.warning(
-            "Ignoring non-object approval state at %s; a re-prompt may follow "
-            "and the file will be overwritten on the next save",
+            "Ignoring non-object approval state at %s; callers fail closed and "
+            "the file will be overwritten on the next save",
             path,
         )
         return {}

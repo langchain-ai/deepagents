@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 
 class DetailActionActivated(Message):
@@ -154,7 +155,8 @@ class NotificationDetailScreen(ModalScreen["ActionId | None"]):
     }
 
     NotificationDetailScreen .nd-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -192,7 +194,7 @@ class NotificationDetailScreen(ModalScreen["ActionId | None"]):
                 self._options.append(option)
                 yield option
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate "
+                f"{modal_navigation_hint(glyphs)} "
                 f"{glyphs.bullet} Enter select "
                 f"{glyphs.bullet} Esc back"
             )

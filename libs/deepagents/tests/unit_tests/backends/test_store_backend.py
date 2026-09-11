@@ -37,12 +37,13 @@ def test_store_backend_crud_and_search():
     matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob
+    # glob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = be.glob("*.md", path="/").matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
 def test_store_backend_read_surfaces_pagination_metadata():
@@ -58,6 +59,34 @@ def test_store_backend_read_surfaces_pagination_metadata():
     assert result.start_line == 2
     assert result.end_line == 3
     assert result.next_offset == 3
+
+
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
+def test_store_backend_read_non_positive_limit_returns_empty_read(offset: int, limit: int):
+    """`StoreBackend.read` inherits the shared clamp rather than raising."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=offset, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+def test_store_backend_read_negative_offset_starts_at_first_line():
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
 
 
 def test_store_backend_reads_mkv_as_binary_without_slicing():
@@ -162,6 +191,20 @@ def test_store_backend_edit_migrates_legacy_list_content() -> None:
     assert stored is not None
     assert stored.value["content"] == "hello\nthere"
     assert stored.value["encoding"] == "utf-8"
+
+
+def test_store_backend_edit_empty_old_string_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == ["hello", "world"]
 
 
 def test_store_backend_write_overwrites_existing_file():

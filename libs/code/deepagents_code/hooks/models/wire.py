@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
@@ -51,6 +51,7 @@ class WireNotificationType(StrEnum):
     ELICITATION_RESPONSE = "elicitation_response"
     AGENT_NEEDS_INPUT = "agent_needs_input"
     AGENT_COMPLETED = "agent_completed"
+    COLD_CACHE_WARNING = "cold_cache_warning"
 
 
 class Effort(_WireModel):
@@ -153,7 +154,7 @@ class RemoveDirectoriesUpdate(_WireModel):
     destination: PermissionDestination
 
 
-PermissionUpdate: TypeAlias = Annotated[
+type PermissionUpdate = Annotated[
     AddRulesUpdate
     | ReplaceRulesUpdate
     | RemoveRulesUpdate
@@ -287,6 +288,18 @@ class PostToolUseWireInput(BaseHookWireInput):
     duration_ms: int | None = None
 
 
+class PostToolUseFailureWireInput(BaseHookWireInput):
+    """Wire input for `PostToolUseFailure`."""
+
+    hook_event_name: Literal[HookEvent.POST_TOOL_USE_FAILURE]
+    tool_name: str
+    tool_input: JsonObject
+    tool_use_id: str
+    error: str
+    is_interrupt: bool | None = None
+    duration_ms: int | None = None
+
+
 class PreCompactWireInput(BaseHookWireInput):
     """Wire input for `PreCompact`."""
 
@@ -326,7 +339,7 @@ class SubagentStopWireInput(BaseHookWireInput):
     session_crons: list[SessionCronWire] = Field(default_factory=list)
 
 
-HookWireInput: TypeAlias = Annotated[
+type HookWireInput = Annotated[
     SessionStartWireInput
     | UserPromptSubmitWireInput
     | SessionEndWireInput
@@ -334,6 +347,7 @@ HookWireInput: TypeAlias = Annotated[
     | NotificationWireInput
     | PreToolUseWireInput
     | PostToolUseWireInput
+    | PostToolUseFailureWireInput
     | PreCompactWireInput
     | StopWireInput
     | SubagentStartWireInput
@@ -425,6 +439,13 @@ class PostToolUseSpecificOutput(_WireModel):
     )
 
 
+class PostToolUseFailureSpecificOutput(_WireModel):
+    """Event-specific output for `PostToolUseFailure`."""
+
+    hook_event_name: Literal["PostToolUseFailure"] = Field(alias="hookEventName")
+    additional_context: str | None = Field(default=None, alias="additionalContext")
+
+
 class StopSpecificOutput(_WireModel):
     """Event-specific output for `Stop`."""
 
@@ -446,12 +467,13 @@ class SubagentStopSpecificOutput(_WireModel):
     additional_context: str | None = Field(default=None, alias="additionalContext")
 
 
-HookSpecificOutput: TypeAlias = Annotated[
+type HookSpecificOutput = Annotated[
     SessionStartSpecificOutput
     | UserPromptSubmitSpecificOutput
     | PreToolUseSpecificOutput
     | PermissionRequestSpecificOutput
     | PostToolUseSpecificOutput
+    | PostToolUseFailureSpecificOutput
     | StopSpecificOutput
     | SubagentStartSpecificOutput
     | SubagentStopSpecificOutput,

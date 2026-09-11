@@ -48,11 +48,13 @@ from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     GLOB_TRUNCATION_NOTE,
     GREP_TRUNCATION_NOTE,
+    NO_LINES_REQUESTED_WARNING,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
     FilesystemState,
     GrepSchema,
+    _format_glob_tool_result,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -315,8 +317,11 @@ class TestFilesystemMiddleware:
             }
         )
         result = result_raw.content
-        # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result == str(["/test.py"])
+        # Bare `*.py` matches the basename at any depth under the search root.
+        assert "/test.py" in result
+        assert "/pokemon/charmander.py" in result
+        assert "/test.txt" not in result
+        assert "/pokemon/squirtle.txt" not in result
 
     def test_glob_search_shortterm_wildcard_pattern(self):
         files = {
@@ -379,8 +384,9 @@ class TestFilesystemMiddleware:
             }
         )
         result = result_raw.content
+        # Path scopes the tree; bare patterns still match nested basenames under it.
         assert "/src/main.py" in result
-        assert "/src/utils/helper.py" not in result
+        assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" not in result
 
     def test_glob_search_shortterm_brace_expansion(self):
@@ -1593,6 +1599,103 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
+    def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
+        """Invoke `read_file` against a fixed 3-line file with the given window."""
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": offset, "limit": limit})
+        assert isinstance(result, ToolMessage)
+        return result
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_does_not_claim_the_file_is_empty(self, limit):
+        """A zero-line window must not borrow the empty-file reminder.
+
+        The `read_file` description teaches the model that reminder means the
+        file itself is empty, so reusing it here would state something false
+        about a file that has contents.
+        """
+        result = self._read_notes(offset=0, limit=limit)
+
+        assert result.status == "success"
+        assert result.content == NO_LINES_REQUESTED_WARNING.format(limit=limit)
+        assert result.content != EMPTY_CONTENT_WARNING
+        assert "empty contents" not in result.content
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_binary_keeps_empty_file_reminder(self, limit):
+        """An inspected-but-empty file must not borrow the zero-line-window warning.
+
+        Binary reads ignore `limit`, so a zero-byte binary is fully inspected
+        and comes back as empty base64; claiming it "was not inspected and may
+        have contents" would be false on both counts.
+        """
+        files = {
+            "/image.png": FileData(
+                content="",
+                encoding="base64",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/image.png", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_text_keeps_empty_file_reminder(self, limit):
+        """A genuinely empty text file reports emptiness regardless of `limit`.
+
+        The blank-content branch in `slice_read_response` runs before the
+        zero-`limit` check, so an empty file arrives as whitespace-only text,
+        not as a backend-declared zero-line window.
+        """
+        files = {
+            "/notes.txt": FileData(
+                content="",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_negative_offset_clamps_and_discloses(self):
+        """A clamped offset still reads, and says so.
+
+        The window reaches EOF here, which suppresses the pagination notice, so
+        the disclosure has to come from its own notice or the model gets a
+        gutter starting at line 1 with no sign its request was reinterpreted.
+        """
+        result = self._read_notes(offset=-1, limit=100)
+
+        assert result.status == "success"
+        assert result.content == ("1  one\n2  two\n3  three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+
+    def test_read_file_non_negative_offset_has_no_clamp_notice(self):
+        """The clamp notice must not appear on ordinary reads."""
+        result = self._read_notes(offset=0, limit=100)
+
+        assert result.content == "1  one\n2  two\n3  three"
+
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
         read_result = ReadResult(
@@ -2113,6 +2216,35 @@ class TestFilesystemMiddleware:
 
         assert result == tool_message
 
+    def test_read_file_zero_limit_on_image_still_returns_the_image(self):
+        """A zero limit must not turn a binary read into a no-lines reminder.
+
+        `limit` never applies to binary payloads, so the no-lines guard is
+        conditioned on empty content as well. Guarding on `limit` alone would
+        regress every image read that happens to carry a degenerate limit.
+        """
+
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="img-zero-limit",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime, "limit": 0})
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
+
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
 
@@ -2293,6 +2425,122 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(
+        ("body", "offset", "limit", "expected_rows"),
+        [
+            # Mid-file blank window.
+            ("line1\n\n\n\n\nline6\n", 1, 4, [2, 3, 4, 5]),
+            # Blank window starting at line 1 of a file that continues.
+            ("\n\n\nline4\nline5\n", 0, 3, [1, 2, 3]),
+            # Blank window ending at EOF but not starting at line 1.
+            ("line1\n\n\n", 1, 2, [2, 3]),
+        ],
+    )
+    def test_read_file_blank_window_of_non_empty_file_renders_lines(self, body: str, offset: int, limit: int, expected_rows: list[int]):
+        """A blank window of a file with content renders numbered blank lines."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = _runtime("blank-window-read")
+
+        backend.write("/f.txt", body)
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/f.txt", "offset": offset, "limit": limit, "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content != EMPTY_CONTENT_WARNING
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "\n".join(f"{line_number}  " for line_number in expected_rows)
+
+    @pytest.mark.parametrize(
+        ("content", "serialization"),
+        [
+            # Lines joined with "\n" as a separator: no trailing terminator.
+            ("a\nb\n\n", "separator-joined"),
+            # Terminators kept: the same window splits into a phantom "".
+            ("a\nb\n\n\n", "terminator-kept"),
+        ],
+    )
+    def test_read_file_window_ending_in_blank_row_keeps_that_row(self, content: str, serialization: str):
+        """A window whose last source row is blank renders every row it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=5,
+            start_line=1,
+            end_line=4,
+            next_offset=4,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/f.txt"})
+
+        assert isinstance(result, ToolMessage)
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "1  a\n2  b\n3  \n4  ", serialization
+        assert "Read 4 lines" in result.content
+
+    def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
+        """A window spanning a whole whitespace-only file still describes an empty file."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=" \n\t", encoding="utf-8"),
+            total_lines=2,
+            start_line=1,
+            end_line=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/blank.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(("content", "end_line"), [("", 2), ("\n\n\n", 5)])
+    def test_read_file_blank_window_pads_to_reported_rows(self, content: str, end_line: int):
+        """A separator-joined blank window renders one row per line it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=end_line + 1,
+            start_line=2,
+            end_line=end_line,
+            next_offset=end_line,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt"})
+
+        assert isinstance(result, ToolMessage)
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "\n".join(f"{line_number}  " for line_number in range(2, end_line + 1))
+
+    def test_read_file_keeps_backend_truncation_banner_past_window(self):
+        """Rows a backend appends beyond `end_line` survive padding."""
+        backend, _ = _make_backend()
+        banner = "\n\n[Output was truncated due to size limits.]"
+        read_result = ReadResult(
+            file_data=FileData(content="a\nb" + banner, encoding="utf-8"),
+            total_lines=9,
+            start_line=1,
+            end_line=2,
+            next_offset=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert "[Output was truncated due to size limits.]" in result.content
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
@@ -2769,6 +3017,7 @@ class TestFilesystemMiddleware:
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -2805,6 +3054,78 @@ class TestFilesystemMiddleware:
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
+
+    def test_execute_tool_omits_artifact_exit_code_when_unknown(self):
+        """Test execute tool omits `exit_code` when the backend reports none."""
+
+        # Backends may leave exit_code unset, and the capture-offload parse falls
+        # back to None when the wrapper's meta line is unreadable. None must not be
+        # published as a value: it is falsy like a successful 0 but unequal to it, so
+        # both `!= 0` and `if not exit_code` would misclassify it.
+        class UnknownExitCodeMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="some output")
+
+            @property
+            def id(self):
+                return "unknown-exit-code-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_unknown_ec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=UnknownExitCodeMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo test", "runtime": rt})
+
+        # The content omits the status line entirely for an unknown exit code, so the
+        # artifact must not imply one either.
+        assert "exit code" not in result.content
+        assert result.artifact == {}
+
+    def test_execute_tool_error_paths_carry_no_artifact(self):
+        """Test execute tool returns no artifact when no command ran."""
+
+        # Errors raised before the command runs have no exit code to report, so
+        # `artifact` stays None. Consumers must therefore guard rather than index --
+        # inventing a sentinel exit code here would be indistinguishable from a real
+        # command that exited with it.
+        class ErrorPathMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            @property
+            def id(self):
+                return "error-path-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_err_artifact",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=ErrorPathMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        # Validation error: rejected before the backend is reached.
+        rejected = execute_tool.invoke({"command": "echo test", "timeout": -1, "runtime": rt})
+        assert rejected.status == "error"
+        assert rejected.artifact is None
+
+        # Backend raised: the command was attempted but produced no exit code.
+        raised = execute_tool.invoke({"command": "echo test", "runtime": rt})
+        assert raised.status == "error"
+        assert raised.artifact is None
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""
@@ -3193,6 +3514,22 @@ class TestTruncation:
         assert "results truncated" in result[-1]
         assert "try being more specific" in result[-1]
 
+    def test_truncate_list_result_accounts_for_rendering(self):
+        # Many short paths: the repr overhead alone pushes the rendered list over budget.
+        paths = [f"/{index:04x}" for index in range(10_000)]
+        result = truncate_if_too_long(paths)
+
+        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
+        assert result[-1] == TRUNCATION_GUIDANCE
+
+    def test_truncate_list_result_uneven_item_lengths(self):
+        # A single oversized leading item must not be retained whole.
+        paths = ["/" + "x" * (TOOL_RESULT_TOKEN_LIMIT * 4), *[f"/{index}.py" for index in range(100)]]
+        result = truncate_if_too_long(paths)
+
+        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
+        assert result == [TRUNCATION_GUIDANCE]
+
     def test_truncate_string_result_no_truncation(self):
         content = "short content"
         result = truncate_if_too_long(content)
@@ -3504,3 +3841,33 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+
+class TestGlobTruncationNoteMatchesTheCause:
+    """The remedy differs by cause, so the note must not assert the wrong one."""
+
+    def test_budget_truncation_advises_narrowing(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason="budget")
+
+        assert "Narrow the search" in content
+
+    def test_unreadable_truncation_does_not_advise_narrowing(self):
+        """Narrowing can never surface files under a directory we cannot read.
+
+        Telling the model to narrow here sends it into a retry loop that cannot
+        succeed, which is why the cause is carried through `GlobResult`.
+        """
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason="unreadable")
+
+        assert "could not be read" in content
+        assert "will NOT reveal" in content
+
+    def test_unknown_cause_falls_back_to_the_generic_note(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=True, truncation_reason=None)
+
+        assert "Narrow the search" in content
+
+    def test_complete_result_has_no_note(self):
+        content = _format_glob_tool_result(["/a.py"], truncated=False)
+
+        assert "Note:" not in content

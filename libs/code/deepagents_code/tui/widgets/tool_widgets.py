@@ -10,7 +10,9 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code.diff_utils import DiffStats, count_diff_change_lines
 from deepagents_code.file_ops import is_sensitive_file_path
+from deepagents_code.tui.widgets.diff import compose_diff_lines, format_diff_stats
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -22,6 +24,9 @@ _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
+
+_NO_STATS = DiffStats(additions=0, deletions=0)
+"""Stand-in for a header with no counts to show."""
 
 
 def format_display_content(content: object) -> str:
@@ -41,78 +46,58 @@ def format_display_content(content: object) -> str:
         return str(content)
 
 
-def _format_stats(additions: int, deletions: int) -> Content:
-    """Format addition/deletion stats as styled Content.
-
-    Args:
-        additions: Number of added lines.
-        deletions: Number of removed lines.
-
-    Returns:
-        Styled Content showing additions and deletions.
-    """
-    colors = theme.get_theme_colors()
-    parts: list[str | tuple[str, str] | Content] = []
-    if additions:
-        parts.append((f"+{additions}", colors.success))
-    if deletions:
-        if parts:
-            parts.append(" ")
-        parts.append((f"-{deletions}", colors.error))
-    return Content.assemble(*parts) if parts else Content("")
-
-
-def _file_header(
-    file_path: str, additions: int = 0, deletions: int = 0
-) -> ComposeResult:
+def _file_header(file_path: str, stats: DiffStats = _NO_STATS) -> ComposeResult:
     """Yield the `File:` path header with optional `+N -M` stats.
 
     Args:
         file_path: Path to the file being modified.
-        additions: Number of added lines.
-        deletions: Number of removed lines.
+        stats: Line counts for the change; zeros render no counts.
 
     Yields:
         Static widgets for the file path header and a spacer line.
     """
-    stats = _format_stats(additions, deletions)
     yield Static(
         Content.assemble(
             Content.from_markup("[bold cyan]File:[/bold cyan] $path  ", path=file_path),
-            stats,
+            format_diff_stats(stats),
         )
     )
     yield Static("")
 
 
 def _count_diff_stats(
-    diff_lines: list[str], old_string: str, new_string: str
-) -> tuple[int, int]:
-    """Count additions and deletions from diff data.
+    diff_lines: list[str],
+    old_string: str,
+    new_string: str,
+    stats: DiffStats | None = None,
+) -> DiffStats:
+    """Resolve the counts to show above an approval diff.
 
     Args:
         diff_lines: Unified diff output lines.
         old_string: Original text being replaced (fallback when no diff).
         new_string: Replacement text (fallback when no diff).
+        stats: Authoritative counts from the preview's producer, taken before
+            the body was clipped. Always preferred where supplied, because the
+            `delete` preview is built with `max_lines=100`, so recounting
+            `diff_lines` would describe the excerpt rather than the change — and
+            that number is what the user approves when destroying a file. The
+            edit path's fragment fallback builds `diff_lines` uncapped and
+            supplies none, so the recount below is exact there.
+            (`ApprovalPreview.stats` documents the same rule across all three
+            producers; this function serves only two of them.)
 
     Returns:
-        Tuple of (additions count, deletions count).
+        Line counts for the change.
     """
+    if stats is not None:
+        return stats
     if diff_lines:
-        additions = sum(
-            1
-            for line in diff_lines
-            if line.startswith("+") and not line.startswith("+++")
-        )
-        deletions = sum(
-            1
-            for line in diff_lines
-            if line.startswith("-") and not line.startswith("---")
-        )
-    else:
-        additions = new_string.count("\n") + 1 if new_string else 0
-        deletions = old_string.count("\n") + 1 if old_string else 0
-    return additions, deletions
+        return count_diff_change_lines(diff_lines)
+    return DiffStats(
+        additions=new_string.count("\n") + 1 if new_string else 0,
+        deletions=old_string.count("\n") + 1 if old_string else 0,
+    )
 
 
 class ToolApprovalWidget(Vertical):
@@ -176,7 +161,10 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
             total_lines = len(lines)
 
             # File header with line count
-            yield from _file_header(file_path, additions=total_lines if content else 0)
+            yield from _file_header(
+                file_path,
+                DiffStats(additions=total_lines if content else 0, deletions=0),
+            )
 
             if total_lines > _MAX_LINES:
                 # Truncate for display
@@ -204,8 +192,10 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         old_string = format_display_content(self.data.get("old_string", ""))
         new_string = format_display_content(self.data.get("new_string", ""))
 
-        additions, deletions = _count_diff_stats(diff_lines, old_string, new_string)
-        yield from _file_header(file_path, additions, deletions)
+        stats = _count_diff_stats(
+            diff_lines, old_string, new_string, self.data.get("stats")
+        )
+        yield from _file_header(file_path, stats)
 
         # Never render the diff of credential files (e.g. `.env`); the stats
         # above still convey that a change happened without exposing content.
@@ -214,35 +204,23 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # Render content
-            yield from self._render_diff_lines_only(diff_lines)
+            # The gutter shows only when the renderer marks the diff's numbers
+            # as the file's. `EditFileRenderer` sets it for the full-file
+            # preview diff; its fragment fallback diffs `old_string` against
+            # `new_string`, whose numbers are fragment-relative and would
+            # assert locations that are simply wrong. `DeleteFileRenderer`
+            # leaves it off too — its diff covers the whole file from line 1,
+            # so the numbers are correct but say nothing: every line is going.
+            yield from compose_diff_lines(
+                "\n".join(diff_lines),
+                max_lines=_MAX_DIFF_LINES,
+                path=file_path,
+                before=old_string,
+                after=new_string,
+                show_numbers=bool(self.data.get("show_numbers")),
+            )
         else:
             yield from self._render_strings_only(old_string, new_string)
-
-    def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
-        """Render unified diff lines without returning stats.
-
-        Yields:
-            Static widgets for each diff line with appropriate styling.
-        """
-        lines_shown = 0
-
-        for line in diff_lines:
-            if lines_shown >= _MAX_DIFF_LINES:
-                yield Static(
-                    Content.styled(
-                        f"... ({len(diff_lines) - lines_shown} more lines)", "dim"
-                    )
-                )
-                break
-
-            if line.startswith(("@@", "---", "+++")):
-                continue
-
-            widget = self._render_diff_line(line)
-            if widget:
-                yield widget
-                lines_shown += 1
 
     def _render_strings_only(self, old_string: str, new_string: str) -> ComposeResult:
         """Render old/new strings without returning stats.
@@ -259,31 +237,6 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         if new_string:
             yield Static(Content.styled("Adding:", f"bold {colors.success}"))
             yield from self._render_string_lines(new_string, is_addition=True)
-
-    @staticmethod
-    def _render_diff_line(line: str) -> Static | None:
-        """Render a single diff line with appropriate styling.
-
-        Returns:
-            Static widget with styled diff line, or None for empty/skipped lines.
-        """
-        raw = line[1:] if len(line) > 1 else ""
-
-        if line.startswith("-"):
-            return Static(
-                Content.from_markup("- $text", text=raw), classes="diff-removed"
-            )
-        if line.startswith("+"):
-            return Static(
-                Content.from_markup("+ $text", text=raw), classes="diff-added"
-            )
-        if line.startswith(" "):
-            return Static(
-                Content.from_markup("  $text", text=raw), classes="diff-context"
-            )
-        if line.strip():
-            return Static(line, markup=False)
-        return None
 
     @staticmethod
     def _render_string_lines(text: str, *, is_addition: bool) -> ComposeResult:

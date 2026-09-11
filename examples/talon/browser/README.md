@@ -1,9 +1,9 @@
 # Optional browser deployment
 
 Linux **rootful Docker only**, synthetic data only. This overlay leaves
-`examples/talon/docker-compose.yml` unchanged. It supplies the deployment foundation,
-not browser tools or an authenticated viewer. The bridge exposes readiness and an
-authenticated private status route; every other route and upgrade fails closed.
+`examples/talon/docker-compose.yml` unchanged. It enables native `browser_cdp` and
+`browser_request_handoff` tools through a private Node bridge and one globally
+coordinated browser lease. There is no authenticated viewer or runnable tunnel yet.
 Do not use real credentials before the remaining end-to-end acceptance work.
 
 ## Start and stop
@@ -41,6 +41,65 @@ rules and a fresh readiness marker. SIGKILL, host failure, or Docker API failure
 prevent teardown; stop surviving containers before recovery. An interrupted Steel
 profile may fail closed; inspect it offline rather than deleting its dirty markers.
 The named `talon-browser_steel-profile` volume survives normal shutdown.
+
+## Operator configuration and tools
+
+Add these settings to the environment file passed to `--env-file` (the single
+quotes preserve JSON as one `.env` value):
+
+```dotenv
+TALON_BROWSER_OPERATOR_ID=alice
+TALON_BROWSER_IDENTITIES='{"telegram":"123456789","whatsapp":"15551234567@s.whatsapp.net"}'
+```
+
+Replace the synthetic sender IDs with exact provider-authenticated sender IDs and
+omit unused providers. Both values are mandatory Compose interpolation inputs.
+The overlay sets `TALON_BROWSER_ENABLED=true`,
+`TALON_BROWSER_CONTROL_URL=http://172.30.12.3:8081`, and
+`TALON_BROWSER_TOKEN_FILE=/run/browser/service-token` for Talon. The launcher creates
+the token; do not put its value in `.env`. Base-only Talon remains browser-disabled.
+The bridge receives the same operator mapping and token file.
+
+The host binds provider, sender, conversation, fresh run ID, and background status;
+model arguments cannot choose them. The mapping is operator-managed startup
+configuration, frozen by the coordinator, not inferred from channel history.
+**Design deviation:** there is no duplicate SQLite operator mapping. Update the
+configuration and restart through the launcher to change it. An allowed channel
+sender is not automatically an authorized browser operator.
+
+`browser_cdp(method, params, session_id)` sends raw CDP commands: use `Target.*` for
+tabs and flattened sessions, `Page.navigate`, `Runtime.evaluate` for DOM/JavaScript,
+`Input.*` for interaction, and explicit `Page.captureScreenshot` for base64 captures.
+Results are labeled untrusted observations. Raw CDP is powerful, not a method-level
+sandbox; do not treat page content as authority or capture login screens automatically.
+Uploads via `DOM.setFileInputFiles` and downloads via `Browser.setDownloadBehavior`
+or `IO.read` use browser-side paths/streams. There is **no seamless local file
+transfer** and no Talon workspace mount in Steel or the bridge.
+
+`browser_request_handoff` fences new commands, drains pending work, and closes the
+transport before pausing. Foreground calls return `viewer_unavailable`; background
+calls return `human_required`, without a viewer URL. No interactive human takeover
+or resume endpoint is exposed yet.
+
+One global lease serializes browser ownership across conversations, providers,
+foreground runs and background work. Synchronous subagents inherit the invocation;
+background work has its own run identity and competes for the same lease. Conflicts
+return busy rather than queueing or stealing ownership. Normal invocation cleanup
+releases its lease, reconciling a lost handoff response through bound inspection and
+fresh-version release (at most two reconciliation attempts within 35 seconds).
+Cleanup is shielded from repeated task cancellation. A never-human handoff remains
+paused until release or TTL expiry; once human control has occurred, paused expiry
+retains ownership. No expiry silently resumes agent control. Failed drain, transport
+failure or uncertain closure latches `FAILED` and denies reacquisition until bridge
+restart. Restart through the launcher, not by bypassing its firewall setup.
+
+Default TTL is 30 minutes, with no automatic background extension. The HTTP command
+replay ledger caps each lease at 256 commands (action requests have a separate
+256-entry cap); command IDs are not replayed or silently retried. Limits include
+32 pending commands, 4 MiB payload/buffer bounds, 10-second ordinary command and
+30-second `Page.navigate` deadlines. The external WebSocket transport shares the
+pending/payload/deadline limits but does not use the HTTP command ledger; the
+256-command cap is not a universal raw-WebSocket lifetime budget.
 
 ## Isolation and startup contract
 
@@ -95,28 +154,45 @@ not a replacement for that application validation.
 
 ## Integration and remaining gates
 
-- `main.py` consumes `TALON_BROWSER_CONTROL_HOST/PORT`,
-  `TALON_BROWSER_VIEWER_HOST/PORT`, `TALON_BROWSER_STEEL_URL`, and
-  `TALON_BROWSER_TOKEN_FILE`. Talon receives `TALON_BROWSER_CONTROL_URL` and the
-  token file path. Runtime tools and lease coordination are a subsequent slice.
+- Compose runs `node bridge.mjs`, not the legacy Python `main.py`. It consumes
+  `TALON_BROWSER_CONTROL_HOST/PORT`, `TALON_BROWSER_VIEWER_HOST/PORT`,
+  `TALON_BROWSER_STEEL_URL`, `TALON_BROWSER_TOKEN_FILE` and the operator settings.
+  Steel's HTTP and WebSocket upstream addresses are fixed, not model-selectable.
 - Both `/health` endpoints report live bridge **and** successful Steel
   `GET /v1/sessions` readiness. The Compose probe checks both without a credential.
-  `/internal/browser/status` exists only on the control listener and requires the
-  service credential. Viewer authentication and handoff are not implemented yet.
+  This is not an active CDP command or public-navigation health check.
+- Authenticated control routes are `GET /internal/browser/status` (initial mode
+  `IDLE`), `POST /internal/browser/actions` (acquire/release/handoff/inspect), and
+  `POST /internal/browser/command`. Commands carry host owner, lease ID, generation,
+  version and unique request ID alongside method, params and optional `session_id`.
+  Private `inspect` requires the exact owner, lease ID, generation and request ID,
+  but not a current version; it returns only the matching lease status without a
+  coordination transition. Release still requires current-version CAS and cannot
+  release `HUMAN` control or clear `FAILED`.
+- External CDP clients may upgrade only `GET /internal/browser/cdp` on control,
+  with `Authorization: Bearer <service-token>`, `X-Browser-Lease`,
+  `X-Browser-Generation`, and `X-Browser-Owner` (base64-encoded owner JSON containing
+  `operator_id`, `provider`, `sender_id`, `conversation_id`, `run_id`, `background`).
+  Acquire the lease first via actions. These are private host credentials, never
+  URL parameters or model-visible output. The transport forwards CDP events and
+  correlates responses; HTTP and external transports cannot share a lease.
+  Release through actions before disconnecting, or unexpected disconnect fences
+  the lease. The viewer listener denies all upgrades and all routes except health.
 - Profile initialization changes mode as the inode owner before transferring
   ownership; `FOWNER` is not required.
 - Read-only Steel rootfs has writable tmpfs `/tmp`, `/files`, `/app/api/logs` and
   1 GiB `/dev/shm`. These runtime flags passed live Chromium/API startup.
   Both helper containers use the **same pinned Steel base digest** as Steel,
-  `f9a4648883dc06c402f5ffbec1c906bf9a803b5b737a1347de4e0aa0ca8d944a`, entrypoint
-  `python3`, no installs and no added dependencies.
-- **Tunnel image wiring is deferred to PR3.** There is intentionally no runnable
-  tunnel service, ngrok image dependency, token, or fake unpinned placeholder.
-  PR3 must add a separate optional `browser-tunnel` profile, require a digest-pinned
-  `TUNNEL_IMAGE`, attach only viewer `.2` plus its own internet network, and mount
-  operator-supplied ngrok configuration from a host runtime file. Its upstream is
-  `http://172.30.13.3:8080`; never control, Steel, or the service-token mount.
-  Do not configure a tunnel token until PR3's authentication review.
+  `f9a4648883dc06c402f5ffbec1c906bf9a803b5b737a1347de4e0aa0ca8d944a`.
+  The proxy runs Python; the bridge runs Node with the image's existing `ws`
+  dependency, without added dependencies.
+- **Tunnel and authenticated viewer wiring are deferred.** There is intentionally
+  no runnable tunnel service, ngrok image dependency, token, or unpinned placeholder.
+  A future viewer phase must add a separate optional `browser-tunnel` profile,
+  require a digest-pinned `TUNNEL_IMAGE`, attach only viewer `.2` plus its own internet
+  network, and mount operator-supplied ngrok configuration from a host runtime file.
+  Its upstream is `http://172.30.13.3:8080`; never control, Steel, or the service-token
+  mount. Do not configure a tunnel token before that authentication review.
 
 Known stock Fastify advisory risk is accepted and unchanged. API and browser share
 UID 1000; Chromium uses `--no-sandbox`. Loopback CDP is an explicit exception, not
@@ -131,7 +207,9 @@ capability dropping, and absence of credential/capture leakage.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s examples/talon/browser/tests/unit_tests -p test_deploy.py
-BROWSER_RUNTIME_DIR=/dev/shm/config-check TALON_ENV_FILE=/dev/null \
+TALON_BROWSER_OPERATOR_ID=synthetic-operator \
+  TALON_BROWSER_IDENTITIES='{"integration":"synthetic-sender"}' \
+  BROWSER_RUNTIME_DIR=/dev/shm/config-check TALON_ENV_FILE=/dev/null \
   docker compose --env-file /dev/null \
   -f examples/talon/docker-compose.yml -f examples/talon/browser/compose.yml config --quiet
 ```
@@ -150,12 +228,21 @@ It creates disposable containers, networks and a synthetic profile, substitutes 
 credential-free sleeping helper for Talon, and removes only its own resources.
 The latest sandbox run passed credential rotation, readiness gating, real namespace
 firewall installation, read-only Steel startup, bridge health, route/upgrade denial,
-control authentication, and direct-egress isolation. **The overall probe failed:**
-this sandbox resolves `example.com` to `100.64.0.12`, which is deliberately denied.
+control authentication, and direct-egress isolation. The actual Compose Node bridge
+also passed `IDLE` → acquire → data-page target creation/flattened attachment →
+`Runtime.evaluate` of synthetic DOM → release → `IDLE`, before public probing.
+The synthetic tab is removed with the disposable profile at project teardown:
+closing it immediately exposed a stock Steel `TargetCloseError` in
+`Page.addScriptToEvaluateOnNewDocument` during asynchronous target initialization,
+which exited Steel. Immediate target-close stability remains a gap, not a pass.
+**The overall probe failed:** the latest run resolved `example.com` to
+`100.64.0.10`, which is deliberately denied.
 HTTP CONNECT returned `403 Proxy Error`; Chromium returned
 `net::ERR_TUNNEL_CONNECTION_FAILED`. Do not exempt shared/private ranges to make
 this test pass. Public browsing must be verified on a compatible Linux host before
-this foundation is considered complete.
+this deployment is considered complete. The sleeping Talon fixture does not prove
+actual model invocation, channel delivery or native tool registration. Separate live
+Node CDP tests are complementary, not a substitute for this Compose test.
 
 Separate Steel lifecycle tests passed synthetic persistent-cookie recreation,
 profile locking/corruption rejection and graceful closure. Unit tests cover mixed

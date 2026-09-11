@@ -19,6 +19,7 @@ from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from deepagents_talon.authorization import set_authorization_handler
+from deepagents_talon.browser import active_run, reset_run, set_run
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
@@ -195,6 +196,13 @@ class BackgroundSubagents(AgentMiddleware):
         )
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
+        parent_browser = active_run()
+        child_browser = (
+            parent_browser.client.bind(replace(parent_browser.binding, background=True))
+            if parent_browser is not None
+            else None
+        )
+        browser_token = set_run(child_browser)
         _IN_SUBAGENT.set(True)
         APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the
@@ -204,7 +212,9 @@ class BackgroundSubagents(AgentMiddleware):
         # background authorization needs host-side cleanup first.
         set_authorization_handler(None)
         config: RunnableConfig = {"configurable": {"thread_id": task_id}, "recursion_limit": 500}
-        runtime = replace(request.runtime, config=config, state=dict(request.runtime.state))
+        runtime = replace(
+            request.runtime, config=config, state=dict(request.runtime.state), context=None
+        )
         call = {**request.tool_call, "args": {**request.tool_call["args"], "runtime": runtime}}
         timeout = asyncio.timeout(_TASK_TIMEOUT_SECONDS)
         try:
@@ -233,6 +243,10 @@ class BackgroundSubagents(AgentMiddleware):
             logger.exception("Background subagent %s failed", task_id)
             # This result reaches the model and the user: no arguments, no credentials.
             job.result = _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT
+        finally:
+            reset_run(browser_token)
+            if child_browser is not None:
+                await child_browser.close()
 
     async def _run_remote(self, request: ToolCallRequest) -> str:
         spec = self._remote[request.tool_call["args"]["subagent_type"]]

@@ -9,11 +9,12 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect injected annotations
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command  # noqa: TC002  # tool schemas resolve return annotations
 
 from deepagents_talon.background import _IN_SUBAGENT
+from deepagents_talon.browser import BrowserContext, active_run
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -126,6 +127,8 @@ class TaskTools(AgentMiddleware):
             runtime: ToolRuntime,
             tools: list[str] | None = None,
         ) -> str | Command:
+            if active_run() is not None and not _IN_SUBAGENT.get():
+                return "Browser-enabled tasks require detached execution; no child action ran."
             if not tools:
                 return await original.ainvoke(
                     {
@@ -201,16 +204,23 @@ def _compile_fresh(
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
     graph = create_agent(
+        context_schema=BrowserContext,
         model=spec.get("model", model),
         tools=spec.get("tools", []),
         system_prompt=spec.get("system_prompt", ""),
         middleware=[HumanInTheLoopMiddleware(interrupt_on=approvals)] if approvals else [],
         checkpointer=False,
     )
+
+    async def invoke_fresh(state: dict[str, object], config: RunnableConfig) -> object:
+        if _IN_SUBAGENT.get() and (browser_run := active_run()) is not None:
+            return await graph.ainvoke(_task_only(state), config, context=browser_run.context)
+        return await graph.ainvoke(_task_only(state), config)
+
     return {
         "name": spec["name"],
         "description": spec["description"],
-        "runnable": RunnableLambda(_task_only) | graph,
+        "runnable": RunnableLambda(invoke_fresh),
     }
 
 

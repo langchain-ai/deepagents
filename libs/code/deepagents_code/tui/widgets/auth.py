@@ -221,6 +221,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "meta": "https://dev.meta.ai/api-keys/",
     "mistralai": "https://console.mistral.ai/api-keys",
     "nvidia": "https://build.nvidia.com/settings/api-keys",
+    "ollama": "https://ollama.com/keys",
     "openai": "https://platform.openai.com/api-keys",
     "openrouter": "https://openrouter.ai/workspaces/default/keys",
     "perplexity": "https://www.perplexity.ai/settings/api",

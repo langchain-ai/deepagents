@@ -50,6 +50,9 @@ LANGSMITH_API_KEY_ENV: Final[str] = "LANGSMITH_API_KEY"
 LANGSMITH_API_KEY_FALLBACK_ENV_VARS: Final[tuple[str, ...]] = ("LANGCHAIN_API_KEY",)
 """Legacy env vars the LangSmith SDK accepts after `LANGSMITH_API_KEY_ENV`."""
 
+OLLAMA_API_KEY_ENV: Final[str] = "OLLAMA_API_KEY"
+"""Primary env var the Ollama Cloud web APIs read for their API key."""
+
 LANGSMITH_API_KEY_ENV_VARS: Final[tuple[str, ...]] = (
     LANGSMITH_API_KEY_ENV,
     *LANGSMITH_API_KEY_FALLBACK_ENV_VARS,

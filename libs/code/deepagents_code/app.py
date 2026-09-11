@@ -3599,20 +3599,24 @@ class DeepAgentsApp(App):
         """Whether a successful MCP login is waiting for reconnect."""
 
         self._pending_web_search_restart = False
-        """Whether a Tavily key saved via `/auth` is awaiting an offered restart.
+        """Whether a web-search key saved via `/auth` is awaiting an offered restart.
 
-        `web_search` is bound only when Tavily is configured at server spawn
-        time (see `server_graph._build_tools`), so a key added to a running
-        server takes effect only after a respawn. Set when the saved key gates
-        a tool the running server lacks; consumed when the `/auth` manager
+        `web_search` is bound only when Tavily or Ollama Cloud is configured at
+        server spawn time (see `server_graph._build_tools`), so a key added to a
+        running server takes effect only after a respawn. Set when the saved key
+        gates a tool the running server lacks; consumed when the `/auth` manager
         closes so the restart prompt never stacks over the still-open manager.
         """
 
-        self._auth_exported_tavily_original: str | None = None
-        """Original shell `TAVILY_API_KEY` value before `/auth` exported Tavily."""
+        self._auth_exported_web_search: dict[str, str | None] = {}
+        """Env originals for web-search keys `/auth` exported, per service.
 
-        self._auth_exported_tavily = False
-        """Whether this app process exported `TAVILY_API_KEY` from `/auth`."""
+        Maps the service name (e.g. `"tavily"`) to the `os.environ` value its
+        API-key var shadowed at export time (`None` when the var was absent), so
+        a later delete can restore exactly what was there before. Ownership of
+        the export is tracked separately from the offer flag so a later delete
+        can reliably undo it (see `_clear_web_search_restart_if_needed`).
+        """
 
         self._pending_mcp_disable_reconnect_servers: set[str] = set()
         """MCP servers with disable-state changes waiting for reconnect."""
@@ -23971,63 +23975,70 @@ class DeepAgentsApp(App):
     def _note_web_search_restart_if_needed(self, provider: str) -> None:
         """Flag an offered restart when a saved key enables `web_search`.
 
-        `web_search` is bound only when Tavily is configured at server spawn
-        time. A server that already spawned with Tavily has the tool bound, so
-        only a running server that lacks it needs a respawn. The stored key is
-        exported to the environment eagerly (as onboarding does) so a later
-        `/restart` — or the offered one — picks it up on reload. Ownership of
-        that export is tracked separately from the offer flag so a later delete
-        can reliably undo it (see `_clear_web_search_restart_if_needed`).
+        `web_search` is bound only when Tavily or Ollama Cloud is configured at
+        server spawn time. A server that already spawned with either has the
+        tool bound, so only a running server that lacks it needs a respawn. The
+        stored key is exported to the environment eagerly (as onboarding does)
+        so a later `/restart` — or the offered one — picks it up on reload.
+        Ownership of that export is tracked separately from the offer flag so a
+        later delete can reliably undo it (see `_clear_web_search_restart_if_needed`).
 
         Args:
             provider: The `/auth` config key that was just saved.
         """
-        from deepagents_code.model_config import TAVILY_SERVICE
+        from deepagents_code.model_config import (
+            OLLAMA_SERVICE,
+            SERVICE_API_KEY_ENV,
+            TAVILY_SERVICE,
+        )
 
-        if provider != TAVILY_SERVICE:
+        if provider not in (TAVILY_SERVICE, OLLAMA_SERVICE):
             return
         from deepagents_code.config import credentials
 
-        if credentials.has_tavily:
+        if credentials.has_tavily or credentials.has_ollama:
             return
         if self._server_proc is None or self._server_kwargs is None:
             return
         from deepagents_code.model_config import apply_stored_service_credentials
 
-        previous = os.environ.get("TAVILY_API_KEY")
+        env_var = SERVICE_API_KEY_ENV[provider]
+        previous = os.environ.get(env_var)
         apply_stored_service_credentials()
-        exported = os.environ.get("TAVILY_API_KEY")
+        exported = os.environ.get(env_var)
         if not exported:
             return
-        if not self._auth_exported_tavily and previous != exported:
-            self._auth_exported_tavily_original = previous
-            self._auth_exported_tavily = True
+        if provider not in self._auth_exported_web_search and previous != exported:
+            self._auth_exported_web_search[provider] = previous
         self._pending_web_search_restart = True
 
     def _clear_web_search_restart_if_needed(self, provider: str) -> None:
-        """Disarm a Tavily restart offer and undo its env export after a delete.
+        """Disarm a web-search restart offer and undo its env export after a delete.
 
-        Only touches `TAVILY_API_KEY` when *this* app exported it (tracked by
-        `_auth_exported_tavily`, set in `_note_web_search_restart_if_needed`) —
-        not the offer flag, which is consumed on manager close before a delete
-        can happen. That distinction is why a shell-provided key survives a
-        delete (the export flag was never set) while our own export is reverted
-        to whatever value it shadowed.
+        Only touches the deleted service's API-key var when *this* app exported
+        it (tracked by `_auth_exported_web_search`, set in
+        `_note_web_search_restart_if_needed`) — not the offer flag, which is
+        consumed on manager close before a delete can happen. That distinction
+        is why a shell-provided key survives a delete (the export was never
+        ours) while our own export is reverted to whatever value it shadowed.
 
         Args:
             provider: The `/auth` config key that was just deleted.
         """
-        from deepagents_code.model_config import TAVILY_SERVICE
+        from deepagents_code.model_config import (
+            OLLAMA_SERVICE,
+            SERVICE_API_KEY_ENV,
+            TAVILY_SERVICE,
+        )
 
-        if provider != TAVILY_SERVICE:
+        if provider not in (TAVILY_SERVICE, OLLAMA_SERVICE):
             return
-        if self._auth_exported_tavily:
-            if self._auth_exported_tavily_original is None:
-                os.environ.pop("TAVILY_API_KEY", None)
+        if provider in self._auth_exported_web_search:
+            original = self._auth_exported_web_search.pop(provider)
+            if original is None:
+                os.environ.pop(SERVICE_API_KEY_ENV[provider], None)
             else:
-                os.environ["TAVILY_API_KEY"] = self._auth_exported_tavily_original
-            self._auth_exported_tavily = False
-            self._auth_exported_tavily_original = None
+                os.environ[SERVICE_API_KEY_ENV[provider]] = original
         self._pending_web_search_restart = False
 
     def _maybe_offer_deferred_web_search_restart(self) -> None:
@@ -27428,29 +27439,29 @@ class DeepAgentsApp(App):
         )
 
     async def _offer_restart_for_web_search(self) -> None:
-        """Offer a restart so a Tavily key saved via `/auth` enables `web_search`.
+        """Offer a restart so a web-search key saved via `/auth` enables `web_search`.
 
-        The app-owned server binds `web_search` only when Tavily is configured
-        at spawn time (see `server_graph._build_tools`), so a key added
-        mid-session takes effect only after the server respawns. Mirrors the
-        post-install offer: same guards, watchdog, and fallback messaging, with
-        web-search-specific copy.
+        The app-owned server binds `web_search` only when Tavily or Ollama Cloud
+        is configured at spawn time (see `server_graph._build_tools`), so a key
+        added mid-session takes effect only after the server respawns. Mirrors
+        the post-install offer: same guards, watchdog, and fallback messaging,
+        with web-search-specific copy.
         """
         from deepagents_code.config import credentials
 
-        if credentials.has_tavily:
+        if credentials.has_tavily or credentials.has_ollama:
             # A respawn happened between arming the offer and now — e.g. an
             # install-on-select in the same `/auth` session auto-restarted the
             # server, which reloaded config and rebound `web_search`. The
             # restart is no longer needed, so don't offer a redundant one.
             return
         await self._offer_server_restart(
-            label="Tavily API key",
+            label="Web search API key",
             verb="Saved",
             prompt_body=(
                 "Restart the server to enable web search, or defer with `/restart`."
             ),
-            relaunch_hint="Relaunch dcode to enable web search with your Tavily key.",
+            relaunch_hint="Relaunch dcode to enable web search with your new key.",
             busy_hint=(
                 "Run `/restart` to enable web search once the current task finishes."
             ),

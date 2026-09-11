@@ -29,6 +29,7 @@ from deepagents_code import _env_vars, auth_store
 from deepagents_code._constants import (
     LANGSMITH_API_KEY_ENV,
     LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+    OLLAMA_API_KEY_ENV,
 )
 from deepagents_code._git import find_git_common_dir
 from deepagents_code._paths import PATHS
@@ -994,9 +995,19 @@ takes effect only after a respawn — the app offers that restart, and this
 constant is the single name its `/auth` handling compares against.
 """
 
+OLLAMA_SERVICE = "ollama"
+"""Service name for Ollama Cloud web search in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` gates the spawn-time `web_search`
+tool the same way `TAVILY_SERVICE` does (see `server_graph._build_tools`), so a
+key added to a running server takes effect only after a respawn — the app
+offers that restart, and its `/auth` handling compares against both constants.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
     LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV,
     TAVILY_SERVICE: "TAVILY_API_KEY",
+    OLLAMA_SERVICE: OLLAMA_API_KEY_ENV,
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 

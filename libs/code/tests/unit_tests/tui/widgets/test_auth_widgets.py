@@ -2513,6 +2513,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             "anthropic",
             "tavily",
             "langsmith",
+            "ollama",
         }
 
     async def test_selecting_service_opens_prompt_for_its_env_var(

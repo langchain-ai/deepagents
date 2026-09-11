@@ -129,8 +129,7 @@ class TestNoteWebSearchRestart:
 
         app = DeepAgentsApp()
         app._pending_web_search_restart = True
-        app._auth_exported_tavily = True
-        app._auth_exported_tavily_original = None
+        app._auth_exported_web_search = {"tavily": None}
 
         app._clear_web_search_restart_if_needed("tavily")
 
@@ -294,7 +293,7 @@ class TestOfferRestartForWebSearch:
         await app._offer_restart_for_web_search()
 
         app._restart_after_install.assert_awaited_once_with(  # ty: ignore
-            "Tavily API key"
+            "Web search API key"
         )
 
     async def test_restart_state_flip_surfaces_fallback(
@@ -469,8 +468,7 @@ class TestCredentialSavedHandler:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._pending_web_search_restart = True
-            app._auth_exported_tavily = True
-            app._auth_exported_tavily_original = None
+            app._auth_exported_web_search = {"tavily": None}
 
             app.on_auth_manager_screen_credential_deleted(
                 AuthManagerScreen.CredentialDeleted("tavily")
@@ -607,3 +605,131 @@ class TestDeferredOfferAfterManagerCloses:
             assert app._pending_web_search_restart is True
             assert app._launch_web_search_restart_prompt not in scheduled
             app._install_provider_then_reopen_auth.assert_awaited_once()  # ty: ignore
+
+
+class TestOllamaWebSearchRestart:
+    """The restart offer covers Ollama Cloud alongside Tavily.
+
+    `web_search` gates on either provider (see `server_graph._build_tools`),
+    so saving an Ollama key via `/auth` arms the same deferred respawn offer.
+    """
+
+    @staticmethod
+    def _fake_ollama_export(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make `apply_stored_service_credentials` export an Ollama key."""
+
+        def _apply() -> None:
+            monkeypatch.setenv("OLLAMA_API_KEY", "ollama-fake")
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.apply_stored_service_credentials",
+            _apply,
+        )
+
+    def test_flags_restart_when_running_server_lacks_ollama(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A saved Ollama key on a web-search-less running server arms the offer."""
+        from deepagents_code.config import credentials
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.setattr(credentials, "tavily_api_key", None)
+        monkeypatch.setattr(credentials, "ollama_api_key", None)
+        self._fake_ollama_export(monkeypatch)
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("ollama")
+
+        assert app._pending_web_search_restart is True
+
+    def test_skips_when_server_already_has_tavily(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server spawned with Tavily already bound `web_search`, so no offer."""
+        from deepagents_code.config import credentials
+
+        monkeypatch.setattr(credentials, "tavily_api_key", "tvly-existing")
+        self._fake_ollama_export(monkeypatch)
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("ollama")
+
+        assert app._pending_web_search_restart is False
+
+    def test_skips_when_server_already_has_ollama(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server spawned with Ollama Cloud already bound `web_search`."""
+        from deepagents_code.config import credentials
+
+        monkeypatch.setattr(credentials, "tavily_api_key", None)
+        monkeypatch.setattr(credentials, "ollama_api_key", "ollama-existing")
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("ollama")
+
+        assert app._pending_web_search_restart is False
+
+    async def test_offer_gates_on_either_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The post-close offer skips when either key is already configured."""
+        from deepagents_code.config import credentials
+
+        monkeypatch.setattr(credentials, "tavily_api_key", None)
+        monkeypatch.setattr(credentials, "ollama_api_key", "ollama-existing")
+
+        app = DeepAgentsApp()
+        app._offer_server_restart = AsyncMock()  # ty: ignore
+
+        app._pending_web_search_restart = True
+        app._maybe_offer_deferred_web_search_restart()
+        await app._offer_restart_for_web_search()
+
+        app._offer_server_restart.assert_not_awaited()  # ty: ignore
+
+    def test_deleted_ollama_key_clears_pending_restart_and_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Ollama disarms the deferred restart and removes its env bridge."""
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-deleted")
+
+        app = DeepAgentsApp()
+        app._pending_web_search_restart = True
+        app._auth_exported_web_search = {"ollama": None}
+
+        app._clear_web_search_restart_if_needed("ollama")
+
+        assert app._pending_web_search_restart is False
+        assert "OLLAMA_API_KEY" not in os.environ
+
+    def test_deleted_ollama_key_restores_original_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Ollama restores a shell key that `/auth` temporarily replaced."""
+        from deepagents_code.config import credentials
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-from-shell")
+        monkeypatch.setattr(credentials, "tavily_api_key", None)
+        monkeypatch.setattr(credentials, "ollama_api_key", None)
+        self._fake_ollama_export(monkeypatch)
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("ollama")
+        app._maybe_offer_deferred_web_search_restart()
+        app._clear_web_search_restart_if_needed("ollama")
+
+        assert app._pending_web_search_restart is False
+        assert os.environ["OLLAMA_API_KEY"] == "ollama-from-shell"

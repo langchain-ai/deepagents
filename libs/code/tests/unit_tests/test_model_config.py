@@ -885,6 +885,31 @@ class TestServiceCredentials:
         assert status.env_var == "TAVILY_API_KEY"
         assert status.detail == "TAVILY_API_KEY is not set or is empty"
 
+    def test_ollama_is_configurable_service(self) -> None:
+        """`ollama` is a non-model service with an `/auth`-managed env var."""
+        from deepagents_code.model_config import (
+            OLLAMA_SERVICE,
+            SERVICE_API_KEY_ENV,
+            is_service,
+        )
+
+        assert is_service(OLLAMA_SERVICE)
+        assert SERVICE_API_KEY_ENV[OLLAMA_SERVICE] == "OLLAMA_API_KEY"
+
+    def test_ollama_status_configured_from_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An `OLLAMA_API_KEY` env var reports CONFIGURED from the env source."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "from-env")
+        status = get_service_auth_status("ollama")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "OLLAMA_API_KEY"
+
     def test_status_configured_from_env(
         self,
         fake_state_dir: Path,  # noqa: ARG002

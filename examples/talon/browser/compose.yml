@@ -1,0 +1,155 @@
+services:
+  talon:
+    env_file: !override
+      - ${TALON_ENV_FILE:?Use browser/deploy.py}
+    restart: "no"
+    environment:
+      TALON_BROWSER_CONTROL_URL: http://172.30.12.3:8081
+      TALON_BROWSER_TOKEN_FILE: /run/browser/service-token
+    volumes:
+      - type: bind
+        source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/service-token
+        target: /run/browser/service-token
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      default: {}
+      browser-control:
+        ipv4_address: 172.30.12.2
+    depends_on:
+      browser-bridge:
+        condition: service_healthy
+
+  browser-bridge:
+    build:
+      context: ./browser
+    image: talon-browser-stdlib:local
+    command: ["main.py"]
+    user: "1000:1000"
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1770"]
+    environment:
+      TALON_BROWSER_CONTROL_HOST: 172.30.12.3
+      TALON_BROWSER_CONTROL_PORT: "8081"
+      TALON_BROWSER_VIEWER_HOST: 172.30.13.3
+      TALON_BROWSER_VIEWER_PORT: "8080"
+      TALON_BROWSER_STEEL_URL: http://172.30.14.2:3000
+      TALON_BROWSER_TOKEN_FILE: /run/browser/service-token
+    volumes:
+      - type: bind
+        source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/service-token
+        target: /run/browser/service-token
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      browser-control:
+        ipv4_address: 172.30.12.3
+      browser-viewer:
+        ipv4_address: 172.30.13.3
+      browser-steel:
+        ipv4_address: 172.30.14.4
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; [urllib.request.urlopen(u, timeout=3).close() for u in ('http://172.30.12.3:8081/health', 'http://172.30.13.3:8080/health')]"
+      interval: 5s
+      timeout: 8s
+      retries: 12
+    depends_on:
+      steel:
+        condition: service_healthy
+      browser-egress:
+        condition: service_started
+
+  steel:
+    build:
+      context: ./browser/steel
+    image: talon-steel:local
+    user: "0:0"
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    shm_size: 1gb
+    stop_grace_period: 40s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,uid=1000,gid=1000,mode=1770
+      - /files:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=0700
+      - /app/api/logs:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=0700
+    environment:
+      STEEL_REQUIRE_EGRESS_READY: "true"
+    volumes:
+      - steel-profile:/var/lib/steel/profile
+      - type: bind
+        source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/steel-network
+        target: /run/steel-network
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      browser-steel:
+        ipv4_address: 172.30.14.2
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9222/json/version', timeout=3).close()"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 60s
+
+  browser-egress:
+    build:
+      context: ./browser
+    image: talon-browser-stdlib:local
+    user: "1000:1000"
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command:
+      - -c
+      - |
+        import pathlib, runpy, time
+        deadline = time.monotonic() + 60
+        while not pathlib.Path('/run/egress-network/ready').is_file():
+            if time.monotonic() >= deadline:
+                raise SystemExit('egress_ready_timeout')
+            time.sleep(0.1)
+        runpy.run_path('/opt/browser/egress.py', run_name='__main__')
+    volumes:
+      - type: bind
+        source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/egress-network
+        target: /run/egress-network
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      browser-steel:
+        ipv4_address: 172.30.14.3
+      browser-internet:
+        gw_priority: 1
+
+networks:
+  browser-control:
+    internal: true
+    ipam:
+      config: [{subnet: 172.30.12.0/24}]
+  browser-viewer:
+    internal: true
+    ipam:
+      config: [{subnet: 172.30.13.0/24}]
+  browser-steel:
+    internal: true
+    ipam:
+      config: [{subnet: 172.30.14.0/24}]
+  browser-internet: {}
+
+volumes:
+  steel-profile: {}

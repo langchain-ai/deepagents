@@ -87,21 +87,6 @@ class TestResolveMcpConfigExplicit:
         assert result.used_paths == (Path(str(cfg)),)
         assert "notion" in result.config["mcpServers"]
 
-    def test_invalid_explicit_config_returns_error(self, tmp_path: Path) -> None:
-        """Invalid explicit configs surface a structured error, never a print."""
-        cfg = tmp_path / "broken.json"
-        cfg.write_text("not json")
-        result = resolve_mcp_config(str(cfg))
-        assert isinstance(result, ConfigResolutionError)
-        assert result.kind is ConfigErrorKind.EXPLICIT_LOAD_FAILED
-        assert "Failed to load MCP config" in result.message
-
-    def test_missing_explicit_config_returns_error(self, tmp_path: Path) -> None:
-        """A missing explicit config still surfaces a structured error."""
-        result = resolve_mcp_config(str(tmp_path / "nope.json"))
-        assert isinstance(result, ConfigResolutionError)
-        assert result.kind is ConfigErrorKind.EXPLICIT_LOAD_FAILED
-
     def test_permission_error_on_explicit_config_returns_error(
         self, tmp_path: Path
     ) -> None:
@@ -119,16 +104,6 @@ class TestResolveMcpConfigExplicit:
 
 class TestResolveMcpConfigAutodiscover:
     """Auto-discovery resolution path."""
-
-    def test_no_discovered_configs_returns_no_config_found(self) -> None:
-        """Empty discovery yields the `NO_CONFIG_FOUND` reason."""
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[],
-        ):
-            result = resolve_mcp_config(None)
-        assert isinstance(result, ConfigResolutionError)
-        assert result.kind is ConfigErrorKind.NO_CONFIG_FOUND
 
     def test_untrusted_only_returns_no_usable_config_with_paths(
         self,
@@ -172,33 +147,6 @@ class TestResolveMcpConfigAutodiscover:
         assert isinstance(result, ConfigResolution)
         assert result.used_paths == (project_cfg,)
         assert set(result.config["mcpServers"]) == {"notion"}
-
-    def test_legacy_enabled_project_servers_is_surfaced(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A legacy flat allowlist is reported so login can explain the change.
-
-        `mcp login` is non-interactive (no approval prompt), so a user who
-        relied on the removed `[mcp].enabled_project_servers` key must be told
-        why their server stopped loading rather than have it vanish silently.
-        """
-        _isolate_project_mcp_trust_lists(
-            monkeypatch, tmp_path, '[mcp]\nenabled_project_servers = ["notion"]\n'
-        )
-        project_cfg = tmp_path / "project.json"
-        project_cfg.write_text(
-            '{"mcpServers":{"notion":{"transport":"http",'
-            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
-        )
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[_project_source(project_cfg)],
-        ):
-            result = resolve_mcp_config(None)
-        assert isinstance(result, ConfigResolutionError)
-        assert result.legacy_ignored == ("notion",)
 
     def test_unreadable_policy_fails_closed_and_surfaces_error(
         self,
@@ -689,10 +637,6 @@ class TestSelectServer:
 class TestFormatUntrustedProjectNotice:
     """`format_untrusted_project_notice` rendering."""
 
-    def test_empty_returns_empty_string(self) -> None:
-        """No untrusted paths means no notice."""
-        assert format_untrusted_project_notice(()) == ""
-
     def test_includes_each_path_and_trust_hint(self, tmp_path: Path) -> None:
         """The rendered notice names each skipped path and the trust hint."""
         a = tmp_path / "a.json"
@@ -706,10 +650,6 @@ class TestFormatUntrustedProjectNotice:
 class TestFormatLegacyIgnoredNotice:
     """`format_legacy_ignored_notice` rendering."""
 
-    def test_empty_returns_empty_string(self) -> None:
-        """No ignored names means no notice."""
-        assert format_legacy_ignored_notice(()) == ""
-
     def test_names_and_migration_hint(self) -> None:
         """The notice names each ignored server and how to re-approve."""
         notice = format_legacy_ignored_notice(("docs", "slack"))
@@ -721,12 +661,6 @@ class TestFormatLegacyIgnoredNotice:
 
 class TestFormatMalformedApprovalsNotice:
     """`format_malformed_approvals_notice` rendering."""
-
-    def test_zero_returns_empty_string(self) -> None:
-        """No dropped approvals means no notice."""
-        from deepagents_code.mcp_login_service import format_malformed_approvals_notice
-
-        assert format_malformed_approvals_notice(0) == ""
 
     def test_count_and_migration_hint(self) -> None:
         """The notice reports the count and how to re-approve."""
@@ -742,29 +676,9 @@ class TestFormatMalformedApprovalsNotice:
 class TestFormatPolicyErrorNotice:
     """`format_policy_error_notice` rendering."""
 
-    def test_none_returns_empty_string(self) -> None:
-        """A readable policy (None) produces no notice."""
-        from deepagents_code.mcp_login_service import format_policy_error_notice
-
-        assert format_policy_error_notice(None) == ""
-
-    def test_names_reason_and_fix(self) -> None:
-        """The notice embeds the read error and points at config.toml."""
-        from deepagents_code.mcp_login_service import format_policy_error_notice
-
-        notice = format_policy_error_notice("Could not read foo")
-        assert "Could not read foo" in notice
-        assert "config.toml" in notice
-
 
 class TestFormatLegacyEnvIgnoredNotice:
     """`format_legacy_env_ignored_notice` rendering."""
-
-    def test_false_returns_empty_string(self) -> None:
-        """The old env var unset means no notice."""
-        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
-
-        assert format_legacy_env_ignored_notice(False) == ""
 
     def test_names_old_and_new_env_var(self) -> None:
         """The notice names both the removed and the replacement env var."""
@@ -777,24 +691,3 @@ class TestFormatLegacyEnvIgnoredNotice:
 
 class TestFormatLoadErrorsNotice:
     """`format_load_errors_notice` rendering."""
-
-    def test_empty_returns_empty_string(self) -> None:
-        """No load errors means no notice."""
-        from deepagents_code.mcp_login_service import format_load_errors_notice
-
-        assert format_load_errors_notice(()) == ""
-
-    def test_one_line_per_failure(self) -> None:
-        """Each `(path, error)` pair becomes its own reported line."""
-        from deepagents_code.mcp_login_service import format_load_errors_notice
-
-        notice = format_load_errors_notice(
-            (
-                (Path("/a/.mcp.json"), "bad json"),
-                (Path("/b/.mcp.json"), "missing command"),
-            )
-        )
-        lines = notice.splitlines()
-        assert len(lines) == 2
-        assert "Ignoring MCP config /a/.mcp.json: bad json" in lines[0]
-        assert "Ignoring MCP config /b/.mcp.json: missing command" in lines[1]

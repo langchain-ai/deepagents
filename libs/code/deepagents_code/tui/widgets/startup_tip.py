@@ -11,7 +11,7 @@ from textual.widgets import Static
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
 from deepagents_code.editor import editor_display_name
 
-_TIP_EXTERNAL_EDITOR = "Press ctrl+x to compose prompts in your external editor"
+_TIP_EXTERNAL_EDITOR = "Press ctrl+g to compose prompts in your external editor"
 """Generic editor tip replaced at construction when an editor is configured."""
 
 _TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO modes"
@@ -33,7 +33,10 @@ _TIPS: dict[str, int] = {
     "Open /mcp and press Enter on a remote server to sign in again": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "Use /summarization-model to choose a model for compaction summaries": 1,
+    "Use /uninstall to remove an optional integration": 1,
     "Use /effort to change the current model's reasoning effort": 1,
+    "Start with --show-reasoning to display provider-visible reasoning": 1,
     _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,
@@ -86,7 +89,7 @@ def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]
     editor = editor_display_name()
     if editor is not None:
         weight = tips.pop(_TIP_EXTERNAL_EDITOR)
-        tips[f"Press ctrl+x to compose prompts in {editor}"] = weight
+        tips[f"Press ctrl+g to compose prompts in {editor}"] = weight
 
     if not yolo_switcher_enabled:
         # Replace the YOLO cycle tip with the Manual/Auto-only wording so the

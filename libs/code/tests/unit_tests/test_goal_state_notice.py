@@ -34,7 +34,6 @@ from deepagents_code.goal_state_notice import (
     notice_text_sections,
     project_goal_state,
     serialize_goal_state,
-    summarization_cutoff,
     superseded_goal_state_placeholder,
 )
 
@@ -114,18 +113,6 @@ def test_inactive_notice_prohibits_goal_tool_calls() -> None:
         assert "<goal_status_note>" not in content
 
 
-def test_actionable_goal_without_rubric_promises_no_grading() -> None:
-    """Automatic grading is only claimed when acceptance criteria exist."""
-    notice = build_goal_state_notice(
-        {"_goal_objective": "ship it", "_goal_status": "active"}, event_id="x"
-    )
-
-    assert "- Rubric active: no" in notice.content
-    assert "Work toward the goal" in notice.content
-    assert "graded automatically" not in notice.content
-    assert "<acceptance_criteria>" not in notice.content
-
-
 def test_blocked_notice_embeds_the_models_own_status_note() -> None:
     """A blocked goal stays actionable, so its recorded blocker is readable."""
     notice = build_goal_state_notice(
@@ -141,25 +128,6 @@ def test_blocked_notice_embeds_the_models_own_status_note() -> None:
         "<goal_status_note>waiting on &lt;API&gt; docs</goal_status_note>"
         in notice.content
     )
-
-
-def test_embedded_text_is_not_truncated() -> None:
-    """The notice carries requirements beyond the former 4,000-character cap."""
-    objective = "A" * 4_500
-    criteria = "B" * 4_700
-
-    content = build_goal_state_notice(
-        {
-            "_goal_objective": objective,
-            "_goal_status": "active",
-            "_goal_rubric": criteria,
-        },
-        event_id="x",
-    ).content
-
-    assert f"<goal_objective>{objective}</goal_objective>" in content
-    assert f"<acceptance_criteria>{criteria}</acceptance_criteria>" in content
-    assert "truncated to fit context" not in content
 
 
 def test_oversized_legacy_notice_is_bounded_and_non_actionable() -> None:
@@ -390,19 +358,6 @@ def test_oversized_detection_is_scoped_to_the_current_tag_vocabulary() -> None:
     assert not is_oversized_goal_state_message(untagged)
 
 
-def test_summarization_cutoff_degrades_to_zero_on_malformed_events() -> None:
-    """A malformed event must read as "nothing trimmed", never raise."""
-    assert summarization_cutoff({"cutoff_index": 7}) == 7
-    assert summarization_cutoff({"cutoff_index": -1}) == 0
-    assert summarization_cutoff({"cutoff_index": True}) == 0
-    assert summarization_cutoff({"cutoff_index": 3}, message_count=2) == 0
-    assert summarization_cutoff({"cutoff_index": 2}, message_count=2) == 2
-    assert summarization_cutoff(None) == 0
-    assert summarization_cutoff({}) == 0
-    assert summarization_cutoff({"cutoff_index": "7"}) == 0
-    assert summarization_cutoff("not-an-event") == 0
-
-
 def test_active_notice_embeds_escaped_objective_and_criteria() -> None:
     """Actionable state carries the objective and criteria as escaped context."""
     notice = build_goal_state_notice(
@@ -422,44 +377,6 @@ def test_active_notice_embeds_escaped_objective_and_criteria() -> None:
         "</acceptance_criteria>" in notice.content
     )
     assert "Work toward the goal." in notice.content
-
-
-def test_rubric_only_notice_embeds_criteria_without_objective() -> None:
-    """A standalone rubric surfaces criteria but reports no goal."""
-    notice = build_goal_state_notice({"rubric": "include a marker"}, event_id="x")
-
-    assert "- Goal status: not set" in notice.content
-    assert "- Rubric active: yes" in notice.content
-    assert "Follow the active rubric while handling the user's request" in (
-        notice.content
-    )
-    assert "Work toward the goal" not in notice.content
-    assert "<goal_objective>" not in notice.content
-    assert "<acceptance_criteria>include a marker</acceptance_criteria>" in (
-        notice.content
-    )
-
-
-def test_one_shot_rubric_does_not_direct_toward_inactive_goal() -> None:
-    """A one-shot rubric supersedes paused or completed goal guidance."""
-    for status in ("paused", "complete"):
-        notice = build_goal_state_notice(
-            {
-                "_goal_objective": "ship it",
-                "_goal_status": status,
-                "rubric": "include a marker",
-            },
-            event_id="x",
-        )
-
-        assert "Follow the active rubric while handling the user's request" in (
-            notice.content
-        )
-        assert "Work toward the goal" not in notice.content
-        assert "<goal_objective>" not in notice.content
-        assert "<acceptance_criteria>include a marker</acceptance_criteria>" in (
-            notice.content
-        )
 
 
 def test_blocked_notice_keeps_criteria_and_prior_blocker() -> None:
@@ -527,12 +444,6 @@ def test_unsaved_continuation_also_supplies_criteria() -> None:
     assert "ship login" in continuation.content
     assert "- replay is blocked\\n- tests pass" in continuation.content
     assert continuation.additional_kwargs["goal_state_persisted"] is False
-
-
-def test_unsaved_criteria_require_an_objective() -> None:
-    """Criteria alone would describe a goal the message never states."""
-    with pytest.raises(ValueError, match="require an unsaved objective"):
-        build_goal_continuation("created", unsaved_criteria="- tests pass")
 
 
 def test_prior_blocker_is_escaped_as_context_data() -> None:

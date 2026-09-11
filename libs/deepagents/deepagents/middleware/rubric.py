@@ -520,6 +520,15 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             `GraderResponse`.
 
             With none, the grader reasons from the transcript alone.
+        grader_middleware: Middleware applied to the nested grader agent.
+        grader_context_schema: Runtime context schema for the nested grader.
+        grader_state_schema: State schema for the nested grader. Use this when
+            `build_grader_state` adds custom state fields.
+        prepare_messages_for_grader: Optional transform applied to the transcript
+            messages before the SDK builds the sanitized grader payload.
+        build_grader_state: Optional callback that adds custom fields to the
+            nested grader input. It cannot replace the SDK-owned `messages`
+            field.
         max_iterations: Maximum grader iterations per rubric attempt; must be a
             positive integer.
 
@@ -533,8 +542,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             suppressed; do not use this callback to enforce control flow.
 
     Raises:
-        ValueError: If `max_iterations` is less than 1, or if `model` is falsy.
-        TypeError: If `max_iterations` is not an `int`.
+        ValueError: If `max_iterations` is less than 1, `model` is falsy, or
+            `build_grader_state` is provided without `grader_state_schema`.
+        TypeError: If `max_iterations` is not an `int`, or a provided callback
+            is not callable.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
@@ -548,6 +559,11 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         model: str | BaseChatModel,
         system_prompt: str | None = None,
         tools: Sequence[BaseTool] | None = None,
+        grader_middleware: Sequence[AgentMiddleware[Any, Any, Any]] | None = None,
+        grader_context_schema: type[Any] | None = None,
+        grader_state_schema: type[AgentState[Any]] | None = None,
+        prepare_messages_for_grader: Callable[[list[AnyMessage]], list[AnyMessage]] | None = None,
+        build_grader_state: Callable[[RubricState, int], Mapping[str, Any]] | None = None,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
     ) -> None:
@@ -560,12 +576,27 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if max_iterations < 1:
             msg = f"RubricMiddleware: `max_iterations` must be positive, got {max_iterations}."
             raise ValueError(msg)
+        if grader_state_schema is None and build_grader_state is not None:
+            msg = "RubricMiddleware: `grader_state_schema` is required with `build_grader_state`."
+            raise ValueError(msg)
+        for name, callback in (
+            ("prepare_messages_for_grader", prepare_messages_for_grader),
+            ("build_grader_state", build_grader_state),
+        ):
+            if callback is not None and not callable(callback):
+                msg = f"RubricMiddleware: `{name}` must be callable."
+                raise TypeError(msg)
 
         self.max_iterations = max_iterations
         self._model = model
         self._model_label = _configured_model_label(model)
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
+        self._grader_middleware = grader_middleware or ()
+        self._grader_context_schema = grader_context_schema
+        self._grader_state_schema = grader_state_schema
+        self._prepare_messages_for_grader = prepare_messages_for_grader
+        self._build_grader_state = build_grader_state
         self._on_evaluation = on_evaluation
         # Built lazily so importing the middleware doesn't construct a model
         # client (which can trigger env-var lookups / API key validation).
@@ -789,8 +820,11 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             model=resolved_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
+            middleware=self._grader_middleware,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
+            state_schema=self._grader_state_schema,
+            context_schema=self._grader_context_schema,
         )
         return self._grader
 
@@ -966,8 +1000,17 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         Returns:
             The nested grader's input state.
         """
-        payload = self._build_grader_payload(state, iteration, correction)
-        return {"messages": [HumanMessage(content=payload)]}
+        grader_state = state
+        if self._prepare_messages_for_grader:
+            grader_state = RubricState(**state)
+            grader_state["messages"] = self._prepare_messages_for_grader(list(state.get("messages", [])))
+        payload = self._build_grader_payload(grader_state, iteration, correction)
+        grader_input = dict(self._build_grader_state(grader_state, iteration)) if self._build_grader_state else {}
+        if "messages" in grader_input:
+            msg = "RubricMiddleware: `build_grader_state` cannot set `messages`."
+            raise ValueError(msg)
+        grader_input["messages"] = [HumanMessage(content=payload)]
+        return grader_input
 
     def _invoke_grader(
         self,

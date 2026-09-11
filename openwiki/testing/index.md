@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Test topology and execution guidance for the Deep Agents SDK, dcode, ACP, Talon, and evaluation suite. Use the appropriate package entrypoint and preserve the offline-unit, networked-integration, and warnings-as-errors boundaries.
+- [Testing Strategy and Change Validation](testing-guide.md) - Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.

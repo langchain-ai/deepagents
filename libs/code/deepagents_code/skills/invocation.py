@@ -29,10 +29,12 @@ class SkillInvocationEnvelope:
         prompt: Composed prompt that wraps `SKILL.md` content with
             invocation instructions.
         message_kwargs: Extra fields merged into the initial HumanMessage.
+        skill_name: Invoked skill name for trace attribution.
     """
 
     prompt: str
     message_kwargs: dict[str, Any]
+    skill_name: str
 
 
 def discover_skills_and_roots(
@@ -148,4 +150,8 @@ def build_skill_invocation_envelope(
             },
         },
     }
-    return SkillInvocationEnvelope(prompt=prompt, message_kwargs=message_kwargs)
+    return SkillInvocationEnvelope(
+        prompt=prompt,
+        message_kwargs=message_kwargs,
+        skill_name=skill["name"],
+    )

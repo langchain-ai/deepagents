@@ -12,7 +12,7 @@ shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats
 `DEEPAGENTS_CODE_`-prefixed and canonical env, env beats user `config.toml`,
-and the typed default is the final fallback. A malformed numeric/list/PTC
+and the typed default is the final fallback. A malformed numeric/list/PTC/ISO
 value, an unrecognized boolean token, or a wrong-typed TOML value is logged
 and falls back to the next layer rather than raising, so one bad entry does
 not discard valid sibling policy.
@@ -36,7 +36,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import (
@@ -100,20 +102,11 @@ effectively remove it. A resolved value above the ceiling is rejected and falls
 through to the next layer / default.
 """
 
-RECURSION_LIMIT_DEFAULT = 2000
-"""Default LangGraph `recursion_limit` for the main agent.
-
-Single source of truth shared by the `runtime.recursion_limit` option, the
-`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
-above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
-in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
-"""
-
 RECURSION_LIMIT_FLOOR = 25
-"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+"""Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
-A value below this would break otherwise-valid runs, so a resolved value under
-the floor is rejected and falls through to the next layer / default.
+Lower values are rejected and resolution falls through to the next layer. The
+`--recursion-limit` flag is exempt and accepts any value `>= 1`.
 """
 
 RECURSION_LIMIT_CEILING = 100_000
@@ -123,6 +116,9 @@ Bounds the graph step budget so a mistyped or hostile override cannot request
 effectively unbounded traversal. A resolved value above the ceiling is rejected
 and falls through to the next layer / default.
 """
+
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+"""Upstream recursion default inherited when no Deep Agents override wins."""
 
 COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 """Context size above which a resumed thread is offered compaction.
@@ -160,6 +156,78 @@ VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
 """Allowlist derived from `CursorStyle` so the two never drift."""
 
 
+def normalize_iso_datetime(value: object) -> str | None:
+    """Normalize an ISO 8601 date or aware datetime to a UTC timestamp.
+
+    Returns:
+        The normalized timestamp, or `None` when the value is invalid.
+    """
+    parsed: datetime
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            try:
+                parsed = datetime.combine(
+                    date.fromisoformat(text), datetime.min.time(), tzinfo=UTC
+                )
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).isoformat()
+
+
+_DURATION_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "w": 7 * 24 * 60 * 60,
+}
+_MAX_DURATION_SECONDS = int(timedelta.max.total_seconds())
+
+
+def normalize_duration(value: object) -> str | None:
+    """Normalize a positive integer duration such as `7d`.
+
+    Returns:
+        The normalized duration, or `None` when invalid.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)([smhdw])", value.strip().lower())
+    if match is None:
+        return None
+    digits, unit = match.groups()
+    if len(digits) > len(str(_MAX_DURATION_SECONDS)):
+        return None
+    count = int(digits)
+    seconds = count * _DURATION_UNITS[unit]
+    return f"{count}{unit}" if seconds <= _MAX_DURATION_SECONDS else None
+
+
+def parse_duration_seconds(value: object) -> int | None:
+    """Parse a positive integer duration such as `7d` into seconds.
+
+    Returns:
+        The duration in seconds, or `None` when invalid.
+    """
+    normalized = normalize_duration(value)
+    if normalized is None:
+        return None
+    return int(normalized[:-1]) * _DURATION_UNITS[normalized[-1]]
+
+
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
@@ -169,7 +237,7 @@ class OptionKind(Enum):
     `option_accepts_toml` is the public seam over that same coercion.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`, `EXTENSION_TRUST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
-    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    bespoke parsers (their semantics — dynamic debug fallback, pathsep-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
     coerced by the providers themselves (`ranked_theme_toml_value` and
@@ -202,6 +270,12 @@ class OptionKind(Enum):
 
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
+
+    ISO_DATETIME = "iso_datetime"
+    """An ISO 8601 date or timezone-aware datetime normalized to UTC."""
+
+    DURATION_SECONDS = "duration_seconds"
+    """A positive integer duration with an `s`, `m`, `h`, `d`, or `w` suffix."""
 
     MODEL_LIST_DELEGATE = "model_list"
     """Validates a list of `provider:model` specs and `provider:*` wildcards."""
@@ -251,6 +325,8 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.ISO_DATETIME: "ISO 8601 date or timezone-aware datetime",
+    OptionKind.DURATION_SECONDS: "duration (for example, 7d)",
     OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
@@ -363,6 +439,7 @@ class _CommonFields(TypedDict):
     summary: str
     env_var: NotRequired[str | None]
     fallback_env_vars: NotRequired[tuple[str, ...]]
+    prefix_aware_fallbacks: NotRequired[bool]
     toml_keys: NotRequired[tuple[str, ...] | None]
     invert_toml_bool: NotRequired[bool]
     cli_flag: NotRequired[str | None]
@@ -381,6 +458,8 @@ type _BoolKind = Literal[OptionKind.BOOL, OptionKind.BOOL_PRESENCE]
 type _StrKind = Literal[
     OptionKind.STR,
     OptionKind.NON_EMPTY_STR,
+    OptionKind.ISO_DATETIME,
+    OptionKind.DURATION_SECONDS,
     OptionKind.CURSOR_STYLE_DELEGATE,
     OptionKind.EXTENSION_TRUST_DELEGATE,
     OptionKind.STARTUP_MODE_DELEGATE,
@@ -439,9 +518,18 @@ class ConfigOption[T]:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
-    mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
-    `LANGSMITH_PROJECT`.
+    Read literally unless `prefix_aware_fallbacks` is set, so `config`/`config
+    get` mirror runtime fallbacks such as `get_langsmith_project_name` reading
+    bare `LANGSMITH_PROJECT`.
+    """
+
+    prefix_aware_fallbacks: bool = False
+    """Whether `fallback_env_vars` honor `DEEPAGENTS_CODE_` prefix overrides.
+
+    Set for credentials, whose runtime lookup routes every accepted name
+    through `resolve_env_var` -- including empty-prefix shadowing. Left off for
+    fallbacks the runtime reads literally, where applying the override would
+    let an empty prefixed variable shadow a set canonical one.
     """
 
     toml_keys: tuple[str, ...] | None = None
@@ -1753,7 +1841,11 @@ def option_accepts_toml(
 
 
 def is_valid_recursion_limit(value: object) -> TypeIs[int]:
-    """Return whether `value` is an accepted main-agent `recursion_limit`.
+    """Return whether `value` is in bounds for a managed, env, or TOML tier.
+
+    The `--recursion-limit` flag does not go through this predicate: it uses the
+    looser `_is_valid_cli_recursion_limit` (`>= 1`), so a CLI value this function
+    rejects is still honored.
 
     Narrows so callers need no `cast`. `bool` is rejected at runtime but is a
     subclass of `int`, so the negative branch is not narrowed for it -- no
@@ -1771,18 +1863,25 @@ def _is_valid_cli_recursion_limit(value: object) -> TypeIs[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+def _inherited_langgraph_recursion_limit() -> int | None:
+    """Return LangGraph's environment default when one is configured."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    return int(raw) if raw is not None else None
+
+
 def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> int:
+) -> int | None:
     """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
-    `config.toml` → default precedence. Explicit CLI values retain the
-    documented `>= 1` contract. Other out-of-range values (below
-    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) are discarded
-    with a logged warning and the next lower-precedence layer is tried.
+    `config.toml` precedence, then inherits LangGraph's environment default when
+    no Deep Agents override wins. Explicit CLI values retain the documented
+    `>= 1` contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or
+    above `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the
+    next lower-precedence layer is tried.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1793,14 +1892,14 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The resolved recursion limit. CLI values are positive; values from all
-            other tiers are within
-            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+        The resolved recursion limit, or `None` when nothing valid is configured.
+            CLI values are `>= 1`; Deep Agents managed, env, and TOML values are
+            within `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
     if option is None:
-        return RECURSION_LIMIT_DEFAULT
+        return None
 
     resolver = _resolver_for_option_sources(
         toml_data=data,
@@ -1840,15 +1939,6 @@ def resolve_recursion_limit(
         )
         excluded.update(rejected_ranks)
 
-    if settled is None and source != "default":
-        logger.warning(
-            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
-            source,
-            value,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-            RECURSION_LIMIT_DEFAULT,
-        )
     # Emitted once the loop settles, against the first resolution: only now is
     # it known whether the flag actually lost. `resolved` here is the winning
     # tier, so the masked CLI entry is not on it -- the first resolution is the
@@ -1859,16 +1949,12 @@ def resolve_recursion_limit(
         and CLI_RANK in first_resolved.masked_ranks
     ):
         _emit_ranked_diagnostics(option, first_resolved)
-    return RECURSION_LIMIT_DEFAULT if settled is None else settled
+    if settled is not None:
+        return settled
+    return _inherited_langgraph_recursion_limit()
 
 
 # --- Option definitions -----------------------------------------------------
-
-# Search credentials that are not provider API keys live outside
-# `PROVIDER_API_KEY_ENV`, so they are declared explicitly.
-_EXTRA_CREDENTIAL_ENV: dict[str, str] = {
-    "tavily": "TAVILY_API_KEY",
-}
 
 _SECRET_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "APIKEY")
 
@@ -1985,18 +2071,23 @@ def _is_secret_env(name: str) -> bool:
 def _credential_options() -> tuple[ConfigOption[object], ...]:
     """Build credential options from the canonical provider/key registries.
 
-    Generating these from `PROVIDER_API_KEY_ENV` (rather than hand-listing
-    them) guarantees every provider the app knows how to authenticate has a
-    manifest entry, so new providers can never silently miss the config
-    surface.
+    Generating these from the provider and service registries guarantees every
+    credential the app knows how to authenticate has a manifest entry, so new
+    providers and services can never silently miss the config surface.
 
     Returns:
-        One credential `ConfigOption` per known provider/key env var.
+        One credential `ConfigOption` per provider in `PROVIDER_API_KEY_ENV`
+            and per service in `SERVICE_API_KEY_ENV`. Service entries win on a
+            name collision.
     """
-    from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+    from deepagents_code.model_config import (
+        PROVIDER_API_KEY_ENV,
+        SERVICE_API_KEY_ENV,
+        SERVICE_API_KEY_FALLBACK_ENV_VARS,
+    )
 
     options: list[ConfigOption[object]] = []
-    sources = {**PROVIDER_API_KEY_ENV, **_EXTRA_CREDENTIAL_ENV}
+    sources = {**PROVIDER_API_KEY_ENV, **SERVICE_API_KEY_ENV}
     for name, env_var in sorted(sources.items()):
         redacted = _is_secret_env(env_var)
         summary = (
@@ -2012,6 +2103,8 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 summary=summary,
                 kind=OptionKind.STR,
                 env_var=env_var,
+                fallback_env_vars=SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ()),
+                prefix_aware_fallbacks=True,
                 redacted=redacted,
                 provider=name,
                 dependency_module=dependency[0] if dependency else None,
@@ -2159,6 +2252,17 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("ui", "show_diff_line_numbers"),
     ),
     ConfigOption(
+        key="display.show_reasoning",
+        group="Display",
+        summary="Show provider-visible reasoning in local output (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_REASONING,
+        toml_keys=("ui", "show_reasoning"),
+        cli_flag="--show-reasoning",
+        cli=CliSpec("--show-reasoning"),
+    ),
+    ConfigOption(
         key="display.show_scrollbar",
         group="Display",
         summary="Show the vertical scrollbar in the chat area (off by default).",
@@ -2283,6 +2387,18 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary="Most recently switched-to model (managed by the app).",
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
+    ),
+    ConfigOption(
+        key="models.summarization_default",
+        group="Models",
+        summary=(
+            "Default model spec ('provider:model') used for context-compaction "
+            "summaries; unset reuses the main agent model."
+        ),
+        kind=OptionKind.STR,
+        toml_keys=("models", "summarization_default"),
+        cli_flag="--summarization-model",
+        cli=CliSpec("--summarization-model"),
     ),
     ConfigOption(
         key="models.auto_classifier",
@@ -2449,7 +2565,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Tools",
         summary=(
             "Extra directories added to the skill symlink containment "
-            "allowlist (env is colon-separated)."
+            "allowlist (env uses the platform path separator)."
         ),
         kind=OptionKind.SKILLS_DIRS_DELEGATE,
         env_var=_env_vars.EXTRA_SKILLS_DIRS,
@@ -2632,6 +2748,25 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
+        key="threads.max_resume_age",
+        group="Threads",
+        summary=(
+            "Block resuming threads older than this duration (for example, '7d')."
+        ),
+        kind=OptionKind.DURATION_SECONDS,
+        toml_keys=("threads", "max_resume_age"),
+    ),
+    ConfigOption(
+        key="threads.resume_after",
+        group="Threads",
+        summary=(
+            "Block resuming threads last updated before this ISO 8601 date or "
+            "timezone-aware datetime."
+        ),
+        kind=OptionKind.ISO_DATETIME,
+        toml_keys=("threads", "resume_after"),
     ),
     ConfigOption(
         key="threads.relative_time",
@@ -2849,7 +2984,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Runtime",
         summary="Main agent LangGraph recursion_limit (graph step budget).",
         kind=OptionKind.INT,
-        default=RECURSION_LIMIT_DEFAULT,
         env_var=_env_vars.RECURSION_LIMIT,
         toml_keys=("runtime", "recursion_limit"),
         cli_flag="--recursion-limit",
@@ -2944,12 +3078,21 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.DEBUG,
     ),
     ConfigOption(
+        key="debug.directory",
+        group="Debug",
+        summary="Directory for per-thread debug log files.",
+        kind=OptionKind.STR,
+        default="/tmp/deepagents_debug",  # noqa: S108  # documents the app default, not a write target
+        env_var=_env_vars.DEBUG_DIRECTORY,
+        toml_keys=("debug", "directory"),
+    ),
+    ConfigOption(
         key="debug.file",
         group="Debug",
-        summary="Path for the debug log file.",
+        summary="Deprecated debug log file override; its parent directory is used.",
         kind=OptionKind.STR,
-        default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+        toml_keys=("debug", "file"),
     ),
     ConfigOption(
         key="debug.log_level",
@@ -3021,6 +3164,8 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
 NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
     {
         _env_vars.SERVER_ENV_PREFIX,
+        # Prefixed alias for the existing `display.charset` option.
+        _env_vars.UI_CHARSET_MODE,
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,

@@ -2,6 +2,99 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
+
+### Features
+
+- Recommended GLM 5.3 models are now available in code workflows ([#6211](https://github.com/langchain-ai/deepagents/pull/6211)).
+
+### Bug Fixes
+
+- Added pricing support for Fireworks GLM-5.3 and GLM-5.3 Flash usage ([#6221](https://github.com/langchain-ai/deepagents/pull/6221), [#6223](https://github.com/langchain-ai/deepagents/pull/6223)).
+- Workspace switches now ask for confirmation before restarting the server ([#6178](https://github.com/langchain-ai/deepagents/pull/6178)).
+- Effort changes are now included in cache identity for OpenAI and Anthropic requests ([#6196](https://github.com/langchain-ai/deepagents/pull/6196)).
+- Standardized the recent-thread environment variable ([#6205](https://github.com/langchain-ai/deepagents/pull/6205)).
+- Silenced warnings when the themes config is absent ([#6220](https://github.com/langchain-ai/deepagents/pull/6220)).
+
+## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
+
+### Features
+
+- Added `GPT-6 Astra` support ([#6141](https://github.com/langchain-ai/deepagents/issues/6141)).
+- Reuses the server across workspace switches ([#6152](https://github.com/langchain-ai/deepagents/issues/6152)).
+- Limits thread resume age ([#6068](https://github.com/langchain-ai/deepagents/issues/6068)).
+
+### Bug Fixes
+
+- Improved workspace isolation by resolving project policy per workspace, scoping project dotenv to workspaces, and isolating LangSmith auth and workspace tracing ([#6064](https://github.com/langchain-ai/deepagents/issues/6064), [#5980](https://github.com/langchain-ai/deepagents/issues/5980), [#6061](https://github.com/langchain-ai/deepagents/issues/6061)).
+- Improved transcript tail reconciliation by bounding and serializing reconciliation work ([#6057](https://github.com/langchain-ai/deepagents/issues/6057), [#6143](https://github.com/langchain-ai/deepagents/issues/6143)).
+- Refuses a second sandbox workspace and moves sandbox creation and entry off the guarded event loop ([#5979](https://github.com/langchain-ai/deepagents/issues/5979), [#6017](https://github.com/langchain-ai/deepagents/issues/6017)).
+- Surfaces stale updates in-session ([#6063](https://github.com/langchain-ai/deepagents/issues/6063)).
+- Surfaces the LangSmith credential in `dcode config` ([#6083](https://github.com/langchain-ai/deepagents/issues/6083)).
+- Offloads server config imports ([#6089](https://github.com/langchain-ai/deepagents/issues/6089)).
+- Correctly parses extra skill directories with the platform separator ([#6151](https://github.com/langchain-ai/deepagents/issues/6151)).
+
+## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
+
+### Features
+
+- Defaulted general-purpose subagents to fork mode ([#6024](https://github.com/langchain-ai/deepagents/issues/6024)).
+- Defaulted the Auto classifier by provider ([#6039](https://github.com/langchain-ai/deepagents/issues/6039)).
+- Added support for binding conversations to a recorded workspace ([#5946](https://github.com/langchain-ai/deepagents/issues/5946)).
+- Added tracing for the effective approval mode ([#5972](https://github.com/langchain-ai/deepagents/issues/5972)).
+
+### Bug Fixes
+
+- Fixed request-time working directory binding and now show the bound workspace in shell approvals ([#5968](https://github.com/langchain-ai/deepagents/issues/5968), [#5966](https://github.com/langchain-ai/deepagents/issues/5966)).
+- Fixed marketplace plugin installs to accept bare relative source paths and identify the rejected source path when validation fails ([#5959](https://github.com/langchain-ai/deepagents/issues/5959), [#5960](https://github.com/langchain-ai/deepagents/issues/5960)).
+- Classifier errors now include model names ([#6038](https://github.com/langchain-ai/deepagents/issues/6038)).
+- Updated the splash screen to use a sharp border ([#5970](https://github.com/langchain-ai/deepagents/issues/5970)).
+
+### Performance Improvements
+
+- Reduced QuickJS middleware tracing overhead by omitting trace inputs ([#6015](https://github.com/langchain-ai/deepagents/issues/6015)).
+
+## [0.1.65](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.64...deepagents-code==0.1.65) (2026-08-28)
+
+### Features
+
+- Added Python extension support, including discovery, configuration and loading, runtime hosting, and trust and inspection UX ([#5631](https://github.com/langchain-ai/deepagents/issues/5631), [#5632](https://github.com/langchain-ai/deepagents/issues/5632), [#5633](https://github.com/langchain-ai/deepagents/issues/5633), [#5634](https://github.com/langchain-ai/deepagents/issues/5634))
+- Added a `/summarization-model` command and model picker for configuring the summarization model ([#5884](https://github.com/langchain-ai/deepagents/issues/5884), [#5932](https://github.com/langchain-ai/deepagents/issues/5932))
+- Added support for optional extra uninstall commands ([#5875](https://github.com/langchain-ai/deepagents/issues/5875))
+- Added an option to show visible reasoning ([#5887](https://github.com/langchain-ai/deepagents/issues/5887))
+
+### Bug Fixes
+
+- Improved model and task reliability by retrying interrupted model streams, recovering stale pending work before compaction, and isolating parallel `task` failures ([#5905](https://github.com/langchain-ai/deepagents/issues/5905), [#5909](https://github.com/langchain-ai/deepagents/issues/5909), [#5954](https://github.com/langchain-ai/deepagents/issues/5954))
+- Improved server restart handling by waiting for graph readiness before continuing ([#5947](https://github.com/langchain-ai/deepagents/issues/5947))
+- Capped MCP tool names for provider compatibility ([#5953](https://github.com/langchain-ai/deepagents/issues/5953))
+- Fixed Auto approval gate path expansion handling and now records Auto classifier deadline misses as traced errors ([#5941](https://github.com/langchain-ai/deepagents/issues/5941), [#5944](https://github.com/langchain-ai/deepagents/issues/5944))
+- Completed ASCII UI fallbacks and hid inactive F2 tool hints ([#5930](https://github.com/langchain-ai/deepagents/issues/5930), [#5939](https://github.com/langchain-ai/deepagents/issues/5939))
+- Isolated debug logs by thread ([#5921](https://github.com/langchain-ai/deepagents/issues/5921))
+- Updated rubric grader model changes to apply without a restart ([#5885](https://github.com/langchain-ai/deepagents/issues/5885))
+
+## [0.1.64](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.63...deepagents-code==0.1.64) (2026-08-28)
+
+### Features
+
+- Added trace metadata attribution for skill invocations ([#5925](https://github.com/langchain-ai/deepagents/issues/5925)).
+- Added a list of MCP servers that require login ([#5867](https://github.com/langchain-ai/deepagents/issues/5867)).
+- Added the ability to copy the current model from the picker header ([#5904](https://github.com/langchain-ai/deepagents/issues/5904)).
+- Linked the doctor commit hash to GitHub ([#5920](https://github.com/langchain-ai/deepagents/issues/5920)).
+- Standardized the external editor shortcut ([#5911](https://github.com/langchain-ai/deepagents/issues/5911)).
+
+### Bug Fixes
+
+- Deferred recursion-limit handling to the LangGraph server ([#5882](https://github.com/langchain-ai/deepagents/issues/5882)).
+- Disabled Git terminal prompts in `execute` ([#5878](https://github.com/langchain-ai/deepagents/issues/5878)).
+- Improved privacy and debug-only visibility for MCP token and editable paths ([#5866](https://github.com/langchain-ai/deepagents/issues/5866), [#5850](https://github.com/langchain-ai/deepagents/issues/5850)).
+- Updated the model-switch warning to point to `/offload` ([#5901](https://github.com/langchain-ai/deepagents/issues/5901)).
+- Rejected stale successful updates ([#5847](https://github.com/langchain-ai/deepagents/issues/5847)).
+- Fixed thread timestamp rendering on systems without the glibc-only `%-I` `strftime` flag ([#5886](https://github.com/langchain-ai/deepagents/issues/5886)).
+- Respected ASCII mode in the splash border ([#5923](https://github.com/langchain-ai/deepagents/issues/5923)).
+- Skipped unchanged config writes ([#5919](https://github.com/langchain-ai/deepagents/issues/5919)).
+- Skipped uncorrelated-result warnings for auto-mode policy denials ([#5869](https://github.com/langchain-ai/deepagents/issues/5869)).
+
 ## [0.1.63](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.62...deepagents-code==0.1.63) (2026-08-26)
 
 ### Features

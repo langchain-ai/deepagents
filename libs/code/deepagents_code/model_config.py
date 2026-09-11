@@ -26,6 +26,10 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._constants import (
+    LANGSMITH_API_KEY_ENV,
+    LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+)
 from deepagents_code._git import find_git_common_dir
 from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
@@ -52,6 +56,25 @@ def reset_env_resolution_log() -> None:
         _resolved_env_var_log_names.clear()
 
 
+def stored_key_reaches_runtime(env_var: str) -> bool:
+    """Whether a stored credential copied onto `env_var` would be read.
+
+    A present `DEEPAGENTS_CODE_` override outranks the store: the apply pass
+    skips the copy outright, and the canonical name it would have written is
+    then ignored by `resolve_env_var`. That holds even when the override is
+    empty, which suppresses the canonical name entirely.
+
+    Args:
+        env_var: Canonical env var name the store would be copied onto.
+
+    Returns:
+        `True` when no prefixed override stands in the way.
+    """
+    if env_var.startswith(_ENV_PREFIX):
+        return True
+    return f"{_ENV_PREFIX}{env_var}" not in os.environ
+
+
 def resolved_env_var_name(canonical: str) -> str:
     """Return whichever env var name actually carries the resolved value.
 
@@ -66,9 +89,12 @@ def resolved_env_var_name(canonical: str) -> str:
     Returns:
         The resolving env var name (prefixed or canonical).
     """
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
     if not canonical.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{canonical}"
-        if prefixed in os.environ:
+        if prefixed in environ:
             return prefixed
     return canonical
 
@@ -95,11 +121,14 @@ def resolve_env_var(name: str) -> str | None:
     Returns:
         The resolved value, or `None` when absent or empty.
     """
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
     if not name.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{name}"
-        if prefixed in os.environ:
-            val = os.environ[prefixed]
-            if not val and os.environ.get(name):
+        if prefixed in environ:
+            val = environ[prefixed]
+            if not val and environ.get(name):
                 logger.debug(
                     "%s is set but empty, blocking non-empty %s. "
                     "Unset %s to use the canonical variable.",
@@ -116,7 +145,7 @@ def resolve_env_var(name: str) -> str | None:
                 if should_log:
                     logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
-    return os.environ.get(name) or None
+    return environ.get(name) or None
 
 
 PROVIDERS_DOCS_URL = (
@@ -407,11 +436,16 @@ class ProviderAuthStatus:
         return True
 
     def missing_detail(self) -> str:
-        """Return a user-facing reason for a missing-credential status."""
-        if self.env_var:
-            return f"{self.env_var} is not set or is empty"
+        """Return a user-facing reason for a missing-credential status.
+
+        `detail` wins over the `env_var` template because a status that names
+        several accepted variables (a service with fallbacks) has already
+        spelled the fuller sentence there.
+        """
         if self.detail:
             return self.detail
+        if self.env_var:
+            return f"{self.env_var} is not set or is empty"
         return (
             f"provider '{self.provider}' is not recognized. "
             f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
@@ -961,7 +995,7 @@ constant is the single name its `/auth` handling compares against.
 """
 
 SERVICE_API_KEY_ENV: dict[str, str] = {
-    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV,
     TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
@@ -971,6 +1005,14 @@ agent tracing (LangSmith) — but their credentials follow the same store-on-dis
 model as model providers, so they appear in the `/auth` manager and can be
 entered directly in the TUI instead of being exported as environment variables
 before launch.
+"""
+
+SERVICE_API_KEY_FALLBACK_ENV_VARS: dict[str, tuple[str, ...]] = {
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+}
+"""Fallback env vars per non-model service, tried after its primary env var.
+
+A service absent from this map has no fallbacks.
 """
 
 CODEX_PROVIDER = "openai_codex"
@@ -2413,8 +2455,11 @@ def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
         A `CONFIGURED` status pointing at `LANGSMITH_GATEWAY_API_KEY`, or
         `None` when the gateway cannot authenticate this provider.
     """
-    gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
-    gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
+    gateway = environ.get(LANGSMITH_GATEWAY_ENV)
+    gateway_key = environ.get(LANGSMITH_GATEWAY_API_KEY_ENV)
     if (
         provider not in LANGSMITH_GATEWAY_PROVIDERS
         or not gateway
@@ -2431,20 +2476,31 @@ def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
     )
 
 
-def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
+def _resolve_configured(
+    provider: str,
+    env_var: str,
+    fallback_env_vars: tuple[str, ...] = (),
+    *,
+    allow_stored: bool = True,
+) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
-    Stored credentials beat env vars (matches `resolve_provider_credential`).
+    Stored credentials beat env vars (matches `resolve_provider_credential`),
+    unless the service caller disables stored credentials because a prefixed
+    override prevents them from reaching the runtime.
 
     Args:
         provider: Provider name (e.g., `"anthropic"`).
         env_var: Canonical env var name to check when no stored credential
             exists. Recorded on the returned status either way.
+        fallback_env_vars: Canonical env vars read, in order, when `env_var`
+            is unset. The one that resolves is recorded on the status.
+        allow_stored: Whether a stored credential can reach the runtime.
 
     Returns:
-        A `CONFIGURED` status, or `None` when neither source is set.
+        A `CONFIGURED` status, or `None` when no source is set.
     """
-    if _has_stored_credential(provider):
+    if allow_stored and _has_stored_credential(provider):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=provider,
@@ -2452,14 +2508,15 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
             source=ProviderAuthSource.STORED,
             detail="stored credential",
         )
-    if resolve_env_var(env_var):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=provider,
-            env_var=env_var,
-            source=ProviderAuthSource.ENV,
-            detail="credentials set",
-        )
+    for candidate in (env_var, *fallback_env_vars):
+        if resolve_env_var(candidate):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                env_var=candidate,
+                source=ProviderAuthSource.ENV,
+                detail="credentials set",
+            )
     return None
 
 
@@ -2785,25 +2842,34 @@ def is_langsmith(name: str) -> bool:
 def get_service_auth_status(service: str) -> ProviderAuthStatus:
     """Return credential readiness for a non-model service (e.g. `"tavily"`).
 
-    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
-    so a stored key beats the env var and the `/auth` manager can render the
-    same `[stored]` / `[env: ...]` / `[missing]` badges.
+    Checks a stored key, then `SERVICE_API_KEY_ENV[service]`, then each entry in
+    `SERVICE_API_KEY_FALLBACK_ENV_VARS[service]` in order. Mirrors
+    `get_provider_auth_status`, except a prefixed override suppresses the stored
+    service key. Otherwise a stored key beats the env vars, and the
+    `/auth` manager can render the same `[stored]` / `[env: ...]` / `[missing]`
+    badges. Recorded env var names stay canonical; callers resolve the
+    `DEEPAGENTS_CODE_` spelling at display time.
 
     Args:
         service: Service name (e.g. `"tavily"`).
 
     Returns:
-        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+        `CONFIGURED` when a stored, env, or fallback env credential is set,
+            else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
-    configured = _resolve_configured(service, env_var)
+    fallbacks = SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
+    configured = _resolve_configured(
+        service, env_var, fallbacks, allow_stored=stored_key_reaches_runtime(env_var)
+    )
     if configured:
         return configured
+    accepted = " or ".join((env_var, *fallbacks))
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,
         env_var=env_var,
-        detail=f"{env_var} is not set or is empty",
+        detail=f"{accepted} is not set or is empty",
     )
 
 
@@ -2829,8 +2895,7 @@ def apply_stored_service_credentials() -> None:
             continue
         if not stored:
             continue
-        prefixed = f"{_ENV_PREFIX}{env_var}"
-        if prefixed in os.environ:
+        if not stored_key_reaches_runtime(env_var):
             continue
         if os.environ.get(env_var) != stored:
             os.environ[env_var] = stored
@@ -2960,8 +3025,11 @@ def _configured_base_url_survives_env_clear(provider: str) -> bool:
     provider_cfg = config.providers.get(provider)
     if provider_cfg and provider_cfg.get("base_url"):
         return True
+    from deepagents_code.config import active_environment
+
+    environment = active_environment()
     for env_var in get_base_url_env_vars(provider):
-        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+        if environment.get(f"{_ENV_PREFIX}{env_var}"):
             return True
     return False
 
@@ -3160,6 +3228,16 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    summarization_default_model: str | None = None
+    """The default summary model from `[models].summarization_default`.
+
+    Not the resolution path -- `--summarization-model` outranks this value at
+    launch, so it may differ from the model summaries are actually generated
+    with. Stored unvalidated: `_validate` only warns when the spec omits a
+    `provider:` prefix, because `create_model`'s provider auto-detection makes
+    a bare name legitimate.
+    """
+
     allowed_models: tuple[str, ...] | None = None
     """Ordered model specs and provider wildcards the policy permits.
 
@@ -3341,6 +3419,7 @@ class ModelConfig:
             option_keys = (
                 "models.default",
                 "models.recent",
+                "models.summarization_default",
                 "models.auto_classifier",
                 "models.providers",
             )
@@ -3388,6 +3467,12 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                summarization_default_model=_toml_model_spec(
+                    resolved["models.summarization_default"],
+                    key="summarization_default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
                 auto_classifier_model=(
                     resolved["models.auto_classifier"]
                     if isinstance(resolved["models.auto_classifier"], str)
@@ -3430,29 +3515,29 @@ class ModelConfig:
         Issues warnings for invalid configurations but does not raise exceptions,
         allowing the app to continue with potentially degraded functionality.
         """
-        # Warn if default_model is set but doesn't use provider:model format
-        if self.default_model and ":" not in self.default_model:
-            logger.warning(
-                "default_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.default_model,
-            )
-
-        # Warn if recent_model is set but doesn't use provider:model format
-        if self.recent_model and ":" not in self.recent_model:
-            logger.warning(
-                "recent_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.recent_model,
-            )
-
-        # Warn if auto_classifier_model is set but doesn't use provider:model format
-        if self.auto_classifier_model and ":" not in self.auto_classifier_model:
-            logger.warning(
-                "auto_classifier_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
+        # Warn if a model field is set but doesn't use provider:model format
+        model_fields = (
+            ("default_model", self.default_model, "anthropic:claude-sonnet-4-5"),
+            ("recent_model", self.recent_model, "anthropic:claude-sonnet-4-5"),
+            (
+                "summarization_default_model",
+                self.summarization_default_model,
+                "openai:gpt-5.4-mini",
+            ),
+            (
+                "auto_classifier_model",
                 self.auto_classifier_model,
-            )
+                "anthropic:claude-sonnet-4-5",
+            ),
+        )
+        for field_name, spec, example in model_fields:
+            if spec and ":" not in spec:
+                logger.warning(
+                    "%s '%s' should use provider:model format (e.g., '%s')",
+                    field_name,
+                    spec,
+                    example,
+                )
 
         # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():
@@ -3961,21 +4046,29 @@ def _save_toml_field(
             else:
                 data = {}
 
-            if section not in data:
-                data[section] = {}
-            data[section][field] = value
+            existing_section = data.get(section)
+            existing = (
+                existing_section.get(field)
+                if isinstance(existing_section, dict)
+                else None
+            )
+            unchanged = type(existing) is type(value) and existing == value
+            if not unchanged:
+                if section not in data:
+                    data[section] = {}
+                data[section][field] = value
 
-            # Write to temp file then rename so an interrupted write can't corrupt
-            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(config_path)
-            except BaseException:
-                # Clean up temp file on any failure
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
+                # Write to temp file then rename so an interrupted write can't corrupt
+                fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        tomli_w.dump(data, f)
+                    Path(tmp_path).replace(config_path)
+                except BaseException:
+                    # Clean up temp file on any failure
+                    with contextlib.suppress(OSError):
+                        Path(tmp_path).unlink()
+                    raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a
@@ -5112,7 +5205,9 @@ def _parse_csv_env(name: str) -> list[str] | None:
             trimming), or `None` when the variable is unset so callers can
             distinguish "unset, fall back to TOML" from "set but empty".
     """
-    raw = os.environ.get(name)
+    from deepagents_code.config import active_environment
+
+    raw = active_environment().get(name)
     if raw is None:
         return None
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -5677,7 +5772,11 @@ def load_mcp_server_trust_lists(
     # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
     # longer read; flag it set-but-ignored so callers can explain the rename
     # instead of the names silently ceasing to pre-approve.
-    legacy_env_ignored = _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in os.environ
+    from deepagents_code.config import active_environment
+
+    legacy_env_ignored = (
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in active_environment()
+    )
     if legacy_env_ignored:
         logger.warning(
             "%s is no longer used; it was renamed to %s",

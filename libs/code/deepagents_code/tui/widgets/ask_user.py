@@ -254,7 +254,7 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while one of this
+        The `Ctrl+G external editor` hint is included only while one of this
         menu's text areas holds focus, matching the routing in
         `App.action_open_editor`. Multi-select prompts add a Space-toggle tip.
 
@@ -275,9 +275,9 @@ class AskUserMenu(Container):
         if self._show_editor_hint():
             editor = editor_display_name()
             parts.append(
-                f"Ctrl+X edit in {editor}"
+                f"Ctrl+G edit in {editor}"
                 if editor is not None
-                else "Ctrl+X external editor"
+                else "Ctrl+G external editor"
             )
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
@@ -295,9 +295,9 @@ class AskUserMenu(Container):
         return question is not None and question.can_uncheck_other_input(focused)
 
     def _show_editor_hint(self) -> bool:
-        """Whether `ctrl+x` would currently open one of this menu's text areas.
+        """Whether `ctrl+g` would currently open one of this menu's text areas.
 
-        `App.action_open_editor` routes `ctrl+x` to an ask-user text area only
+        `App.action_open_editor` routes `ctrl+g` to an ask-user text area only
         when one is focused, and otherwise falls through to the chat input.
         A visible-but-unfocused field therefore must not advertise the
         shortcut: pressing it would open the user's chat draft instead. The
@@ -465,13 +465,13 @@ class AskUserMenu(Container):
             node = node.parent
         if node is not None and node._index != self._current_question:
             self._highlight_question(node._index)
-        # Every focus change inside the menu can flip whether ctrl+x routes
+        # Every focus change inside the menu can flip whether ctrl+g routes
         # here, including clicks that land on a question container rather than
         # its text area, so refresh regardless of which question is active.
         self._update_help()
 
     def on_descendant_blur(self, event: events.DescendantBlur) -> None:
-        """Retract the `Ctrl+X` hint when focus leaves a text area."""
+        """Retract the `Ctrl+G` hint when focus leaves a text area."""
         del event  # Unused: the hint is recomputed from current focus.
         self._update_help()
 

@@ -1407,6 +1407,27 @@ async def get_most_recent(
             return row[0] if row else None
 
 
+async def get_thread_updated_at(thread_id: str) -> str | None:
+    """Get the latest stored update timestamp for a thread.
+
+    Returns:
+        The ISO timestamp, or `None` when none is stored.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+
+        query = """
+            SELECT MAX(json_extract(metadata, '$.updated_at'))
+            FROM checkpoints
+            WHERE thread_id = ?
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            value = row[0] if row else None
+            return value if isinstance(value, str) and value else None
+
+
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 
@@ -1557,24 +1578,24 @@ _DEFAULT_THREAD_LIMIT = 20
 
 
 def get_thread_limit() -> int:
-    """Read the thread listing limit from `DA_CLI_RECENT_THREADS`.
-
-    Falls back to `_DEFAULT_THREAD_LIMIT` when the variable is unset or contains
-    a non-integer value. The result is clamped to a minimum of 1.
+    """Read the thread listing limit from the environment.
 
     Returns:
         Number of threads to display.
     """
     import os
 
-    raw = os.environ.get("DA_CLI_RECENT_THREADS")
+    from deepagents_code._env_vars import RECENT_THREADS
+
+    raw = os.environ.get(RECENT_THREADS)
     if raw is None:
         return _DEFAULT_THREAD_LIMIT
     try:
         return max(1, int(raw))
     except ValueError:
         logger.warning(
-            "Invalid DA_CLI_RECENT_THREADS value %r, using default %d",
+            "Invalid %s value %r, using default %d",
+            RECENT_THREADS,
             raw,
             _DEFAULT_THREAD_LIMIT,
         )
@@ -1603,8 +1624,8 @@ async def list_threads_command(
             When `None`, threads for all agents are shown.
         limit: Maximum number of threads to display.
 
-            When `None`, reads from `DA_CLI_RECENT_THREADS` or falls back to
-            the default.
+            When `None`, reads from `DEEPAGENTS_CODE_RECENT_THREADS` or falls
+            back to the default.
         sort_by: Sort field — `"updated"` or `"created"`.
 
             When `None`, reads the merged managed and user config
@@ -1750,9 +1771,11 @@ async def list_threads_command(
     console.print()
     console.print(table)
     if len(threads) >= limit:
+        from deepagents_code._env_vars import RECENT_THREADS
+
         console.print(
             f"[dim]Showing last {limit} threads. "
-            "Override with -n/--limit or DA_CLI_RECENT_THREADS.[/dim]"
+            f"Override with -n/--limit or {RECENT_THREADS}.[/dim]"
         )
     console.print()
 

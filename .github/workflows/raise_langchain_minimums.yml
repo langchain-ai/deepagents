@@ -39,9 +39,10 @@
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
 # - Idempotent per run identity: if a PR is already open for the selected
-#   package and dependency set (or no bound needs raising), the workflow exits
-#   without creating a duplicate. A cron `all` run, a manual broad run, and
-#   narrowed runs over different dependency sets each use their own branch.
+#   package and dependency set, the workflow refreshes its generated changes and
+#   description instead of creating a duplicate. A cron `all` run, a manual
+#   broad run, and narrowed runs over different dependency sets each use their
+#   own branch.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -62,7 +63,7 @@ on:
         description: "Release package whose dependency minimums to raise"
         required: true
         type: choice
-        default: "deepagents-code"
+        default: "all"
         options:
           - "deepagents-code"
           - "all"
@@ -197,7 +198,7 @@ jobs:
           echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
           echo "No in-scope minimum needed raising; no PR opened." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skip if PR already open for this branch
+      - name: Find an existing PR for this branch
         id: existing
         if: steps.raise.outputs.changed == 'true'
         env:
@@ -209,18 +210,50 @@ jobs:
           count=$(printf '%s' "$existing_json" | jq 'length')
           echo "count=$count" >> "$GITHUB_OUTPUT"
           if [ "$count" -gt 0 ]; then
+            pr_number=$(printf '%s' "$existing_json" | jq -r '.[0].number')
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
-            echo "Open PR already exists for $BRANCH; skipping."
-            echo "::notice::Open dependency minimums PR already exists: $pr_url"
-            # The "Raise dependency minimums" step already wrote its raised-bounds
-            # summary; append the outcome link so it is visible without digging
-            # through the step log for the ::notice:: annotation.
-            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+            echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+            echo "Open PR already exists for $BRANCH; refreshing it."
+            echo "::notice::Refreshing dependency minimums PR: $pr_url"
           fi
+
+      - name: Build PR metadata
+        id: metadata
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          PACKAGE: ${{ inputs.package || 'all' }}
+          SUMMARY: ${{ steps.raise.outputs.summary }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          DEPENDENCIES: ${{ inputs.dependencies || '' }}
+        run: |
+          set -euo pipefail
+          title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
+          if [ -n "$DEPENDENCIES" ]; then
+            title="$title (\`$DEPENDENCIES\` only)"
+            lead="Raises the dependency lower bounds for \`$DEPENDENCIES\` only"
+          fi
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          {
+            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE"
+            printf '%s\n\n' "$SUMMARY"
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s), manually dispatched by @%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml" "$ACTOR"
+              if [ -n "$DEPENDENCIES" ]; then
+                printf ' and restricted to `%s`' "$DEPENDENCIES"
+              fi
+              printf '.\n'
+            else
+              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s) on its daily schedule.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
+            fi
+            printf 'Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
+          } > .minimums-pr-body
 
       - name: Generate GitHub App token
         id: app-token
-        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
+        if: steps.raise.outputs.changed == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
@@ -228,20 +261,71 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      - name: Refresh existing minimums bump PR
+        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.existing.outputs.number }}
+          PR_URL: ${{ steps.existing.outputs.url }}
+          BRANCH: ${{ steps.raise.outputs.branch }}
+          CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
+          LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
+          BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+          TITLE: ${{ steps.metadata.outputs.title }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
+          IFS=',' read -ra files <<< "$CHANGED_FILES"
+          IFS=',' read -ra dirs <<< "$LOCK_DIRS"
+          for dir in "${dirs[@]}"; do
+            files+=("$dir/uv.lock")
+          done
+          generated="$(mktemp -d)"
+          for file in "${files[@]}"; do
+            mkdir -p "$generated/$(dirname "$file")"
+            cp "$file" "$generated/$file"
+          done
+
+          git restore --worktree -- "${files[@]}"
+          base_commit=$(git rev-parse HEAD)
+          git fetch --depth=1 origin "$BRANCH"
+          tip_email=$(git log -1 --format='%ce' FETCH_HEAD)
+          if [ "$tip_email" != "$BOT_EMAIL" ]; then
+            echo "::error::Branch $BRANCH exists on origin and its tip was authored by $tip_email, not this workflow. Refusing to update it; resolve the branch manually."
+            exit 1
+          fi
+          git checkout -B "$BRANCH" FETCH_HEAD
+          git read-tree --reset -u "$base_commit"
+          for file in "${files[@]}"; do
+            cp "$generated/$file" "$file"
+          done
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "$BOT_EMAIL"
+          git add -- "${files[@]}"
+          if ! git diff --cached --quiet; then
+            git commit -m "$TITLE"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+          fi
+
+          gh pr edit "$PR_NUMBER" --body-file .minimums-pr-body
+          echo "Refreshed dependency minimums PR: $PR_URL"
+          echo "::notice::Refreshed dependency minimums PR: $PR_URL"
+          printf '**PR:** %s (branch and description refreshed)\n' "$PR_URL" > .minimums-pr-line
+
       - name: Open minimums bump PR
         if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PACKAGE: ${{ inputs.package || 'all' }}
           BRANCH: ${{ steps.raise.outputs.branch }}
           CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
           LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
-          SUMMARY: ${{ steps.raise.outputs.summary }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
-          EVENT_NAME: ${{ github.event_name }}
-          ACTOR: ${{ github.actor }}
-          DEPENDENCIES: ${{ inputs.dependencies || '' }}
+          TITLE: ${{ steps.metadata.outputs.title }}
         run: |
           set -euo pipefail
 
@@ -257,7 +341,7 @@ jobs:
           fi
 
           # Recreate an orphan branch from a prior run that pushed but failed
-          # before `gh pr create` (the no-open-PR check above already ran, so any
+          # before `gh pr create` (the existing-PR check above already ran, so any
           # branch still on origin carries no open PR). Distinguish "absent" from
           # "could not reach origin": `--exit-code` returns 2 for no match, and
           # anything else is a real error worth failing on rather than
@@ -300,48 +384,35 @@ jobs:
           for dir in "${dirs[@]}"; do
             lockfiles+=("$dir/uv.lock")
           done
-          # A narrowed run must not be titled or described as a full
-          # ecosystem bump: the title is what a reviewer reads before deciding
-          # this is "the usual automated bump", and the trailing attribution
-          # line is too late to correct that impression.
-          title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
-          lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
-          if [ -n "$DEPENDENCIES" ]; then
-            title="$title (\`$DEPENDENCIES\` only)"
-            lead="Raises the dependency lower bounds for \`$DEPENDENCIES\` only"
-          fi
 
           git add -- "${files[@]}" "${lockfiles[@]}"
-          git commit -m "$title"
+          git commit -m "$TITLE"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
-
-          body_file="$(mktemp)"
-          {
-            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE"
-            printf '%s\n\n' "$SUMMARY"
-            # Say which trigger opened the PR. The workflow link alone cannot
-            # distinguish the daily cron from a human clicking "Run workflow",
-            # and a narrowed manual run otherwise reads as a complete bump.
-            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s), manually dispatched by @%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml" "$ACTOR"
-              if [ -n "$DEPENDENCIES" ]; then
-                printf ' and restricted to `%s`' "$DEPENDENCIES"
-              fi
-              printf '.\n'
-            else
-              printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s) on its daily schedule.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml"
-            fi
-            printf 'Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
-          } > "$body_file"
 
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "$title" \
-            --body-file "$body_file")
+            --title "$TITLE" \
+            --body-file .minimums-pr-body)
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
-          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+          printf '**PR:** %s\n' "$pr_url" > .minimums-pr-line
+
+      - name: Write the job summary
+        # Runs even when an intermediate step failed (e.g. `uv lock`), so the
+        # raised-bounds table is never lost: the raise step holds it back in
+        # its `summary` output, and this step replays it — after the PR link
+        # when an outcome step recorded one.
+        if: always() && steps.raise.outputs.changed == 'true'
+        env:
+          SUMMARY: ${{ steps.raise.outputs.summary }}
+        run: |
+          set -euo pipefail
+          if [ -f .minimums-pr-line ]; then
+            cat .minimums-pr-line >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either

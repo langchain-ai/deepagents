@@ -1,254 +1,166 @@
 ---
 type: integration-guide
-title: Sandbox & Partner Integrations
-description: How deepagents sandbox backends route file and shell operations through a provider's execute primitive, the isolation role sandboxes play, and what each partner package (Daytona, Modal, Runloop, Vercel, QuickJS) provides.
-tags: [sandbox, backends, integrations, security, isolation, deepagents, partners, execute, quickjs]
+title: Sandbox and Partner Integrations
+description: How dcode discovers, provisions, and owns sandbox providers; how provider adapters meet the deepagents shell and filesystem contract; and the operational boundaries of supported partner packages.
+tags: [sandbox, backends, integrations, deepagents, dcode, partners, quickjs]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-09-09T08:05:37.706Z
 sources:
+  - id: openwiki-source-bcf1f68e7989964d2fcec7aa
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
+  - id: openwiki-source-03e3942e51522a3aa485168d
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_provider.py
+  - id: openwiki-source-668d65d09330d04370b47300
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
+  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
+    resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-ea49272aef6bfc33d634a15c
+    resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
+  - id: openwiki-source-ba6aa10dca5a8aea05030887
+    resource: repo://libs/code/tests/integration_tests/test_sandbox_operations.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-7c1cff57fb2b25a4a7848547
     resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
+  - id: openwiki-source-a7a618389fa5cf95185c7070
+    resource: repo://libs/partners/daytona/tests/integration_tests/test_integration.py
   - id: openwiki-source-5e387cb8bab7ca8537e7d97c
     resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-d7c3a1e189bde4017052fcb5
-    resource: repo://libs/partners/quickjs/langchain_quickjs/__init__.py
+  - id: openwiki-source-47e7cf704d54342cf95c8125
+    resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
+  - id: openwiki-source-e93ea9e1f8eb3113683abb76
+    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-432765ddd062caf048e7f51e
     resource: repo://libs/partners/quickjs/README.md
   - id: openwiki-source-cbe167006ecbe803d01c6520
     resource: repo://libs/partners/runloop/langchain_runloop/provider.py
-  - id: openwiki-source-5bed94970c51ae91e5e8897f
-    resource: repo://libs/partners/runloop/README.md
+  - id: openwiki-source-c16a7598b4b3a3ef0cee3328
+    resource: repo://libs/partners/runloop/tests/integration_tests/test_integration.py
   - id: openwiki-source-edb310aff3786a7a99593231
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+  - id: openwiki-source-1176ea0659c06327fcdf25b1
+    resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 ---
 
-# Sandbox & Partner Integrations
+# Sandbox and Partner Integrations
 
-A **sandbox backend** lets a deep agent run shell commands and manipulate files
-inside an isolated execution environment (a container, VM, or remote host)
-supplied by an external provider. The agent code never talks to the provider SDK
-directly: it talks to a small, uniform interface, and one provider-specific
-adapter translates that interface into provider API calls. This page explains
-how that adapter connects to a provider, how every file operation and the
-`execute`/shell tool route through a single primitive, why sandboxes are the
-system's execution-isolation boundary, and what each partner package under
-`libs/partners/` contributes.
+A sandbox integration has two distinct roles. A **backend adapter** exposes a provider environment through the deepagents filesystem-and-shell contract. A dcode **provider** owns lifecycle: it creates or attaches an environment, establishes readiness, and deletes environments that dcode created. This separation keeps provider SDK concerns at the edge while `BaseSandbox` supplies common agent-facing filesystem behavior.
 
-See also: [Backends](../concepts/backends.md), the
-[Architecture overview](../architecture/overview.md), and
-[Security](../operations/security.md).
+`SandboxBackendProtocol` is a shell-execution capability contract, not an isolation certification. Although designed for containers, VMs, and remote hosts, `LocalShellBackend` implements it while executing directly on the host. Treat provider configuration—not the protocol—as the authority on isolation, accessible files and networks, credentials, quotas, retention, and teardown. See [Backends](../concepts/backends.md), [Runtime behavior](../architecture/runtime-behavior.md), [Filesystem tools](../concepts/tools-filesystem.md), and [Security](../operations/security.md).
 
-## The sandbox contract: `SandboxBackendProtocol`
+## Backend contract and derived operations
 
-`SandboxBackendProtocol` extends the generic `BackendProtocol` with shell
-execution. Beyond the file operations every backend provides, it adds
-`execute()`/`aexecute()` for running a full shell command string and an `id`
-property identifying the sandbox instance. It is designed for backends running
-in isolated environments — containers, VMs, or remote hosts.
+The protocol extends `BackendProtocol` with an `id` and `execute()`/`aexecute()`. `execute(command, timeout=...)` takes a complete shell command and returns combined output, an exit code, and truncation status. The default async implementation runs the synchronous method in a worker thread; it forwards a supplied timeout only when the concrete `execute` method accepts that keyword. Use non-negative integer timeouts portably: `None` uses the backend default, and some adapters interpret `0` as no timeout.
 
-An agent created with `create_deep_agent` gets an `execute` tool for running
-shell commands, but that tool only works when the configured backend implements
-`SandboxBackendProtocol`; for non-sandbox backends the `execute` tool returns an
-error message instead.
-
-`execute()` takes a full shell command string plus an optional `timeout` (in
-seconds; `None` means the backend default) and returns an `ExecuteResponse`
-carrying combined stdout/stderr `output`, an `exit_code`, and a `truncated`
-flag. The default `aexecute()` simply runs `execute()` on a worker thread via
-`asyncio.to_thread`, forwarding `timeout` only when the concrete backend's
-`execute` actually accepts it (checked by `execute_accepts_timeout`).
-
-## `BaseSandbox`: one primitive, all operations derived
-
-`BaseSandbox` is the abstract base class that implements
-`SandboxBackendProtocol` and does the heavy lifting so provider adapters stay
-small. A concrete subclass implements only four things: `execute()`,
-`upload_files()`, `download_files()`, and the `id` property. Every other
-operation is *derived* from those primitives:
-
-- `ls`, `grep`, `glob`, and `read` are built by generating a shell command (or a
-  small `python3 -c` script) and running it through `execute()`, then parsing
-  the output.
-- `write` delegates content transfer to `upload_files()` (after a
-  preflight that creates parent directories).
-- `edit` uses a server-side `execute()` script for payloads under
-  `_EDIT_INLINE_MAX_BYTES`, and for larger edits falls back to uploading the old
-  and new strings as temp files and running a server-side replace script.
-
-This is why a new provider integration is cheap: implement command execution and
-byte transfer, and inherit a complete file toolset. `BaseSandbox` explicitly
-does **not** reduce or partition the trust boundary of `execute()` — its helpers
-are convenience wrappers that assume any caller who can use the backend already
-has whatever shell-execution capability the backend exposes.
+The agent's `execute` tool works only when its configured backend implements `SandboxBackendProtocol`; otherwise it reports an error. A normal adapter subclasses `BaseSandbox` and implements four primitives: `execute()`, `upload_files()`, `download_files()`, and `id`. Transfer implementations are expected to return one response per file and preserve partial failure as response errors rather than aborting a whole batch.
 
 ```mermaid
 sequenceDiagram
-    participant Tool as Agent file/execute tool
+    participant Agent as Agent tools
     participant Base as BaseSandbox
-    participant Sub as Provider adapter
-    participant Prov as Provider environment
+    participant Adapter as Provider adapter
+    participant Env as Provider environment
 
-    Tool->>Base: ls / read / grep / glob
-    Base->>Base: build shell or python3 command
-    Base->>Sub: execute(command, timeout)
-    Sub->>Prov: provider SDK run command
-    Prov-->>Sub: stdout/stderr, exit code
-    Sub-->>Base: ExecuteResponse
-    Base->>Base: parse output into structured result
-    Base-->>Tool: LsResult / ReadResult / GrepResult / GlobResult
-
-    Tool->>Base: write / edit
-    Base->>Sub: upload_files(files) (and/or execute)
-    Sub->>Prov: transfer bytes / run replace script
-    Prov-->>Sub: per-file result
-    Sub-->>Base: FileUploadResponse[]
-    Base-->>Tool: WriteResult / EditResult
+    Agent->>Base: filesystem operation or execute
+    Base->>Base: build command or transfer request
+    Base->>Adapter: execute or file transfer
+    Adapter->>Env: provider SDK request
+    Env-->>Adapter: command or file result
+    Adapter-->>Base: response object
+    Base-->>Agent: structured result
 ```
 
-*How derived file operations and the `execute`/shell tool both funnel through the
-provider adapter's `execute()`/`upload_files()` primitives.*
+*Agent filesystem operations funnel through adapter command-execution and byte-transfer primitives.*
 
-## Sandboxes as the execution-isolation boundary
+`ls`, `read`, `grep`, and `glob` generate a shell command or a `python3` program, execute it in the environment, and parse its output. `write` first creates parent directories, then uploads UTF-8 bytes. `edit` uses a server-side replacement script for small payloads; for larger ones it uploads randomized temporary old/new files and replaces server-side, so it does not download the source. Empty search text is rejected; multiple matches require `replace_all=True`. The separate preflight and write calls leave an inherent TOCTOU window.
 
-The security value of a sandbox backend is that **arbitrary model-controlled
-shell commands run inside an isolated provider environment, not on the host**.
-The `execute` tool and every derived file operation issue commands that execute
-in the container/VM the adapter is wired to; a compromise or a destructive
-command is contained there.
+These helpers do not narrow shell authority. Delete uses shell quoting only to pass the target as one `rm -rf` argument; it does not confine traversal or reachable paths. A recursive delete can partially complete before reporting a nonzero exit.
 
-This contrasts sharply with `LocalShellBackend`, which extends the filesystem
-backend to run commands directly on the local machine with `subprocess.run(...,
-shell=True)` and **no sandboxing** — the command string is passed straight to the
-system shell and can touch any path on the host. Sandbox backends exist precisely
-to avoid that: they move untrusted execution off the host and behind a provider's
-isolation.
+### Bounded results and failure behavior
 
-Because commands and globs are model-supplied and run over an untrusted tree,
-`BaseSandbox` also enforces resource bounds inside the scripts it generates (see
-below) so a hostile or accidental pattern cannot hang or exhaust the sandbox.
-The delete operation is candid about its blast radius: `shlex.quote` only
-neutralizes shell metacharacters, so whatever the sandbox shell can reach, delete
-can remove — the isolation of that reach is the sandbox's job, not the tool's.
-See [Security](../operations/security.md) for the surrounding threat model.
+- `read()` performs text pagination in the environment and caps text output at about 500 KiB; binary previews have a separate cap. A cap appends pagination guidance.
+- The generated glob program limits brace expansion to 1,000 candidates, results to 10,000 matches, and walking time to 5 seconds. A limit yields a truncated warning, not an apparently exhaustive result. Since that budget excludes interpreter startup and transport, `aglob` has a 30-second outer timeout and `agrep` uses `(2 * DEFAULT_GREP_TIMEOUT) + 5`; both return a structured narrowing error on expiry.
+- `execute_with_offload()` is opt-in through `enable_capture_offload=False` by default because its wrapper requires shell/coreutils behavior that images may lack. When enabled, oversized combined output is captured in the environment and represented by a head/tail preview; capture is capped without killing the command, preserving its exit code. When disabled, execution is unwrapped and returns `offloaded=False`.
 
-## Bounds and timeouts
+## dcode provider selection, setup, and ownership
 
-Sandbox operations run on untrusted, potentially huge trees, so both the remote
-scripts and the host-side wrappers are bounded.
+`SandboxProvider` standardizes synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)` plus worker-thread async wrappers. Static `SandboxProviderMetadata` lets dcode describe a working directory, installation hint, reattachment support, snapshot support, and an optional dependency probe without constructing credential-dependent providers.
 
-Inside the generated `glob` script (`sandbox.py`), the walk over the sandbox
-filesystem is capped by three constants: `MAX_EXPANSIONS = 1000` on brace
-expansion, `MAX_MATCHES = 10000` on emitted matches, and `TIME_BUDGET = 5.0`
-seconds on the walk itself. Exceeding any of them sets a `truncated` warning on
-the result rather than failing, so a partial result is never silently mistaken
-for an exhaustive one. `TIME_BUDGET` is the sandbox-side analogue of the
-filesystem backend's glob timeout and is deliberately the same 5 seconds. The
-script also prunes pseudo-filesystems (`proc`, `sys`, `dev`) when rooted at `/`
-so a bare pattern does not burn the whole budget in `/proc`.
+`SandboxRegistry` combines curated built-ins, third-party providers advertised through the `deepagents_code.sandbox_providers` entry-point group, and providers declared in `[sandboxes.providers]` in user configuration. Collision order is **config > entry point > built-in**. Config can specify a `class_path`, working directory, package/install hint, capability flags, and `params` forwarded to `get_or_create()`. A configured `class_path` imports Python under the user account, so configuration is a trusted local-administration boundary.
 
-The remote script's own budget covers only the walk — not interpreter startup,
-the round-trip, or transferring up to `MAX_MATCHES` records — so the async
-wrappers add an *outer* bound defined in `protocol.py`. `aglob` is bounded by
-`ASYNC_GLOB_TIMEOUT = 30` seconds and `agrep` by
-`ASYNC_GREP_TIMEOUT = (2 * DEFAULT_GREP_TIMEOUT) + 5` seconds. On timeout each
-returns a structured error telling the model to narrow its pattern or path,
-rather than hanging the caller indefinitely on a wedged sandbox.
+`create_sandbox()` resolves metadata before provisioning. It rejects snapshots that the provider does not advertise and rejects combining `snapshot_name` with an existing `sandbox_id`. Configured parameters are merged with call-time parameters, with call-time keys winning; the snapshot is forwarded as `snapshot`. Only after a backend is ready does an optional setup file run. `${VAR}` expansion reads the active workspace environment—not the server process environment—and the expanded content executes as `bash -c`; a nonzero exit raises `RuntimeError` and aborts startup.
 
-`read()` output is separately capped to roughly 500 KiB (`MAX_OUTPUT_BYTES`), and
-binary previews to `MAX_BINARY_BYTES`, to avoid backend stdout/log transport
-failures; over-cap reads append `TRUNCATION_MSG` guiding the model to paginate.
+```mermaid
+flowchart TD
+    Start["Provider request"] --> Resolve["Resolve metadata and validate options"]
+    Resolve --> Provision["Create or attach backend"]
+    Provision --> Setup{"Setup file supplied"}
+    Setup -->|yes| RunSetup["Expand workspace variables and run bash -c"]
+    Setup -->|no| Use["Use backend"]
+    RunSetup --> Use
+    Use --> Close{"Context exits"}
+    Close -->|fresh backend| Delete["Delete by backend id"]
+    Close -->|attached backend| Retain["Leave backend running"]
+```
 
-## Capture-at-source offload for large `execute` output
+*Setup follows successful provisioning; only a fresh environment belongs to this context's cleanup.*
 
-`BaseSandbox` exposes `execute_with_offload()` (and its async twin) so large
-command output need not round-trip back through the agent process. When enabled,
-the command's combined output is captured to a file at `capture_path` in the
-sandbox; output at or below `max_inline_bytes` is returned inline, otherwise only
-a head/tail preview returns and the caller surfaces a `read_file` pointer.
-Captured output is hard-capped at `max_capture_bytes` without killing the
-command, preserving the exit code.
+A context deletes only a sandbox created with no `sandbox_id`; attached environments are retained. Cleanup exceptions are reported but do not mask an exception from the context body. `verify_sandbox_deps()` performs a lightweight `find_spec` preflight when metadata names a backend module and supplies either an in-app `/install` or CLI `dcode install` remedy.
 
-This behavior is opt-in per backend via the `enable_capture_offload` class
-attribute, which defaults to `False` because the capture wrapper relies on shell
-and coreutils assumptions not guaranteed on every sandbox image. When it is
-`False`, `execute_with_offload` runs the command unwrapped and returns the full
-output (`offloaded=False`) so the middleware falls back to inline execution plus
-generic eviction.
+### Server lifetime and workspace restriction
 
-## Partner packages under `libs/partners/`
+A dcode server keeps the opened sandbox context in process-level state and registers cleanup at `atexit`. Its runtime factory cache is load-bearing: it prevents duplicate sandbox creation, duplicate cleanup registration, and repeated MCP discovery. The server may cache up to 32 workspace runtimes, but a configured sandbox is process-wide: the first workspace that needs it reserves it and a different workspace is refused instead of sharing its environment. Start a separate server to serve another sandboxed workspace.
 
-Each partner package is an independently versioned distribution that owns its own
-environment, `pyproject.toml`, `Makefile`, and tests. Wiring a new partner into
-the repository (CI, labeling, release automation, secret inventory, and — for
-sandbox-backed partners — Harbor sandbox options and credential checks) is
-described in the partner guidance doc.
+### Built-in provider lifecycle differences
 
-The four remote-execution partners (`daytona`, `modal`, `runloop`, `vercel`) each
-subclass `BaseSandbox`, so their code is essentially just `execute()`, byte
-transfer, and `id` mapped onto the provider SDK; the fifth (`quickjs`) is a
-different kind of sandbox entirely — an in-process JavaScript REPL, not a remote
-shell.
+The curated set is `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`. `langsmith` and `runloop` advertise snapshot support; AgentCore does not support attachment by ID.
 
-### `daytona` — `langchain-daytona`
+- **Daytona:** cannot attach by ID. dcode creates a sandbox, repeatedly probes `echo ready`, and deletes it if readiness does not arrive before the startup timeout.
+- **Modal:** can create or attach. A new sandbox uses `/workspace`, is probed for readiness, and is terminated on startup failure. dcode fails closed when a workspace supplies only one of `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, preventing fallback to a broader server identity.
+- **Runloop:** dcode delegates lifecycle to the partner `RunloopProvider`; a missing requested ID is surfaced as `SandboxNotFoundError` at the dcode boundary.
+- **Vercel:** creates a `python3.13` sandbox with a 30-minute lifetime or retrieves an existing ID, then waits for `running`. Terminal status or timeout fails startup, and dcode stops a newly created sandbox when readiness fails. Workspace-scoped explicit Vercel credentials must be complete and cannot mix workspace and inherited server fields.
+- **AgentCore:** validates workspace AWS credential combinations before constructing a session where possible; it avoids silently substituting server credentials when a workspace pinned a distinct, invalid credential configuration.
 
-`DaytonaSandbox` wraps an existing `daytona.Sandbox`. Its `execute()` runs the
-command asynchronously in a per-command Daytona *session*, polls the session's
-command status until the exit code appears (delay controlled by
-`sync_polling_interval`), then collects the session logs; a timeout returns exit
-code `124`. `timeout=0` means "wait indefinitely" in Daytona.
+## Partner adapters
 
-### `modal` — `langchain-modal`
+Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. Adding a sandbox-backed partner involves release and operational wiring—CI, labels, release metadata, credential inventory, integration-test secret gating, and Harbor sandbox options—not only an adapter.
 
-`ModalSandbox` wraps an existing `modal.Sandbox`. `execute()` runs the command via
-`sandbox.exec("bash", "-c", command, timeout=...)`, waits, and combines stdout and
-stderr; file transfer uses the Modal sandbox's `open()`/`read()`/`write()`. The
-sandbox `id` is the Modal object id, and `timeout=0` means wait indefinitely.
+| Package | Boundary | Key behavior |
+| --- | --- | --- |
+| `langchain-daytona` | `DaytonaSandbox` | Per-command sessions and Daytona batch file APIs. |
+| `langchain-modal` | `ModalSandbox` | `bash -c` execution and Modal file handles. |
+| `langchain-runloop` | `RunloopSandbox` and `RunloopProvider` | Devbox execution/file APIs and blueprint-aware lifecycle. |
+| `langchain-vercel-sandbox` | `VercelSandbox` | Detached commands, polling, logs, and Vercel file APIs. |
+| `langchain-quickjs` | `CodeInterpreterMiddleware` | In-process JavaScript REPL with explicit capability bridges, not a remote shell backend. |
 
-### `runloop` — `langchain-runloop`
+### Daytona, Modal, Runloop, and Vercel
 
-Runloop adds a lifecycle **provider** on top of the sandbox. `RunloopProvider`
-(constructed with a Runloop API bearer token) exposes `get_or_create(...)` to
-create or attach a Runloop devbox — optionally booting from a named *blueprint*
-(create-if-missing, resolved in the order `RUNLOOP_SANDBOX_BLUEPRINT_ID` →
-`snapshot` kwarg → `RUNLOOP_SANDBOX_BLUEPRINT_NAME` → empty devbox) — and
-`delete(sandbox_id=...)` to shut one down. `get_or_create` returns a connected
-`RunloopSandbox`, translates a missing `sandbox_id` into a `KeyError`, and maps
-auth/connection failures to `RuntimeError`.
+`DaytonaSandbox.execute()` creates a unique session per command, starts it asynchronously, polls status until an exit code is available, reads session logs, and deletes the session in `finally`. `sync_polling_interval` may be fixed or derived from elapsed time. A timeout returns exit code `124`; `0` waits indefinitely. Its batch transfer methods require absolute paths and preserve request ordering.
 
-### `vercel` — `langchain-vercel-sandbox`
+`ModalSandbox.execute()` uses `sandbox.exec("bash", "-c", command, timeout=...)`, waits, and combines stdout/stderr. Its ID is Modal's `object_id`; transfers use binary `open()` handles and map expected filesystem failures to structured errors. `0` also means no timeout.
 
-`VercelSandbox` wraps an existing `vercel.sandbox.Sandbox`. Its constructor
-rejects a negative default `timeout` (`ValueError`), treats `timeout=0` as
-"wait indefinitely", and the `id` is the Vercel `sandbox_id`.
+`RunloopProvider` attaches to a requested devbox or creates one. For fresh devboxes its blueprint selection order is `RUNLOOP_SANDBOX_BLUEPRINT_ID`, `snapshot`, `RUNLOOP_SANDBOX_BLUEPRINT_NAME`, then an empty devbox. A named blueprint is reused only when build-complete; otherwise it is built from `blueprint_dockerfile` or the default Dockerfile. Missing attachments become `KeyError` in the partner provider, while authentication, connectivity, and creation failures become contextual `RuntimeError`; `delete()` shuts the devbox down.
 
-### `quickjs` — `langchain-quickjs`
+`VercelSandbox` wraps an existing Vercel object, exposes `sandbox_id`, rejects a negative default timeout, and interprets `0` as an indefinite wait. It starts `bash -lc` detached and polls locally; timeout returns `124` after a best-effort kill. If logs cannot be fetched after completion, it preserves the command exit code and reports unavailable output. Combined output is capped at 100,000 bytes. Its file methods require absolute paths and preserve unrecognized provider errors rather than labeling them missing files.
 
-`langchain-quickjs` is not a remote shell backend. It is a `deepagents`
-middleware (`CodeInterpreterMiddleware`) that gives an agent a persistent,
-sandboxed **JavaScript REPL** tool backed by an embedded QuickJS engine. The
-model writes one block of JavaScript that orchestrates work in-loop — variables
-and functions persist across `eval` calls, `Promise.all` runs concurrent work,
-configured subagents are dispatchable via `await task({...})`, and (opt-in) the
-agent's own tools are callable as `await tools.<name>(...)` (programmatic tool
-calling).
+## QuickJS: capability isolation, not a remote sandbox
 
-Its sandbox is capability-based isolation rather than OS isolation: the REPL runs
-in a QuickJS context with **no ambient capabilities** — no filesystem, no
-network, no `fetch`, no `require`, no `process`, and no wall-clock time — and
-capabilities are only added explicitly via PTC. Execution is bounded by a
-per-call wall-clock timeout (default 5 s), a runtime-wide memory limit (default
-64 MiB, surfacing `OutOfMemory`), and a per-call PTC host-call budget (default
-256). Each LangGraph `thread_id` gets its own QuickJS `Runtime`, so separate
-conversations cannot see each other's globals.
+`langchain-quickjs` installs `CodeInterpreterMiddleware`, which gives an agent a persistent JavaScript `eval` tool backed by an embedded QuickJS engine. In the default `mode="thread"`, state persists across calls and turns for one LangGraph `thread_id`; `turn` limits it to a turn and `call` creates a fresh REPL for every evaluation. Each thread has an isolated worker/runtime/context slot. Thread-mode snapshots can be persisted, and supplying `snapshot_signing_key` HMAC-signs them; missing or invalid signatures are discarded before restore.
+
+The guest has no ambient filesystem, network, `fetch`, `require`, `process`, or real-clock capability. Authority enters only through configured `tools.<name>` programmatic tool calling (PTC) or the optional `task(...)` subagent bridge. This is capability isolation rather than OS isolation: a bridged tool receives its actual authority. PTC and the subagent bridge bypass normal `ToolNode` routing, so `interrupt_on`/HITL approval is not automatically applied per bridged invocation. Gate `eval`, add approval middleware inside subagents, or disable bridges when per-operation approval is required; see [Permissions and HITL](../concepts/permissions-hitl.md).
+
+Defaults are a 64 MiB runtime memory limit, a 5-second QuickJS VM execution timeout, 256 PTC host calls per evaluation, and 4,000-character result/console blocks. The VM timeout does not include waiting for Python host calls, so it is not a total wall-clock bound. `max_ptc_calls=None` permits unbounded host-call loops and is unsuitable for untrusted prompts.
+
+## What the focused tests establish
+
+The Daytona, Modal, Runloop, and Vercel partner suites extend `SandboxIntegrationTests` against real provider environments and clean those environments in class-scoped fixtures. Modal rejects a run lacking `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`; Runloop rejects one lacking `RUNLOOP_API_KEY`. These tests verify the shared backend contract at the provider boundary rather than claiming that a provider is isolated.
+
+The dcode integration tests exercise provisioning and transfer behavior for the built-in providers (including AgentCore when AWS credentials are available); they are skipped in the release pipeline and retain some explicitly skipped error-handling cases. The Daytona-based `BaseSandbox` operation suite reuses one class-scoped sandbox and covers write/read/edit/list/search/glob semantics and edge cases. Keep lifecycle and credential fail-closed behavior unit-tested independently of these remote suites.

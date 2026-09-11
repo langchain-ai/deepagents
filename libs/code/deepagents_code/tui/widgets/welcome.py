@@ -35,6 +35,7 @@ from deepagents_code.config import (
     get_glyphs,
     get_langsmith_project_name,
     get_langsmith_replica_project,
+    is_ascii_mode,
 )
 from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
@@ -188,7 +189,7 @@ class WelcomeBanner(Static):
     DEFAULT_CSS = """
     WelcomeBanner {
         height: auto;
-        border: round $primary;
+        border: solid $primary;
         padding: 0 2;
         margin-bottom: 1;
     }
@@ -263,12 +264,19 @@ class WelcomeBanner(Static):
     def on_mount(self) -> None:
         """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
+        self._update_border()
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
+        self._update_border()
         self.update(self._build_banner())
+
+    def _update_border(self) -> None:
+        """Apply the current theme color to the ASCII border."""
+        if is_ascii_mode():
+            self.styles.border = ("ascii", theme.get_theme_colors(self).primary)
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""

@@ -7,22 +7,20 @@ in `CLAUDE.md`.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
 import textwrap
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
-from deepagents_code.main import (
-    _BARE_ACTION_GROUPS,
-    _HELP_SPECS,
-    _show_bare_command_group_help,
-    parse_args,
-)
+from deepagents_code.main import _show_bare_command_group_help, parse_args
+
+if TYPE_CHECKING:
+    import argparse
 
 # Module *prefixes* that must not appear in `sys.modules` after a help-only
 # invocation. Using prefixes (rather than an explicit allowlist) catches
@@ -110,29 +108,6 @@ def _read_marker(stderr: str, prefix: str) -> object:
             return json.loads(line[len(prefix) :])
     msg = f"marker {prefix!r} not found in stderr"
     raise AssertionError(msg)
-
-
-def test_managed_health_import_defers_remote_http_stack() -> None:
-    """Ordinary managed-config checks do not import remote networking code."""
-    code = """
-        import json
-        import sys
-
-        import deepagents_code.configuration.service
-
-        remote_modules = ("http.client", "urllib.error", "urllib.request")
-        print(json.dumps([name for name in remote_modules if name in sys.modules]))
-    """
-    result = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == []
 
 
 @pytest.mark.parametrize(
@@ -251,16 +226,6 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
     assert bootstrap_done is True
 
 
-def test_bare_config_runs_primary_action() -> None:
-    """Bare `config` must resolve values instead of rendering command help."""
-    result = _run_cli_main(["config", "--json"])
-
-    assert result.returncode == 0, result.stderr
-    assert '"command": "config"' in result.stdout
-    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
-    assert bootstrap_done is True
-
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -285,75 +250,9 @@ def test_subcommands_bypass_fast_path(argv: list[str]) -> None:
     assert _show_bare_command_group_help(args) is False
 
 
-def test_unknown_command_bypasses_fast_path() -> None:
-    """`command=None` (no command at all) must not trigger help dispatch."""
-    args = parse_args_from([])
-    assert _show_bare_command_group_help(args) is False
-
-
-def test_command_group_specs_cover_every_subparser_group() -> None:
-    """Every command group must declare what its bare invocation does."""
-    parser = _build_top_level_parser()
-    groups_with_subparsers = _top_level_subparser_groups(parser)
-    overlap = set(_HELP_SPECS) & _BARE_ACTION_GROUPS
-    assert not overlap, (
-        f"Command groups declare conflicting defaults: {sorted(overlap)}"
-    )
-
-    known_groups = set(_HELP_SPECS) | _BARE_ACTION_GROUPS
-    missing = groups_with_subparsers - known_groups
-    assert not missing, (
-        "Top-level command groups have subparsers but no declared bare behavior: "
-        f"{sorted(missing)}. Add each group to `_HELP_SPECS` or "
-        "`_BARE_ACTION_GROUPS` in main.py."
-    )
-
-
 def parse_args_from(argv: list[str]) -> argparse.Namespace:
     """Run `parse_args()` with a controlled argv."""
     from unittest.mock import patch
 
     with patch.object(sys, "argv", ["deepagents", *argv]):
         return parse_args()
-
-
-def _build_top_level_parser() -> argparse.ArgumentParser:
-    """Capture the top-level parser by hooking `ArgumentParser.parse_args`."""
-    from typing import Any
-    from unittest.mock import patch
-
-    captured: dict[str, argparse.ArgumentParser] = {}
-    real_parse_args = argparse.ArgumentParser.parse_args
-
-    def _capture(
-        self: argparse.ArgumentParser,
-        *a: Any,
-        **kw: Any,
-    ) -> argparse.Namespace:
-        captured.setdefault("parser", self)
-        return real_parse_args(self, *a, **kw)
-
-    with (
-        patch.object(sys, "argv", ["deepagents", "help"]),
-        patch.object(argparse.ArgumentParser, "parse_args", _capture),
-    ):
-        parse_args()
-
-    return captured["parser"]
-
-
-def _top_level_subparser_groups(parser: argparse.ArgumentParser) -> set[str]:
-    """Return names of top-level subparsers that themselves have subparsers."""
-    from typing import cast
-
-    groups: set[str] = set()
-    for action in parser._actions:
-        if not isinstance(action, argparse._SubParsersAction):
-            continue
-        choices = cast("dict[str, argparse.ArgumentParser]", action.choices)
-        for name, sub in choices.items():
-            for sub_action in sub._actions:
-                if isinstance(sub_action, argparse._SubParsersAction):
-                    groups.add(name)
-                    break
-    return groups

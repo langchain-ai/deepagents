@@ -169,6 +169,20 @@ def coerce_environment_value[T](
         if value:
             return _found_for(option, value)
         return Invalid(f"Ignoring {name}={raw!r} (expected non-empty string)")
+    if kind is OptionKind.ISO_DATETIME:
+        from deepagents_code.config_manifest import normalize_iso_datetime
+
+        if value := normalize_iso_datetime(raw):
+            return _found_for(option, value)
+        return Invalid(
+            f"Ignoring {name}={raw!r} (expected ISO 8601 date or aware datetime)"
+        )
+    if kind is OptionKind.DURATION_SECONDS:
+        from deepagents_code.config_manifest import normalize_duration
+
+        if value := normalize_duration(raw):
+            return _found_for(option, value)
+        return Invalid(f"Ignoring {name}={raw!r} (expected duration such as 7d)")
     if kind is OptionKind.EXTENSION_TRUST_DELEGATE:
         from deepagents_code.extensions.settings import parse_trust_policy
 
@@ -299,6 +313,16 @@ def coerce_toml_value[T](
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
             return _found_for(option, value)
+    elif kind is OptionKind.ISO_DATETIME:
+        from deepagents_code.config_manifest import normalize_iso_datetime
+
+        if value := normalize_iso_datetime(raw):
+            return _found_for(option, value)
+    elif kind is OptionKind.DURATION_SECONDS:
+        from deepagents_code.config_manifest import normalize_duration
+
+        if value := normalize_duration(raw):
+            return _found_for(option, value)
     elif kind is OptionKind.MODEL_LIST_DELEGATE:
         from deepagents_code.model_config import parse_model_allowlist
 
@@ -411,6 +435,22 @@ def ranked_toml_value[T](
     return RankedProviderValue(rank, durable, status, result)
 
 
+def _prefix_aware_env_name(name: str, environ: Mapping[str, str]) -> str:
+    """Select a prefix override by presence, including an explicitly empty one.
+
+    Args:
+        name: Canonical environment variable name.
+        environ: Environment mapping being resolved.
+
+    Returns:
+        The prefixed name when present, otherwise the canonical name.
+    """
+    prefixed = (
+        name if name.startswith("DEEPAGENTS_CODE_") else f"DEEPAGENTS_CODE_{name}"
+    )
+    return prefixed if prefixed in environ else name
+
+
 def ranked_environment_value[T](
     option: ConfigOption[T],
     environ: Mapping[str, str],
@@ -431,14 +471,17 @@ def ranked_environment_value[T](
 
     names: list[str] = []
     if option.env_var:
-        canonical = option.env_var
-        prefixed = (
-            canonical
-            if canonical.startswith("DEEPAGENTS_CODE_")
-            else f"DEEPAGENTS_CODE_{canonical}"
+        names.append(_prefix_aware_env_name(option.env_var, environ))
+    for fallback in option.fallback_env_vars:
+        name = (
+            _prefix_aware_env_name(fallback, environ)
+            if option.prefix_aware_fallbacks
+            else fallback
         )
-        names.append(prefixed if prefixed in environ else canonical)
-    names.extend(option.fallback_env_vars)
+        # A prefix-aware fallback can resolve to a name the primary already
+        # selected; reading it twice would emit a duplicate diagnostic.
+        if name not in names:
+            names.append(name)
 
     status = ProviderStatus("environment", None, ProviderHealth.OK)
     last_invalid: Invalid | None = None
@@ -523,8 +566,6 @@ def ranked_theme_toml_value(
 
     resolved = resolve_terminal_mapping(ui)
     if resolved is not None:
-        import os
-
         term_program = os.environ.get("TERM_PROGRAM", "").strip()
         selected = replace(
             status,
@@ -1581,8 +1622,8 @@ class EnvProvider:
 
     name: str = "environment"
     rank: int = ENVIRONMENT_RANK
-    environ: Mapping[str, str] = field(
-        default_factory=lambda: os.environ,
+    environ: Mapping[str, str] | None = field(
+        default=None,
         repr=False,
         compare=False,
     )
@@ -1607,14 +1648,16 @@ class EnvProvider:
         Returns:
             Ranked and coerced provider result.
         """
+        from deepagents_code.config import active_environment
         from deepagents_code.config_manifest import OptionKind
 
+        environ = active_environment() if self.environ is None else self.environ
         if option.kind is OptionKind.THEME_DELEGATE:
             return _ranked_for(
                 option,
-                ranked_theme_environment_value(self.environ, rank=self.rank),
+                ranked_theme_environment_value(environ, rank=self.rank),
             )
-        return ranked_environment_value(option, self.environ, rank=self.rank)
+        return ranked_environment_value(option, environ, rank=self.rank)
 
     def status(self) -> ProviderStatus:
         """Return the always-healthy environment provider status."""

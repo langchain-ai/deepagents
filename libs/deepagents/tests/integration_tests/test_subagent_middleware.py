@@ -1,5 +1,5 @@
 import json
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from deepagents.backends.state import StateBackend
-from deepagents.graph import create_agent
+from deepagents.graph import create_agent, create_deep_agent
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SubAgentMiddleware,
@@ -263,3 +263,47 @@ class TestSubagentMiddleware:
         assert isinstance(parsed["findings"], str)
         assert isinstance(parsed["confidence"], (int, float))
         assert isinstance(parsed["summary"], str)
+
+    def test_forked_subagent_reuses_parent_prompt_cache(self):
+        """A fork reads the parent prompt prefix from Anthropic's prompt cache."""
+        cacheable_context = " ".join("The project identifier is context-cache-test." for _ in range(200))
+        agent = create_deep_agent(
+            model="anthropic:claude-sonnet-4-6",
+            system_prompt=(
+                "Delegate the user's request to the forked worker with the task tool. "
+                "Do not answer directly.\n\n"
+                f"<reference_context>{cacheable_context}</reference_context>"
+            ),
+            subagents=[
+                {
+                    "name": "forked-worker",
+                    "description": "Completes the delegated task using the inherited context.",
+                    "mode": "fork",
+                    "tools": [],
+                }
+            ],
+        )
+
+        model_messages: list[tuple[Any, AIMessage]] = []
+        for namespace, update in agent.stream(
+            {"messages": [HumanMessage(content="Delegate this task: reply with the project identifier.")]},
+            subgraphs=True,
+            stream_mode="updates",
+        ):
+            if not isinstance(update, dict):
+                continue
+            model_update = update.get("model")
+            if not isinstance(model_update, dict):
+                continue
+            messages = model_update.get("messages", [])
+            if messages and isinstance(messages[-1], AIMessage):
+                model_messages.append((namespace, messages[-1]))
+
+        parent_task_calls = [call for namespace, message in model_messages if not namespace for call in message.tool_calls if call["name"] == "task"]
+        assert any(call["args"].get("subagent_type") == "forked-worker" for call in parent_task_calls)
+
+        forked_response = next(message for namespace, message in model_messages if namespace)
+        input_details = (forked_response.usage_metadata or {}).get("input_token_details", {})
+        cache_read_tokens = input_details.get("cache_read", 0)
+        assert isinstance(cache_read_tokens, int)
+        assert cache_read_tokens > 0

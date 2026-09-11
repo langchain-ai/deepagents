@@ -21,6 +21,7 @@ from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMa
 logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
 
 class InvalidGlobPatternError(ValueError):
@@ -256,6 +257,28 @@ def format_content_with_line_numbers(
     # two spaces (or otherwise diverging) would silently break them; the
     # producer->consumer round-trip tests in both packages guard against that.
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
+
+
+def _format_source_block(content: str | list[str]) -> str:
+    """Join file content into the verbatim source body of a `read_file` result.
+
+    Source lines are emitted unchanged. The status header the middleware puts
+    above them is the only structural element, so nothing here needs escaping.
+
+    Args:
+        content: File content as a string or list of lines.
+
+    Returns:
+        The source lines joined by newlines, without a trailing terminator.
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    return "\n".join(lines)
 
 
 def check_empty_content(content: str) -> str | None:
@@ -534,6 +557,9 @@ def perform_string_replacement(
     Returns:
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
+    if not old_string:
+        return EMPTY_OLD_STRING_ERROR
+
     occurrences = content.count(old_string)
 
     if occurrences == 0:
@@ -584,14 +610,19 @@ def truncate_if_too_long(result: str) -> str: ...
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     """Truncate list or string result if it exceeds token limit (rough estimate: 4 chars/token)."""
+    limit = TOOL_RESULT_TOKEN_LIMIT * 4
     if isinstance(result, list):
-        total_chars = sum(len(item) for item in result)
-        if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
+        # Callers render the list with `str()`, so each item costs its repr plus ", ".
+        budget = limit - len(repr(TRUNCATION_GUIDANCE)) - 2
+        used = 0
+        for kept, item in enumerate(result):
+            used += len(repr(item)) + 2
+            if used > budget:
+                return result[:kept] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
-    if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
-        return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
+    if len(result) > limit:
+        return result[: limit - len(TRUNCATION_GUIDANCE) - 1] + "\n" + TRUNCATION_GUIDANCE
     return result
 
 
@@ -860,7 +891,8 @@ def _glob_search_files(
         relative = _relative_to_root(file_path, normalized_path)
 
         if matcher(relative):
-            matches.append((file_path, file_data["modified_at"]))
+            # `modified_at` is NotRequired on `FileData`; undated files sort last.
+            matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 

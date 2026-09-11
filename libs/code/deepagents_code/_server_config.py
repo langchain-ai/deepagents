@@ -12,8 +12,9 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -21,9 +22,91 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_I
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from deepagents import FsToolName
 
     from deepagents_code.project_utils import ProjectContext
+
+logger = logging.getLogger(__name__)
+
+
+SESSION_WORKSPACE_FIELDS = frozenset(
+    {
+        "allow_fs_tools",
+        "assistant_id",
+        "auto_approve",
+        "enable_ask_user",
+        "enable_interpreter",
+        "enable_memory",
+        "enable_shell",
+        "enable_skills",
+        "interactive",
+        "interpreter_ptc",
+        "interpreter_ptc_acknowledge_unsafe",
+        "interrupt_shell_only",
+        "no_mcp",
+        "recursion_limit",
+        "sandbox_id",
+        "sandbox_snapshot_name",
+        "sandbox_type",
+        "shell_allow_list",
+    }
+)
+"""Policy a managed client may claim for its own command invocation.
+
+These come from the client's own CLI flags, so the client already knows them
+and claiming them proves only that both sides agree. Together with
+`PROJECT_WORKSPACE_FIELDS` this must partition `to_workspace_payload()`
+exactly: a payload field in neither set is never verified against a client
+claim and never checked for project drift.
+`test_workspace_claim_partitions_every_policy_field` pins that.
+"""
+PROJECT_WORKSPACE_FIELDS = frozenset(
+    {
+        "extension_paths",
+        "mcp_config_path",
+        "sandbox_setup",
+        "trust_project_extensions",
+        "trust_project_mcp",
+    }
+)
+"""Policy the server must resolve per project directory, never accept.
+
+Each of these grants code execution scoped to a checkout -- MCP servers,
+sandbox setup commands, Python extensions. A client that could claim them could
+execute one directory's configuration against another directory's trust
+decision.
+"""
+
+
+def _same_workspace_project(first: str | None, second: str) -> bool:
+    """Whether two paths name the same project directory.
+
+    Fails closed: an unset launch root, a missing path, or an undecidable
+    comparison counts as *different*, so the caller drops project policy rather
+    than carrying it across an unverified boundary. `_same_directory` compares
+    by device and inode, so a symlinked or differently cased spelling of one
+    directory still compares equal.
+
+    Returns:
+        `True` only when both paths name the same directory.
+    """
+    if first is None:
+        return False
+    from deepagents_code._paths import DeepAgentsHomeError, _same_directory
+
+    try:
+        return _same_directory(Path(first), Path(second))
+    except DeepAgentsHomeError:
+        logger.warning(
+            "Could not compare project directories %s and %s; treating as "
+            "separate projects, so project-scoped policy will not apply",
+            first,
+            second,
+            exc_info=True,
+        )
+        return False
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -270,6 +353,12 @@ class ServerConfig:
     """Model spec string (e.g. `'anthropic:claude-opus-4-7'`); `None` lets the
     server pick its default."""
 
+    summarization_model: str | None = None
+    """Model spec used only for context-compaction summaries.
+
+    `None` reuses the main agent model.
+    """
+
     model_params: dict[str, Any] | None = None
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
@@ -373,10 +462,9 @@ class ServerConfig:
     recursion_limit: int | None = None
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
-    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
-    `[runtime].recursion_limit` / the default at agent-build time"
-    (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
-    over those layers. Must be a positive integer when set.
+    `None` resolves from runtime configuration. An explicit value from
+    `--recursion-limit` wins over the env var and `config.toml`, but managed
+    config outranks the flag. Must be a positive integer when set.
     """
 
     sandbox_type: str | None = None
@@ -416,6 +504,150 @@ class ServerConfig:
 
     extension_paths: tuple[str, ...] = ()
     """Absolute one-run extension files or directories from repeatable CLI flags."""
+
+    def to_workspace_payload(self) -> dict[str, Any]:
+        """Return non-secret resource policy for a durable workspace binding."""
+        return {
+            "assistant_id": self.assistant_id,
+            "auto_approve": self.auto_approve,
+            "interrupt_shell_only": self.interrupt_shell_only,
+            "shell_allow_list": self.shell_allow_list,
+            "interactive": self.interactive,
+            "enable_shell": self.enable_shell,
+            "enable_ask_user": self.enable_ask_user,
+            "enable_memory": self.enable_memory,
+            "enable_skills": self.enable_skills,
+            "enable_interpreter": self.enable_interpreter,
+            "interpreter_ptc": self.interpreter_ptc,
+            "interpreter_ptc_acknowledge_unsafe": (
+                self.interpreter_ptc_acknowledge_unsafe
+            ),
+            "allow_fs_tools": self.allow_fs_tools,
+            "recursion_limit": self.recursion_limit,
+            "sandbox_type": self.sandbox_type,
+            "sandbox_id": self.sandbox_id,
+            "sandbox_snapshot_name": self.sandbox_snapshot_name,
+            "sandbox_setup": self.sandbox_setup,
+            "mcp_config_path": self.mcp_config_path,
+            "no_mcp": self.no_mcp,
+            "trust_project_mcp": self.trust_project_mcp,
+            "trust_project_extensions": self.trust_project_extensions,
+            "extension_paths": list(self.extension_paths),
+        }
+
+    def to_session_workspace_claim(self) -> dict[str, Any]:
+        """Return the command-scoped policy a managed client may claim.
+
+        Returns:
+            The session-scoped subset of the workspace policy.
+        """
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in SESSION_WORKSPACE_FIELDS
+        }
+
+    def to_project_workspace_policy(self) -> dict[str, Any]:
+        """Return policy that must be resolved for each project directory.
+
+        Returns:
+            The project-scoped subset of the workspace policy.
+        """
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in PROJECT_WORKSPACE_FIELDS
+        }
+
+    def session_workspace_fingerprint(self) -> str:
+        """Fingerprint the exact client-claimable session policy.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(self.to_session_workspace_claim())
+
+    def resolve_workspace(
+        self,
+        cwd: str,
+        project_root: str | None,
+    ) -> ServerConfig:
+        """Resolve directory-bound policy for one server workspace.
+
+        Project-scoped policy (`PROJECT_WORKSPACE_FIELDS`) is valid only for
+        the directory it was resolved against: it came from the launch-time CLI
+        and that project's trust decisions. Reusing it for another directory
+        would apply one project's MCP servers, sandbox setup, and extensions to
+        a different, possibly untrusted, checkout.
+
+        So the launch project keeps its policy verbatim, and any other project
+        starts from nothing: MCP and sandbox setup are *dropped* rather than
+        rediscovered, and extension trust is re-read from the trust store for
+        that project. `_same_workspace_project` fails closed, so an
+        unresolvable path also takes the drop branch.
+
+        Args:
+            cwd: Absolute, canonical working directory for the workspace.
+            project_root: Canonical project root, or `None` when the workspace
+                has none. The launch cwd uses the server's explicit root when
+                configured. Otherwise, extension trust is keyed on `cwd` when
+                no root exists.
+
+        Returns:
+            A config whose session policy is unchanged and whose project policy
+            is either the launch project's or empty.
+        """
+        if self.project_root is not None and _same_workspace_project(self.cwd, cwd):
+            project_root = str(Path(self.project_root).expanduser().resolve())
+        launch_root = self.project_root or self.cwd
+        target_root = project_root or cwd
+        if _same_workspace_project(launch_root, target_root):
+            return replace(self, cwd=cwd, project_root=project_root)
+        from deepagents_code.extensions.trust import is_project_extensions_trusted
+
+        return replace(
+            self,
+            cwd=cwd,
+            project_root=project_root,
+            sandbox_setup=None,
+            mcp_config_path=None,
+            trust_project_mcp=None,
+            trust_project_extensions=is_project_extensions_trusted(target_root),
+            extension_paths=(),
+        )
+
+    def preserve_bound_extension_trust(
+        self, bound_policy: Mapping[str, object]
+    ) -> ServerConfig:
+        """Keep an existing thread's extension trust when a new grant appears.
+
+        Args:
+            bound_policy: Server policy persisted when the thread was bound.
+
+        Returns:
+            A config that defers new grants to new threads. Revocations remain
+            visible so binding and runtime validation can reject them.
+        """
+        if bound_policy.get("trust_project_extensions") is False and (
+            self.trust_project_extensions is True
+        ):
+            return replace(self, trust_project_extensions=False)
+        return self
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the resolved runtime config except workspace identity.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        values = self.to_env()
+        values.pop("CWD")
+        values.pop("PROJECT_ROOT")
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(values)
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
@@ -482,6 +714,7 @@ class ServerConfig:
         """
         return {
             "MODEL": self.model,
+            "SUMMARIZATION_MODEL": self.summarization_model,
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
             ),
@@ -562,6 +795,7 @@ class ServerConfig:
         """
         return cls(
             model=_read_env_str("MODEL"),
+            summarization_model=_read_env_str("SUMMARIZATION_MODEL") or None,
             model_params=_read_env_json("MODEL_PARAMS"),
             cli_max_retries=_read_env_int("MAX_RETRIES", default=None),
             profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
@@ -613,6 +847,7 @@ class ServerConfig:
         *,
         project_context: ProjectContext | None,
         model_name: str | None,
+        summarization_model: str | None = None,
         model_params: dict[str, Any] | None,
         cli_max_retries: int | None = None,
         profile_overrides: dict[str, Any] | None = None,
@@ -650,6 +885,8 @@ class ServerConfig:
         Args:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
+            summarization_model: Model spec used only for context-compaction
+                summaries; `None` reuses the main model.
             model_params: Extra model kwargs.
             cli_max_retries: Explicit `--max-retries` value.
             profile_overrides: Model profile metadata overrides.
@@ -680,7 +917,7 @@ class ServerConfig:
             auto_classifier_model: Auto classifier model spec; `None` resolves from
                 env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-                from env / `config.toml` / default at agent-build time.
+                from runtime configuration at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -699,6 +936,7 @@ class ServerConfig:
 
         return cls(
             model=model_name,
+            summarization_model=summarization_model,
             model_params=model_params,
             cli_max_retries=cli_max_retries,
             profile_overrides=profile_overrides,

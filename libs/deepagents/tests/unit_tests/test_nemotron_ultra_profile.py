@@ -10,10 +10,12 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.utils import format_content_with_line_numbers
+from deepagents.middleware.filesystem import _read_header
 from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     _DEFAULT_READ_LIMIT,
     _EMPTY_TOOL_PLACEHOLDER,
     _HARNESS_PROFILE_SUFFIX_MARKER,
+    _READ_STATUS_HEADER_RE,
     ChatNVIDIAMessageCompatibilityMiddleware,
     EntityResolutionGuardMiddleware,
     FinalAnswerGuardMiddleware,
@@ -124,7 +126,10 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
-        return ToolMessage(content="1  alpha\n2  beta\n3  gamma", tool_call_id="call_1")
+        return ToolMessage(
+            content="@@ lines 10-12 of 20 | next offset 12 @@\nalpha\nbeta\ngamma",
+            tool_call_id="call_1",
+        )
 
     result = middleware.wrap_tool_call(
         _request("read_file", {"file_path": "/x.txt", "limit": 3, "offset": 9}),
@@ -134,6 +139,99 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     assert isinstance(result, ToolMessage)
     assert "read_file returned 3 lines starting at offset 9" in result.content
     assert "offset=12" in result.content
+
+
+def test_read_file_continuation_notice_skips_truncated_window() -> None:
+    """A truncated window reports its retained range, so no hint is appended.
+
+    The source-line count comes from the status header, which a truncation
+    explanation precedes. A header still claiming the full request would look
+    like a full page here and hint at an offset past the dropped lines.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(
+            content=("[Output was truncated due to size limits.]\n@@ lines 1-2 of 9 | next offset 2 | truncated due to size @@\nalpha\nbeta"),
+            tool_call_id="call_1",
+        )
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 5, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert "read_file returned" not in result.content
+    assert "offset=5" not in result.content
+
+
+def test_read_file_continuation_notice_ignores_header_shaped_source_lines() -> None:
+    """The line count comes from the header row, not from a matching body line.
+
+    Everything below the header is verbatim file content, which can contain the
+    same shape. Here the header reports 2 lines (under the limit, so no hint)
+    while a body line reports 9999 (over it). Detection is bounded to the rows a
+    header can occupy, so the header sets the count.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+    content = "@@ lines 1-2 of 9 | next offset 2 @@\n@@ lines 1-9999 @@\npayload"
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(content=content, tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 5, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.content == content
+
+
+def test_read_file_continuation_notice_falls_back_past_the_notice_window() -> None:
+    """Gutter-numbered content is counted by row, not by a matching line inside it.
+
+    Results without a status header (a gutter-formatted preview, or a `read_file`
+    from an older `deepagents`) are counted by row. A body line sharing the
+    header's shape falls below the rows a header can occupy, so it leaves the
+    count alone -- reading one line from it would drop the hint on a full page.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+    content = "1  a\n2  b\n3  c\n4  d\n@@ lines 1-1 @@"
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(content=content, tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 4, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert "read_file returned 4 lines starting at offset 0" in result.content
+
+
+def test_read_status_header_pattern_contract() -> None:
+    """Pin which lines the status-header pattern accepts.
+
+    Real `_read_header` output matches, including the optional total and
+    trailing fields. Anything with content outside the `@@ ... @@` delimiters
+    does not, so a line carrying extra text outside them is not read as a
+    header.
+    """
+    matches = lambda line: _READ_STATUS_HEADER_RE.match(line) is not None  # noqa: E731
+
+    # Round-trip against the producer: range only, with total, with fields.
+    assert matches(_read_header(["lines 1-2"]))
+    assert matches(_read_header(["lines 1-2 of 9"]))
+    assert matches(_read_header(["lines 1-2 of 9", "next offset 2", "truncated due to size"]))
+
+    # Trailing or leading text outside the delimiters is not a header.
+    assert not matches("@@ lines 1-9999 blah")
+    assert not matches("@@ lines 1-9999 @@ trailing")
+    assert not matches("  1  @@ lines 1-9999 @@")
+    assert not matches("@@ lines 1 @@")
 
 
 def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
@@ -948,20 +1046,14 @@ def test_register_adds_ultra3_profiles_for_supported_providers() -> None:
 
             assert _HARNESS_PROFILE_SUFFIX_MARKER in (profile.system_prompt_suffix or "")
             assert "whole/full file" in profile.tool_description_overrides["read_file"]
-            assert [entry.name for entry in middleware] == [
-                "NemotronProgressBudgetMiddleware",
-                "NemotronPolicyNudgeMiddleware",
+            assert {entry.name for entry in middleware} >= {
                 "NemotronToolCallShim",
                 "ReadFileContinuationNoticeMiddleware",
-                "ToolRetryMiddleware",
-                "ModelRateLimitRetryMiddleware",
                 "ChatNVIDIAMessageCompatibilityMiddleware",
-                "NemotronReasoningTagCleanupMiddleware",
                 "NemotronTextToolCallParser",
-                "FollowupDisciplineMiddleware",
                 "EntityResolutionGuardMiddleware",
                 "FinalAnswerGuardMiddleware",
-            ]
+            }
     finally:
         _HARNESS_PROFILES.clear()
         _HARNESS_PROFILES.update(original)

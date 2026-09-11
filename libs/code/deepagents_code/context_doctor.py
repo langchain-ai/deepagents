@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -54,7 +56,8 @@ def _schema_tokens(tools: Sequence[ToolEntry]) -> tuple[int, int]:
 
 
 def _bounded(text: str, limit: int = 160) -> str:
-    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+    ellipsis = get_glyphs().ellipsis
+    return text if len(text) <= limit else f"{text[: limit - len(ellipsis)]}{ellipsis}"
 
 
 def _skill_tokens(skill: ExtendedSkillMetadata) -> int:

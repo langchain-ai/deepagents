@@ -32,6 +32,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
+    _format_source_block,
     create_file_data,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
@@ -1367,6 +1368,12 @@ class TestFilesystemMiddleware:
 
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
+    def test_format_source_block_returns_source_verbatim(self):
+        """The body carries no markers, so no source line needs escaping."""
+        content = ["    def foo():", "        return 1"]
+
+        assert _format_source_block(content) == "    def foo():\n        return 1"
+
     def test_format_content_with_line_numbers_short_lines(self):
         """Test that short lines (<=5000 chars) are displayed normally."""
         content = ["short line 1", "short line 2", "short line 3"]
@@ -1548,7 +1555,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+        assert result.content == ("@@ lines 1-2 of 5 | next offset 2 @@\none\ntwo")
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1564,8 +1571,8 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 10})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1  one\n2  two\n3  three"
-        assert "remaining from offset" not in result.content
+        assert result.content == "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
+        assert "next offset" not in result.content
 
     def test_read_file_offset_window_reports_source_line_range(self):
         files = {
@@ -1581,7 +1588,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
+        assert result.content == ("@@ lines 3-4 of 5 | next offset 4 @@\nthree\nfour")
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1597,7 +1604,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+        assert result.content == ("@@ lines 1-1 of 5 | next offset 1 @@\none")
 
     def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
         """Invoke `read_file` against a fixed 3-line file with the given window."""
@@ -1682,19 +1689,43 @@ class TestFilesystemMiddleware:
         """A clamped offset still reads, and says so.
 
         The window reaches EOF here, which suppresses the pagination notice, so
-        the disclosure has to come from its own notice or the model gets a
-        gutter starting at line 1 with no sign its request was reinterpreted.
+        the disclosure has to come from its own notice or the model gets a range
+        starting at line 1 with no sign its request was reinterpreted.
         """
         result = self._read_notes(offset=-1, limit=100)
 
         assert result.status == "success"
-        assert result.content == ("1  one\n2  two\n3  three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+        assert result.content == (
+            "[Requested offset -1 is before the start of the file; read from line 1 instead.]\n@@ lines 1-3 of 3 @@\none\ntwo\nthree"
+        )
 
     def test_read_file_non_negative_offset_has_no_clamp_notice(self):
         """The clamp notice must not appear on ordinary reads."""
         result = self._read_notes(offset=0, limit=100)
 
-        assert result.content == "1  one\n2  two\n3  three"
+        assert result.content == "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
+
+    @pytest.mark.parametrize(("offset", "expected"), [(0, "1-3"), (5, "6-8"), (-1, "1-3")])
+    def test_read_file_without_window_metadata_still_states_a_range(self, offset: int, expected: str):
+        """A backend may return numberable text with no window metadata.
+
+        The header always states a range, so one is derived from the requested
+        offset. Emitting a fieldless `@@  @@` would match neither the TUI
+        parser nor the continuation middleware, leaving the model and the user
+        looking at bare protocol scaffolding.
+        """
+        backend, _ = _make_backend()
+        read_result = ReadResult(file_data=FileData(content="alpha\nbeta\ngamma", encoding="utf-8"))
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/x.txt", "offset": offset, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        header = next(line for line in result.content.splitlines() if line.startswith("@@ "))
+        assert header.startswith(f"@@ lines {expected}")
+        assert result.content.endswith("alpha\nbeta\ngamma")
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
@@ -1711,7 +1742,7 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1  one\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+        assert result.content == "@@ lines 1-1 | next offset 1 @@\none"
 
     def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
@@ -1729,8 +1760,8 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert "Output was truncated due to size limits" in result.content
-        assert "remaining from offset" not in result.content
+        assert "truncated mid-line" in result.content
+        assert "next offset" not in result.content
 
     def test_read_file_truncation_recomputes_remaining_lines_notice(self):
         backend, _ = _make_backend()
@@ -1751,10 +1782,41 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
+        header = next(line for line in result.content.splitlines() if line.startswith("@@ "))
+        last_displayed_line = int(header.split(" | ")[0].split("-")[1].split(" ")[0])
         assert last_displayed_line < 100
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        assert f"next offset {last_displayed_line} " in header
+
+    def test_read_file_truncation_rebuilds_opening_marker_to_retained_range(self):
+        """Both envelope markers report the range actually retained.
+
+        A stale opening marker is not cosmetic: consumers take the source-line
+        count from it, so a marker still claiming the full requested window
+        advertises a resume offset past the rows truncation dropped.
+        """
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(
+                content="\n".join(f"line {line}: " + "x" * 80 for line in range(1, 101)),
+                encoding="utf-8",
+            ),
+            total_lines=120,
+            start_line=1,
+            end_line=100,
+            next_offset=100,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=500)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        notice, header, *rows = result.content.split("\n")
+        retained = len(rows)
+        assert retained < 100
+        assert notice.startswith("[Output was truncated due to size limits.")
+        assert header == f"@@ lines 1-{retained} of 120 | next offset {retained} | truncated due to size @@"
 
     def test_read_file_truncation_adds_notice_when_backend_reached_eof(self):
         backend, _ = _make_backend()
@@ -1775,19 +1837,18 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
+        header = next(line for line in result.content.splitlines() if line.startswith("@@ "))
+        last_displayed_line = int(header.split(" | ")[0].split("-")[1].split(" ")[0])
         assert last_displayed_line < 100
-        assert numbered_lines[-1].endswith("x" * 80)
-        assert f"remaining from offset {last_displayed_line}.]" in result.content
+        assert f"line {last_displayed_line}: " + "x" * 80 in result.content
+        assert f"next offset {last_displayed_line} " in header
 
     def test_read_file_truncation_never_splits_a_wrapped_source_line(self):
-        """When the budget cuts inside a wrapped line's rows, resume before that line.
+        """When the budget cannot fit an oversized line, resume before that line.
 
-        Source line 3 is 15000 chars, so it renders as rows `3`, `3.1`, `3.2`.
-        The char budget fits lines 1-2 but not the full wrapped line, so the
-        notice must report line 2 and resume from offset 2 — never advertise an
-        offset that lands inside the undisplayed tail of line 3.
+        Source line 3 is 15000 chars. The char budget fits lines 1-2 but not
+        that line, so the header must report line 2 and resume from offset 2 —
+        never an offset that lands inside the undisplayed tail of line 3.
         """
         backend, _ = _make_backend()
         read_result = ReadResult(
@@ -1807,10 +1868,13 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        assert "Output was truncated due to size limits" in result.content
+        assert "truncated due to size" in result.content
         # Line 2 is the last complete source line that fits; the wrapped line 3
         # is dropped whole and the resume offset points at it, not inside it.
-        assert "[Read 2 lines (lines 1-2 of 10 total). 8 lines remaining from offset 2.]" in result.content
+        notice, header, *rows = result.content.split("\n")
+        assert notice.startswith("[Output was truncated due to size limits.")
+        assert header == "@@ lines 1-2 of 10 | next offset 2 | truncated due to size @@"
+        assert rows == ["aaa", "bbb"]
         # No partial rendering of the wrapped line leaked through.
         assert "c" * 5000 not in result.content
 
@@ -2425,6 +2489,122 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(
+        ("body", "offset", "limit", "expected_rows"),
+        [
+            # Mid-file blank window.
+            ("line1\n\n\n\n\nline6\n", 1, 4, [2, 3, 4, 5]),
+            # Blank window starting at line 1 of a file that continues.
+            ("\n\n\nline4\nline5\n", 0, 3, [1, 2, 3]),
+            # Blank window ending at EOF but not starting at line 1.
+            ("line1\n\n\n", 1, 2, [2, 3]),
+        ],
+    )
+    def test_read_file_blank_window_of_non_empty_file_renders_lines(self, body: str, offset: int, limit: int, expected_rows: list[int]):
+        """A blank window of a file with content renders numbered blank lines."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = _runtime("blank-window-read")
+
+        backend.write("/f.txt", body)
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/f.txt", "offset": offset, "limit": limit, "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content != EMPTY_CONTENT_WARNING
+        header, *rows = result.content.split("\n")
+        assert header.startswith(f"@@ lines {expected_rows[0]}-{expected_rows[-1]} ")
+        assert rows == ["" for _ in expected_rows]
+
+    @pytest.mark.parametrize(
+        ("content", "serialization"),
+        [
+            # Lines joined with "\n" as a separator: no trailing terminator.
+            ("a\nb\n\n", "separator-joined"),
+            # Terminators kept: the same window splits into a phantom "".
+            ("a\nb\n\n\n", "terminator-kept"),
+        ],
+    )
+    def test_read_file_window_ending_in_blank_row_keeps_that_row(self, content: str, serialization: str):
+        """A window whose last source row is blank renders every row it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=5,
+            start_line=1,
+            end_line=4,
+            next_offset=4,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/f.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == "@@ lines 1-4 of 5 | next offset 4 @@\na\nb\n\n", serialization
+
+    def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
+        """A window spanning a whole whitespace-only file still describes an empty file."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=" \n\t", encoding="utf-8"),
+            total_lines=2,
+            start_line=1,
+            end_line=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/blank.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(("content", "end_line"), [("", 2), ("\n\n\n", 5)])
+    def test_read_file_blank_window_pads_to_reported_rows(self, content: str, end_line: int):
+        """A separator-joined blank window renders one row per line it reports."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=end_line + 1,
+            start_line=2,
+            end_line=end_line,
+            next_offset=end_line,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt"})
+
+        assert isinstance(result, ToolMessage)
+        blank_rows = "\n".join("" for _ in range(2, end_line + 1))
+        expected_header = f"@@ lines 2-{end_line} of {end_line + 1} | next offset {end_line} @@"
+        assert result.content == f"{expected_header}\n{blank_rows}"
+
+    def test_read_file_keeps_backend_truncation_banner_past_window(self):
+        """Rows a backend appends beyond `end_line` survive padding."""
+        backend, _ = _make_backend()
+        banner = "\n\n[Output was truncated due to size limits.]"
+        read_result = ReadResult(
+            file_data=FileData(content="a\nb" + banner, encoding="utf-8"),
+            total_lines=9,
+            start_line=1,
+            end_line=2,
+            next_offset=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert "[Output was truncated due to size limits.]" in result.content
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
@@ -3397,6 +3577,22 @@ class TestTruncation:
         # Last item should be the truncation message
         assert "results truncated" in result[-1]
         assert "try being more specific" in result[-1]
+
+    def test_truncate_list_result_accounts_for_rendering(self):
+        # Many short paths: the repr overhead alone pushes the rendered list over budget.
+        paths = [f"/{index:04x}" for index in range(10_000)]
+        result = truncate_if_too_long(paths)
+
+        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
+        assert result[-1] == TRUNCATION_GUIDANCE
+
+    def test_truncate_list_result_uneven_item_lengths(self):
+        # A single oversized leading item must not be retained whole.
+        paths = ["/" + "x" * (TOOL_RESULT_TOKEN_LIMIT * 4), *[f"/{index}.py" for index in range(100)]]
+        result = truncate_if_too_long(paths)
+
+        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
+        assert result == [TRUNCATION_GUIDANCE]
 
     def test_truncate_string_result_no_truncation(self):
         content = "short content"

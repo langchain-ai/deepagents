@@ -61,7 +61,6 @@ from check_lockfiles_pre_commit import package_dirs, python_version  # noqa: E40
 from check_release_deps import (  # noqa: E402
     PyPIRequestError,
     _write_output,
-    _write_step_summary,
     fetch_pypi_json,
     load_release_packages,
 )
@@ -776,7 +775,6 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)
-    _write_step_summary(summary)
 
     changed_files = sorted(plan.manifest_path for plan in plans)
     lock_dirs = stale_lock_dirs(changed_files)
@@ -789,6 +787,10 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
         "lock_specs",
         ",".join(f"{path}={python_version(REPO_ROOT / path)}" for path in lock_dirs),
     )
+    # Deliberately not `_write_step_summary`: `GITHUB_STEP_SUMMARY` is a per-step
+    # file uploaded when the step ends, so the table can only appear *after* the
+    # PR link if the step that learns the PR outcome emits both. The workflow
+    # replays this output in that step's own summary.
     _write_output("summary", summary)
     return 0
 

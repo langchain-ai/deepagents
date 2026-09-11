@@ -37,12 +37,27 @@ Hardcoded rather than read from `deepagents.middleware.rubric.RubricMiddleware`
 because this module is dependency-free and importing the SDK for a display
 string would violate the startup-performance rule (see AGENTS.md). This is a
 hand-maintained duplicate that can rot if the SDK bumps its default, so
-`test_reliable_rubric.py::TestReliableRubricMiddleware::test_displayed_max_iterations_default_matches_sdk`
+`test_reliable_rubric.py::TestRubricMiddlewareIntegration::test_displayed_max_iterations_default_matches_sdk`
 is the drift guard that fails when the two diverge.
 """
 
 FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
 """Prefix used to infer Fireworks from fully-qualified IDs."""
+
+LANGSMITH_API_KEY_ENV: Final[str] = "LANGSMITH_API_KEY"
+"""Primary env var the LangSmith SDK reads for its API key."""
+
+LANGSMITH_API_KEY_FALLBACK_ENV_VARS: Final[tuple[str, ...]] = ("LANGCHAIN_API_KEY",)
+"""Legacy env vars the LangSmith SDK accepts after `LANGSMITH_API_KEY_ENV`."""
+
+LANGSMITH_API_KEY_ENV_VARS: Final[tuple[str, ...]] = (
+    LANGSMITH_API_KEY_ENV,
+    *LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+)
+"""Env vars LangSmith reads for its API key, in precedence order.
+
+Mirrors the SDK's own `LANGSMITH_`-then-`LANGCHAIN_` lookup.
+"""
 
 FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (
     "accounts/fireworks/models/",

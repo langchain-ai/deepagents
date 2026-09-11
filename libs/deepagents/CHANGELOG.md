@@ -2,6 +2,35 @@
 
 # Deep Agents Changelog
 
+## [0.7.13](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.12...deepagents==0.7.13) (2026-09-02)
+
+### Bug Fixes
+
+- Renamed the SDK subagent mode from `handoff` to `isolated` ([#6030](https://github.com/langchain-ai/deepagents/issues/6030)).
+
+## [0.7.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.11...deepagents==0.7.12) (2026-09-01)
+
+### Features
+
+- Added subagent conversation forking in the SDK ([#5714](https://github.com/langchain-ai/deepagents/issues/5714)).
+
+### Bug Fixes
+
+- Fixed glob sorting to tolerate missing `modified_at` values in the SDK ([#4376](https://github.com/langchain-ai/deepagents/issues/4376)).
+
+## [0.7.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.10...deepagents==0.7.11) (2026-08-28)
+
+### Features
+
+- Added SDK integration hooks for rubric graders ([#5874](https://github.com/langchain-ai/deepagents/issues/5874))
+
+## [0.7.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.9...deepagents==0.7.10) (2026-08-28)
+
+### Bug Fixes
+
+- Prevent local shell commands from stealing TUI input ([#5873](https://github.com/langchain-ai/deepagents/issues/5873))
+- Surface sandbox glob failures instead of reporting no matches ([#5566](https://github.com/langchain-ai/deepagents/issues/5566))
+
 ## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
 
 ### Features

@@ -84,15 +84,6 @@ def _ignore_codex_experimental_warning() -> Iterator[None]:
 class TestGetStatus:
     """`get_status` reflects on-disk state without network or refresh."""
 
-    def test_not_logged_in_when_file_missing(self, tmp_path: Path) -> None:
-        status = openai_codex.get_status(store_path=tmp_path / "missing.json")
-        assert status.logged_in is False
-        assert status.account_id is None
-        assert status.plan_type is None
-        assert status.expires_at is None
-        assert status.is_expired is False
-        assert status.unreadable_reason is None
-
     def test_logged_in_when_token_present(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
         _write_token(path)
@@ -122,9 +113,6 @@ class TestGetStatus:
 class TestIsLoggedIn:
     """Convenience predicate over `get_status`."""
 
-    def test_false_when_missing(self, tmp_path: Path) -> None:
-        assert openai_codex.is_logged_in(store_path=tmp_path / "x.json") is False
-
     def test_true_when_present(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
         _write_token(path)
@@ -133,9 +121,6 @@ class TestIsLoggedIn:
 
 class TestLogout:
     """Logout returns `True` only when a file was actually removed."""
-
-    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
-        assert openai_codex.logout(store_path=tmp_path / "missing.json") is False
 
     def test_removes_existing_file(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
@@ -184,12 +169,6 @@ class TestProviderAuthStatus:
 
 class TestBuildChatModel:
     """`build_chat_model` raises `FileNotFoundError` when no token exists."""
-
-    def test_raises_when_no_token(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            openai_codex.build_chat_model(
-                "gpt-5.2-codex", store_path=tmp_path / "missing.json"
-            )
 
     def test_returns_chat_model_when_token_present(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"

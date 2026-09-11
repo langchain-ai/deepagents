@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import asyncio
 import dataclasses
 import json
 import uuid
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any, TypedDict
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
@@ -21,21 +23,26 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode
+from langgraph.pregel.remote import RemoteGraph
 from langgraph.types import Command
+from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -88,6 +95,18 @@ class _ScriptedChatModel(BaseChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         self.tools = tools
         return self
+
+
+def _subagent_task_graph(runnable: Runnable) -> CompiledStateGraph:
+    middleware = SubAgentMiddleware(
+        backend=StateBackend(),
+        subagents=[CompiledSubAgent(name="worker", description="A worker agent", runnable=runnable)],
+    )
+    builder = StateGraph(MessagesState)
+    builder.add_node("tools", ToolNode(middleware.tools))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    return builder.compile()
 
 
 class TestSubAgents:
@@ -1466,7 +1485,16 @@ class TestSubAgents:
             f"Expected JSON-serialized population data, got: {population_tool_message.content}"
         )
 
-    def test_structured_response_serialized_as_tool_message(self) -> None:
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param(AIMessage(content="Here are my findings."), id="object"),
+            pytest.param({"type": "ai", "content": "Here are my findings."}, id="dict"),
+            pytest.param({"type": "ai", "content": "Invalid tool calls.", "tool_calls": "abc"}, id="malformed-dict"),
+        ],
+    )
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    def test_structured_response_serialized_as_tool_message(self, message: BaseMessage | dict[str, object], *, use_async: bool) -> None:
         """Test that structured_response is JSON-serialized as ToolMessage content.
 
         When a subagent produces a `structured_response`, the middleware should
@@ -1481,7 +1509,7 @@ class TestSubAgents:
 
         mock_subagent = RunnableLambda(
             lambda _: {
-                "messages": [AIMessage(content="Here are my findings about renewable energy.")],
+                "messages": [message],
                 "structured_response": structured_data,
             }
         )
@@ -1520,10 +1548,9 @@ class TestSubAgents:
             ],
         )
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Analyze renewable energy")]},
-            config={"configurable": {"thread_id": f"test-structured-{uuid.uuid4().hex}"}},
-        )
+        inputs = {"messages": [HumanMessage(content="Analyze renewable energy")]}
+        config: RunnableConfig = {"configurable": {"thread_id": f"test-structured-{uuid.uuid4().hex}"}}
+        result = asyncio.run(agent.ainvoke(inputs, config=config)) if use_async else agent.invoke(inputs, config=config)
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
@@ -1675,17 +1702,82 @@ class TestSubAgents:
         parsed = AnalysisResult.model_validate_json(task_tool_message.content)
         assert parsed == AnalysisResult(findings="Solar is growing fast", confidence=0.95)
 
-    def test_fallback_to_last_message_without_structured_response(self) -> None:
-        """Test fallback to last message when no structured_response is present.
+    @pytest.mark.parametrize(
+        ("messages", "expected"),
+        [
+            pytest.param([AIMessage(content="The answer.")], "The answer.", id="object"),
+            pytest.param([{"type": "ai", "content": "The answer."}], "The answer.", id="sdk-dict"),
+            pytest.param([{"role": "assistant", "content": "The answer."}], "The answer.", id="role-dict"),
+            pytest.param([("assistant", "The answer.")], "The answer.", id="assistant-tuple"),
+            pytest.param(
+                [{"lc": 1, "type": "constructor", "id": ["langchain", "schema", "messages", "AIMessage"], "kwargs": {"content": "The answer."}}],
+                "The answer.",
+                id="constructor-dict",
+            ),
+            pytest.param([AIMessage(content="The answer."), AIMessage(content="")], "The answer.", id="trailing-empty"),
+            pytest.param(
+                [
+                    AIMessage(content="An earlier answer."),
+                    {"type": "ai", "content": "The answer."},
+                    AIMessage(content=""),
+                    {"role": "assistant", "content": []},
+                    HumanMessage(content="A later human message."),
+                    {"type": "tool", "content": "A later tool result.", "tool_call_id": "call_child"},
+                ],
+                "The answer.",
+                id="mixed-trailing-empty-and-non-ai",
+            ),
+            pytest.param(
+                [{"type": "ai", "content": [{"type": "text", "text": "The "}, {"type": "text", "text": "answer."}]}],
+                "The answer.",
+                id="text-blocks",
+            ),
+            pytest.param([], "", id="empty"),
+            pytest.param(
+                [HumanMessage(content="Do work"), {"type": "tool", "content": "A tool result.", "tool_call_id": "call_child"}],
+                "",
+                id="no-assistant",
+            ),
+            pytest.param(
+                [{"content": "Missing type and role."}, AIMessage(content="The answer.")],
+                "The answer.",
+                id="malformed-before-object",
+            ),
+            pytest.param(
+                [{"content": "Missing type and role."}, {"type": "ai", "content": "The answer."}],
+                "The answer.",
+                id="malformed-before-dict",
+            ),
+            pytest.param([AIMessage(content="The answer."), {"content": "Missing type and role."}], "The answer.", id="malformed-trailing"),
+            pytest.param([{"content": "Missing type and role."}], "", id="malformed-only"),
+            pytest.param([{"content": "Missing type and role."}, AIMessage(content="")], "", id="malformed-before-empty-assistant"),
+            pytest.param(
+                [AIMessage(content="The answer."), {"type": "tool", "content": "Missing tool call ID."}],
+                "The answer.",
+                id="malformed-trailing-tool",
+            ),
+            pytest.param(
+                [AIMessage(content="The answer."), {"type": "ai", "content": {"invalid": "content"}}],
+                "The answer.",
+                id="invalid-assistant-content",
+            ),
+            pytest.param([AIMessage(content="The answer."), object()], "The answer.", id="unsupported-object"),
+            pytest.param([AIMessage(content="The answer."), ("assistant", "invalid", "sequence")], "The answer.", id="malformed-sequence"),
+            pytest.param(
+                [AIMessage(content="The answer."), {"type": [], "content": "Invalid role."}],
+                "The answer.",
+                id="unhashable-role",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    def test_fallback_to_last_message_without_structured_response(self, messages: list[object], expected: str, *, use_async: bool) -> None:
+        """Use the last non-empty assistant text without structured_response.
 
         When a subagent does not produce a `structured_response`, the middleware
-        should fall back to extracting the last message text.
+        should extract assistant text from native, serialized, or mixed messages.
         """
-        mock_subagent = RunnableLambda(
-            lambda _: {
-                "messages": [AIMessage(content="Plain text result without structured response")],
-            }
-        )
+        mock_subagent = RunnableLambda(lambda _: {"messages": messages})
 
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
@@ -1721,75 +1813,82 @@ class TestSubAgents:
             ],
         )
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Test")]},
-            config={"configurable": {"thread_id": f"test-no-structured-{uuid.uuid4().hex}"}},
-        )
-
+        inputs = {"messages": [HumanMessage(content="Test")]}
+        config: RunnableConfig = {"configurable": {"thread_id": f"test-no-structured-{uuid.uuid4().hex}"}}
+        result = asyncio.run(agent.ainvoke(inputs, config=config)) if use_async else agent.invoke(inputs, config=config)
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         task_tool_message = tool_messages[0]
-        assert task_tool_message.content == "Plain text result without structured response"
+        assert task_tool_message.tool_call_id == "call_plain"
+        assert task_tool_message.content == expected
 
-    def test_fallback_skips_trailing_empty_ai_message(self) -> None:
-        """Skip a trailing empty AIMessage and use the last AIMessage with text.
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    def test_remote_subagent_messages(self, *, use_async: bool) -> None:
+        """Return serialized RemoteGraph assistant text through the parent task tool."""
+        answer = "The remote answer is 42."
 
-        Anthropic/Bedrock occasionally emits an empty `end_turn` AIMessage after
-        a successful final tool call. The middleware should walk back to the
-        prior AIMessage carrying the real answer instead of forwarding an empty
-        ToolMessage.
-        """
-        mock_subagent = RunnableLambda(
-            lambda _: {
-                "messages": [
-                    AIMessage(content="The real answer from the subagent."),
-                    AIMessage(content=""),
-                ],
-            }
-        )
-
-        parent_chat_model = GenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "task",
-                                "args": {
-                                    "description": "Do work",
-                                    "subagent_type": "worker",
-                                },
-                                "id": "call_trailing_empty",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="Done"),
-                ]
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == "/runs/stream"
+            state = {"messages": [{"type": "ai", "content": answer}]}
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=f"event: values\ndata: {json.dumps(state)}\n\n",
             )
-        )
 
-        agent = create_deep_agent(
-            model=parent_chat_model,
-            checkpointer=InMemorySaver(),
-            subagents=[
-                CompiledSubAgent(
-                    name="worker",
-                    description="A worker agent",
-                    runnable=mock_subagent,
-                ),
-            ],
-        )
+        inputs = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "task", "args": {"description": "Answer", "subagent_type": "worker"}, "id": "call_remote"}],
+                )
+            ]
+        }
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Test")]},
-            config={"configurable": {"thread_id": f"test-trailing-empty-{uuid.uuid4().hex}"}},
-        )
+        async def ainvoke() -> dict:
+            async with httpx.AsyncClient(base_url="http://example.invalid", transport=httpx.MockTransport(respond)) as client:
+                remote = RemoteGraph("worker", client=LangGraphClient(client))
+                raw_result = await remote.ainvoke({"messages": []})
+                assert isinstance(raw_result["messages"][-1], dict)
+                return await _subagent_task_graph(remote).ainvoke(inputs)
 
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 1
-        assert tool_messages[0].content == "The real answer from the subagent."
+        if use_async:
+            result = asyncio.run(ainvoke())
+        else:
+            with httpx.Client(base_url="http://example.invalid", transport=httpx.MockTransport(respond)) as client:
+                remote = RemoteGraph("worker", sync_client=SyncLangGraphClient(client))
+                raw_result = remote.invoke({"messages": []})
+                assert isinstance(raw_result["messages"][-1], dict)
+                result = _subagent_task_graph(remote).invoke(inputs)
+
+        tool_message = result["messages"][-1]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.content == answer
+        assert tool_message.tool_call_id == "call_remote"
+
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("error_source", ["runnable", "conversion"])
+    def test_subagent_unexpected_error_propagates(self, monkeypatch: pytest.MonkeyPatch, error_source: str, *, use_async: bool) -> None:
+        def fail(_value: object) -> dict:
+            msg = "Unexpected subagent failure"
+            raise RuntimeError(msg)
+
+        runnable = RunnableLambda(fail)
+        if error_source == "conversion":
+            monkeypatch.setattr("deepagents.middleware.subagents.convert_to_messages", fail)
+            runnable = RunnableLambda(lambda _: {"messages": [{"type": "ai", "content": "The answer."}]})
+        agent = _subagent_task_graph(runnable)
+        inputs = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "task", "args": {"description": "Do work", "subagent_type": "worker"}, "id": "call_failed"}],
+                )
+            ]
+        }
+        with pytest.raises(RuntimeError, match="Unexpected subagent failure"):
+            asyncio.run(agent.ainvoke(inputs)) if use_async else agent.invoke(inputs)
 
     def test_subagent_streaming_emits_messages_and_updates_from_subgraph(self) -> None:
         """Test end-to-end subagent streaming with `subgraphs=True`.

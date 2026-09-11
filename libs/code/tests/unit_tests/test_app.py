@@ -4054,6 +4054,16 @@ class TestTurnStateRelease:
             assert app._agent_turn_started is False
             app.action_interrupt()
             await pilot.pause()
+            # `_send_to_agent` now awaits the spinner mount before spawning
+            # the worker, which keeps extra Textual timers (the spinner's
+            # 0.1s animation) pending. A single `pilot.pause()` can drain
+            # timers in a different order than the `call_after_refresh`
+            # recovery callback, so pump until the release lands rather
+            # than assuming one pass suffices.
+            for _ in range(10):
+                if not app._agent_running:
+                    break
+                await pilot.pause()
 
             assert app._agent_running is False
 
@@ -4105,6 +4115,11 @@ class TestTurnStateRelease:
             await app._send_to_agent("second")
             app.action_interrupt()
             await pilot.pause()
+            # See `test_interrupt_before_worker_starts_releases_turn`.
+            for _ in range(10):
+                if not app._agent_running:
+                    break
+                await pilot.pause()
 
             assert app._agent_running is False
 
@@ -4122,6 +4137,11 @@ class TestTurnStateRelease:
             assert app._agent_turn_started is False
             app._force_interrupt_active_work()
             await pilot.pause()
+            # See `test_interrupt_before_worker_starts_releases_turn`.
+            for _ in range(10):
+                if not app._agent_running:
+                    break
+                await pilot.pause()
 
             assert app._agent_running is False
 
@@ -4144,6 +4164,11 @@ class TestTurnStateRelease:
             assert app._agent_turn_started is False
             await app._handle_command("/restart")
             for _ in range(3):
+                await pilot.pause()
+            # See `test_interrupt_before_worker_starts_releases_turn`.
+            for _ in range(10):
+                if not app._agent_running:
+                    break
                 await pilot.pause()
 
             assert app._agent_running is False

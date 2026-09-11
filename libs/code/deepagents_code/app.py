@@ -9897,7 +9897,9 @@ class DeepAgentsApp(App):
         if self._loading_widget is not None:
             self._loading_widget.resume()
 
-    async def _set_spinner(self, status: SpinnerStatus) -> None:
+    async def _set_spinner(
+        self, status: SpinnerStatus, *, started_at: float | None = None
+    ) -> None:
         """Show, update, or hide the loading spinner.
 
         Also drives the terminal's `OSC 9;4` progress indicator, when
@@ -9906,6 +9908,9 @@ class DeepAgentsApp(App):
 
         Args:
             status: The spinner status to display, or `None` to hide.
+            started_at: Turn start time (`time.time()` epoch seconds) the
+                elapsed counter counts from when a fresh spinner is mounted.
+                Ignored when a spinner is already showing.
         """
         from deepagents_code.terminal_escape import (
             TerminalProgressState,
@@ -9943,7 +9948,7 @@ class DeepAgentsApp(App):
             # Mount once per turn. `_mount_before_queued` keeps new messages
             # *above* the spinner, so it stays pinned at the bottom and never
             # needs repositioning (which flickered) as tools stream in.
-            self._loading_widget = LoadingWidget(status)
+            self._loading_widget = LoadingWidget(status, started_at=started_at)
             await self._mount_before_queued(messages, self._loading_widget)
         else:
             # A fresh status update means the agent is active again, so
@@ -17991,6 +17996,14 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            # Show the spinner before the awaited turn setup (shell flush,
+            # goal-state checkpoint reads/writes, stream-config git reads,
+            # UserPromptSubmit hooks) so feedback is immediate. The stream
+            # loop's own `_set_spinner("Thinking")` call is idempotent, and
+            # `_cleanup_agent_task` hides it on every exit path. Timestamped
+            # here so the elapsed counter includes the whole setup window.
+            turn_started_at = time.time()
+            await self._set_spinner("Thinking", started_at=turn_started_at)
             if not self._plugin_auto_update_started:
                 self._plugin_auto_update_started = True
                 self._start_plugin_auto_update()

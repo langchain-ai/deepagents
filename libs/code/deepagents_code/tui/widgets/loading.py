@@ -85,16 +85,22 @@ class LoadingWidget(Static):
     }
     """
 
-    def __init__(self, status: str = "Thinking") -> None:
+    def __init__(
+        self, status: str = "Thinking", *, started_at: float | None = None
+    ) -> None:
         """Initialize loading widget.
 
         Args:
             status: Initial status text to display
+            started_at: Turn start time (`time.time()` epoch seconds) the
+                elapsed counter counts from. Pass the time the user's prompt
+                was accepted so the counter includes pre-stream setup;
+                defaults to widget mount.
         """
         super().__init__()
         self._status = status
         self._spinner = Spinner()
-        self._start_time: float | None = None
+        self._start_time = started_at
         self._spinner_widget: Static | None = None
         self._status_widget: Static | None = None
         self._hint_widget: Static | None = None

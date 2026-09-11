@@ -1703,6 +1703,9 @@ def _warm_mcp_adapter_imports() -> None:
     versions — the exact culprit may shift as dependencies change, but the
     general risk of import-time I/O in this subtree does not).
 
+    `jsonschema` scans bundled schemas on import. Warm it before the first
+    structured tool result is validated on the event loop.
+
     Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
     (remote-server preflight and the per-tool call path), where an import
     failure is captured and reported per server. A failure to warm it must not
@@ -1710,6 +1713,7 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
+    import jsonschema  # noqa: F401  # Initialize bundled schemas off the event loop.
     from langchain_core._api import (  # noqa: PLC2701
         suppress_langchain_beta_warning,
     )
@@ -1864,6 +1868,7 @@ async def _mount_backends(
     """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
     from fastmcp import FastMCP
     from fastmcp.client import Client as FastMCPClient
+    from fastmcp.client.transports.base import TransportOptions
     from fastmcp.server.providers.proxy import StatefulProxyClient
     from fastmcp.server.server import create_proxy
 
@@ -1898,7 +1903,12 @@ async def _mount_backends(
                 redact=redact.get(server_name, False),
             )
 
-    return FastMCPClient(router), stack, discovered, failures
+    from deepagents_code._mcp_session import _MCPClientSession
+
+    client = FastMCPClient(router)
+    # Configure only this consumer session; proxy sessions retain forwarding.
+    client._transport_options = TransportOptions(session_class=_MCPClientSession)
+    return client, stack, discovered, failures
 
 
 def _classify_connect_failure(

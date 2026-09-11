@@ -13,11 +13,14 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.client.auth import OAuthClientProvider
 
 from deepagents_code._env_vars import DEBUG
 from deepagents_code.mcp_auth import FileTokenStorage
 
 if TYPE_CHECKING:
+    from fastmcp.client.transports import StreamableHttpTransport
+
     from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
@@ -137,15 +140,18 @@ class TestLoginWithoutStdio:
 
         captured: list[str] = []
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
-            await provider.context.redirect_handler(
-                "https://slack.com/oauth/v2/authorize?client_id=x"
-            )
-            code, _state = await provider.context.callback_handler()
-            captured.append(code)
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
+            assert isinstance(provider, OAuthClientProvider)
+            redirect_handler = provider.context.redirect_handler
+            callback_handler = provider.context.callback_handler
+            assert redirect_handler is not None
+            assert callback_handler is not None
+            await redirect_handler("https://slack.com/oauth/v2/authorize?client_id=x")
+            result = await callback_handler()
+            captured.append(result.code)
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         ui = RecordingOAuthInteraction(
@@ -288,14 +294,17 @@ class TestLoginWithoutStdio:
 
         secret = "super-secret-access-token"
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
-            await provider.context.redirect_handler(
-                "https://slack.com/oauth/v2/authorize?client_id=x"
-            )
-            await provider.context.callback_handler()
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
+            assert isinstance(provider, OAuthClientProvider)
+            redirect_handler = provider.context.redirect_handler
+            assert redirect_handler is not None
+            await redirect_handler("https://slack.com/oauth/v2/authorize?client_id=x")
+            callback_handler = provider.context.callback_handler
+            assert callback_handler is not None
+            await callback_handler()
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(
                 OAuthToken(access_token=secret, token_type="Bearer")
             )

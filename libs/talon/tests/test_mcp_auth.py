@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import httpx2
 import pytest
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.client.auth import OAuthFlowError
+from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthToken
 from pydantic import SecretStr
 
 from deepagents_talon.mcp_auth import (
@@ -56,17 +58,33 @@ def _public_dns(
 @pytest.fixture
 def oauth_network(
     monkeypatch: pytest.MonkeyPatch,
-) -> Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport]:
+) -> Callable[[Callable[[httpx.Request], httpx.Response]], httpx2.MockTransport]:
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
 
-    def install(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
+    def install(handler: Callable[[httpx.Request], httpx.Response]) -> httpx2.MockTransport:
         transport = httpx.MockTransport(handler)
         monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **_kwargs: transport)
         monkeypatch.setattr(
             "deepagents_talon.mcp_auth._OAuthHTTPTransport", lambda **_kwargs: transport
         )
         monkeypatch.setattr("httpx._client.AsyncHTTPTransport", lambda **_kwargs: transport)
-        return transport
+
+        def resource(request: httpx2.Request) -> httpx2.Response:
+            response = handler(
+                httpx.Request(
+                    request.method,
+                    str(request.url),
+                    headers=request.headers.raw,
+                    content=request.content,
+                )
+            )
+            return httpx2.Response(
+                response.status_code,
+                headers=response.headers.raw,
+                content=response.content,
+            )
+
+        return httpx2.MockTransport(resource)
 
     return install
 
@@ -205,7 +223,7 @@ async def test_provider_refreshes_expired_token_after_restart(
         return httpx.Response(404)
 
     transport = oauth_network(handle)
-    async with httpx.AsyncClient(transport=transport, auth=provider) as client:
+    async with httpx2.AsyncClient(transport=transport, auth=provider) as client:
         response = await client.get("https://example.com/mcp")
 
     assert response.status_code == 200
@@ -317,9 +335,9 @@ async def test_interactive_provider_validates_callback_state(
         "builtins.input", lambda _prompt: "http://localhost:3000/callback?code=abc&state=state"
     )
 
-    code, state = await provider.context.callback_handler()
+    result = await provider.context.callback_handler()
 
-    assert (code, state) == ("abc", "state")
+    assert (result.code, result.state) == ("abc", "state")
 
 
 def test_slack_provider_selection_requires_slack_hostname() -> None:
@@ -379,7 +397,8 @@ async def test_slack_provider_validates_registered_callback(
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(callbacks))
 
-    assert await callback() == ("abc", "state")
+    result = await callback()
+    assert (result.code, result.state) == ("abc", "state")
     with pytest.raises(MCPAuthorizationError, match="callback is invalid"):
         await callback()
 
@@ -678,8 +697,8 @@ async def oauth_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_ne
     async def redirect(url: str) -> None:
         states.append(parse_qs(urlparse(url).query)["state"][0])
 
-    async def callback() -> tuple[str, str]:
-        return "authorization-code", states[-1]
+    async def callback() -> AuthorizationCodeResult:
+        return AuthorizationCodeResult(code="authorization-code", state=states[-1])
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -689,7 +708,7 @@ async def oauth_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_ne
 
     provider.context.redirect_handler = redirect
     provider.context.callback_handler = callback
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         transport=oauth_network(handle), auth=provider, follow_redirects=True
     ) as client:
         yield client, requests, responses, storage
@@ -739,8 +758,8 @@ async def test_oauth_rejects_unsafe_resource_discovery(
         ("authorization_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
         ("token_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
         ("registration_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
-        ("issuer", "https://other.example", "issuer does not match"),
-        ("issuer", "https://auth.example/other-tenant", "issuer does not match"),
+        ("issuer", "https://other.example", "issuer mismatch"),
+        ("issuer", "https://auth.example/other-tenant", "issuer mismatch"),
     ],
 )
 async def test_oauth_rejects_unsafe_metadata(
@@ -750,7 +769,8 @@ async def test_oauth_rejects_unsafe_metadata(
     responses["/.well-known/oauth-authorization-server/tenant"] = httpx.Response(
         200, json=_oauth_metadata(**{field: value})
     )
-    with pytest.raises(MCPAuthorizationError, match=error):
+    expected = OAuthFlowError if field == "issuer" else MCPAuthorizationError
+    with pytest.raises(expected, match=error):
         await client.get("https://example.com/mcp")
     assert all(request.method == "GET" for request in requests)
 

@@ -4,6 +4,9 @@ services:
       - ${TALON_ENV_FILE:?Use browser/deploy.py}
     restart: "no"
     environment:
+      TALON_BROWSER_ENABLED: "true"
+      TALON_BROWSER_OPERATOR_ID: ${TALON_BROWSER_OPERATOR_ID:?Configure the browser operator}
+      TALON_BROWSER_IDENTITIES: ${TALON_BROWSER_IDENTITIES:?Configure explicit provider sender identities}
       TALON_BROWSER_CONTROL_URL: http://172.30.12.3:8081
       TALON_BROWSER_TOKEN_FILE: /run/browser/service-token
     volumes:
@@ -25,7 +28,8 @@ services:
     build:
       context: ./browser
     image: talon-browser-stdlib:local
-    command: ["main.py"]
+    entrypoint: ["node"]
+    command: ["bridge.mjs"]
     user: "1000:1000"
     restart: "no"
     read_only: true
@@ -33,6 +37,8 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,mode=1770"]
     environment:
+      TALON_BROWSER_OPERATOR_ID: ${TALON_BROWSER_OPERATOR_ID:?Configure the browser operator}
+      TALON_BROWSER_IDENTITIES: ${TALON_BROWSER_IDENTITIES:?Configure explicit provider sender identities}
       TALON_BROWSER_CONTROL_HOST: 172.30.12.3
       TALON_BROWSER_CONTROL_PORT: "8081"
       TALON_BROWSER_VIEWER_HOST: 172.30.13.3

@@ -134,6 +134,71 @@ connection.close()
     )
 
 
+def cdp(compose: list[str], env: dict[str, str]) -> None:
+    probe(
+        compose,
+        env,
+        "browser-bridge",
+        """
+import http.client
+import json
+from pathlib import Path
+from uuid import uuid4
+
+headers = {
+    "Authorization": "Bearer " + Path("/run/browser/service-token").read_text().strip(),
+    "Content-Type": "application/json",
+}
+owner = dict(operator_id="synthetic-operator", provider="integration",
+             sender_id="synthetic-sender", conversation_id="synthetic-conversation",
+             run_id=str(uuid4()), background=False)
+
+def request(endpoint, body=None):
+    connection = http.client.HTTPConnection("172.30.12.3", 8081, timeout=35)
+    try:
+        connection.request("GET" if body is None else "POST",
+                           "/internal/browser/" + endpoint,
+                           body=None if body is None else json.dumps(body), headers=headers)
+        response = connection.getresponse()
+        result = json.loads(response.read())
+        assert response.status == 200, (endpoint, response.status, result)
+        return result
+    finally:
+        connection.close()
+
+assert request("status")["mode"] == "IDLE"
+acquired = request("actions", dict(action="acquire", owner=owner, request_id=str(uuid4())))
+lease = {key: acquired[key] for key in ("lease_id", "generation", "version")}
+target = None
+
+def command(method, params, session_id=None):
+    body = dict(lease, owner=owner, request_id=str(uuid4()), method=method, params=params)
+    if session_id is not None:
+        body["session_id"] = session_id
+    return request("command", body)["result"]
+
+try:
+    assert acquired["mode"] == "AGENT"
+    target = command("Target.createTarget", {"url": "data:text/html,<title>Synthetic CDP</title><p>compose-node-ok</p>"})["targetId"]
+    session = command("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+    result = command("Runtime.evaluate", {
+        "expression": "new Promise(resolve => { const read = () => resolve({title: document.title, text: document.body.textContent}); if (document.readyState === 'complete') read(); else addEventListener('load', read, {once: true}); })",
+        "awaitPromise": True, "returnByValue": True,
+    }, session)
+    assert "exceptionDetails" not in result, result
+    assert result["result"]["value"] == {"title": "Synthetic CDP", "text": "compose-node-ok"}, result
+finally:
+    released = request("actions", dict(lease, action="release", owner=owner, request_id=str(uuid4())))
+    assert released["status"] == "released", released
+assert request("status")["mode"] == "IDLE"
+""",
+    )
+    print(
+        "PASS actual Node Compose bridge: IDLE, acquire, create/attach data tab, Runtime.evaluate, release, IDLE",
+        flush=True,
+    )
+
+
 def isolation(compose: list[str], env: dict[str, str]) -> None:
     deny = """
 import socket
@@ -260,6 +325,8 @@ def lifecycle(directory: Path, runtime: Path, env: dict[str, str]) -> None:
         TALON_ENV_FILE=str(env_file),
         BROWSER_RUNTIME_DIR=str(runtime),
         COMPOSE_PARALLEL_LIMIT="1",
+        TALON_BROWSER_OPERATOR_ID="synthetic-operator",
+        TALON_BROWSER_IDENTITIES='{"integration":"synthetic-sender"}',
     )
     override = directory / "override.yml"
     override.write_text("""services:
@@ -346,6 +413,7 @@ def lifecycle(directory: Path, runtime: Path, env: dict[str, str]) -> None:
         wait_healthy(compose, env)
         routes(compose, env)
         isolation(compose, env)
+        cdp(compose, env)
         public_navigation(compose, env)
     finally:
         for name in ("steel-network", "egress-network"):

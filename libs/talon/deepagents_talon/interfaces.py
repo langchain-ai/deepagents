@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.authorization import AuthorizationHandler
     from deepagents_talon.background import BackgroundSubagents
+    from deepagents_talon.browser import BrowserBinding, BrowserEventHandler
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +140,10 @@ class AgentRequest:
     conversation_id: str
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    browser_binding: BrowserBinding | None = field(default=None, kw_only=True, repr=False)
+    browser_event_handler: BrowserEventHandler | None = field(
+        default=None, kw_only=True, repr=False, compare=False
+    )
     approval_handler: ToolApprovalHandler | None = field(
         default=None,
         kw_only=True,

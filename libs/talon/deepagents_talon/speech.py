@@ -261,12 +261,18 @@ def _load_local_pipeline(model: str, device: str, config: TalonConfig) -> _Local
 
     logger.info("Loading local voice transcription model %s on device=%s", model, device)
     snapshot = hub.snapshot_download(repo_id=model, cache_dir=str(cache), token=False)
+    local_model = module.AutoModel.from_pretrained(
+        snapshot, local_files_only=True, trust_remote_code=False
+    )
+    processor = module.AutoProcessor.from_pretrained(
+        snapshot, local_files_only=True, trust_remote_code=False
+    )
     loaded = module.pipeline(
         "automatic-speech-recognition",
-        model=snapshot,
+        model=local_model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
         device=device,
-        trust_remote_code=False,
-        model_kwargs={"local_files_only": True},
     )
     _local_pipelines[key] = loaded
     logger.info("Local voice transcription model %s ready on device=%s", model, device)

@@ -266,7 +266,9 @@ class BoundedEmbeddings(Embeddings):
         return output
 
     async def _batch(self, texts: list[str]) -> list[list[float]]:
-        async with self.slots, asyncio.timeout(_REQUEST_TIMEOUT):
+        # CPU inference includes cold model loading; the Store batch deadline bounds it.
+        timeout = None if self.profile.adapter == "local" else _REQUEST_TIMEOUT
+        async with self.slots, asyncio.timeout(timeout):
             vectors = await self.embed.aembed_documents(texts)
         self._validate(vectors, len(texts))
         return vectors

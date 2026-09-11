@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
+import httpx2
 from langchain_core._security._exceptions import SSRFBlockedError
 from langchain_core._security._policy import SSRFPolicy
 from langchain_core._security._ssrf_protection import validate_safe_url
@@ -810,8 +811,8 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         self._initialized = True
 
     async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         """Keep discovered OAuth requests outside the resource client's redirect policy."""
         async with contextlib.aclosing(super().async_auth_flow(request)) as flow:
             outbound = await anext(flow)
@@ -826,14 +827,25 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
                 except StopAsyncIteration:
                     return
 
-    async def _send_oauth_request(self, request: httpx.Request) -> httpx.Response:
+    async def _send_oauth_request(self, request: httpx2.Request) -> httpx2.Response:
         await self._validate_metadata()
         await _validate_oauth_url(str(request.url))
         try:
             async with asyncio.timeout(_HTTP_TIMEOUT_SECONDS), _oauth_http_client() as client:
-                response = await client.send(request, follow_redirects=False)
+                guarded = httpx.Request(
+                    request.method,
+                    str(request.url),
+                    headers=request.headers.raw,
+                    content=await request.aread(),
+                )
+                response = await client.send(guarded, follow_redirects=False)
                 _reject_oauth_redirect(response)
-                return response
+                return httpx2.Response(
+                    response.status_code,
+                    headers=response.headers.raw,
+                    content=response.content,
+                    request=request,
+                )
         except SSRFBlockedError:
             raise MCPAuthorizationError(_UNSAFE_ENDPOINT_MESSAGE) from None
 
@@ -862,14 +874,14 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
             if endpoint is not None:
                 await _validate_oauth_url(str(endpoint))
 
-    async def _perform_authorization(self) -> httpx.Request:
+    async def _perform_authorization(self) -> httpx2.Request:
         await self._validate_metadata()
         if self.context.oauth_metadata is None:
             base = self.context.get_authorization_base_url(self.context.server_url)
             await _validate_oauth_url(urljoin(base, "/authorize"))
         return await super()._perform_authorization()
 
-    async def _refresh_token(self) -> httpx.Request:
+    async def _refresh_token(self) -> httpx2.Request:
         if self.context.oauth_metadata is None:
             async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
                 await self._discover_refresh_metadata()
@@ -900,7 +912,9 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
                 client.stream("GET", self.context.server_url) as response,
             ):
                 _reject_oauth_redirect(response)
-                challenge = extract_resource_metadata_from_www_auth(response)
+                challenge = extract_resource_metadata_from_www_auth(
+                    httpx2.Response(response.status_code, headers=response.headers.raw)
+                )
         except SSRFBlockedError:
             raise MCPAuthorizationError(_UNSAFE_ENDPOINT_MESSAGE) from None
         for url in build_protected_resource_metadata_discovery_urls(

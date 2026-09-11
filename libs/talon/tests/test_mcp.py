@@ -162,7 +162,7 @@ async def _assert_refresh_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def load() -> SimpleNamespace:
-        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+        return SimpleNamespace(tools=(DummyTool(name="refreshed", description="", args_schema={}),))
 
     monkeypatch.setattr(provider, "load", load)
     refreshed = await provider.refresh_if_needed()
@@ -393,7 +393,7 @@ async def test_mcp_reload_tool_schedules_refresh_without_configuration(
     assert result == {"status": "scheduled", "available": "after_successful_reload"}
 
     async def load() -> SimpleNamespace:
-        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+        return SimpleNamespace(tools=(DummyTool(name="refreshed", description="", args_schema={}),))
 
     monkeypatch.setattr(provider, "load", load)
     refreshed = await provider.refresh_if_needed()
@@ -456,7 +456,9 @@ async def test_mcp_tool_provider_preserves_refresh_requested_during_load(
         if loads == 1:
             load_started.set()
             await release_load.wait()
-        return SimpleNamespace(tools=(DummyTool(f"refreshed-{loads}"),))
+        return SimpleNamespace(
+            tools=(DummyTool(name=f"refreshed-{loads}", description="", args_schema={}),)
+        )
 
     monkeypatch.setattr(provider, "load", load)
     first = asyncio.create_task(provider.refresh_if_needed())
@@ -489,7 +491,7 @@ async def test_mcp_tool_provider_retries_cancelled_refresh(
         if loads == 1:
             load_started.set()
             await release_load.wait()
-        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+        return SimpleNamespace(tools=(DummyTool(name="refreshed", description="", args_schema={}),))
 
     monkeypatch.setattr(provider, "load", load)
     refresh = asyncio.create_task(provider.refresh_if_needed())

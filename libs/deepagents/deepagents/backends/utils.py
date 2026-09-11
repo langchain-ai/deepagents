@@ -259,6 +259,28 @@ def format_content_with_line_numbers(
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 
+def _format_source_block(content: str | list[str]) -> str:
+    """Join file content into the verbatim source body of a `read_file` result.
+
+    Source lines are emitted unchanged. The status header the middleware puts
+    above them is the only structural element, so nothing here needs escaping.
+
+    Args:
+        content: File content as a string or list of lines.
+
+    Returns:
+        The source lines joined by newlines, without a trailing terminator.
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    return "\n".join(lines)
+
+
 def check_empty_content(content: str) -> str | None:
     """Check if content is empty and return warning message.
 

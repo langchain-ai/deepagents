@@ -1121,6 +1121,95 @@ class TestMessageCountFromCheckpointBlob:
         finally:
             sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
 
+    async def test_count_does_not_decode_history_before_message_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Counting a compacted thread must not decode obsolete snapshot history."""
+        from dataclasses import dataclass
+        from functools import reduce
+        from typing import Annotated
+
+        from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
+        from langgraph.channels import DeltaChannel
+        from langgraph.checkpoint.serde.types import _DeltaSnapshot
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
+
+        if TYPE_CHECKING:
+            from langchain_core.runnables import RunnableConfig
+
+        @dataclass
+        class State:
+            messages: Annotated[
+                list[AnyMessage | RemoveMessage],
+                DeltaChannel(
+                    lambda state, writes: reduce(add_messages, writes, state),
+                    snapshot_frequency=2,
+                ),
+            ]
+
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "snapshot.db")
+        monkeypatch.setattr(sessions, "_message_count_cache", {})
+        config: RunnableConfig = {"configurable": {"thread_id": "snapshot-count"}}
+        async with sessions.get_checkpointer() as saver:
+            builder = StateGraph(State)
+            builder.add_node("respond", lambda state: {"messages": state.messages})
+            builder.add_edge(START, "respond")
+            builder.add_edge("respond", END)
+            graph = builder.compile(checkpointer=saver)
+            await graph.ainvoke(
+                State(messages=[HumanMessage(content="obsolete payload", id="old")]),
+                config,
+            )
+            await graph.ainvoke(
+                State(
+                    messages=[
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        HumanMessage(content="summary", id="summary"),
+                    ]
+                ),
+                config,
+            )
+            checkpoint = await saver.aget_tuple(config)
+            assert checkpoint is not None
+            snapshot = checkpoint.checkpoint["channel_values"]["messages"]
+            assert isinstance(snapshot, _DeltaSnapshot)
+            assert [message.id for message in snapshot.value] == ["summary"]
+            await graph.ainvoke(
+                State(messages=[HumanMessage(content="recent", id="recent")]),
+                config,
+                interrupt_before=["respond"],
+            )
+            state = await graph.aget_state(config)
+            head = await saver.aget_tuple(config)
+            assert head is not None
+            assert "messages" not in head.checkpoint["channel_values"]
+            await saver.aput_writes(
+                head.config,
+                [("messages", [HumanMessage(content="pending", id="pending")])],
+                state.tasks[0].id,
+            )
+            state = await graph.aget_state(config)
+            assert [message.id for message in state.values["messages"]] == [
+                "summary",
+                "recent",
+                "pending",
+            ]
+
+            with patch.object(
+                JsonPlusSerializer,
+                "loads_typed",
+                autospec=True,
+                side_effect=JsonPlusSerializer.loads_typed,
+            ) as loads:
+                threads = await sessions.list_threads(include_message_count=True)
+
+        assert len(threads) == 1
+        assert threads[0]["message_count"] == 3
+        assert not any(
+            b"obsolete payload" in call.args[1][1] for call in loads.call_args_list
+        ), "Counting messages decoded obsolete payloads covered by a newer snapshot"
+
     def test_inlined_messages_take_precedence_over_writes(
         self, temp_db_with_checkpoint_messages: Path
     ) -> None:

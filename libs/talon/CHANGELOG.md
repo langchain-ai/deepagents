@@ -2,33 +2,19 @@
 
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.7...deepagents-talon==0.0.8) (2026-09-11)
 
-
 ### Features
 
-* **talon:** add `send_message` for progress updates ([#6264](https://github.com/langchain-ai/deepagents/issues/6264)) ([15606d2](https://github.com/langchain-ai/deepagents/commit/15606d280a8ddb86c8966fef0bab257f8070944f))
-* **talon:** add targeted conversation deletion ([#6235](https://github.com/langchain-ai/deepagents/issues/6235)) ([4fb301d](https://github.com/langchain-ai/deepagents/commit/4fb301d647c860d0d8f2108149e58cd9fe623352))
-* **talon:** manage tool approvals through `tools.json` ([#6248](https://github.com/langchain-ai/deepagents/issues/6248)) ([a273ad6](https://github.com/langchain-ai/deepagents/commit/a273ad6c6a595c3aff915b744750711b50d544e3))
-
+- Added `send_message` support for progress updates. ([#6264](https://github.com/langchain-ai/deepagents/pull/6264))
+- Added targeted conversation deletion. ([#6235](https://github.com/langchain-ai/deepagents/pull/6235))
+- Added support for managing tool approvals through `tools.json`. ([#6248](https://github.com/langchain-ai/deepagents/pull/6248))
 
 ### Bug Fixes
 
-* **talon:** bound archive scans, query embeddings, and deletion markers ([#6162](https://github.com/langchain-ai/deepagents/issues/6162)) ([79c23e6](https://github.com/langchain-ai/deepagents/commit/79c23e669bf81cddf16e4ab1582ccc9b26d8bea7))
-* **talon:** bound the vector rebuild, break the import cycle, pin postgres ([#6165](https://github.com/langchain-ai/deepagents/issues/6165)) ([8462c24](https://github.com/langchain-ai/deepagents/commit/8462c24524541f49a3eb53037580110586973c8c))
-* **talon:** close a url swap past the MCP auto-approve guard ([#6173](https://github.com/langchain-ai/deepagents/issues/6173)) ([d886742](https://github.com/langchain-ai/deepagents/commit/d8867426af3ab83c31d64a11e5b84a21ce86a43d))
-* **talon:** deliver background subagents launched by a scheduled job ([#6228](https://github.com/langchain-ai/deepagents/issues/6228)) ([b6dc5c5](https://github.com/langchain-ai/deepagents/commit/b6dc5c5a8c6c1124f8e243868a83b9af188b08c7))
-* **talon:** fix local voice transcription and embedding retries ([#6255](https://github.com/langchain-ai/deepagents/issues/6255)) ([a97ba32](https://github.com/langchain-ai/deepagents/commit/a97ba320fa797e9546efe3486ce703e8efd30fb4))
-* **talon:** harden the MCP OAuth device flow and credential paths ([#6170](https://github.com/langchain-ai/deepagents/issues/6170)) ([e6c5829](https://github.com/langchain-ai/deepagents/commit/e6c58294d6792bcf433eb5f38fec1b5be70cc065))
-* **talon:** keep results a discarded turn never reported ([#6231](https://github.com/langchain-ai/deepagents/issues/6231)) ([481773c](https://github.com/langchain-ai/deepagents/commit/481773caed336c86034e1c72b4988e7e93968610))
-* **talon:** make background subagents and host start/stop recoverable ([#6166](https://github.com/langchain-ai/deepagents/issues/6166)) ([d4c41b0](https://github.com/langchain-ai/deepagents/commit/d4c41b048132eb27e2337b60b21463403b615390))
-* **talon:** make MCP configuration updates bounded and non-destructive ([#6171](https://github.com/langchain-ai/deepagents/issues/6171)) ([f995931](https://github.com/langchain-ai/deepagents/commit/f9959311bfeb788191f971fe32552b01adbac199))
-* **talon:** make subagent orchestration state what it enforces ([#6167](https://github.com/langchain-ai/deepagents/issues/6167)) ([05620cc](https://github.com/langchain-ai/deepagents/commit/05620cc72bfa7b81ce41064641cfa5808cb7c74a))
-* **talon:** persist local model downloads ([#6137](https://github.com/langchain-ai/deepagents/issues/6137)) ([fc91199](https://github.com/langchain-ai/deepagents/commit/fc91199a44b99990cca49341169aea858da222fc))
-* **talon:** report MCP protocol errors to the model ([#6239](https://github.com/langchain-ai/deepagents/issues/6239)) ([edd0bcf](https://github.com/langchain-ai/deepagents/commit/edd0bcfc61dc16eabea0b3a59aa84569e3b240dc))
-* **talon:** share one optional-driver loader and close provider clients ([#6164](https://github.com/langchain-ai/deepagents/issues/6164)) ([02cea21](https://github.com/langchain-ai/deepagents/commit/02cea210d7f3e5bc2bf89453e8a6e4af59031f59))
-* **talon:** stop losing MCP refresh tokens on a refresh response ([#6172](https://github.com/langchain-ai/deepagents/issues/6172)) ([7dc07cb](https://github.com/langchain-ai/deepagents/commit/7dc07cbb60f144e2b7fc266ee452b06c8b8dd10c))
-* **talon:** stop one conversation from stalling or outliving the rest ([#6168](https://github.com/langchain-ai/deepagents/issues/6168)) ([134ffc7](https://github.com/langchain-ai/deepagents/commit/134ffc7bb4eba504ee90aaae3a70df87c6ea3217))
-* **talon:** surface indexing failures and bound the indexing worker ([#6163](https://github.com/langchain-ai/deepagents/issues/6163)) ([03653d6](https://github.com/langchain-ai/deepagents/commit/03653d6d95ceb0b1b6739998fd9475e304489d12))
-* **talon:** unwind the channel that fails mid-start, and keep teardown safe ([#6169](https://github.com/langchain-ai/deepagents/issues/6169)) ([5406820](https://github.com/langchain-ai/deepagents/commit/5406820ec1c00ce521b0f54bb786c511da092f01))
+- Improved MCP reliability and safety by hardening OAuth device-flow and credential handling, preserving refresh tokens, making configuration updates bounded and non-destructive, reporting protocol errors to the model, and preventing URL swaps past the auto-approve guard. ([#6170](https://github.com/langchain-ai/deepagents/pull/6170), [#6172](https://github.com/langchain-ai/deepagents/pull/6172), [#6171](https://github.com/langchain-ai/deepagents/pull/6171), [#6239](https://github.com/langchain-ai/deepagents/pull/6239), [#6173](https://github.com/langchain-ai/deepagents/pull/6173))
+- Improved background subagent and conversation reliability, including recoverable start/stop behavior, scheduled-job delivery, clearer orchestration enforcement, preventing one conversation from stalling or outliving the rest, and suppressing results from discarded turns. ([#6166](https://github.com/langchain-ai/deepagents/pull/6166), [#6228](https://github.com/langchain-ai/deepagents/pull/6228), [#6167](https://github.com/langchain-ai/deepagents/pull/6167), [#6168](https://github.com/langchain-ai/deepagents/pull/6168), [#6231](https://github.com/langchain-ai/deepagents/pull/6231))
+- Improved indexing and vector maintenance by bounding archive scans, query embeddings, deletion markers, vector rebuilds, and indexing workers, while surfacing indexing failures and resolving import-cycle and PostgreSQL dependency issues. ([#6162](https://github.com/langchain-ai/deepagents/pull/6162), [#6165](https://github.com/langchain-ai/deepagents/pull/6165), [#6163](https://github.com/langchain-ai/deepagents/pull/6163))
+- Fixed local voice transcription and embedding retries, and ensured local model downloads persist. ([#6255](https://github.com/langchain-ai/deepagents/pull/6255), [#6137](https://github.com/langchain-ai/deepagents/pull/6137))
+- Improved startup, teardown, and provider cleanup by safely unwinding channels that fail mid-start, sharing the optional-driver loader, and closing provider clients. ([#6169](https://github.com/langchain-ai/deepagents/pull/6169), [#6164](https://github.com/langchain-ai/deepagents/pull/6164))
 
 ## [0.0.7](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.6...deepagents-talon==0.0.7) (2026-09-07)
 

@@ -26933,6 +26933,12 @@ class DeepAgentsApp(App):
             )
             return
 
+        from deepagents_code.mcp_tools import mcp_dependency_error
+
+        if error := await asyncio.to_thread(mcp_dependency_error):
+            await self._mount_message(ErrorMessage(error))
+            return
+
         from deepagents_code.mcp_auth import login as mcp_login
         from deepagents_code.tui.widgets.mcp_login import (
             LoginOutcome,

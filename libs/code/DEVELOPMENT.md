@@ -28,6 +28,12 @@ make bootstrap
 
 If you only want to sync dependencies without installing hooks, run `uv sync --group test` instead.
 
+MCP support is an optional extra: install `deepagents-code[mcp]` for MCP servers
+and OAuth login. The test group includes this extra. For a tool installation, run
+`uv tool install 'deepagents-code[mcp]'`; for a checkout without the test group,
+run `uv sync --extra mcp`. The base package can be used by applications with a
+different MCP SDK version; dcode's MCP integration requires its own MCP v1 environment.
+
 Run the TUI from `libs/code` in your local checkout:
 
 ```bash

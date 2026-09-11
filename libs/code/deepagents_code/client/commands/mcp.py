@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -106,6 +107,12 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
             state, unresolvable config, or a config file that failed to
             load); or 2 when no config file was found.
     """
+    from deepagents_code.mcp_tools import mcp_dependency_error
+
+    if error := await asyncio.to_thread(mcp_dependency_error):
+        print(error, file=sys.stderr)  # noqa: T201
+        return 1
+
     from deepagents_code._invocation import invoked_name
     from deepagents_code.mcp_login_service import (
         ConfigErrorKind,
@@ -233,6 +240,12 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         Process exit code: 0 on success, 1 on config or login failure,
         2 if no config file could be found.
     """
+    from deepagents_code.mcp_tools import mcp_dependency_error
+
+    if error := await asyncio.to_thread(mcp_dependency_error):
+        print(error, file=sys.stderr)  # noqa: T201
+        return 1
+
     from deepagents_code.mcp_auth import login
     from deepagents_code.mcp_login_service import (
         ConfigErrorKind,

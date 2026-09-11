@@ -1382,8 +1382,6 @@ A condensed summary follows:
         profile = request.model.profile
         limit = profile.get("max_input_tokens") if isinstance(profile, dict) else None
         if not isinstance(limit, int) or isinstance(limit, bool):
-            limit = self._get_profile_limits()
-        if limit is None:
             return None
         output = 0
         for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):

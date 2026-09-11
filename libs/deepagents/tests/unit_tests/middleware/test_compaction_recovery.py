@@ -79,6 +79,37 @@ async def test_oversized_tail_fits_before_send(*, asynchronous: bool, trigger: i
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("profile", [None, {}, {"max_input_tokens": True}])
+@pytest.mark.parametrize("trigger", [1, 100])
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_unknown_agent_limit_does_not_use_summarizer_budget(
+    *, asynchronous: bool, profile: dict[str, int] | None, trigger: int, overflow: bool
+) -> None:
+    request = _request().override(system_message=SystemMessage(content="s" * 10000))
+    request.model.profile = profile
+    summarizer = make_mock_model("summary")
+    summarizer.profile = {"max_input_tokens": 10000}
+    middleware = SummarizationMiddleware(
+        model=summarizer, backend=MockBackend(), trigger=("messages", trigger), keep=("messages", 3), token_counter=_count
+    )
+    sent: list[int] = []
+
+    def handler(current: ModelRequest) -> ModelResponse:
+        assert current.system_message == request.system_message
+        sent.append(_count(current.messages))
+        if overflow and len(sent) == 1:
+            raise ContextOverflowError
+        return ModelResponse(result=[AIMessage(content="done")])
+
+    result = await _invoke(middleware, request, handler, asynchronous=asynchronous)
+    response = result.model_response if isinstance(result, ExtendedModelResponse) else result
+    assert response.result[0].content == "done"
+    assert len(sent) == (2 if overflow else 1)
+    if overflow:
+        assert sent[1] < sent[0]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("trigger", [1, 100])
 async def test_provider_overflow_recovers_once(*, asynchronous: bool, trigger: int) -> None:
     request = _request()

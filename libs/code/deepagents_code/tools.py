@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
 
+_OLLAMA_WEB_SEARCH_URL = "https://ollama.com/api/web_search"
+"""Ollama Cloud web search endpoint (`Authorization: Bearer OLLAMA_API_KEY`)."""
+
+_OLLAMA_WEB_FETCH_URL = "https://ollama.com/api/web_fetch"
+"""Ollama Cloud web fetch endpoint (`Authorization: Bearer OLLAMA_API_KEY`)."""
+
+_OLLAMA_MAX_RESULTS = 10
+"""Hard cap the Ollama web search API accepts for `max_results`."""
+
+_TAVILY_PROVIDER = "tavily"
+_OLLAMA_PROVIDER = "ollama"
+
 _WEB_SEARCH_MARKER = "deepagents_web_search"
 """Tool-metadata key marking a workspace-bound `web_search` variant.
 
@@ -299,15 +311,45 @@ def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> s
     return parser.get_text()
 
 
-def _missing_tavily_key_error(query: object) -> dict[str, object]:
-    """Return the payload the model sees when no Tavily key is configured.
+def _active_web_provider() -> str | None:
+    """Return the provider backing the web tools, or `None` when unconfigured.
+
+    Tavily keeps priority so existing Tavily workspaces are unaffected; Ollama
+    Cloud (`OLLAMA_API_KEY`) is the fallback. The same Ollama key backs cloud
+    models and the web search/fetch APIs, so no separate credential is needed.
+
+    Returns:
+        `"tavily"`, `"ollama"`, or `None`.
+    """
+    from deepagents_code.config import credentials
+
+    if credentials.has_tavily:
+        return _TAVILY_PROVIDER
+    if credentials.has_ollama:
+        return _OLLAMA_PROVIDER
+    return None
+
+
+def _missing_key_error(provider: str | None, query: object) -> dict[str, object]:
+    """Return the payload the model sees when no web search key is configured.
 
     Shared by the built-in and workspace-bound variants: `is_web_search_tool`
     treats them as one tool, so they have to fail identically.
 
+    Args:
+        provider: Selected web provider, or `None` when no key is set. `None`
+            keeps the historical Tavily-only message because Tavily is still
+            the documented primary and existing deployments rely on it.
+
     Returns:
         Error payload naming the env var to set.
     """
+    if provider == _OLLAMA_PROVIDER:
+        return {
+            "error": "Ollama API key not configured. "
+            "Please set OLLAMA_API_KEY environment variable.",
+            "query": query,
+        }
     return {
         "error": "Tavily API key not configured. "
         "Please set TAVILY_API_KEY environment variable.",
@@ -345,7 +387,11 @@ def _get_tavily_client() -> TavilyClient | None:
     return _tavily_client
 
 
-def create_web_search_tool(api_key: str) -> BaseTool:
+def create_web_search_tool(
+    api_key: str,
+    *,
+    provider: str = _TAVILY_PROVIDER,
+) -> BaseTool:
     """Bind web search to one workspace credential.
 
     The schema is taken from `web_search` via `functools.wraps` so the built-in
@@ -353,6 +399,10 @@ def create_web_search_tool(api_key: str) -> BaseTool:
     also have to fail the same way: `is_web_search_tool` treats them as one, so
     a missing package or an unusable key must return the payload the model can
     act on rather than raising.
+
+    Args:
+        api_key: The workspace provider credential (`""` reports unconfigured).
+        provider: Which backend the key belongs to (`"tavily"` or `"ollama"`).
 
     Returns:
         Workspace-bound web search tool.
@@ -366,7 +416,13 @@ def create_web_search_tool(api_key: str) -> BaseTool:
     def workspace_web_search(**kwargs: Any) -> object:
         nonlocal client
         if not api_key:
-            return _missing_tavily_key_error(kwargs.get("query"))
+            return _missing_key_error(provider, kwargs.get("query"))
+        if provider == _OLLAMA_PROVIDER:
+            return _search_with_ollama(
+                api_key,
+                query=kwargs.get("query", ""),
+                max_results=kwargs.get("max_results", 5),
+            )
         if client is None:
             try:
                 from tavily import TavilyClient as _TavilyClient
@@ -438,12 +494,27 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
 ):
     """Search the web for current information.
 
+    Backed by Tavily when `TAVILY_API_KEY` is set, otherwise by Ollama Cloud
+    (`OLLAMA_API_KEY`). The `topic` and `include_raw_content` arguments only
+    apply to the Tavily backend; Ollama ignores them.
+
     Returns:
         Search hits with title, URL, snippet, and score.
     """
+    provider = _active_web_provider()
+    if provider is None:
+        return _missing_key_error(None, query)
+    if provider == _OLLAMA_PROVIDER:
+        from deepagents_code.config import credentials
+
+        return _search_with_ollama(
+            credentials.ollama_api_key or "",
+            query=query,
+            max_results=max_results,
+        )
     client = _get_tavily_client()
     if client is None:
-        return _missing_tavily_key_error(query)
+        return _missing_key_error(provider, query)
     return _search_with_tavily(
         client,
         query=query,
@@ -451,6 +522,49 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         topic=topic,
         include_raw_content=include_raw_content,
     )
+
+
+def _search_with_ollama(
+    api_key: str,
+    *,
+    query: str,
+    max_results: int,
+) -> object:
+    """Execute an Ollama Cloud web search with the standard error translation.
+
+    Args:
+        api_key: Ollama Cloud API key (Bearer credential).
+        query: The search query.
+        max_results: Requested result count, capped at the API's own limit.
+
+    Returns:
+        Search hits (`{"query", "results"}` with `title`, `url`, and `content`
+        per hit) or a translated error payload.
+    """
+    if not api_key:
+        # Mirrors the workspace variant's contract: an empty key reports the
+        # configuration problem instead of sending an unusable request.
+        return _missing_key_error(_OLLAMA_PROVIDER, query)
+
+    try:
+        import requests
+    except ImportError as exc:
+        return _missing_package_error(exc)
+
+    try:
+        response = requests.post(
+            _OLLAMA_WEB_SEARCH_URL,
+            json={"query": query, "max_results": min(max_results, _OLLAMA_MAX_RESULTS)},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.exceptions.RequestException, ValueError) as e:
+        return {"error": f"Web search error: {e!s}", "query": query}
+
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    return {"query": query, "results": results}
 
 
 def _search_with_tavily(
@@ -512,14 +626,25 @@ def fetch_url(
 ) -> dict[str, Any]:
     """Fetch a URL and return the page content as markdown.
 
+    Fetches directly unless Ollama Cloud is the active web provider (Tavily
+    unconfigured, `OLLAMA_API_KEY` set), in which case the Ollama web fetch
+    API retrieves the page server-side and no SSRF guard applies — the local
+    process never connects to the target host.
+
     Returns:
-        Fetched page markdown plus status metadata.
+        Fetched page markdown plus status metadata. The Ollama backend omits
+        `status_code` and adds `title` and `links`.
     """
     try:
         import requests
         from markdownify import markdownify
     except ImportError as exc:
         return _missing_package_error(exc)
+
+    if _active_web_provider() == _OLLAMA_PROVIDER:
+        from deepagents_code.config import credentials
+
+        return _fetch_with_ollama(url, credentials.ollama_api_key or "")
 
     try:
         response = _fetch_with_redirects(url, timeout=timeout)
@@ -547,6 +672,52 @@ def fetch_url(
         "status_code": response.status_code,
         "content_length": len(markdown_content),
     }
+
+
+def _fetch_with_ollama(url: str, api_key: str) -> dict[str, Any]:
+    """Fetch `url` through the Ollama Cloud web fetch API.
+
+    Args:
+        url: The URL Ollama should retrieve server-side.
+        api_key: Ollama Cloud API key (Bearer credential).
+
+    Returns:
+        Fetched page content and metadata, or an error payload using the same
+        shape the direct fetch path returns. No SSRF guard applies here: the
+        local process only connects to `ollama.com`, so fetching internal
+        addresses does not leak the network the agent runs in.
+    """
+    import requests
+
+    try:
+        response = requests.post(
+            _OLLAMA_WEB_FETCH_URL,
+            json={"url": url},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.exceptions.RequestException, ValueError) as e:
+        return {"error": f"Fetch URL error: {e!s}", "url": url, "category": "network"}
+
+    content = ""
+    links: list[str] = []
+    if isinstance(payload, dict):
+        content = str(payload.get("content", ""))
+        raw_links = payload.get("links", [])
+        links = [str(link) for link in raw_links] if isinstance(raw_links, list) else []
+
+    result: dict[str, Any] = {
+        "url": url,
+        "markdown_content": content,
+        "content_length": len(content),
+    }
+    if isinstance(payload, dict) and payload.get("title"):
+        result["title"] = payload["title"]
+    if links:
+        result["links"] = links
+    return result
 
 
 def _fetch_with_redirects(url: str, *, timeout: int) -> Any:  # noqa: ANN401  # requests.Response, but kept dynamic to avoid eager import

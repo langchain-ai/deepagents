@@ -2514,7 +2514,7 @@ class TestCheckOptionalTools:
         """Patch credentials.has_tavily so ripgrep-only tests stay isolated."""
         with patch(
             "deepagents_code.config.credentials",
-            SimpleNamespace(has_tavily=True),
+            SimpleNamespace(has_tavily=True, has_ollama=False),
         ):
             yield
 
@@ -2545,7 +2545,7 @@ class TestCheckOptionalTools:
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
                 "deepagents_code.config.credentials",
-                SimpleNamespace(has_tavily=False),
+                SimpleNamespace(has_tavily=False, has_ollama=False),
             ),
         ):
             missing = check_optional_tools(config_path=config_path)
@@ -2561,7 +2561,7 @@ class TestCheckOptionalTools:
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
                 "deepagents_code.config.credentials",
-                SimpleNamespace(has_tavily=False),
+                SimpleNamespace(has_tavily=False, has_ollama=False),
             ),
         ):
             missing = check_optional_tools(config_path=config_path)

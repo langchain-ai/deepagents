@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
+from unittest import mock
 from unittest.mock import patch
+
+import responses
 
 from langchain_core.tools import tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -79,3 +83,106 @@ class TestWorkspaceErrorTranslation:
             result = search.invoke({"query": "anything"})
 
         assert "error" in result
+
+
+class TestOllamaProviderSelection:
+    """Tavily keeps priority; Ollama Cloud is the fallback."""
+
+    @staticmethod
+    def _credentials(has_tavily: bool, has_ollama: bool) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            has_tavily=has_tavily,
+            has_ollama=has_ollama,
+            ollama_api_key="k",
+        )
+
+    def test_tavily_wins_when_both_configured(self) -> None:
+        from deepagents_code.tools import _active_web_provider
+
+        with mock.patch(
+            "deepagents_code.config.credentials", self._credentials(True, True)
+        ):
+            assert _active_web_provider() == "tavily"
+
+    def test_ollama_when_only_ollama_configured(self) -> None:
+        from deepagents_code.tools import _active_web_provider
+
+        with mock.patch(
+            "deepagents_code.config.credentials", self._credentials(False, True)
+        ):
+            assert _active_web_provider() == "ollama"
+
+    def test_none_without_any_key(self) -> None:
+        from deepagents_code.tools import _active_web_provider
+
+        with mock.patch(
+            "deepagents_code.config.credentials", self._credentials(False, False)
+        ):
+            assert _active_web_provider() is None
+
+
+class TestOllamaSearch:
+    """The Ollama Cloud backend posts to `ollama.com` and normalizes hits."""
+
+    def test_posts_to_ollama_with_bearer_key_and_result_cap(self) -> None:
+        from types import SimpleNamespace
+
+        from deepagents_code.tools import _OLLAMA_WEB_SEARCH_URL
+
+        stub = SimpleNamespace(has_tavily=False, has_ollama=True, ollama_api_key="k")
+
+        with responses.RequestsMock() as rsps, mock.patch(
+            "deepagents_code.config.credentials", stub
+        ):
+            rsps.add(
+                "POST",
+                _OLLAMA_WEB_SEARCH_URL,
+                json={
+                    "results": [
+                        {"title": "T", "url": "https://x", "content": "c"},
+                    ]
+                },
+            )
+
+            result = web_search(query="q", max_results=25)
+            request = rsps.calls[0][0]
+        assert request.headers["Authorization"] == "Bearer k"
+        assert json.loads(request.body) == {"query": "q", "max_results": 10}
+        assert result == {"query": "q", "results": [{"title": "T", "url": "https://x", "content": "c"}]}
+
+    def test_request_errors_are_translated(self) -> None:
+        from types import SimpleNamespace
+
+        from deepagents_code.tools import _OLLAMA_WEB_SEARCH_URL
+
+        stub = SimpleNamespace(has_tavily=False, has_ollama=True, ollama_api_key="k")
+
+        with responses.RequestsMock() as rsps, mock.patch(
+            "deepagents_code.config.credentials", stub
+        ):
+            rsps.add("POST", _OLLAMA_WEB_SEARCH_URL, status=401)
+
+            result = web_search(query="q")
+
+        assert "Web search error" in result["error"]
+        assert result["query"] == "q"
+
+    def test_empty_ollama_key_reports_configuration(self) -> None:
+        from types import SimpleNamespace
+
+        stub = SimpleNamespace(has_tavily=False, has_ollama=True, ollama_api_key="")
+
+        with mock.patch("deepagents_code.config.credentials", stub):
+            result = web_search(query="q")
+
+        assert "Ollama API key not configured" in result["error"]
+        assert result["query"] == "q"
+
+    def test_workspace_variant_ollama_message_for_empty_key(self) -> None:
+        search = create_web_search_tool("", provider="ollama")
+
+        result = search.invoke({"query": "anything"})
+
+        assert "Ollama API key not configured" in result["error"]

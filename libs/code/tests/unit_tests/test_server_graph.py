@@ -282,7 +282,7 @@ asyncio.run(main())
 
         assert read_only_builtins == [fetch_url, bound_tool]
         assert get_current_thread_id not in read_only_builtins
-        create.assert_called_once_with("workspace-key")
+        create.assert_called_once_with("workspace-key", provider="tavily")
 
     async def test_build_tools_read_only_allowlist_without_web_search(self) -> None:
         """With no Tavily key the allowlist holds `fetch_url` alone."""
@@ -359,7 +359,7 @@ asyncio.run(main())
             observed["auto_classifier_model"] = kwargs["auto_classifier_model"]
             return graph_obj, _backend_with_offload(object())
 
-        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None)
+        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None, ollama_api_key=None)
         environment = dict(os.environ)
         config_module = _module_with_attrs(
             "deepagents_code.config",
@@ -472,7 +472,7 @@ asyncio.run(main())
         registry.get_metadata.return_value = None
         registry.get_params.return_value = {}
 
-        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None)
+        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None, ollama_api_key=None)
         environment = dict(os.environ)
         config_module = _module_with_attrs(
             "deepagents_code.config",

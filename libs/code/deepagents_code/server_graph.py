@@ -165,11 +165,12 @@ async def _build_tools(
     project_context: ProjectContext | None,
     *,
     tavily_api_key: str | None,
+    ollama_api_key: str | None = None,
 ) -> tuple[list[Any], list[Any] | None, list[Any], list[Any]]:
     """Assemble the tool list based on server config.
 
-    Loads built-in tools (conditionally including web search when Tavily is
-    available) and MCP tools when enabled.
+    Loads built-in tools (conditionally including web search when Tavily or
+    Ollama Cloud is available) and MCP tools when enabled.
 
     MCP discovery is awaited on the server's event loop: LangGraph invokes this
     async factory on its running loop, so discovery must use `await` rather than
@@ -186,6 +187,9 @@ async def _build_tools(
         tavily_api_key: Workspace Tavily key, or `None` when the workspace
             configures none. An empty string still binds the tool, which then
             reports the key as unconfigured.
+        ollama_api_key: Workspace Ollama Cloud key, or `None` when the
+            workspace configures none. Used only when `tavily_api_key` is
+            unset; Tavily keeps priority so existing workspaces are unaffected.
 
     Returns:
         Tuple of `(tools, mcp_server_info, mcp_tools, read_only_builtins)`. The
@@ -205,8 +209,17 @@ async def _build_tools(
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
     read_only_builtins: list[Any] = [fetch_url]
-    if tavily_api_key is not None:
-        search_tool = create_web_search_tool(tavily_api_key)
+    if tavily_api_key or ollama_api_key:
+        # Tavily wins when both are configured; see the docstring.
+        provider = "tavily" if tavily_api_key else "ollama"
+        api_key = tavily_api_key if tavily_api_key else ollama_api_key
+        search_tool = create_web_search_tool(api_key or "", provider=provider)
+        tools.append(search_tool)
+        read_only_builtins.append(search_tool)
+    elif tavily_api_key is not None:
+        # An explicitly empty Tavily key still binds the tool so it can report
+        # itself as unconfigured (historical contract).
+        search_tool = create_web_search_tool("")
         tools.append(search_tool)
         read_only_builtins.append(search_tool)
 
@@ -453,6 +466,7 @@ async def _make_graphs_in_environment(
         config,
         project_context,
         tavily_api_key=workspace_credentials.tavily_api_key,
+        ollama_api_key=workspace_credentials.ollama_api_key,
     )
     read_only_context_tools = _criteria_context_tools(
         tools, mcp_tools, read_only_builtins

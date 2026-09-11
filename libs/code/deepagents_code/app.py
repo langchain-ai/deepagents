@@ -11582,7 +11582,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.config import credentials
 
-        if credentials.has_tavily:
+        if credentials.has_tavily or credentials.has_ollama:
             return
 
         from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult

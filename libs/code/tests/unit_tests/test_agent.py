@@ -1186,13 +1186,13 @@ class TestWorkspacePromptCredentials:
         assert "workspace-provider" in prompt
         assert "12,345 tokens" in prompt
 
-    def test_has_tavily_override_controls_guidance(self) -> None:
+    def test_has_web_search_override_controls_guidance(self) -> None:
         """Prompt guidance does not consult process-global credentials."""
-        without = get_system_prompt("test-agent", has_tavily=False)
-        with_tavily = get_system_prompt("test-agent", has_tavily=True)
+        without = get_system_prompt("test-agent", has_web_search=False)
+        with_search = get_system_prompt("test-agent", has_web_search=True)
 
         assert "When you use the web_search tool" not in without
-        assert "When you use the web_search tool" in with_tavily
+        assert "When you use the web_search tool" in with_search
 
 
 class TestBuildModelIdentitySection:
@@ -1236,6 +1236,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         runtime_state.model_name = None
         mock_settings.has_tavily = False
+        mock_settings.has_ollama = False
 
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1341,6 +1342,7 @@ class TestGetSystemPromptWebSearch:
         mock_settings = Mock()
         runtime_state.model_name = None
         mock_settings.has_tavily = False
+        mock_settings.has_ollama = False
 
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1352,6 +1354,7 @@ class TestGetSystemPromptWebSearch:
         mock_settings = Mock()
         runtime_state.model_name = None
         mock_settings.has_tavily = True
+        mock_settings.has_ollama = False
 
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent")

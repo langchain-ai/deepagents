@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from typing import TYPE_CHECKING, Any
 from unittest import mock
@@ -530,3 +531,85 @@ def test_fetch_url_redirect_cap_exhausted(
     assert "error" in result
     assert "Exceeded" in result["error"]
     assert result["category"] == "redirects"
+
+
+class TestOllamaBackendRouting:
+    """`fetch_url` routes through Ollama Cloud only when Tavily is absent."""
+
+    @staticmethod
+    def _credentials(has_tavily: bool, has_ollama: bool, ollama_api_key: str = "k"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            has_tavily=has_tavily,
+            has_ollama=has_ollama,
+            ollama_api_key=ollama_api_key,
+        )
+
+    def test_routes_to_ollama_when_only_ollama_configured(self) -> None:
+        from deepagents_code.tools import _OLLAMA_WEB_FETCH_URL
+
+        with responses.RequestsMock() as rsps, mock.patch(
+            "deepagents_code.config.credentials", self._credentials(False, True)
+        ):
+            rsps.add(
+                "POST",
+                _OLLAMA_WEB_FETCH_URL,
+                json={
+                    "title": "Example",
+                    "content": "# Example page",
+                    "links": ["https://example.com/next"],
+                },
+            )
+
+            result = fetch_url("https://example.com/article")
+            request = rsps.calls[0][0]
+        assert request.headers["Authorization"] == "Bearer k"
+        assert json.loads(request.body) == {"url": "https://example.com/article"}
+        assert result["markdown_content"] == "# Example page"
+        assert result["title"] == "Example"
+        assert result["links"] == ["https://example.com/next"]
+
+    def test_ollama_fetch_errors_are_translated(self) -> None:
+        from deepagents_code.tools import _OLLAMA_WEB_FETCH_URL
+
+        with responses.RequestsMock() as rsps, mock.patch(
+            "deepagents_code.config.credentials", self._credentials(False, True)
+        ):
+            rsps.add("POST", _OLLAMA_WEB_FETCH_URL, status=500)
+
+            result = fetch_url("https://example.com/article")
+
+        assert "Fetch URL error" in result["error"]
+        assert result["url"] == "https://example.com/article"
+        assert result["category"] == "network"
+
+    def test_direct_fetch_still_used_when_tavily_configured(self) -> None:
+        """Tavily keeps priority: no Ollama request and no bearer header."""
+        from deepagents_code import tools as tools_module
+
+        resolver, _ = _make_resolver("93.184.216.34")
+
+        class RecordingSession:
+            """Minimal `requests.Session` stand-in with a canned response."""
+
+            def get(self, url: str, **_kwargs: Any) -> requests.Response:
+                response = requests.Response()
+                response.status_code = 200
+                response.url = url
+                response._content = b"<html><body><p>direct</p></body></html>"
+                return response
+
+        with mock.patch(
+            "deepagents_code.config.credentials", self._credentials(True, True)
+        ), mock.patch.object(
+            tools_module, "_fetch_with_ollama"
+        ) as ollama_fetch, mock.patch.object(
+            socket, "getaddrinfo", resolver
+        ), mock.patch.object(
+            requests, "Session", RecordingSession
+        ):
+            result = fetch_url("http://example.com/direct")
+
+        ollama_fetch.assert_not_called()
+        assert result["status_code"] == 200

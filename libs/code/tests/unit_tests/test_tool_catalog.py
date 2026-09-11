@@ -151,6 +151,18 @@ class TestCollectBuiltInTools:
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" not in names
 
+    def test_web_search_present_with_ollama(self) -> None:
+        with (
+            patch.object(
+                Credentials, "has_tavily", new_callable=PropertyMock, return_value=False
+            ),
+            patch.object(
+                Credentials, "has_ollama", new_callable=PropertyMock, return_value=True
+            ),
+        ):
+            names = {tool.name for tool in collect_built_in_tools()}
+        assert "web_search" in names
+
 
 class TestTodoToolNotBound:
     """Todos are opt-in in the SDK, so dcode binds no `write_todos` by default."""

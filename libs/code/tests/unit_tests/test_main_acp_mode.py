@@ -111,6 +111,7 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
         patch("deepagents_code.acp.AgentServerACP", new=AgentServer),
     ):
         credentials.has_tavily = False
+        credentials.has_ollama = False
         exit_code = await _run_acp_cli_async(
             "agent",
             run_acp_agent=run_agent,

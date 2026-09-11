@@ -187,10 +187,15 @@ def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
     a dev machine but runs it on CI, so a test that reaches the step passes
     locally yet hangs (real screen push) or writes a credential on CI.
 
-    Each test that *needs* a Tavily key should set it explicitly via
-    `monkeypatch.setenv` or patch `credentials.has_tavily`.
+    Each test that *needs* a Tavily or Ollama key should set it explicitly via
+    `monkeypatch.setenv` or patch `credentials.has_tavily` / `has_ollama`.
     """
-    for key in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+    for key in (
+        "TAVILY_API_KEY",
+        "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        "OLLAMA_API_KEY",
+        "DEEPAGENTS_CODE_OLLAMA_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 

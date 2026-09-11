@@ -3415,6 +3415,7 @@ _RELOADABLE_FIELDS = (
     "google_api_key",
     "nvidia_api_key",
     "tavily_api_key",
+    "ollama_api_key",
     "google_cloud_project",
     "google_cloud_location",
     "deepagents_langchain_project",
@@ -3625,6 +3626,9 @@ class CredentialsSnapshot:
     tavily_api_key: str | None
     """Tavily API key if available."""
 
+    ollama_api_key: str | None
+    """Ollama Cloud API key if available (backs web search/fetch)."""
+
     google_cloud_project: str | None
     """Google Cloud project ID for VertexAI authentication."""
 
@@ -3660,6 +3664,11 @@ class CredentialsSnapshot:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
 
+    @property
+    def has_ollama(self) -> bool:
+        """Check if Ollama Cloud API key is configured."""
+        return self.ollama_api_key is not None
+
 
 _CREDENTIAL_FIELDS = frozenset(CredentialsSnapshot.__dataclass_fields__)
 
@@ -3677,6 +3686,7 @@ class Credentials:
     google_api_key: str | None
     nvidia_api_key: str | None
     tavily_api_key: str | None
+    ollama_api_key: str | None
     google_cloud_project: str | None
     google_cloud_location: str | None
     deepagents_langchain_project: str | None
@@ -3731,6 +3741,7 @@ class Credentials:
         google_key = _resolve_env_var_from(env, "GOOGLE_API_KEY")
         nvidia_key = _resolve_env_var_from(env, "NVIDIA_API_KEY")
         tavily_key = _resolve_env_var_from(env, "TAVILY_API_KEY")
+        ollama_key = _resolve_env_var_from(env, "OLLAMA_API_KEY")
         google_cloud_project = _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT")
         google_cloud_location = _resolve_env_var_from(env, "GOOGLE_CLOUD_LOCATION")
         from deepagents_code._env_vars import LANGSMITH_PROJECT
@@ -3742,6 +3753,7 @@ class Credentials:
             google_api_key=google_key,
             nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
+            ollama_api_key=ollama_key,
             google_cloud_project=google_cloud_project,
             google_cloud_location=google_cloud_location,
             deepagents_langchain_project=_resolve_env_var_from(env, LANGSMITH_PROJECT),
@@ -3979,6 +3991,7 @@ class Credentials:
             "google_api_key": _resolve_env_var_from(env, "GOOGLE_API_KEY"),
             "nvidia_api_key": _resolve_env_var_from(env, "NVIDIA_API_KEY"),
             "tavily_api_key": _resolve_env_var_from(env, "TAVILY_API_KEY"),
+            "ollama_api_key": _resolve_env_var_from(env, "OLLAMA_API_KEY"),
             "google_cloud_project": _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT"),
             "google_cloud_location": _resolve_env_var_from(
                 env, "GOOGLE_CLOUD_LOCATION"
@@ -4178,6 +4191,11 @@ class Credentials:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.active.has_tavily
+
+    @property
+    def has_ollama(self) -> bool:
+        """Check if Ollama Cloud API key is configured."""
+        return self.active.has_ollama
 
 
 DANGEROUS_SHELL_PATTERNS = (

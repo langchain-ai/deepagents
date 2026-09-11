@@ -1453,7 +1453,7 @@ _WEB_SEARCH_TOOL_GUIDANCE = (
     "The user only sees your text responses - not tool results. Always provide a "
     "complete, natural language answer after using web_search."
 )
-"""Usage guidance included only when the Tavily-backed tool is available."""
+"""Usage guidance included only when a web search tool is available."""
 
 
 def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
@@ -1530,7 +1530,7 @@ def get_system_prompt(
     interactive: bool = True,
     cwd: str | Path | None = None,
     fs_tools: list[FsToolName] | None = None,
-    has_tavily: bool | None = None,
+    has_web_search: bool | None = None,
     model_result: ModelResult | None = None,
 ) -> str:
     """Get the base system prompt for the agent.
@@ -1550,7 +1550,7 @@ def get_system_prompt(
         cwd: Override the working directory shown in the prompt.
         fs_tools: Filesystem tool allowlist. Restricted prompts omit guidance
             for unavailable tools; `None` retains all guidance.
-        has_tavily: Workspace credential availability override.
+        has_web_search: Web search availability override.
         model_result: Workspace model metadata override.
 
     Returns:
@@ -1620,8 +1620,12 @@ def get_system_prompt(
             unsupported_modalities=runtime_state.model_unsupported_modalities,
         )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
-    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if tavily_available else ""
+    web_search_available = (
+        credentials.has_tavily or credentials.has_ollama
+        if has_web_search is None
+        else has_web_search
+    )
+    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if web_search_available else ""
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1742,7 +1746,7 @@ def _format_web_search_description(
 
     return (
         f"Query: {query}\nMax results: {max_results}\n\n"
-        f"{get_glyphs().warning}  This will use Tavily API credits"
+        f"{get_glyphs().warning}  This will use web search API credits"
     )
 
 
@@ -3073,7 +3077,9 @@ def create_cli_agent(
             interactive=interactive,
             cwd=effective_cwd,
             fs_tools=fs_tools,
-            has_tavily=runtime_credentials.has_tavily,
+            has_web_search=(
+                runtime_credentials.has_tavily or runtime_credentials.has_ollama
+            ),
             model_result=model_result,
         )
 

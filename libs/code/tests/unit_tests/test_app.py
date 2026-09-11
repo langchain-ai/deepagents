@@ -1309,7 +1309,7 @@ class TestStartupSequence:
 
         with (
             patch(
-                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False, has_ollama=False)
             ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
@@ -1343,7 +1343,7 @@ class TestStartupSequence:
 
         with (
             patch(
-                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False, has_ollama=False)
             ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
@@ -1361,7 +1361,7 @@ class TestStartupSequence:
 
         with (
             patch(
-                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=True)
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=True, has_ollama=False)
             ),
             patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
         ):

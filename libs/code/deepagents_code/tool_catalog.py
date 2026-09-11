@@ -206,7 +206,7 @@ def collect_built_in_tools(
     forwarded so agent-specific subagents are loaded from the same directory the
     normal launch path uses. The custom CLI tools are included the same way
     `server_graph._build_tools` adds them, so `web_search` appears only when
-    Tavily is configured.
+    Tavily or Ollama Cloud is configured.
 
     Args:
         assistant_id: Resolved dcode agent identifier to compile.
@@ -232,9 +232,10 @@ def collect_built_in_tools(
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     # Keep in sync with `server_graph._build_tools`: web_search is bound only
-    # when Tavily is configured, so it appears here only under the same gate.
+    # when Tavily or Ollama Cloud is configured, so it appears here only under
+    # the same gate.
     custom_tools: list[Any] = [fetch_url, get_current_thread_id]
-    if credentials.has_tavily:
+    if credentials.has_tavily or credentials.has_ollama:
         custom_tools.append(web_search)
 
     agent, _backend = create_cli_agent(

@@ -362,6 +362,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -420,6 +421,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.return_value = SHELL_ALLOW_ALL
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -469,6 +471,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -523,6 +526,7 @@ class TestAllowFsToolsForwarding:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -587,6 +591,7 @@ class TestQuietMode:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True)
@@ -650,6 +655,7 @@ class TestQuietMode:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -834,6 +840,7 @@ class TestNoStreamMode:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True, stream=False)
@@ -903,6 +910,7 @@ class TestNoStreamMode:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True, stream=True)
@@ -965,6 +973,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=False)
@@ -1018,6 +1027,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=False)
@@ -1064,6 +1074,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True)
@@ -1149,6 +1160,7 @@ class TestShellAllowListDecisionLogic:
         ):
             mock_settings.return_value = shell_allow_list
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="test task")
@@ -1205,6 +1217,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="do the thing")
@@ -1264,6 +1277,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(
@@ -1306,6 +1320,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(
@@ -1364,6 +1379,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(
@@ -1889,6 +1905,7 @@ class TestMaxTurns:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             await run_non_interactive(message="task", max_turns=7)
@@ -2036,6 +2053,7 @@ class TestMaxTurns:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(message="task", max_turns=1)
@@ -3078,6 +3096,7 @@ class TestDrainWiring:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
@@ -3125,6 +3144,7 @@ class TestDrainWiring:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
@@ -3177,6 +3197,7 @@ class TestDrainWiring:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
@@ -3224,6 +3245,7 @@ class TestDrainWiring:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
@@ -3298,6 +3320,7 @@ class TestHeadlessUsageStats:
         ):
             mock_settings.return_value = None
             mock_settings.has_tavily = False
+            mock_settings.has_ollama = False
             runtime_state.model_name = None
 
             return_code = await run_non_interactive(message="test", quiet=quiet)

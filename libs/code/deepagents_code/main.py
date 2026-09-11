@@ -1832,7 +1832,10 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
 
     from deepagents_code.config import credentials
 
-    if not credentials.has_tavily and not is_warning_suppressed("tavily", config_path):
+    if (
+        not (credentials.has_tavily or credentials.has_ollama)
+        and not is_warning_suppressed("tavily", config_path)
+    ):
         missing.append("tavily")
 
     return missing
@@ -1960,7 +1963,7 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
         return PendingNotification(
             key="dep:tavily",
             title="Web search disabled",
-            body=("Add a Tavily API key to enable web search."),
+            body=("Add a Tavily or Ollama Cloud API key to enable web search."),
             actions=(
                 NotificationAction(
                     ActionId.ENTER_API_KEY, "Enter API key", primary=True
@@ -2007,7 +2010,8 @@ def format_tool_warning_cli(tool: str) -> str:
         url = "https://tavily.com"
         suppress = _suppress_hint_cli("tavily")
         return (
-            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "Web search is disabled \u2014 neither TAVILY_API_KEY nor "
+            "OLLAMA_API_KEY is set.\n"
             f"Get a key at [link={url}]{url}[/link]\n\n"
             f"{suppress}\n"
         )
@@ -3538,7 +3542,7 @@ async def _run_acp_cli_async(
     ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if credentials.has_tavily:
+    if credentials.has_tavily or credentials.has_ollama:
         tools.append(web_search)
 
     mcp_session_manager = None

@@ -49,7 +49,9 @@ from deepagents_talon.interfaces import (
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
+    ProgressMessageHandler,
     ReactionChannelAdapter,
+    SendResult,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -723,6 +725,21 @@ class TalonHost:
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
+        active = True
+
+        async def send_progress(text: str) -> SendResult:
+            if (
+                not active
+                or self._generations[agent_conversation_id] != turn.generation
+                or self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
+                or agent_conversation_id in self._terminal_authorizations
+            ):
+                return SendResult(success=False)
+            return await channel.send_message(message.conversation_id, text)
+
+        async def message_handler(text: str) -> SendResult:
+            return await send_with_retry(lambda: send_progress(text))
+
         try:
             result = await self._invoke_agent(
                 conversation_id=agent_conversation_id,
@@ -756,6 +773,7 @@ class TalonHost:
                     )
                 ),
                 tool_approval_operator=operator,
+                message_handler=message_handler,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
             if scheduled and is_silent(result.text):
@@ -769,6 +787,7 @@ class TalonHost:
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
             result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
+            active = False
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
@@ -974,6 +993,7 @@ class TalonHost:
         | None = None,
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
+        message_handler: ProgressMessageHandler | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -995,6 +1015,7 @@ class TalonHost:
                         metadata=metadata,
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
+                        message_handler=message_handler,
                     ),
                 )
         except asyncio.CancelledError:

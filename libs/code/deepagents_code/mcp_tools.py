@@ -1476,6 +1476,47 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
+def _normalize_mcp_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make empty open objects explicit so providers do not close their payloads.
+
+    Returns:
+        A schema copy with implicit open objects made explicit.
+    """
+    normalized = dict(schema)
+    if schema.get("type") == "object" and schema.get("properties") == {}:
+        normalized.setdefault("additionalProperties", True)
+    for key in (
+        "properties",
+        "$defs",
+        "definitions",
+        "patternProperties",
+        "dependentSchemas",
+    ):
+        if isinstance(children := schema.get(key), dict):
+            normalized[key] = {
+                name: _normalize_mcp_schema(child) if isinstance(child, dict) else child
+                for name, child in children.items()
+            }
+    for key in (
+        "items",
+        "additionalProperties",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+    ):
+        if isinstance(child := schema.get(key), dict):
+            normalized[key] = _normalize_mcp_schema(child)
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+        if isinstance(children := schema.get(key), list):
+            normalized[key] = [
+                _normalize_mcp_schema(child) if isinstance(child, dict) else child
+                for child in children
+            ]
+    return normalized
+
+
 async def _build_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1509,6 +1550,8 @@ async def _build_mcp_tool(
     if not isinstance(tool, StructuredTool):
         msg = f"MCP adapter returned unsupported tool type {type(tool).__name__}"
         raise TypeError(msg)
+    if isinstance(tool.args_schema, dict):
+        tool.args_schema = _normalize_mcp_schema(tool.args_schema)
     call = tool.coroutine
     if call is not None:
         from deepagents_code.mcp_middleware import normalize_mcp_arguments

@@ -33,7 +33,7 @@ async def test_local_models_share_cache(tmp_path: Path, monkeypatch, assistant_i
     modules = {
         "sentence_transformers": SimpleNamespace(SentenceTransformer=constructor),
         "huggingface_hub": SimpleNamespace(snapshot_download=download),
-        "transformers": SimpleNamespace(pipeline=Mock()),
+        "transformers": SimpleNamespace(pipeline=Mock(), AutoModel=Mock(), AutoProcessor=Mock()),
     }
     monkeypatch.setattr(history_embeddings.importlib, "import_module", modules.__getitem__)
     monkeypatch.setattr(speech, "_local_pipelines", {})

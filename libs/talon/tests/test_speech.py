@@ -146,7 +146,7 @@ def test_local_pipeline_uses_talon_home_cache(tmp_path: Path, monkeypatch) -> No
     pipeline = Mock()
     modules = {
         "huggingface_hub": SimpleNamespace(snapshot_download=download),
-        "transformers": SimpleNamespace(pipeline=pipeline),
+        "transformers": SimpleNamespace(pipeline=pipeline, AutoModel=Mock(), AutoProcessor=Mock()),
     }
     monkeypatch.setattr(speech.importlib, "import_module", modules.__getitem__)
     monkeypatch.setattr(speech, "_local_pipelines", {})
@@ -158,4 +158,7 @@ def test_local_pipeline_uses_talon_home_cache(tmp_path: Path, monkeypatch) -> No
         cache_dir=str(tmp_path / "cache" / "models" / "huggingface"),
         token=False,
     )
-    assert pipeline.call_args.kwargs["model"] == download.return_value
+    for loader in (modules["transformers"].AutoModel, modules["transformers"].AutoProcessor):
+        loader.from_pretrained.assert_called_once_with(
+            download.return_value, local_files_only=True, trust_remote_code=False
+        )

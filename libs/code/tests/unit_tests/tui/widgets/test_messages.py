@@ -575,16 +575,27 @@ class TestDiffMessageNoChanges:
 class TestToolCallMessageDuration:
     """Tests for the post-run duration shown on long-running tool calls."""
 
-    async def test_execute_shows_took_after_success(self) -> None:
+    def _freeze_elapsed(self, monkeypatch: pytest.MonkeyPatch, elapsed: float) -> None:
+        """Pin `messages.time` so the faked run lasts exactly `elapsed` seconds.
+
+        The wall clock keeps running between `set_running` and `set_success`,
+        so real time can push the elapsed past a rounding boundary; a frozen
+        clock keeps the rendered duration deterministic.
+        """
+        from deepagents_code.tui.widgets import messages as messages_module
+
+        base = iter((0.0,))
+        monkeypatch.setattr(messages_module, "time", lambda: next(base, elapsed))
+
+    async def test_execute_shows_took_after_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """`execute` keeps its status row and reports how long it ran."""
         app = _tool_msg_app("execute", {"command": "sleep 1"})
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._freeze_elapsed(monkeypatch, 4.9)
             app.msg.set_running()
-            # 4.9 keeps the faked elapsed off the `.05` rounding boundary: the
-            # wall clock keeps running between the subtraction and
-            # `set_success`, so an exact `-5` can render as `5.1s`.
-            app.msg._start_time -= 4.9  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
@@ -598,7 +609,9 @@ class TestToolCallMessageDuration:
             children = list(app.msg.children)
             assert children.index(status) > children.index(app.msg._preview_row)
 
-    async def test_execute_shows_fractional_seconds(self) -> None:
+    async def test_execute_shows_fractional_seconds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.
 
         The running spinner truncates to whole seconds, but `set_success`
@@ -608,8 +621,8 @@ class TestToolCallMessageDuration:
         app = _tool_msg_app("execute", {"command": "true"})
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._freeze_elapsed(monkeypatch, 0.3)
             app.msg.set_running()
-            app.msg._start_time -= 0.3  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
@@ -619,13 +632,15 @@ class TestToolCallMessageDuration:
             assert isinstance(content, Content)
             assert content.plain == "Took 0.3s"
 
-    async def test_task_shows_took_after_success(self) -> None:
+    async def test_task_shows_took_after_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """`task` subagent calls keep their status row and report how long they ran."""
         app = _tool_msg_app("task", {"description": "investigate the bug"})
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._freeze_elapsed(monkeypatch, 5)
             app.msg.set_running()
-            app.msg._start_time -= 5  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
@@ -636,13 +651,15 @@ class TestToolCallMessageDuration:
             assert isinstance(content, Content)
             assert content.plain == "Took 5s"
 
-    async def test_task_took_duration_survives_rehydration(self) -> None:
+    async def test_task_took_duration_survives_rehydration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A virtualized task row restores its completed duration."""
         app = _tool_msg_app("task", {"description": "investigate the bug"})
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._freeze_elapsed(monkeypatch, 5)
             app.msg.set_running()
-            app.msg._start_time -= 5  # ty: ignore
             app.msg.set_success("done")
             data = MessageData.from_widget(app.msg)
             assert data.tool_duration == pytest.approx(5, abs=0.1)

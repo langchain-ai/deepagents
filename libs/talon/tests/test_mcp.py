@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import anyio
 import pytest
+from httpx2 import ConnectError
 from langchain_core.tools import StructuredTool
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -837,14 +838,15 @@ async def test_unrelated_exception_group_remains_server_error(
     assert result.servers[0].error == "ExceptionGroup"
 
 
+@pytest.mark.parametrize("error", [OAuthFlowError, ConnectError])
 async def test_unexpected_server_error_does_not_block_other_servers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
 ) -> None:
     class PartiallyFailingMCPClient(FakeMCPClient):
         async def list_tools(self) -> list[Tool]:
             if self.server_name == "broken":
                 msg = "unexpected failure"
-                raise OAuthFlowError(msg)
+                raise error(msg)
             return await super().list_tools()
 
     config_path = tmp_path / "custom.mcp.json"
@@ -866,6 +868,8 @@ async def test_unexpected_server_error_does_not_block_other_servers(
         ("broken", "error"),
         ("working", "ok"),
     ]
+    if error is ConnectError:
+        assert result.servers[0].error == "ConnectError"
 
 
 async def test_tool_allowlist_filters_loaded_tools(
@@ -1091,13 +1095,17 @@ async def test_login_uses_talon_config_and_interactive_oauth(
     assert calls[0]["auth"] is provider
 
 
+@pytest.mark.parametrize("error", [OAuthFlowError, ConnectError])
 async def test_login_reports_oauth_failure_without_details(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: type[Exception],
 ) -> None:
     config_path = tmp_path / "custom.mcp.json"
     _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
 
-    failure = OAuthFlowError("secret token exchange response")
+    failure = error("secret token exchange response")
 
     async def fail_login(*_args: object) -> None:
         raise failure
@@ -1109,7 +1117,7 @@ async def test_login_reports_oauth_failure_without_details(
     result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
 
     assert result == 1
-    assert capsys.readouterr().err == "MCP login failed: OAuthFlowError\n"
+    assert capsys.readouterr().err == f"MCP login failed: {error.__name__}\n"
 
 
 async def test_login_does_not_timeout_interactive_session(

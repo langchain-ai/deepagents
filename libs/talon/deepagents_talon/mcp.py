@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 from fastmcp.client import Client as FastMCPClient
 from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 from httpx import HTTPError
+from httpx2 import HTTPError as MCPHTTPError
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.tools import InjectedToolCallId, tool
 from mcp.client.auth import OAuthFlowError
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 
     import httpx2
     from fastmcp.client.transports import ClientTransport
+    from langchain.mcp.elicitation import MCPElicitationResume
     from langchain_core.tools import BaseTool
 
     from deepagents_talon.config import TalonConfig
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", LangChainBetaWarning)
     from langchain.mcp import MCPAdapter
+    from langchain.mcp.elicitation import ELICITATION_INTERRUPT_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +350,7 @@ class MCPToolProvider:
         except (
             ExceptionGroup,
             HTTPError,
+            MCPHTTPError,
             MCPError,
             OAuthFlowError,
             OSError,
@@ -414,6 +418,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
         except (
             ExceptionGroup,
             HTTPError,
+            MCPHTTPError,
             MCPError,
             OAuthFlowError,
             OSError,
@@ -426,7 +431,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 f"MCP server {name!r} needs authentication"
                 if authentication_required
                 else format_login_error(exc)
-                if isinstance(exc, ExceptionGroup)
+                if isinstance(exc, (ExceptionGroup, HTTPError, MCPHTTPError))
                 else str(exc)
             )
             logger.warning("MCP server %s failed to load: %s", name, error)
@@ -514,6 +519,7 @@ async def login_mcp_server(
             )
     except (
         HTTPError,
+        MCPHTTPError,
         MCPError,
         OAuthFlowError,
         OSError,
@@ -526,6 +532,24 @@ async def login_mcp_server(
         return 1
     print(f"Logged in to MCP server {server_name!r}.")  # noqa: T201
     return 0
+
+
+def _cancel_mcp_elicitation(value: object) -> MCPElicitationResume | None:
+    """Cancel MCP input requests until Talon provides an elicitation UI."""
+    if not isinstance(value, dict) or value.get("type") != ELICITATION_INTERRUPT_TYPE:
+        return None
+    requests = value.get("requests")
+    if not isinstance(requests, list) or not requests:
+        msg = "MCP elicitation interrupt has no requests"
+        raise ValueError(msg)
+    response: MCPElicitationResume = {"responses": {}}
+    for request in requests:
+        key = request.get("key") if isinstance(request, dict) else None
+        if not isinstance(key, str) or not key or key in response["responses"]:
+            msg = "MCP elicitation interrupt has invalid request keys"
+            raise ValueError(msg)
+        response["responses"][key] = {"action": "cancel"}
+    return response
 
 
 async def _open_mcp_session(client: FastMCPClient[ClientTransport]) -> None:

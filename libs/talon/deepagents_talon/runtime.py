@@ -51,6 +51,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
 from deepagents_talon.observability import (
     AgentActivityCallback,
@@ -823,11 +824,15 @@ class DeepAgentRuntime:
         request: AgentRequest,
         interrupts: Sequence[object],
     ) -> Command:
-        payload: dict[str, dict[str, list[dict[str, str]]]] = {}
+        payload: dict[str, object] = {}
         for interrupt in interrupts:
             interrupt_id = _interrupt_id(interrupt)
             if interrupt_id is None:
                 logger.warning("Received tool approval interrupt without an id")
+                continue
+            elicitation = _cancel_mcp_elicitation(getattr(interrupt, "value", None))
+            if elicitation is not None:
+                payload[interrupt_id] = elicitation
                 continue
             action_requests = _action_requests_from_interrupt(interrupt)
             decision, reject_message, _resolution = await _approval_decision(

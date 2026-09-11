@@ -35,6 +35,7 @@ async def test_loader_reports_missing_extra_without_connecting() -> None:
     assert len(servers) == 1
     assert servers[0].name == "docs"
     assert servers[0].status == "error"
+    assert servers[0].error is not None
     assert "deepagents-code[mcp]" in servers[0].error
 
 

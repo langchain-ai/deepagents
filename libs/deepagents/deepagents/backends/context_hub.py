@@ -34,6 +34,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -557,6 +558,53 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub delete failed for %r", self._identifier)
             return DeleteResult(error=f"Hub unavailable: {exc}")
         return DeleteResult(path=file_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory by committing it as one change set.
+
+        Relocates the exact file at `source_path` plus every nested entry
+        under it (the prefix `source_path` + "/") to the equivalent path
+        under `destination_path`. Queued as a single `_WriteIntent`-style
+        change set (old paths cleared, new paths written) so it commits
+        atomically with the rest of the batch.
+
+        Args:
+            source_path: Path of the file or directory to move.
+            destination_path: Destination path.
+
+        Returns:
+            `MoveResult` with `destination_path` on success, or an error if
+                nothing is stored at or under `source_path`, something
+                already exists at `destination_path`, or the hub is
+                unavailable.
+        """
+        hub_source = self._strip_prefix(source_path)
+        hub_dest = self._strip_prefix(destination_path)
+        try:
+            with self._mutations.condition:
+                cache = self._visible_cache_locked()
+                base = hub_source.rstrip("/")
+                prefix = base + "/"
+                to_move = [key for key in cache if key == base or key.startswith(prefix)]
+                if not to_move:
+                    return MoveResult(error=f"Error: File '{source_path}' not found")
+
+                dest_base = hub_dest.rstrip("/")
+                dest_prefix = dest_base + "/"
+                if any(key == dest_base or key.startswith(dest_prefix) for key in cache):
+                    return MoveResult(error=f"Error: '{destination_path}' already exists")
+
+                changes: dict[str, str | None] = {}
+                for key in to_move:
+                    new_key = dest_base + key[len(base) :]
+                    changes[key] = None
+                    changes[new_key] = cache[key]
+                mutation = self._queue_changes_locked(changes)
+            self._wait_for_mutation(mutation)
+        except LangSmithError as exc:
+            logger.exception("Hub move failed for %r", self._identifier)
+            return MoveResult(error=f"Hub unavailable: {exc}")
+        return MoveResult(path=destination_path)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""

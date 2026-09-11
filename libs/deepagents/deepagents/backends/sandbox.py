@@ -21,6 +21,7 @@ import logging
 import os
 import shlex
 from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal
 
 from deepagents.backends.protocol import (
@@ -39,6 +40,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -1871,6 +1873,47 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return DeleteResult(path=file_path)
 
         return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory in the sandbox via a server-side `mv`.
+
+        Runs `test -e || test -L` on `source_path` first, matching `delete`'s
+        not-found contract. Also probes `destination_path` and refuses to
+        overwrite an existing file or directory there. Uses `mv`, so nested
+        content moves as a single filesystem-level rename when source and
+        destination are on the same volume.
+
+        Args:
+            source_path: Absolute path to the file or directory to move.
+            destination_path: Absolute destination path. Missing parent
+                directories are created automatically.
+
+        Returns:
+            `MoveResult` with `destination_path` on success, or an error if
+                `source_path` does not exist, `destination_path` already
+                exists, or the move command fails.
+        """
+        # `shlex.quote` only neutralizes shell metacharacters so each path is
+        # passed as a single literal argument. It is NOT a security boundary --
+        # see the equivalent note in `delete`.
+        quoted_source = shlex.quote(source_path)
+        quoted_dest = shlex.quote(destination_path)
+
+        exists = self.execute(f"test -e {quoted_source} || test -L {quoted_source}")
+        if exists.exit_code is not None and exists.exit_code != 0:
+            return MoveResult(error=f"Error: '{source_path}' not found")
+
+        dest_exists = self.execute(f"test -e {quoted_dest} || test -L {quoted_dest}")
+        if dest_exists.exit_code == 0:
+            return MoveResult(error=f"Error: '{destination_path}' already exists")
+
+        dest_parent = shlex.quote(str(PurePosixPath(destination_path).parent))
+        result = self.execute(f"mkdir -p {dest_parent} && mv -n {quoted_source} {quoted_dest}")
+
+        if result.exit_code == 0:
+            return MoveResult(path=destination_path)
+
+        return MoveResult(error=f"Error moving file '{source_path}' to '{destination_path}': {result.output.strip() or 'unknown error'}")
 
     def grep(
         self,

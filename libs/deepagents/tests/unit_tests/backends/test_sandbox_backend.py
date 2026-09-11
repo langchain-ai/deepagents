@@ -2525,6 +2525,78 @@ class TestSandboxDelete:
         assert "not found" in result.error
 
 
+class TestSandboxMove:
+    """BaseSandbox.move probes both paths then maps the `mv` exit onto MoveResult."""
+
+    def test_move_success(self) -> None:
+        sandbox = MockSandbox()
+        # Queue: source exists, dest missing, mkdir+mv succeeds.
+        sandbox._responses = [("", 0), ("", 1), ("", 0)]
+        result = sandbox.move("/file.txt", "/new.txt")
+        assert result.error is None
+        assert result.path == "/new.txt"
+        assert sandbox.last_command is not None
+        assert "mv -n" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+        assert "/new.txt" in sandbox.last_command
+
+    def test_move_missing_source_returns_not_found(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # source probe reports absent
+        result = sandbox.move("/missing.txt", "/dest.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_move_existing_destination_returns_error(self) -> None:
+        sandbox = MockSandbox()
+        # Queue: source exists, dest also exists.
+        sandbox._responses = [("", 0), ("", 0)]
+        result = sandbox.move("/file.txt", "/existing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "already exists" in result.error
+        # No mv was attempted once the destination probe found a conflict.
+        assert len(sandbox.commands) == 2
+
+    def test_move_failure_reports_output(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [
+            ("", 0),  # source exists
+            ("", 1),  # dest missing
+            ("mv: cannot move '/a' to '/b': Permission denied", 1),
+        ]
+        result = sandbox.move("/a", "/b")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error moving file" in result.error
+        assert "Permission denied" in result.error
+
+    def test_move_failure_unknown_error(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 1)]
+        result = sandbox.move("/a", "/b")
+        assert result.path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_amove_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 1), ("", 0)]
+        result = await sandbox.amove("/file.txt", "/new.txt")
+        assert result.error is None
+        assert result.path == "/new.txt"
+
+    async def test_amove_missing_source_returns_not_found(self) -> None:
+        # `amove` delegates to `move`, so the not-found contract holds async.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1
+        result = await sandbox.amove("/missing.txt", "/dest.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+
 class _HangingSandbox(MockSandbox):
     """Sandbox whose async execute never returns, standing in for a wedged host."""
 

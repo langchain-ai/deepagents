@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -32,6 +33,14 @@ from deepagents.backends.protocol import (
 from deepagents.backends.state import StateBackend
 
 _DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}'."
+_MOVE_UNSUPPORTED_ERROR = "Error: move is not supported for '{file_path}'."
+_CROSS_BACKEND_MOVE_READ_LIMIT = 2**31 - 1
+"""Effectively "no limit" line count for a full-file read during a cross-backend move.
+
+Backends slice a Python list with this value, so it must stay a plausible `int`
+rather than `float("inf")` or an arbitrarily huge integer that could overflow a
+backend's own arithmetic on the bound.
+"""
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -810,6 +819,120 @@ class CompositeBackend(BackendProtocol):
         if res.path is not None:
             res.path = file_path
         return res
+
+    def _cross_backend_move(
+        self,
+        source_backend: BackendProtocol,
+        source_key: str,
+        source_path: str,
+        dest_backend: BackendProtocol,
+        dest_key: str,
+        destination_path: str,
+    ) -> MoveResult:
+        """Move a single file between two different routed backends.
+
+        Neither backend can perform the rename itself since the data has to
+        cross backend boundaries, so this reads the full file from
+        `source_backend`, writes it to `dest_backend`, then deletes it from
+        `source_backend`. Only single files are supported this way -- a
+        recursive directory move across backends is not attempted, since it
+        would require enumerating and individually relocating every nested
+        entry with no way to roll back a partial failure cleanly.
+
+        This is not atomic: a failure after the write but before the delete
+        leaves the file present at both `source_path` and `destination_path`.
+        """
+        read_res = source_backend.read(source_key, offset=0, limit=_CROSS_BACKEND_MOVE_READ_LIMIT)
+        if read_res.error is not None or read_res.file_data is None:
+            return MoveResult(error=read_res.error or f"Error: '{source_path}' not found")
+
+        write_res = dest_backend.write(dest_key, read_res.file_data["content"])
+        if write_res.error is not None:
+            return MoveResult(error=write_res.error)
+
+        delete_res = source_backend.delete(source_key)
+        if delete_res.error is not None:
+            return MoveResult(error=(f"Copied '{source_path}' to '{destination_path}' but failed to remove the original: {delete_res.error}"))
+        return MoveResult(path=destination_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file, routing to the appropriate backend(s).
+
+        `CompositeBackend` always advertises move support (it overrides this
+        method). If `source_path` and `destination_path` route to the same
+        sub-backend, the move is delegated directly to that backend's own
+        `move` (recursive, atomic per that backend's guarantees). If they
+        route to different sub-backends -- crossing a route boundary -- this
+        falls back to a read/write/delete relocation of a single file (see
+        `_cross_backend_move`); moving a directory/prefix across a route
+        boundary is not supported and returns an error.
+
+        Args:
+            source_path: Absolute file path to move.
+            destination_path: Absolute destination path.
+
+        Returns:
+            `MoveResult` with `destination_path` on success, or an error
+            (including when the routed backend does not support `move`, or
+            when a directory move would need to cross backends).
+        """
+        source_backend, source_key, _source_route = _route_for_path(default=self.default, sorted_routes=self.sorted_routes, path=source_path)
+        dest_backend, dest_key, _dest_route = _route_for_path(default=self.default, sorted_routes=self.sorted_routes, path=destination_path)
+
+        if source_backend is dest_backend:
+            try:
+                res = source_backend.move(source_key, dest_key)
+            except NotImplementedError:
+                return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(file_path=source_path))
+            if res.path is not None:
+                res.path = destination_path
+            return res
+
+        # Crossing a route boundary: only single files can be relocated this
+        # way (see `_cross_backend_move`). Directories are ambiguous to detect
+        # cheaply for every backend, so we require the caller confirm the
+        # source is a file by attempting the read, which fails cleanly for a
+        # directory-shaped key on backends that reject reading directories.
+        return self._cross_backend_move(source_backend, source_key, source_path, dest_backend, dest_key, destination_path)
+
+    async def _across_backend_move(
+        self,
+        source_backend: BackendProtocol,
+        source_key: str,
+        source_path: str,
+        dest_backend: BackendProtocol,
+        dest_key: str,
+        destination_path: str,
+    ) -> MoveResult:
+        """Async version of `_cross_backend_move`."""
+        read_res = await source_backend.aread(source_key, offset=0, limit=_CROSS_BACKEND_MOVE_READ_LIMIT)
+        if read_res.error is not None or read_res.file_data is None:
+            return MoveResult(error=read_res.error or f"Error: '{source_path}' not found")
+
+        write_res = await dest_backend.awrite(dest_key, read_res.file_data["content"])
+        if write_res.error is not None:
+            return MoveResult(error=write_res.error)
+
+        delete_res = await source_backend.adelete(source_key)
+        if delete_res.error is not None:
+            return MoveResult(error=(f"Copied '{source_path}' to '{destination_path}' but failed to remove the original: {delete_res.error}"))
+        return MoveResult(path=destination_path)
+
+    async def amove(self, source_path: str, destination_path: str) -> MoveResult:
+        """Async version of move."""
+        source_backend, source_key, _source_route = _route_for_path(default=self.default, sorted_routes=self.sorted_routes, path=source_path)
+        dest_backend, dest_key, _dest_route = _route_for_path(default=self.default, sorted_routes=self.sorted_routes, path=destination_path)
+
+        if source_backend is dest_backend:
+            try:
+                res = await source_backend.amove(source_key, dest_key)
+            except NotImplementedError:
+                return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(file_path=source_path))
+            if res.path is not None:
+                res.path = destination_path
+            return res
+
+        return await self._across_backend_move(source_backend, source_key, source_path, dest_backend, dest_key, destination_path)
 
     def execute(
         self,

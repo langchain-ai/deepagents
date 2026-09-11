@@ -328,6 +328,23 @@ class DeleteResult:
 
 
 @dataclass
+class MoveResult:
+    """Result from backend `move` operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute destination path on success, None on failure.
+
+    Examples:
+        >>> MoveResult(path="/new.txt")
+        >>> MoveResult(error="File not found")
+    """
+
+    error: str | None = None
+    path: str | None = None
+
+
+@dataclass
 class LsResult:
     """Result from backend `ls` operations.
 
@@ -751,6 +768,34 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `delete`."""
         return await asyncio.to_thread(self.delete, file_path)
 
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a path, recursively relocating anything nested under it.
+
+        This method is optional. Backends that do not implement it inherit this
+        default, which raises `NotImplementedError`. Callers that need to support
+        a mix of backends should guard with
+        [`_supports_move`][deepagents.backends.protocol._supports_move] before
+        calling, or catch `NotImplementedError`.
+
+        Args:
+            source_path: Absolute path to move (a file, or a directory/prefix to
+                relocate recursively). Must start with '/'.
+            destination_path: Absolute destination path. Must start with '/'.
+
+        Returns:
+            `MoveResult` with the new path on success, or an error if nothing
+                exists at `source_path`, something already exists at
+                `destination_path`, or the move fails.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `move`.
+        """
+        raise NotImplementedError
+
+    async def amove(self, source_path: str, destination_path: str) -> MoveResult:
+        """Async version of `move`."""
+        return await asyncio.to_thread(self.move, source_path, destination_path)
+
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -982,3 +1027,21 @@ def _supports_delete(backend: BackendProtocol) -> bool:
         True if the backend overrides `delete`, False otherwise.
     """
     return type(backend).delete is not BackendProtocol.delete
+
+
+def _supports_move(backend: BackendProtocol) -> bool:
+    """Check whether a backend implements `move`.
+
+    `move` is optional: backends that don't override it inherit the
+    `NotImplementedError` default from
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol]. This
+    helper lets callers detect support without invoking the method and
+    triggering the error.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        True if the backend overrides `move`, False otherwise.
+    """
+    return type(backend).move is not BackendProtocol.move

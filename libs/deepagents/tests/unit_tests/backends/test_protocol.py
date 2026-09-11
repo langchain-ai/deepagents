@@ -17,10 +17,12 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     GrepResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     _method_accepts_max_count,
     _supports_delete,
+    _supports_move,
 )
 
 
@@ -73,6 +75,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.delete("/file.txt")
 
+    def test_move(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.move("/file.txt", "/new.txt")
+
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.upload_files([("/file.txt", b"data")])
@@ -121,6 +127,10 @@ class TestAsyncMethodsPropagateNotImplemented:
         with pytest.raises(NotImplementedError):
             await backend.adelete("/file.txt")
 
+    async def test_amove(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.amove("/file.txt", "/new.txt")
+
 
 class TestSupportsDelete:
     """`_supports_delete` detects whether a backend overrides `delete`."""
@@ -134,6 +144,20 @@ class TestSupportsDelete:
                 return DeleteResult(path=file_path)
 
         assert _supports_delete(MyBackend()) is True
+
+
+class TestSupportsMove:
+    """`_supports_move` detects whether a backend overrides `move`."""
+
+    def test_false_when_not_overridden(self, backend: BareBackend) -> None:
+        assert _supports_move(backend) is False
+
+    def test_true_when_overridden(self) -> None:
+        class MyBackend(BackendProtocol):
+            def move(self, source_path: str, destination_path: str) -> MoveResult:
+                return MoveResult(path=destination_path)
+
+        assert _supports_move(MyBackend()) is True
 
 
 class TestAdditionalAsyncWrappersPropagateNotImplemented:

@@ -1803,3 +1803,169 @@ async def test_composite_adelete_unsupported_route_returns_error() -> None:
     assert result.path is None
     assert result.error is not None
     assert "not supported" in result.error
+
+
+def test_composite_move_routes_to_correct_backend_when_same_route() -> None:
+    """Source and destination in the same route delegate directly to that backend."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/memories/note.txt", "beta")
+    res = be.move("/memories/note.txt", "/memories/renamed.txt")
+    assert res.error is None
+    assert res.path == "/memories/renamed.txt"
+    assert be.read("/memories/note.txt").error is not None
+    assert be.read("/memories/renamed.txt").error is None
+
+
+def test_composite_move_within_default_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/file.txt", "alpha")
+    res = be.move("/file.txt", "/renamed.txt")
+    assert res.error is None
+    assert res.path == "/renamed.txt"
+    assert be.read("/file.txt").error is not None
+    assert be.read("/renamed.txt").error is None
+
+
+def test_composite_move_directory_recurses_within_route() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/memories/proj/a.txt", "a")
+    be.write("/memories/proj/sub/b.txt", "b")
+    be.write("/memories/keep.txt", "k")
+
+    res = be.move("/memories/proj", "/memories/moved")
+    assert res.error is None
+    assert res.path == "/memories/moved"
+    assert be.read("/memories/proj/a.txt").error is not None
+    assert be.read("/memories/moved/a.txt").error is None
+    assert be.read("/memories/moved/sub/b.txt").error is None
+    assert be.read("/memories/keep.txt").error is None
+
+
+def test_composite_move_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = be.move("/memories/ghost.txt", "/memories/dest.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+async def test_composite_amove_routes_to_correct_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    await be.awrite("/memories/note.txt", "beta")
+    res = await be.amove("/memories/note.txt", "/memories/renamed.txt")
+    assert res.error is None
+    assert res.path == "/memories/renamed.txt"
+    assert (await be.aread("/memories/note.txt")).error is not None
+
+
+async def test_composite_amove_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = await be.amove("/memories/ghost.txt", "/memories/dest.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+class _NoMoveStore(StoreBackend):
+    """StoreBackend variant that opts out of move (inherits protocol default)."""
+
+    move = BackendProtocol.move
+    amove = BackendProtocol.amove
+
+
+def test_composite_move_unsupported_route_returns_error() -> None:
+    """A same-route move to a backend without `move` yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nomove/": _NoMoveStore(store=mem_store, namespace=lambda _rt: ("nomove",))},
+    )
+    result = be.move("/nomove/a.txt", "/nomove/b.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+async def test_composite_amove_unsupported_route_returns_error() -> None:
+    """The async same-route move to a backend without `move` yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nomove/": _NoMoveStore(store=mem_store, namespace=lambda _rt: ("nomove",))},
+    )
+    result = await be.amove("/nomove/a.txt", "/nomove/b.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+def test_composite_move_across_backends_falls_back_to_read_write_delete() -> None:
+    """Moving across a route boundary relocates content via read+write+delete."""
+    be = CompositeBackend(
+        default=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/file.txt", "cross-backend content")
+    res = be.move("/file.txt", "/memories/moved.txt")
+
+    assert res.error is None
+    assert res.path == "/memories/moved.txt"
+    assert be.read("/file.txt").error is not None
+    moved = be.read("/memories/moved.txt")
+    assert moved.error is None
+    assert moved.file_data is not None
+    assert moved.file_data["content"] == "cross-backend content"
+
+
+async def test_composite_amove_across_backends_falls_back_to_read_write_delete() -> None:
+    be = CompositeBackend(
+        default=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("memories",))},
+    )
+
+    await be.awrite("/file.txt", "cross-backend content")
+    res = await be.amove("/file.txt", "/memories/moved.txt")
+
+    assert res.error is None
+    assert res.path == "/memories/moved.txt"
+    assert (await be.aread("/file.txt")).error is not None
+    moved = await be.aread("/memories/moved.txt")
+    assert moved.error is None
+    assert moved.file_data is not None
+    assert moved.file_data["content"] == "cross-backend content"
+
+
+def test_composite_move_across_backends_missing_source_returns_error() -> None:
+    be = CompositeBackend(
+        default=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("memories",))},
+    )
+    result = be.move("/ghost.txt", "/memories/dest.txt")
+    assert result.path is None
+    assert result.error is not None

@@ -123,3 +123,74 @@ def test_state_backend_edit_empty_old_string_returns_error(monkeypatch: pytest.M
     assert result.error is not None
     assert "old_string cannot be empty" in result.error
     assert updates == []
+
+
+def test_state_backend_move_relocates_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {"/a.txt": {"content": "hello", "encoding": "utf-8"}}
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/a.txt", "/b.txt")
+
+    assert result.error is None
+    assert result.path == "/b.txt"
+    assert updates[0]["/a.txt"] is None
+    assert updates[0]["/b.txt"]["content"] == "hello"
+
+
+def test_state_backend_move_relocates_nested_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {
+        "/sub/a.txt": {"content": "a", "encoding": "utf-8"},
+        "/sub/deep/b.txt": {"content": "b", "encoding": "utf-8"},
+        "/keep.txt": {"content": "keep", "encoding": "utf-8"},
+    }
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/sub", "/renamed")
+
+    assert result.error is None
+    assert result.path == "/renamed"
+    update = updates[0]
+    assert update["/sub/a.txt"] is None
+    assert update["/sub/deep/b.txt"] is None
+    assert update["/renamed/a.txt"]["content"] == "a"
+    assert update["/renamed/deep/b.txt"]["content"] == "b"
+    assert "/keep.txt" not in update
+
+
+def test_state_backend_move_missing_source_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files: dict[str, Any] = {}
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/missing.txt", "/dest.txt")
+
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    assert updates == []
+
+
+def test_state_backend_move_existing_destination_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {
+        "/a.txt": {"content": "hello", "encoding": "utf-8"},
+        "/b.txt": {"content": "existing", "encoding": "utf-8"},
+    }
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.move("/a.txt", "/b.txt")
+
+    assert result.path is None
+    assert result.error is not None
+    assert "already exists" in result.error
+    assert updates == []

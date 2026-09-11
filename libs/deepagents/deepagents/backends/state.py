@@ -18,6 +18,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -272,6 +273,46 @@ class StateBackend(BackendProtocol):
 
         self._send_files_update(dict.fromkeys(to_delete, None))
         return DeleteResult(path=file_path)
+
+    def move(self, source_path: str, destination_path: str) -> MoveResult:
+        """Move or rename a file or directory within state.
+
+        Relocates the exact key at `source_path` plus every nested key under
+        it (the prefix `source_path` + "/") to the equivalent path under
+        `destination_path`. The old keys are cleared and the new keys written
+        in a single `CONFIG_KEY_SEND` batch so the move is applied atomically
+        from the caller's perspective.
+
+        Args:
+            source_path: Path of the file or directory to move.
+            destination_path: Destination path.
+
+        Returns:
+            `MoveResult` with `destination_path` on success, or an error if
+                nothing is stored at or under `source_path`, or something
+                already exists at `destination_path`.
+        """
+        files = self._read_files()
+
+        base = source_path.rstrip("/")
+        prefix = base + "/"
+        to_move = [key for key in files if key == base or key.startswith(prefix)]
+        if not to_move:
+            return MoveResult(error=f"Error: File '{source_path}' not found")
+
+        dest_base = destination_path.rstrip("/")
+        dest_prefix = dest_base + "/"
+        if dest_base in files or any(key.startswith(dest_prefix) for key in files):
+            return MoveResult(error=f"Error: '{destination_path}' already exists")
+
+        update: dict[str, Any] = {}
+        for key in to_move:
+            new_key = dest_base + key[len(base) :]
+            update[key] = None
+            update[new_key] = self._prepare_for_storage(files[key])
+
+        self._send_files_update(update)
+        return MoveResult(path=destination_path)
 
     def grep(
         self,

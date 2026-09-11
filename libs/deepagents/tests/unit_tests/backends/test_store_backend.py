@@ -743,3 +743,93 @@ async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
 
     missing = await be.adelete("*")
     assert missing.error is not None and "not found" in missing.error
+
+
+def test_store_backend_move() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/docs/readme.md", "hello store")
+    result = be.move("/docs/readme.md", "/docs/renamed.md")
+    assert result.error is None
+    assert result.path == "/docs/renamed.md"
+    assert be.read("/docs/readme.md").error is not None
+    read_result = be.read("/docs/renamed.md")
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
+
+
+def test_store_backend_move_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    result = be.move("/work", "/moved")
+    assert result.error is None
+    assert result.path == "/moved"
+    assert be.read("/work/a.txt").error is not None
+    assert be.read("/work/sub/b.txt").error is not None
+    assert be.read("/moved/a.txt").error is None
+    assert be.read("/moved/sub/b.txt").error is None
+    assert be.read("/keep.txt").error is None
+
+
+async def test_store_backend_amove_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    result = await be.amove("/work", "/moved")
+    assert result.error is None
+    assert (await be.aread("/work/a.txt")).error is not None
+    assert (await be.aread("/moved/a.txt")).error is None
+    assert (await be.aread("/keep.txt")).error is None
+
+
+def test_store_backend_move_missing_source_returns_error() -> None:
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    result = be.move("/nope.md", "/dest.md")
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+def test_store_backend_move_existing_destination_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+
+    result = be.move("/a.md", "/b.md")
+    assert result.path is None
+    assert result.error is not None
+    assert "already exists" in result.error
+    assert be.read("/a.md").error is None
+
+
+def test_store_backend_move_uses_single_batch_call() -> None:
+    """A recursive move issues one batched store write, not one call per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+    store.batch_calls.clear()  # ignore the setup writes
+
+    result = be.move("/work", "/moved")
+    assert result.error is None
+
+    # Exactly one batch performs the actual relocation (put ops); the search
+    # to enumerate the subtree is a separate, read-only batch call.
+    write_batches = [ops for ops in store.batch_calls if any(isinstance(op, PutOp) for op in ops)]
+    assert len(write_batches) == 1
+    ops = write_batches[0]
+    deleted_keys = {op.key for op in ops if isinstance(op, PutOp) and op.value is None}
+    written_keys = {op.key for op in ops if isinstance(op, PutOp) and op.value is not None}
+    assert deleted_keys == {"/work/a.txt", "/work/sub/b.txt"}
+    assert written_keys == {"/moved/a.txt", "/moved/sub/b.txt"}

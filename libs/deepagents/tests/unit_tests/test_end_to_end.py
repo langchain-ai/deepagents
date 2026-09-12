@@ -2410,29 +2410,27 @@ class TestSummarizationOffloadToState:
                 ]
             )
         )
-        fake_model.profile = {"max_input_tokens": 200_000}
+        fake_model.profile = {"max_input_tokens": 20_000}
 
         agent = create_deep_agent(
             model=fake_model,
             checkpointer=InMemorySaver(),
         )
 
-        text_10_000_tokens = "x" * 10_000 * NUM_CHARS_PER_TOKEN
-        text_50_000_tokens = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        text_1_000_tokens = "x" * 1_000 * NUM_CHARS_PER_TOKEN
         input_messages = [
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),  # 60,000 tokens
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),  # 120,000 tokens
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
-            HumanMessage(content="query"),
-        ]
+            message
+            for _ in range(9)
+            for message in (
+                HumanMessage(content=text_1_000_tokens),
+                AIMessage(content=text_1_000_tokens),
+            )
+        ] + [HumanMessage(content="query")]
 
         config = {"configurable": {"thread_id": "summarization-state-test"}}
         result = agent.invoke({"messages": input_messages}, config)
 
-        assert len(result["messages"]) == 8  # 7 inputs + response
+        assert len(result["messages"]) == len(input_messages) + 1
         assert result["messages"][-1].content == "response"
 
         # two calls: one to summarize, one for response
@@ -3138,7 +3136,7 @@ class TestArtifactsRoot:
                 ]
             )
         )
-        fake_model.profile = {"max_input_tokens": 200_000}
+        fake_model.profile = {"max_input_tokens": 20_000}
 
         agent = create_deep_agent(
             model=fake_model,
@@ -3146,17 +3144,15 @@ class TestArtifactsRoot:
             checkpointer=InMemorySaver(),
         )
 
-        text_10_000_tokens = "x" * 10_000 * NUM_CHARS_PER_TOKEN
-        text_50_000_tokens = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        text_1_000_tokens = "x" * 1_000 * NUM_CHARS_PER_TOKEN
         input_messages = [
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),
-            HumanMessage(content=text_10_000_tokens),
-            AIMessage(content=text_50_000_tokens),
-            HumanMessage(content="query"),
-        ]
+            message
+            for _ in range(9)
+            for message in (
+                HumanMessage(content=text_1_000_tokens),
+                AIMessage(content=text_1_000_tokens),
+            )
+        ] + [HumanMessage(content="query")]
 
         config = {"configurable": {"thread_id": "artifacts-root-summarization-test"}}
         result = agent.invoke({"messages": input_messages}, config)

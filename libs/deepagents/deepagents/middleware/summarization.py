@@ -1759,7 +1759,7 @@ def create_summarization_middleware(
     backend: BackendProtocol,
     *,
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
-    trim_tokens_to_summarize: int | None = None,
+    trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
     token_counter: TokenCounter = count_tokens_approximately,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.

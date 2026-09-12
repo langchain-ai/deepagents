@@ -2,6 +2,24 @@
 
 # Deep Agents Changelog
 
+## [0.7.14](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.13...deepagents==0.7.14) (2026-09-12)
+
+
+### Features
+
+* **sdk,code:** update `read_file` output formatting ([#5648](https://github.com/langchain-ai/deepagents/issues/5648)) ([276beca](https://github.com/langchain-ai/deepagents/commit/276becae1bbaa38d6253aee90e99212e7bdf0606))
+
+
+### Bug Fixes
+
+* **sdk:** bound compaction recovery and validate input budgets ([#6267](https://github.com/langchain-ai/deepagents/issues/6267)) ([bb6d431](https://github.com/langchain-ai/deepagents/commit/bb6d4316eb59b368b862e5517b888e5e70b1c3ae))
+* **sdk:** fix character counting in `ls` and `glob` output ([#6204](https://github.com/langchain-ai/deepagents/issues/6204)) ([4ca678f](https://github.com/langchain-ai/deepagents/commit/4ca678fe11fcb8f452b59b31923f37dabbc26d6a))
+* **sdk:** keep blank read windows out of the empty-file warning ([#5050](https://github.com/langchain-ai/deepagents/issues/5050)) ([a892a0e](https://github.com/langchain-ai/deepagents/commit/a892a0ee26d045256b6d3b0c224b3de663c83eb5))
+* **sdk:** patch invalid partial tool calls ([#5430](https://github.com/langchain-ai/deepagents/issues/5430)) ([edc7c1c](https://github.com/langchain-ai/deepagents/commit/edc7c1ca69831c1827c1f479696a5450ffd1df9d))
+* **sdk:** reject empty old_string in edit_file paths ([#5747](https://github.com/langchain-ai/deepagents/issues/5747)) ([1281b04](https://github.com/langchain-ai/deepagents/commit/1281b04f7eafaf654982b99a3c93f72744208eda))
+* **sdk:** suggest populating path in `glob` tool result where appropriate ([#6199](https://github.com/langchain-ai/deepagents/issues/6199)) ([26954ea](https://github.com/langchain-ai/deepagents/commit/26954eaafb581db641dd7ce3f9d4ba470a9af878))
+* **sdk:** update imputed `ToolMessage` content in `PatchToolCallsMiddleware` ([#6277](https://github.com/langchain-ai/deepagents/issues/6277)) ([178417d](https://github.com/langchain-ai/deepagents/commit/178417d0dad063fea0300db68455f4574ef67db3))
+
 ## [0.7.13](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.12...deepagents==0.7.13) (2026-09-02)
 
 ### Bug Fixes

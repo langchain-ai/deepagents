@@ -1476,6 +1476,78 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
+def _normalize_mcp_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make open objects explicit unless evaluation annotations constrain them.
+
+    Returns:
+        A schema copy preserving `unevaluatedProperties` semantics.
+    """
+    nodes: list[dict[str, Any]] = []
+    normalized = _copy_mcp_schema(schema, nodes)
+    if any("unevaluatedProperties" in node for node in nodes):
+        return normalized
+    for node in nodes:
+        types = node.get("type", [])
+        if isinstance(types, str):
+            types = [types]
+        if (
+            isinstance(types, list)
+            and "object" in types
+            and node.get("properties", {}) == {}
+        ):
+            node.setdefault("additionalProperties", True)
+    return normalized
+
+
+def _copy_mcp_schema(
+    schema: dict[str, Any], nodes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Copy schema positions and collect them without interpreting literal data.
+
+    Returns:
+        A schema copy with independently copied subschemas.
+    """
+    normalized = dict(schema)
+    nodes.append(normalized)
+    for key in (
+        "properties",
+        "$defs",
+        "definitions",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+    ):
+        if isinstance(children := schema.get(key), dict):
+            normalized[key] = {
+                name: _copy_mcp_schema(child, nodes)
+                if isinstance(child, dict)
+                else child
+                for name, child in children.items()
+            }
+    for key in (
+        "items",
+        "additionalProperties",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "additionalItems",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "propertyNames",
+    ):
+        if isinstance(child := schema.get(key), dict):
+            normalized[key] = _copy_mcp_schema(child, nodes)
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems", "items"):
+        if isinstance(children := schema.get(key), list):
+            normalized[key] = [
+                _copy_mcp_schema(child, nodes) if isinstance(child, dict) else child
+                for child in children
+            ]
+    return normalized
+
+
 async def _build_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1509,6 +1581,8 @@ async def _build_mcp_tool(
     if not isinstance(tool, StructuredTool):
         msg = f"MCP adapter returned unsupported tool type {type(tool).__name__}"
         raise TypeError(msg)
+    if isinstance(tool.args_schema, dict):
+        tool.args_schema = _normalize_mcp_schema(tool.args_schema)
     call = tool.coroutine
     if call is not None:
         from deepagents_code.mcp_middleware import normalize_mcp_arguments

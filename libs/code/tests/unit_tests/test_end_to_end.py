@@ -202,7 +202,7 @@ class TestDeepAgentsCLIEndToEnd:
                     ]
                 )
             )
-            model.profile = {"max_input_tokens": 200_000}
+            model.profile = {"max_input_tokens": 10_000}
 
             # Create a CLI agent with the fake model
             agent, backend = create_cli_agent(
@@ -214,22 +214,20 @@ class TestDeepAgentsCLIEndToEnd:
 
             # Invoke the agent
             thread_id = str(uuid.uuid4())
-            text_10_000_tokens = "x" * 10_000 * 4
-            text_50_000_tokens = "x" * 50_000 * 4
+            text_500_tokens = "x" * 500 * 4
             input_messages = [
-                HumanMessage(content=text_10_000_tokens),
-                AIMessage(content=text_50_000_tokens),  # 60,000 tokens
-                HumanMessage(content=text_10_000_tokens),
-                AIMessage(content=text_50_000_tokens),  # 120,000 tokens
-                HumanMessage(content=text_10_000_tokens),
-                AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
-                HumanMessage(content="query"),
-            ]
+                message
+                for _ in range(9)
+                for message in (
+                    HumanMessage(content=text_500_tokens),
+                    AIMessage(content=text_500_tokens),
+                )
+            ] + [HumanMessage(content="query")]
             result = await agent.ainvoke(
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
-            assert len(result["messages"]) == 8  # 7 inputs + response
+            assert len(result["messages"]) == len(input_messages) + 1
             assert result["messages"][-1].content == "response"
 
             # two calls: one to summarize, one for response

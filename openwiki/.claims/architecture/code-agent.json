@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2a99ed137478555ec2efb3c96e348559e67345781bdb5237a8d1270b0879d943",
+  "pageVersion": "sha256:80c33d23e311f3e30352740ce32be6df8093e62445d930cd9915087db101f342",
   "claims": [
     {
       "id": "claim_d463e7db72ac47529b1cd7e9f1097352",
@@ -262,7 +262,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L792-L952",
-          "version": "repo-lines-v1:sha256:4e79aab3904b1648de4a74d82de6f7c72bcc9c7a779a38947bc92784116c21a7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiZjlmZGQwMTk2MDIwNWMwNzQ2N2U3MDJjNmE1YmRhZGJkMzFlZmE3NDU4NmY0M2Q5NjZkYmJiOGMwYjg2ZDY5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMjljNTI0NDM0YzAwOWFhZjBkN2ZlOWUyZmZlNzIyYjE3MGNmOGViMWM4YzE1NzVlNGUzYmQ1MWU5MjZjNzFiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMDg2MjcyYWM0Nzg3YzI3N2IyYzFlMzlmOTljMDgxZGY4MzM2ZWZjZmFkOTFjZjgyNjQ0Y2QzYmY4YTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWJkMGNmYmFhYmM0NDI1ZjI4NDUxMjQ3NTliMmFlNTIxNTBiMmM2MTBjMjNhYzU0NDE2YWI0YzU5ODMyYzc0In0"
+          "version": "repo-lines-v1:sha256:d8eaaad3a59b008a7b348d6baa2824de55872e91f46e86315b7a952cdc4e124e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiZjlmZGQwMTk2MDIwNWMwNzQ2N2U3MDJjNmE1YmRhZGJkMzFlZmE3NDU4NmY0M2Q5NjZkYmJiOGMwYjg2ZDY5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMjljNTI0NDM0YzAwOWFhZjBkN2ZlOWUyZmZlNzIyYjE3MGNmOGViMWM4YzE1NzVlNGUzYmQ1MWU5MjZjNzFiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMDg2MjcyYWM0Nzg3YzI3N2IyYzFlMzlmOTljMDgxZGY4MzM2ZWZjZmFkOTFjZjgyNjQ0Y2QzYmY4YTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWJkMGNmYmFhYmM0NDI1ZjI4NDUxMjQ3NTliMmFlNTIxNTBiMmM2MTBjMjNhYzU0NDE2YWI0YzU5ODMyYzc0In0"
         }
       ]
     },
@@ -383,10 +383,58 @@
           "version": "repo-lines-v1:sha256:9a4859d8e893f697e5f5eb5b654ee06471a3b3b615c50d8f3ec2adedf5c9d539:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjM2QxMzIwN2ViMjFjMmRjMmQzZDg2YjNkNTIxMzFkYTY2M2Q4YjM5NDVmMWIzY2IwMWMzNWE4NGIyNjNmZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzODlmMmZhN2Q5YzQwY2FiMjU4ODQ0M2QwYzFlOTRkNzMzNDQ1MjQwNGIwYzhhZDgzMDQ3NGYxYTg4MWRmODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ1Njk1ZmVhZjEyOTUzOWU1MGM1Njk5NGUzYTUxZTVmZTFlY2I4NmMzMzhkODUxNTQ0NmZmY2RiNDU1NmIwZTgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_6c6d0a9050564e929b32e55fe62f4dde",
+      "statement": "The workspace policy separates client-claimable session fields from project-scoped execution grants; project fields including MCP and extension trust, MCP configuration, sandbox setup, and extension paths must be resolved by the server rather than accepted in a client claim.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_server_config.py#L34-L79",
+          "version": "repo-lines-v1:sha256:8c90e5fa49df55132fe8d2602dcc3e2aded85c4fed4ec52a46ca8c34691112f1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2YzdmZDNiMzdiODYwNzU3OWViNDUyMGI2MjE2NTZiMDVkZTU0NGVkODFhZWUwMjkxNWZlNmU4ODJjNzUyNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNGQ5MDcwYmYzYjI4ZDRjZjA3MGVjMTU2ZWI3NmU1ZDNmOGE3OGMxYmY4MzRkNTJhM2E0MWM2NWUyYTgzNDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4e9ed86ba49f44c29d0e33c2f52c4cb6",
+      "statement": "When abandoning interrupted remote work, RemoteAgent cancels active runs, closes only unanswered trailing-turn tool calls with cancellation results, advances the checkpoint to `__end__`, and fails if queued graph work remains.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L171-L240",
+          "version": "repo-lines-v1:sha256:f11b802807bf55b97d1a6a703eb50ecd0e5415bc33e49e9d9ce2dc4ff582957e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiOTliN2NmYjRlZmQzZjZiY2FiMTI0MTkyZjFmMzE1OGFhN2VjM2I3MzdhYzgzYTVlMjJlYjg5YWYzMTRmZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMDE3NGQ4NDM1ZmMwNTFjYzFiYmIzZTk5ZGM3MzQwNzE4NmQ2MDg5NTg2YmY2MmNjOTczZDQ2NWRlZjI3YmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0NmVkMjBmMmZmOWU3MTE2ODgwNTJiMzEzZGVmZmM5YjRkYmE0MjA0ZGIxZDJkZDU3NTczYmQ4YTM5M2M5ZGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjYWVhNmYxNzM3ZWI3MjZmOWY2MTMwOGJkZGJlZGQ2ZmQyMjFmMDMxZTVkZTlmYzIyMTBhNDZiYmMwYThlOGIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L721-L754",
+          "version": "repo-lines-v1:sha256:2efee16bd335096a713a72a5e98cd4d3ed6354dffa8146b65da830581e96328b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmMDk0NjgxMDUxZDUyNzE3Y2E1MzU1Yzk2NzdkZGRkN2FlNmY3MTljYjMyMTU2MDU3NDI4OTUwYjc2NTczNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1ZmU3OGY5MGQ3N2ZiMWJiOWE5NWY0NjEwNjgyOTM5ODA3M2Y5YmI1NTQ4ZDc4ZDY2Y2NiZGY3YzliNDgyNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4ZThkYWI2OTFhNDYwMzljYjMzN2I0MTRjMjQ0ODUzMTk5MzQ1YmE2ZTE1N2M1YWU0YjZjMDNmZGE4MWNiNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczOWMzODMwNmE0YWJiNzU5ODAxNjkzN2I5M2YzMDdiZWNlZjEyY2Y4MzYxNzZlN2Q1NGRiZjQ4MmEyOTI2ZTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6b8733e1f6144340894494952d31058e",
+      "statement": "RemoteAgent treats a missing HTTP thread or a thread with no checkpoint as empty state, while logging and re-raising other state-retrieval failures.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L585-L639",
+          "version": "repo-lines-v1:sha256:7db37c5adf46ccc745d9a0c9b9c07e175951d8cec842e36df59c6da252b8bfed:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzN2NjMTJiZmRmMGM3NWYyY2ZhMWMzZWY4MGQwOWQ1NWMxMDA4N2I5MTBhM2MxYzkwZjZiODQxMTliMTdjNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWM1MjQ0MzRjMDA5YWFmMGQ3ZmU5ZTJmZmU3MjJiMTcwY2Y4ZWIxYzhjMTU3NWU0ZTNiZDUxZTkyNmM3MWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1Mzg2MTMwMTQ4ZDc4OGIzYTQ3OTM5M2RjMTY1YjQ0MmRhMTEyZTdhODUwZjE1NmIwZDcwYTlmZTZmZmZkNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMTJkMmEzN2M4MWVlOTViZGRlNGE4MTIxMTllMGM5MWQxOGJlMTdmZDMwNTM2ZmJkMjFjYTU0NjVhZWIxZTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8683f032409542c6b596cc682bcd0c76",
+      "statement": "Request-scoped offload execution converts a runtime-factory SystemExit into a service-unavailable response instead of terminating the LangGraph server.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L285-L314",
+          "version": "repo-lines-v1:sha256:ece9d08713575fc115020d0a31a2180c534b04370776004c37542ea6c752011c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0YmJlZWFiYTlhNTZjN2JmYzAzNTYyN2Y0MWRiYmZiZmJkMTQ5ZDFlYzAzNWI2MGQ5MDZlMzQ0MDk5NDQ0ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDY4YWNjOTBjYWI5YzM5ZTM5MjkzOGE1Y2U3YzdhYzViMzViODRlMjRjYjNhYzMyM2ZmNjU1ZGY5ZTNiZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0ZjFkMzIyZmM3NDQwMmUyNDRjODQ1NzMyNWZmMjFhNDJkNzYyYzQ3ZGJlZmZlNTVhZDIyNjZhYjUyMzUzZTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ4OGIyZTNhMTMyNWMxYTliNjZhMDUzNGFiZDJjNmJjMzZjNTBmZjNlNDgyNTMxNzVlNDE2ZWRmZWRlZDUwMzgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L851-L859",
+          "version": "repo-lines-v1:sha256:90187df0ddf48963e31b2daff1750e6ea1165467564db2bdfafec32f858f6a83:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzg0ZGQxNGVlMjJiODgyNDVjMjg1YmUxZTM2YzZhNjFmNThjMWYzMDAzYjI1ZGM3MzZmOGEyNDU0NmFhYWRlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTVlNjZhZDYwNzFkNmY1OWQ1NTBhMjBiMWI5YzNlNGYyNmYxZjNmYWM3ZjY5NjdmZDY2ZGI3MmVlY2YwZmQ0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNThlZjk4MTM2NzRhNWE3OWM0NWZmMjcxNTIwZmY3M2ZlNWZhYTYzODU0YzFkOGJlMWU2NjQ4Nzc5ZGNmNDE3MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTkzM2I5NTJlMTNlOTMyNzIxN2FlODRlODliY2QxNmFiMDliYTE1ZGUwNjhlOWE5OGU4MTRhYWYzNzZmYzlkMiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-12T08:04:33.168Z"
   }
 }

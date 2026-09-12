@@ -5,7 +5,7 @@ description: Explains the independent persistence boundaries for LangGraph state
 tags: [state, persistence, checkpoints, sessions, workspace, langgraph, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-12T08:04:33.168Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -13,6 +13,8 @@ sources:
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
     resource: repo://libs/code/deepagents_code/offload_api.py
+  - id: openwiki-source-9b6cab59e92c8914079f0f53
+    resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
     resource: repo://libs/code/deepagents_code/resume_state.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
@@ -33,7 +35,9 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-12T08:04:33.168Z" }
 ---
 
 # State, Sessions, and Workspace Persistence
@@ -99,6 +103,8 @@ flowchart TD
     ReResolve --> Runtime["Select cached or new workspace runtime"]
 ```
 
+The diagram shows durable workspace binding, conflict handling, and execution-time revalidation.
+
 This lifecycle shows that a thread obtains one durable workspace authority before its graph is selected, and every execution rechecks that authority.
 
 `bind_thread_workspace` uses `BEGIN IMMEDIATE` plus `INSERT OR IGNORE` and then compares the stored and proposed binding. Concurrent first claims cannot mix two workspaces: one wins and a different workspace or protected policy produces `WorkspaceConflictError`; an equivalent claim is idempotent. The resource key combines workspace identity and configuration fingerprint and selects a cached per-workspace runtime. A process-wide sandbox imposes a further constraint: a process already hosting another workspace in such a sandbox rejects the new workspace.
@@ -107,7 +113,11 @@ Current schema version 3 deliberately migrates compatible older binding rows. Ve
 
 Before remote graph execution, `make_graph` requires both a nonempty LangGraph `thread_id` and workspace context. `require_thread_workspace` confirms that every public context field exactly matches the durable binding, rejects an unsupported binding schema or claimed policy mismatch, and re-resolves the bound path to detect changed workspace identity. Runtime construction then resolves current server configuration for the bound workspace and rejects project-policy or server-configuration fingerprint drift. A transient failure while reading extension trust can therefore surface as policy drift rather than silently relaxing policy.
 
-The workspace-binding endpoint resolves policy on the server, rejects client attempts to claim project policy, binds before creating or updating remote thread metadata, and maps conflicts to HTTP 409. If the later metadata mirror fails, the binding remains durable but the endpoint returns 503: callers must handle that split outcome rather than assuming no workspace was bound.
+The workspace-binding endpoint resolves policy on the server, rejects client attempts to claim project policy, and maps conflicts to HTTP 409. A `validate_only` request resolves and validates a proposed binding but does not persist it or mirror thread metadata. A normal request persists the binding before it creates or updates remote thread metadata. If runtime construction or the later metadata mirror fails, the binding can already be durable while the endpoint returns 503; callers must handle that split outcome rather than assuming no workspace was bound.
+
+### Deleting a local session
+
+`delete_thread` removes the thread's LangGraph checkpoint and write rows from the local database, then best-effort removes its local offloaded conversation-history archive. Archive-cleanup failures are logged and do not change the return value, which reports only whether checkpoint rows were deleted. This cleanup is not a replacement for understanding other persistence owners: it does not establish that an external backend or a remote workspace-binding lifecycle was removed.
 
 ## Operational guidance
 

@@ -5,7 +5,7 @@ description: Package-scoped uv and Make workflows, repository fan-out validation
 tags: [development, ci, monorepo, uv, make, release-please]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-12T08:04:33.168Z
 sources:
   - id: openwiki-source-37e02a57730563a4b4de1690
     resource: repo://.github/LAYOUT.md
@@ -37,7 +37,7 @@ sources:
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-12T08:04:33.168Z" }
 ---
 
 # Development, CI, and Releases
@@ -142,8 +142,8 @@ The manifest is the current released-version baseline, not a source-version file
 | --- | --- |
 | `libs/deepagents` | `0.7.13` |
 | `libs/acp` | `0.0.11` |
-| `libs/code` | `0.1.67` |
-| `libs/talon` | `0.0.7` |
+| `libs/code` | `0.1.68` |
+| `libs/talon` | `0.0.8` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |

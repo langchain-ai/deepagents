@@ -3,9 +3,6 @@ type: capability reference
 title: Middleware Capability Catalog
 description: Capability-to-owner lookup for Deep Agents middleware, covering request shaping, filesystem access, context, memory, skills, delegation, quality gates, permissions, caching, and profile enforcement. Use it to select the owning layer and understand its important lifecycle boundaries.
 tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
@@ -41,7 +38,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-12T08:04:33.168Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-12T08:04:33.168Z" }
 ---
 
 # Middleware Capability Catalog
@@ -66,7 +66,11 @@ This page is a capability lookup, not a complete construction guide. See [Middle
 | Prompt-cache optimization | `append_prompt_caching_middleware` | Adds provider middleware during graph assembly before memory. |
 | Harness/profile tool consistency | `_ToolExclusionMiddleware` | Filters tools at model-call time and rejects excluded call names at dispatch. |
 
-The package re-exports the public filesystem, context, memory, skills, delegation, and rubric classes and associated supporting types from `deepagents.middleware`. Underscore-prefixed modules are assembly helpers rather than the stable consumer import surface.
+### Public imports versus assembly internals
+
+`deepagents.middleware` is the supported consumer import surface. Its `__all__` publishes filesystem (`FilesystemMiddleware`, `FilesystemPermission`), memory and skills middleware, synchronous and asynchronous subagent definitions/middleware, the summarization layers and factory, and rubric middleware plus its result and criterion types. Import those public names from the package when building an agent.
+
+The default stack also relies on deliberately non-public implementation modules. `PatchToolCallsMiddleware` is imported directly by graph assembly, not re-exported by `deepagents.middleware`; it repairs persisted message history rather than offering a user-facing capability. `_fs_interrupt`, `_prompt_caching`, `_state`, `_message_eviction`, `_overflow_clip`, `_tool_exclusion`, and `_video` similarly support assembly, policy translation, state isolation, recovery, profile presentation, or optional media handling. Treat underscore-prefixed names—and direct imports of the patcher—as implementation details rather than stable extension points.
 
 ## Request and state lifecycle
 
@@ -121,7 +125,7 @@ If a normal request raises `ContextOverflowError`, summarization is attempted ev
 
 `RubricMiddleware` is inert without a caller-supplied `rubric`. At a natural agent stop it sends a bounded, sanitized transcript to a lazily built separate grader agent, whose `GraderResponse` is constrained to `satisfied`, `needs_revision`, or `failed` and criterion-level consistency. Only `needs_revision` appends tagged grader feedback as a synthetic `HumanMessage` and jumps back to the model. `max_iterations_reached` and `grader_error` are middleware terminal results, not grader verdicts; non-satisfied terminal outcomes preserve the main agent's last response, so callers must inspect private state, events, or the callback to branch. Grader transcript contents are explicitly treated as untrusted observation, while the rubric defines done.
 
-`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call whose id has no `ToolMessage`, it inserts a synthetic cancelled response—or a malformed-arguments response for invalid calls—and rewrites the complete message list.
+`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. It gathers all answered tool-call IDs, then for every valid or invalid AI tool call with a non-null unanswered ID inserts a synthetic error `ToolMessage` immediately after that AI message and rewrites the complete message list. Invalid calls receive a malformed-or-truncated-arguments explanation; otherwise the explanation says that no result was recorded and the call may have been cancelled or interrupted. Existing results and ID-less calls are left alone. This repair is idempotent on the next run because the inserted messages make those IDs answered.
 
 Profiles may omit middleware and tools. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: it removes excluded tools from the model request and rejects an excluded name at the tool-call boundary, preventing a custom request wrapper from re-advertising it. This aligns advertised and executable tools; it is not a security boundary.
 

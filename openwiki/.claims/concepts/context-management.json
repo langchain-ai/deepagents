@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cca9bd3acb617ac4ef20a2c54ef9ce636c7ba8340b675b3a3ef740ee827d0f87",
+  "pageVersion": "sha256:9cab5ddebcd2ac2aeccf2f2ec4f46b3307dd5060cc015e74b3c6825f0e081a0b",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -28,7 +28,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -42,7 +42,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -52,7 +52,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -90,7 +90,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -110,7 +110,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -140,7 +140,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -154,7 +154,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -168,7 +168,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -365,6 +365,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-12T08:04:33.168Z"
   }
 }

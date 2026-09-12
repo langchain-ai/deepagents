@@ -5,7 +5,7 @@ description: How deepagents and dcode control model-visible context through resu
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-12T08:04:33.168Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -33,7 +33,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-12T08:04:33.168Z" }
 ---
 
 # Context Management and Offload
@@ -57,7 +57,7 @@ flowchart TD
     Evict --> Read["read_file reads selected ranges"]
 ```
 
-Caption: The source-verified SDK path evicts a single oversized result independently of compaction; compaction changes the model request while checkpointed raw messages remain available.
+Caption: The SDK path evicts a single oversized result independently of compaction; compaction changes the model request while checkpointed raw messages remain available.
 
 ## Large tool results: evict text, retain a recovery path
 

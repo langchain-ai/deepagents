@@ -1,0 +1,92 @@
+muse-instinct-agent/tools/link.py
+  s_53da529842cf04::t_1bcdde6a1196ab 1-49
+muse-instinct-agent/channels/slack.py
+  s_9f099edb5a141a::t_e92f6c9a0e6a77 1-2,25-29,32,39
+  s_9f099edb5a141a::t_989bb393c064c6 30-31
+  s_9f099edb5a141a::t_028bb39507c67b 3-24,33-38
+muse-instinct-agent/sandbox/__init__.py
+  s_9f099edb5a141a::t_2c78057fc31bfe 4-5,28-29,34
+  s_9f099edb5a141a::t_97c044f938b7af 6-23,31-33,35-64
+  s_9f099edb5a141a::t_f617a8f67cfe5e 65-71
+  s_9f099edb5a141a::t_8898d141920c05 1-3,24-27,30
+muse-instinct-agent/tools/search.py
+  s_9f099edb5a141a::t_b61bfa0b483a7c 1-76
+muse-instinct-agent/tools/_assets/playwright_facade.js
+  s_9f099edb5a141a::t_e152159b16f433 1-1689
+muse-instinct-agent/agent.py
+  s_53da529842cf04::t_e31b7128141bed 34,47
+  s_9f099edb5a141a::t_3524a987fdf7c1 10-12,36
+  s_9f099edb5a141a::t_b61bfa0b483a7c 21-23,35
+  s_53da529842cf04::t_9937a07db78ce5 1-9,13-20,24-33,37-46,48
+muse-instinct-agent/tools/stagehand.py
+  s_9f099edb5a141a::t_e152159b16f433 1-5,7-39,42-147,192-502
+  s_9f099edb5a141a::t_737785af01a207 168-189
+  s_9f099edb5a141a::t_089450112d0ff8 148-152,166-167,190-191
+  s_9f099edb5a141a::t_cee98fb9d56ec4 6,40-41,153-165
+muse-instinct-agent/.gitignore
+  s_7b0dc37b3be9f2::t_dfac291aa00c59 5-6
+  s_7b0dc37b3be9f2::t_9e2eee777a9403 1-4
+muse-instinct-agent/pyproject.toml
+  s_9f099edb5a141a::t_3524a987fdf7c1 15-17
+  s_9f099edb5a141a::t_0fec8427b16340 1-14
+muse-instinct-agent/instructions.md
+  s_9f099edb5a141a::t_242dd349f5a1e8 7-28,30-31
+  s_9f099edb5a141a::t_303784f732618a 127-130,137-139
+  s_9f099edb5a141a::t_ad8a8bbda2ffc8 85-86
+  s_9f099edb5a141a::t_b352334e9a6867 87,125-126,140-157
+  s_9f099edb5a141a::t_31d4762541928d 92-93,106-107
+  s_9f099edb5a141a::t_57b6d42a66cf65 29,32-33,36
+  s_9f099edb5a141a::t_b99c2ece068be1 38-64,114-118
+  s_9f099edb5a141a::t_3ebea6064ece67 131-136
+  s_9f099edb5a141a::t_f33b77655988ad 94-105,108
+  s_9f099edb5a141a::t_f59ad9b50d1e22 1-6,34-35,37,65-84,88-91,109-113,119-124,158-159
+muse-instinct-agent/uv.lock
+  s_9f099edb5a141a::t_58e1bbc04172ee 1-987
+muse-instinct-agent/README.md
+  s_9f099edb5a141a::t_a907871f2aeb42 1-113
+muse-instinct-agent/identity.py
+  s_9f099edb5a141a::t_1e92e969c2c0b4 1-21
+muse-instinct-agent/run_once.py
+  s_9f099edb5a141a::t_72b4e5c728e02f 1-60
+muse-instinct-agent/sandbox/setup.sh
+  s_9f099edb5a141a::t_f970ec5b4ea8e9 1-29
+muse-instinct-agent/smoke_test.py
+  s_9f099edb5a141a::t_1f1c41eb2ce5d7 1-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5a2d915f1a0af1f34b0bce8f0384afaa154b5206",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_53da529842cf04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c96bd839-8e98-4a28-a8d7-035709a84c69",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_7b0dc37b3be9f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e26958da-0724-4d4b-8362-f5c39e6365d5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_9f099edb5a141a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6416e36e-7550-4bed-9a8f-45932150f64d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

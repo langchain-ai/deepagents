@@ -20,7 +20,7 @@ dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.6.12",
     "langchain>=1.3.12,<2.0.0",
-    "deepagents-code>=0.1.27",
+    "deepagents-code[mcp]>=0.1.27",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
     # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;

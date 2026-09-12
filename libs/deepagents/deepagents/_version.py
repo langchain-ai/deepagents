@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # uses it to keep `__version__` in sync with `pyproject.toml` on every release
 # PR. Without it, `__version__` silently drifts behind the package version. See
 # `.github/RELEASING.md` > Version Bumping.
-__version__ = "0.7.13"  # x-release-please-version
+__version__ = "0.7.14"  # x-release-please-version
 
 
 def _distribution_name(dist: Distribution) -> str:

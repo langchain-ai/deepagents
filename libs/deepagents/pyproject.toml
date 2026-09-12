@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.7.13"
+version = "0.7.14"
 
 description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"

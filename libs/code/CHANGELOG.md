@@ -2,6 +2,18 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-12)
+
+
+### Features
+
+* **sdk,code:** update `read_file` output formatting ([#5648](https://github.com/langchain-ai/deepagents/issues/5648)) ([276beca](https://github.com/langchain-ai/deepagents/commit/276becae1bbaa38d6253aee90e99212e7bdf0606))
+
+
+### Bug Fixes
+
+* **code:** demote no-output hint suppression to debug ([#6245](https://github.com/langchain-ai/deepagents/issues/6245)) ([d93ab33](https://github.com/langchain-ai/deepagents/commit/d93ab3351bbf4c3687212f665094ccad100f2c08))
+
 ## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
 
 ### Features

@@ -1477,24 +1477,51 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
 
 
 def _normalize_mcp_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Make empty open objects explicit so providers do not close their payloads.
+    """Make open objects explicit unless evaluation annotations constrain them.
 
     Returns:
-        A schema copy with implicit open objects made explicit.
+        A schema copy preserving `unevaluatedProperties` semantics.
+    """
+    nodes: list[dict[str, Any]] = []
+    normalized = _copy_mcp_schema(schema, nodes)
+    if any("unevaluatedProperties" in node for node in nodes):
+        return normalized
+    for node in nodes:
+        types = node.get("type", [])
+        if isinstance(types, str):
+            types = [types]
+        if (
+            isinstance(types, list)
+            and "object" in types
+            and node.get("properties", {}) == {}
+        ):
+            node.setdefault("additionalProperties", True)
+    return normalized
+
+
+def _copy_mcp_schema(
+    schema: dict[str, Any], nodes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Copy schema positions and collect them without interpreting literal data.
+
+    Returns:
+        A schema copy with independently copied subschemas.
     """
     normalized = dict(schema)
-    if schema.get("type") == "object" and schema.get("properties") == {}:
-        normalized.setdefault("additionalProperties", True)
+    nodes.append(normalized)
     for key in (
         "properties",
         "$defs",
         "definitions",
         "patternProperties",
         "dependentSchemas",
+        "dependencies",
     ):
         if isinstance(children := schema.get(key), dict):
             normalized[key] = {
-                name: _normalize_mcp_schema(child) if isinstance(child, dict) else child
+                name: _copy_mcp_schema(child, nodes)
+                if isinstance(child, dict)
+                else child
                 for name, child in children.items()
             }
     for key in (
@@ -1505,13 +1532,17 @@ def _normalize_mcp_schema(schema: dict[str, Any]) -> dict[str, Any]:
         "if",
         "then",
         "else",
+        "additionalItems",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "propertyNames",
     ):
         if isinstance(child := schema.get(key), dict):
-            normalized[key] = _normalize_mcp_schema(child)
-    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            normalized[key] = _copy_mcp_schema(child, nodes)
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems", "items"):
         if isinstance(children := schema.get(key), list):
             normalized[key] = [
-                _normalize_mcp_schema(child) if isinstance(child, dict) else child
+                _copy_mcp_schema(child, nodes) if isinstance(child, dict) else child
                 for child in children
             ]
     return normalized

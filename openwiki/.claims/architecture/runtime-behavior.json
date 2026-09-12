@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f5638ab2b317aae0a2ce7a32c33597b416fe81278c4f7bd8931c206e2b83c1a3",
+  "pageVersion": "sha256:9c373bac26b9b169c553bedf25e7caf3865a806e8d4e102694793e7e7d61abfa",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -199,10 +199,40 @@
           "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
         }
       ]
+    },
+    {
+      "id": "claim_545ce95726f94341ab9924e3355f8c57",
+      "statement": "Workspace bindings are atomically persisted in the sessions SQLite database with canonical workspace identity, project root, policy JSON, and a fingerprint-derived resource key; a thread cannot be rebound to conflicting workspace or policy, while compatible legacy rows can be migrated.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py",
+          "version": "repo-file-v1:sha256:85b06cd7f40d542ddd0713cf8dbeacf10ff63f7b2c77b28b481fe8c42e6d3447"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca6fff74e92343b8b7da64f93a8dad8c",
+      "statement": "The server pins process-wide LangSmith tracing and redaction settings from the first workspace runtime and rejects later workspace runtimes with different tracing settings, preventing process-global tracing from crossing workspace boundaries.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_215d022621d9448595785e01f40194a8",
+      "statement": "Remote offload ensures a live HTTP thread, forwards workspace context to the custom operation route, uses a single operation ID across hook-interrupt resume rounds capped at 32 fulfillments, and on caller cancellation waits for a server cancelled-or-finished acknowledgement before re-raising cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-12T08:04:33.168Z"
   }
 }

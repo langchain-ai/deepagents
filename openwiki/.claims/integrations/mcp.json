@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:65f4cf51bd392fbff3520bbeb7a094778c6783486901b83de21be002cd751bd7",
+  "pageVersion": "sha256:a8d677d16d159b0689fbc87ab03ed4f91934939d4dd83b24819d122ab6f05769",
   "claims": [
     {
       "id": "claim_d5aa81de837946b19d18c6953cbc5d84",
@@ -34,16 +34,6 @@
           "resource": "repo://libs/code/deepagents_code/client/commands/mcp.py",
           "version": "repo-file-v1:sha256:c466626b6ad313aa47edfdfc9bd98c7313c8b3a5c24d9be653affe8125eda2ba"
         },
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py",
-          "version": "repo-file-v1:sha256:950ba3dcabcac5631d67d82728f35194c3a2f3a6ff8308a2da1e96cc74c4ff1c"
-        }
-      ]
-    },
-    {
-      "id": "claim_db0cd80b67b64a0fbf1c72673b84e21b",
-      "statement": "For auto-discovered login targets, `resolve_mcp_config` applies project trust filtering and returns skipped project paths plus policy, legacy, malformed-approval, and load-error diagnostics as structured result fields; an explicit config is instead loaded by itself.",
-      "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_login_service.py",
           "version": "repo-file-v1:sha256:950ba3dcabcac5631d67d82728f35194c3a2f3a6ff8308a2da1e96cc74c4ff1c"
@@ -150,11 +140,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -164,15 +154,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -182,7 +172,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py",
@@ -190,11 +180,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -204,11 +194,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_mcp_config.py",
-          "version": "repo-file-v1:sha256:96f1d0d8ece96fba82491ae16c4b77ffd08e1adb4388efcdf3da20ec0dbaf3c3"
+          "version": "repo-file-v1:sha256:cd2e39b982d43391e4ea321148740203cf408055608ddc01b70d7cdc33adbd10"
         }
       ]
     },
@@ -218,11 +208,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -242,7 +232,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         }
       ]
     },
@@ -252,13 +242,67 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
+        }
+      ]
+    },
+    {
+      "id": "claim_fb630ad187714a6c8c45bf4bc7790f6b",
+      "statement": "For auto-discovered dcode login targets, `resolve_mcp_config` applies project trust filtering and returns skipped project paths plus policy, legacy, malformed-approval, and load-error diagnostics as structured result fields; an explicit config is instead loaded by itself.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py",
+          "version": "repo-file-v1:sha256:950ba3dcabcac5631d67d82728f35194c3a2f3a6ff8308a2da1e96cc74c4ff1c"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec42c1f6a7dc4e77a5b0edda480fdba5",
+      "statement": "dcode resolves `${VAR}` and `${VAR:-default}` in supported MCP fields against its active configuration environment without mutating the raw server definition; malformed references and unset required variables fail, while `:-` uses its default for an empty or unset value.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_config.py",
+          "version": "repo-file-v1:sha256:e5c64aae51ebf0a35ac902894ab7685e21901c08fbb0af1ffa33abac032a1df8"
+        }
+      ]
+    },
+    {
+      "id": "claim_aa47f7e26a3b4484ba941435ad1e9486",
+      "statement": "Talon resolves the same supported MCP string fields from `TalonConfig.env` before the process environment, rejects malformed or required-unset references, and blocks a defined set of dangerous stdio environment variables.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp.py",
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
+        }
+      ]
+    },
+    {
+      "id": "claim_100fb52387d14c23ac86b2ac152166ac",
+      "statement": "Talon's runtime preserves the existing tool graph when a scheduled MCP refresh fails and replaces tools and graph together only after a successful refresh; host-triggered explicit reload similarly suppresses configuration and transport failure details from the channel response.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:48e22926fddce530d64bfe71e5b2305892ef94728186be402deddb7ad9bfbe2a"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:69e147902c7078760bbc642a65ca273f2d500818410407bc8e251e405adbd63b"
+        }
+      ]
+    },
+    {
+      "id": "claim_47a6c07d346049ecbfe0c2361ce427bf",
+      "statement": "Talon OAuth discovery and token requests are constrained to public HTTPS without redirects, validate authorization metadata issuer and endpoints, and preserve a stored refresh token when a refresh response omits one.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py",
+          "version": "repo-file-v1:sha256:862f67e6fc88b798a4f2e2143837659786ecd75357514aede04c1225d01511d7"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-12T08:04:33.168Z"
   }
 }

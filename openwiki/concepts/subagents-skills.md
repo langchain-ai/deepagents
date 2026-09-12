@@ -1,11 +1,11 @@
 ---
 type: agent extension mechanisms
 title: Subagents and Skills
-description: Deepagents middleware for inline, forked, compiled, and remote asynchronous delegation, plus progressive-disclosure skill discovery and loading. Includes dcode and Talon configuration and runtime behavior for these extensions.
+description: Deepagents middleware for inline, forked, compiled, and remote asynchronous delegation, plus progressive-disclosure skill discovery and loading. Covers Talon's fresh local and opaque remote subagents, background lifecycle, reload behavior, and configuration validation.
 tags: [subagents, skills, delegation, middleware, progressive-disclosure, agent-protocol, dcode, talon]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-12T08:04:33.168Z
 sources:
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
@@ -41,12 +41,14 @@ sources:
     resource: repo://libs/talon/tests/test_async_subagents.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+  - id: openwiki-source-ba64217fcf5745a7cb863296
+    resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-12T08:04:33.168Z" }
 ---
 
 # Subagents and Skills
 
-Deepagents has two complementary extension mechanisms. **Subagents** delegate work to another local agent, caller-supplied runnable, or remote graph. **Skills** make a large instruction library discoverable without placing every instruction in every model request. `create_deep_agent` assembles the middleware; `SubAgentMiddleware`, `AsyncSubAgentMiddleware`, and `SkillsMiddleware` own the SDK runtime behavior. See [middleware stack](/openwiki/architecture/middleware-stack.md), [context management](/openwiki/concepts/context-management.md), and [build a deep agent](/openwiki/workflows/build-a-deep-agent.md).
+Deepagents has two complementary extension mechanisms. **Subagents** delegate work to another local agent, caller-supplied runnable, or remote graph. **Skills** make a large instruction library discoverable without placing every instruction in every model request. `create_deep_agent` assembles the middleware; `SubAgentMiddleware`, `AsyncSubAgentMiddleware`, and `SkillsMiddleware` own the SDK behavior. See [middleware stack](/openwiki/architecture/middleware-stack.md), [context management](/openwiki/concepts/context-management.md), and [build a deep agent](/openwiki/workflows/build-a-deep-agent.md).
 
 ## Choose the delegation boundary
 
@@ -129,19 +131,39 @@ For interactive `/skill:` commands, dcode wraps the SDK skill parser with a loca
 
 ## Talon: fresh, backgrounded, and reloadable delegation
 
-Talon is experimental and has its own delegation layer around the SDK. It loads remote definitions from `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. The CLI supplies this loader to `DeepAgentRuntime` in strict mode. An absent file yields no remote agents; unreadable, malformed, or invalid configuration fails startup in strict mode. Non-strict loading warns and retains valid entries.
+Talon is experimental and layers its own delegation policy around the SDK. Its CLI passes `load_async_subagents` into `DeepAgentRuntime`. The loader reads `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. A missing file or absent section yields no remote agents. Reading, TOML parsing, section-shape, or any definition error raises `ValueError`: configuration is fail-closed rather than silently retaining only valid entries.
 
-Talon also reads local `AGENTS.md` definitions from its assistant `agents/{name}/` directory (or its parent fallback). These require name and description, may select a model and exact unique tool names, and compile as **fresh** agents with a task-only input and the operator approval policy. Talon does not support SDK fork mode: local configuration rejects any mode other than its `fresh` default, and preparation rejects `fork`. Per call, its `task` wrapper can add selected catalog tools to a named local subagent without replacing configured tools; it rejects duplicate or unavailable selections.
+Talon also reads local `AGENTS.md` definitions from its assistant `agents/{name}/` directory (or its parent fallback). A frontmatter name defaults to the directory name; a non-empty description is required, while model selection is optional. Its `mode` may only be omitted or `fresh`; fork is rejected. Declared tools must be unique non-empty exact names and must resolve from the configuration catalog. Local definitions compile as **fresh** task-only agents with only their configured attachments and applicable operator approval policy, without inherited history, skills, middleware, or a checkpointer. Remote and caller-supplied compiled agents are opaque: their attachment inventory deliberately reports unknown tools.
 
-Unlike the SDK's durable remote-task state, Talon's `BackgroundSubagents` detaches both inline `task` and `start_async_task` work into in-memory workers. It returns a Talon task ID immediately, scopes inspection and cancellation to the owning conversation, caps total and concurrent work, and runs each job with a separate thread ID. Remote jobs stream their original configured target and cancel on disconnect. Finished, non-cancelled results are delivered back to the owning main agent as data and acknowledged only after that turn completes; they are not durable across a runtime restart.
+Talon's `task` wrapper permits per-call attachments only for named local agents. Selected names must be unique and available in the parent catalog excluding delegation tools; they are added to, not substituted for, configured tools, and trigger a fresh compilation for that task. `get_agent_tools` exposes attachment names and whether saved changes are inactive without exposing prompts or credentials.
 
-Talon provides `reload_subagent_configuration` when local or loader-backed definitions are configured. It validates and builds a replacement graph under a lock, activates it for the next turn, and preserves the old graph when reload fails. Running turns and background tasks retain their original capabilities, so operators should inspect and cancel them before claiming a removal has taken effect.
+```mermaid
+sequenceDiagram
+    participant Main as Main agent
+    participant Bg as BackgroundSubagents
+    participant Worker as Worker
+    participant Remote as Remote graph
+    Main->>Bg: task or start_async_task
+    Bg-->>Main: Talon task ID
+    Bg->>Worker: detached job with new thread ID
+    Worker->>Remote: stream remote job when selected
+    Remote-->>Worker: values or failure
+    Worker-->>Bg: result or terminal status
+    Bg-->>Main: inject completed result on later turn
+```
+*Talon converts both local and remote delegation into bounded in-memory background work; remote jobs stream the configured graph.*
+
+Unlike the SDK's durable remote-task state, Talon's `BackgroundSubagents` detaches both inline `task` and `start_async_task` work into in-memory workers. It requires an owning conversation thread, scopes inspection and cancellation to that owner, caps the pool at 128 total jobs and four running jobs, and gives every worker a distinct thread ID. Workers have a recursion limit of 500 and a one-hour timeout; their authorization handler is cleared and approvals are disabled, so protected work returns an approval-needed result rather than waiting for an absent operator. A remote worker streams the configured graph with `on_disconnect="cancel"`.
+
+A successful, non-cancelled result is queued as data for a subsequent turn of its owning main agent. The runtime acknowledges it only after that turn completes; failed delivery is retried up to three times, then dropped. Cancellation suppresses delivery. The store is in memory, so work and results do not survive a runtime restart.
+
+Talon provides `reload_subagent_configuration` when local or loader-backed definitions are configured. It resolves and validates definitions and creates the replacement graph under the tool lock before assigning either the resolved definitions or active graph. The replacement is used on subsequent turns; the current invocation snapshots its graph in a context variable, and configured background middleware copies the remote target mapping. Thus active turns and already-launched tasks retain their original capabilities, while a failed reload leaves the previous configuration active. Operators should inspect and cancel running jobs before treating removal as complete.
 
 ## Focused tests and safe changes
 
-SDK tests cover routing and default registration, mode validation and the legacy alias, fork prompt/state differences and recursion refusal, dynamic response formats, duplicate names, result extraction, private-state filtering, public-state transfer, configuration merge behavior, all remote tools, reducers/timestamps, headers, cached filtering/live refresh, and ASGI restrictions. Skills tests cover backend loading, malformed candidates, precedence, private one-time state, and template validation.
+SDK tests cover routing and default registration, mode validation and the legacy alias, fork prompt/state differences and recursion refusal, dynamic response formats, duplicate names, result extraction, private-state filtering, public-state transfer, configuration merge behavior, all remote tools, reducers/timestamps, cached filtering/live refresh, and ASGI restrictions. Skills tests cover backend loading, malformed candidates, precedence, private one-time state, and template validation.
 
-The dcode tests cover source discovery, override precedence, slash-command discovery, and containment/trust roots. Talon tests cover TOML parsing, fresh local-agent validation and attachments, background ownership/capacity/cancellation/result delivery, and reload behavior. Preserve these boundary tests when changing delegation: state inheritance, capability attachment, source precedence, and reload semantics are security and lifecycle contracts rather than display details.
+The dcode tests cover source discovery, override precedence, slash-command discovery, and containment/trust roots. Talon tests cover fail-closed TOML parsing, fresh local-agent validation and attachments, background ownership/capacity/cancellation/result delivery, and reload behavior. Preserve these boundary tests when changing delegation: state inheritance, capability attachment, source precedence, and reload semantics are security and lifecycle contracts rather than display details.
 
 ## Related
 

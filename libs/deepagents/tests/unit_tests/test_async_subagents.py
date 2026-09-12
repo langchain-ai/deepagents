@@ -30,9 +30,12 @@ def _make_spec(name: str = "test-agent", **overrides: Any) -> AsyncSubAgent:
     return AsyncSubAgent(**base)  # type: ignore[typeddict-item]
 
 
-def _make_runtime(tool_call_id: str = "tc_test") -> ToolRuntime:
+def _make_runtime(
+    tool_call_id: str = "tc_test",
+    state: dict[str, Any] | None = None,
+) -> ToolRuntime:
     return ToolRuntime(
-        state={},
+        state=state or {},
         context=None,
         tool_call_id=tool_call_id,
         store=None,
@@ -263,6 +266,37 @@ class TestLaunchTool:
             thread_id="thread_abc",
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
+        )
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_forwards_public_state_and_excludes_private_and_internal_keys(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha")])
+        middleware.private_state_keys = frozenset({"access_token"})
+        launch = _get_tool(middleware.tools, "start_async_task")
+        runtime = _make_runtime(
+            state={
+                "access_token": "secret",
+                "public_context": "available to the child",
+                "todos": [{"content": "parent-only"}],
+                "structured_response": {"result": "parent-only"},
+                "async_tasks": {"other-task": {}},
+            }
+        )
+
+        launch.func(description="analyze data", subagent_type="alpha", runtime=runtime)
+
+        mock_client.runs.create.assert_called_once_with(
+            thread_id="thread_abc",
+            assistant_id="my_graph",
+            input={
+                "public_context": "available to the child",
+                "messages": [{"role": "user", "content": "analyze data"}],
+            },
         )
 
 

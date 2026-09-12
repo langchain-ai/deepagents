@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._state import _FORKED_CONTEXT_KEY, prepare_subagent_state
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import (
@@ -49,13 +50,6 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVEN
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result.
-"""
-
-_FORKED_CONTEXT_KEY = "_deepagents_forked_context"
-"""Set on a forked subagent's own initial state; never on the parent's.
-
-Lets `task`/`atask` refuse recursive delegation at call time instead of
-omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 """
 
 _FORK_RECURSION_REFUSAL = (
@@ -389,26 +383,6 @@ DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user as
 The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
 response contains the complete answer."""
 
-_EXCLUDED_STATE_KEYS = {
-    "messages",
-    "todos",
-    "structured_response",
-    _FORKED_CONTEXT_KEY,
-}
-"""State keys that are excluded when passing state to subagents and when
-returning updates from subagents.
-
-When returning updates:
-
-1. The messages key is handled explicitly to ensure only the final message
-    is included
-2. The todos and `structured_response` keys are excluded as they do not have
-    a defined reducer and no clear meaning for returning them from a subagent
-    to the main agent.
-3. Agent-private fields on middleware state schemas are excluded from both
-    subagent output and subagent inputs.
-"""
-
 
 class TaskToolSchema(BaseModel):
     """Input schema for the `task` tool."""
@@ -684,7 +658,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = prepare_subagent_state(result, private_state_keys=private_state_keys)
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -749,7 +723,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             else:
                 # A compiled runnable is opaque -- it may not declare these
                 # channels, and internal state isn't ours to hand it.
-                inherited = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
+                inherited = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
             subagent_state = {
                 **inherited,
                 "messages": _fork_messages(
@@ -759,7 +733,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 ),
             }
         else:
-            subagent_state = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
+            subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent_runnable, subagent_state
 

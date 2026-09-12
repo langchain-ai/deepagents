@@ -8,12 +8,12 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING, Annotated, Any, cast
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -2935,3 +2935,23 @@ class TestSubagentMiddlewareIsolation:
         )
         helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
         assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+
+class TestAsyncSubagentPrivateState:
+    def test_resolves_private_state_keys_for_async_subagents(self) -> None:
+        class State(DeepAgentState):
+            access_token: Annotated[str, PrivateStateAttr]
+
+        model = GenericFakeChatModel(messages=iter([]))
+        async_subagent = {
+            "name": "remote-worker",
+            "description": "A remote worker.",
+            "graph_id": "remote_worker",
+            "url": "http://localhost:8123",
+        }
+
+        with patch.object(AsyncSubAgentMiddleware, "private_state_keys", new_callable=PropertyMock) as private_keys:
+            create_deep_agent(model=model, state_schema=State, subagents=[async_subagent])
+
+        private_keys.assert_called_once()
+        assert "access_token" in private_keys.call_args.args[0]

@@ -117,8 +117,7 @@ DANGEROUS_SHELL_PATTERNS = (
 )
 """Literal substrings that indicate shell injection risk.
 
-Ported from `deepagents_cli.config.DANGEROUS_SHELL_PATTERNS`.  Used by
-`contains_dangerous_patterns` to reject commands that embed arbitrary
+Used by `contains_dangerous_patterns` to reject commands that embed arbitrary
 execution via redirects, substitution operators, or control characters —
 even when the base command is on the allow-list.
 """

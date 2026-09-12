@@ -20,6 +20,17 @@ if TYPE_CHECKING:
     from langchain_core.callbacks import CallbackManagerForLLMRun
 
 
+DCA_TEST_OFFLOAD_GATE_ENV = "DCA_TEST_OFFLOAD_GATE_DIR"
+"""Env var pointing at a directory used to gate summary generation.
+
+When set, a summary request writes `<dir>/entered` and then polls for
+`<dir>/release` before replying. File-based so the test process can hold the
+server's compaction model call open without sharing Python state across the
+server subprocess boundary. Only summary prompts are gated; ordinary turns pass
+through, which is what lets a test launch a concurrent run *while* `/offload`
+is blocked here.
+"""
+
 # Prompt markers that drive `ToolCallingIntegrationChatModel`. Each marker is the
 # full token (including the trailing `=`); the file path follows on the same line,
 # e.g. `DCA_TEST_WRITE_FILE=/tmp/out.txt`. These are the single source of truth
@@ -27,6 +38,7 @@ if TYPE_CHECKING:
 DCA_TEST_WRITE_FILE_MARKER = "DCA_TEST_WRITE_FILE="
 DCA_TEST_DELEGATE_WRITE_MARKER = "DCA_TEST_DELEGATE_WRITE="
 DCA_SUBAGENT_WRITE_FILE_MARKER = "DCA_SUBAGENT_WRITE_FILE="
+DCA_TEST_GOAL_CRITERIA_MARKER = "DCA_TEST_GOAL_CRITERIA="
 
 # Distinct file contents per write path, so a test asserting on file content can
 # prove which branch executed — in particular that subagent mode delegated through
@@ -93,6 +105,7 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
             if (text := self._stringify_message(message)).strip()
         )
         if self._looks_like_summary_request(prompt):
+            self._wait_at_summary_gate()
             content = "integration summary"
         else:
             excerpt = " ".join(prompt.split()[-18:])
@@ -102,13 +115,57 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
                 content = "integration reply"
 
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=content))]
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=content,
+                        usage_metadata={
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                    )
+                )
+            ]
         )
 
     @property
     def _llm_type(self) -> str:
         """LangChain model type identifier."""
         return "deterministic-integration"
+
+    @staticmethod
+    def _wait_at_summary_gate() -> None:
+        """Hold the summary call open until the test releases it.
+
+        No-op unless `DCA_TEST_OFFLOAD_GATE_DIR` names a directory. When set,
+        write `<dir>/entered` (the test's signal that the offload operation is
+        mid-summary) and then poll for `<dir>/release`. Every summary request
+        rewrites the marker, so the test reads it as "a summary is in flight"
+        rather than "the first summary started". Bounded so a crashed test
+        cannot wedge the server subprocess indefinitely.
+
+        Raises:
+            TimeoutError: If the gate is not released within 120 seconds.
+        """
+        import os
+        import time
+        from pathlib import Path
+
+        gate_dir = os.environ.get(DCA_TEST_OFFLOAD_GATE_ENV)
+        if not gate_dir:
+            return
+        gate = Path(gate_dir)
+        (gate / "entered").write_text("1")
+        deadline = time.monotonic() + 120
+        while not (gate / "release").exists():
+            if time.monotonic() > deadline:
+                msg = (
+                    "Offload test gate was never released; refusing to block "
+                    "the server summary call forever."
+                )
+                raise TimeoutError(msg)
+            time.sleep(0.05)
 
     @staticmethod
     def _stringify_message(message: BaseMessage) -> str:
@@ -302,4 +359,44 @@ class ToolCallingIntegrationChatModel(DeterministicIntegrationChatModel):
                     "call_write_file",
                 ),
             ),
+        )
+
+
+class GoalCriteriaIntegrationChatModel(DeterministicIntegrationChatModel):
+    """Exercise nested criteria generation with a repository read."""
+
+    disable_streaming: bool = True
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        """Read the marked file, then return a structured goal proposal.
+
+        Returns:
+            A repository tool call followed by a `GoalProposal` tool call.
+        """
+        prompt = "\n".join(
+            text
+            for message in messages
+            if (text := self._stringify_message(message)).strip()
+        )
+        has_tool_result = any(message.type == "tool" for message in messages)
+        if DCA_TEST_GOAL_CRITERIA_MARKER in prompt and not has_tool_result:
+            path = _extract_marker_path(prompt, DCA_TEST_GOAL_CRITERIA_MARKER)
+            return _tool_call_result(
+                "read_file",
+                {"file_path": path, "limit": 20},
+                "call_goal_read",
+            )
+        return _tool_call_result(
+            "GoalProposal",
+            {
+                "objective": "verify server-side criteria generation",
+                "criteria": "- server repository context is available",
+            },
+            "call_goal_proposal",
         )

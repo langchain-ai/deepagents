@@ -8,7 +8,9 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.cwd_switch import (
+    CwdSwitchAbortMode,
     CwdSwitchChoice,
     CwdSwitchPromptScreen,
 )
@@ -42,7 +44,42 @@ class TestCwdSwitchPromptScreen:
         )
 
         assert "project-specific config" not in unchanged._body_text()
-        assert "project-specific config" in changed._body_text()
+        assert "will also reload project-specific config" in changed._body_text()
+
+    def test_owned_server_refusal_explains_restart(self) -> None:
+        """The restart prompt concisely explains the choice and its cost."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="restart",
+        )
+
+        assert screen._title_text() == "Restart required to switch directories"
+        assert screen._body_text() == (
+            "To use /b/target, restart the agent server. Any running work will stop."
+        )
+        assert screen._help_text() == (
+            f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
+        )
+
+    def test_unowned_server_refusal_has_no_restart(self) -> None:
+        """A client without server ownership only offers staying."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="unavailable",
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+
+        assert screen._title_text() == "Cannot switch directories from this client"
+        assert screen._body_text() == (
+            "This client cannot switch to /b/target. Open this thread in a client "
+            "that can use that directory."
+        )
+        assert screen._help_text() == "Enter or Esc: stay here"
+        screen.action_switch()
+        dismiss.assert_called_once_with("stay")
 
     def test_modal_binds_resume_and_quit_shortcuts(self) -> None:
         """The modal handles resume keys and delegates quit shortcuts."""
@@ -61,81 +98,70 @@ class TestCwdSwitchPromptScreen:
         assert screen.can_focus is True
         assert screen.can_focus_children is False
 
-    def test_on_mount_focuses_screen(self) -> None:
-        """Mounting the modal claims focus from the dismissed thread selector."""
-        screen, _ = self._screen()
-        focus = MagicMock()
-        screen.focus = focus  # ty: ignore[invalid-assignment]
-
-        screen.on_mount()
-
-        focus.assert_called_once_with()
-
-    def test_action_switch_dismisses_switch(self) -> None:
-        """Enter / switch resolves the prompt to `switch`."""
-        screen, dismiss = self._screen()
-        screen.action_switch()
-        dismiss.assert_called_once_with("switch")
-
-    def test_action_stay_dismisses_stay(self) -> None:
-        """Explicit stay resolves the prompt to `stay`."""
-        screen, dismiss = self._screen()
-        screen.action_stay()
-        dismiss.assert_called_once_with("stay")
-
-    def test_action_cancel_treated_as_stay(self) -> None:
-        """Esc / cancel is the safe default and resolves to `stay`.
-
-        The app owns a priority Esc binding, so the screen must define
-        `action_cancel` to control the cancel outcome rather than relying on a
-        bare `escape` binding.
-        """
-        screen, dismiss = self._screen()
-        screen.action_cancel()
-        dismiss.assert_called_once_with("stay")
-
 
 class TestCwdSwitchAbortOption:
     """The launch-time `-r` resume prompt adds a third `abort` option."""
 
-    def test_abort_binding_present(self) -> None:
-        """The modal binds `a` to the abort action."""
-        bindings = [b for b in CwdSwitchPromptScreen.BINDINGS if isinstance(b, Binding)]
-        bindings_by_key = {b.key: b for b in bindings}
+    def test_check_action_gates_abort_binding_by_mode(self) -> None:
+        """`check_action` enables the `a` binding only when an abort mode is set.
 
-        assert bindings_by_key["a"].action == "abort"
+        Guards the binding-disable against regressing to always-enabled — a
+        regression the direct `action_abort` tests would miss because they call
+        the action method directly, bypassing the binding layer.
+        """
 
-    def test_help_and_body_mention_abort_only_when_allowed(self) -> None:
-        """The abort affordance is described only when `allow_abort` is set."""
+        def abort_enabled(abort: CwdSwitchAbortMode | None) -> bool | None:
+            screen = CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )
+            return screen.check_action("abort", ())
+
+        assert abort_enabled("resume") is True
+        assert abort_enabled("thread_switch") is True
+        assert abort_enabled(None) is False
+
+        # Non-abort actions are always allowed, regardless of mode.
+        no_abort = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
+        assert no_abort.check_action("switch", ()) is True
+
+    def test_body_mentions_abort_only_when_allowed(self) -> None:
+        """The abort affordance is described only when an abort mode is set."""
         without = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
         with_abort = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+            current_cwd="/a", thread_cwd="/b", abort="resume"
         )
 
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
-    def test_action_abort_dismisses_abort_when_allowed(self) -> None:
-        """Abort resolves the prompt to `abort` when offered."""
-        screen = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+    def test_title_reflects_flow(self) -> None:
+        """The title asks about switching for `/threads`, resuming otherwise."""
+
+        def title(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._title_text()
+
+        assert title("thread_switch") == "Switch to the thread's original directory?"
+        assert title("resume") == "Resume from the thread's original directory?"
+        assert title(None) == "Resume from the thread's original directory?"
+
+    def test_help_text_names_mode_specific_abort_action(self) -> None:
+        """The help line shows the mode's abort wording, or omits it entirely."""
+
+        def help_line(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._help_text()
+
+        separator = get_glyphs().separator
+        assert help_line("resume") == (
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't resume"
         )
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_called_once_with("abort")
-
-    def test_action_abort_is_noop_when_not_allowed(self) -> None:
-        """Abort does nothing when the prompt was not opened with `allow_abort`."""
-        screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_not_called()
+        assert help_line("thread_switch") == (
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't switch"
+        )
+        assert help_line(None) == f"Enter: switch {separator} Esc: stay in cwd"
 
     async def test_pressing_a_aborts_when_allowed(self) -> None:
         """Pressing `a` resolves the prompt to `abort` when offered."""
@@ -144,7 +170,7 @@ class TestCwdSwitchAbortOption:
             outcomes: list[CwdSwitchChoice | None] = []
             app.push_screen(
                 CwdSwitchPromptScreen(
-                    current_cwd="/a", thread_cwd="/b", allow_abort=True
+                    current_cwd="/a", thread_cwd="/b", abort="resume"
                 ),
                 outcomes.append,
             )

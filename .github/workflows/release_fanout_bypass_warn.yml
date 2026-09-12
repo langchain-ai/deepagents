@@ -1,0 +1,234 @@
+# Loud advisory when a maintainer acknowledges a release-related fan-out gate
+# by applying `allow-lockfile-release` or `allow-scope-mismatch`.
+#
+# Mirrors the `warn-on-bypass` job in `pr_lint.yml` (for `ignore-lint-pr-title`):
+# post a sticky that spells out the release-please consequence and lists every
+# managed component the PR's changed files touch. Cleanup when the label is
+# removed.
+#
+# This job is advisory: it never fails the check. The load-bearing red / green
+# decision still lives in `release_please_scope_check.yml` and
+# `pr_scope_file_check.yml`.
+
+name: "⚠️ Release fan-out bypass warning"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  warn-on-fanout-bypass:
+    name: "warn on release fan-out bypass label"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # Serialize per-PR so rapid label toggles cannot create duplicate stickies.
+    concurrency:
+      group: release-fanout-bypass-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    # Run when either bypass label is toggled, or on any other PR event while
+    # one of the labels is currently present (so opened/edited/synchronize keep
+    # the comment in sync).
+    if: >-
+      (github.event.action == 'labeled' &&
+        (github.event.label.name == 'allow-lockfile-release' ||
+         github.event.label.name == 'allow-scope-mismatch')) ||
+      (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'allow-lockfile-release' ||
+         github.event.label.name == 'allow-scope-mismatch')) ||
+      contains(github.event.pull_request.labels.*.name, 'allow-lockfile-release') ||
+      contains(github.event.pull_request.labels.*.name, 'allow-scope-mismatch')
+    steps:
+      - name: "📋 Checkout base revision"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: "Collect changed files"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const expected = context.payload.pull_request.changed_files;
+            if (typeof expected !== 'number' || files.length !== expected) {
+              core.warning(
+                `Changed-file list incomplete or missing total ` +
+                `(got ${files.length}, expected ${JSON.stringify(expected)}); ` +
+                `component list may be incomplete.`
+              );
+            }
+            fs.writeFileSync('changed_files.txt', files.map(f => f.filename).join('\n'));
+            core.info(`Collected ${files.length} changed file(s).`);
+
+      - name: "Detect touched components"
+        id: detect
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
+          detector=".github/scripts/release/list_touched_release_components.py"
+          legacy_detector=".github/scripts/list_touched_release_components.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
+          if [[ ! -f "$detector" ]]; then
+            echo "::warning::Detector '$detector' absent on base; cannot list components."
+            components='[]'
+            bump_worthy='false'
+          else
+            # Title is env-passed into argv, never shell-interpolated into code.
+            result=$(python "$detector" "$PR_TITLE" < changed_files.txt)
+            components=$(python -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["components"]))' "$result")
+            bump_worthy=$(python -c 'import json,sys; print("true" if json.loads(sys.argv[1])["bump_worthy"] else "false")' "$result")
+          fi
+          {
+            echo "components<<__COMP_EOF__"
+            echo "$components"
+            echo "__COMP_EOF__"
+            echo "bump_worthy=$bump_worthy"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "post or remove bypass-warning comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          COMPONENTS: ${{ steps.detect.outputs.components }}
+          BUMP_WORTHY: ${{ steps.detect.outputs.bump_worthy }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number;
+            if (!prNumber) {
+              core.setFailed('No PR number in payload — workflow may have triggered on an unexpected event type.');
+              return;
+            }
+            const STICKY_MARKER = '<!-- release-fanout-bypass-warn -->';
+            const LABELS = ['allow-lockfile-release', 'allow-scope-mismatch'];
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            async function postStickyOrSummary(commentBody, summaryHeading) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  if (existing.body !== commentBody) {
+                    await github.rest.issues.updateComment({
+                      owner, repo, comment_id: existing.id, body: commentBody,
+                    });
+                    console.log('Updated sticky warning comment');
+                  } else {
+                    console.log('Sticky warning comment already up to date');
+                  }
+                } else {
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: prNumber, body: commentBody,
+                  });
+                  console.log('Posted sticky warning comment');
+                }
+              } catch (commentErr) {
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                await core.summary
+                  .addHeading(summaryHeading)
+                  .addRaw('Paste the following into the PR as a comment:')
+                  .addCodeBlock(commentBody, 'markdown')
+                  .write();
+              }
+            }
+
+            // Use live labels rather than the payload — the payload reflects
+            // pre-event state on `labeled`/`unlabeled`, which would race the
+            // sticky comment cleanup.
+            let liveLabels;
+            try {
+              ({ data: liveLabels } = await github.rest.issues.listLabelsOnIssue({
+                owner, repo, issue_number: prNumber,
+              }));
+            } catch (e) {
+              throw new Error(`Failed to fetch live labels for PR #${prNumber}: ${e.message}`);
+            }
+            const active = liveLabels
+              .map(l => l.name)
+              .filter(n => LABELS.includes(n));
+
+            if (active.length === 0) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    owner, repo, comment_id: existing.id,
+                  });
+                  console.log('Bypass label(s) removed — deleted sticky warning comment');
+                }
+              } catch (e) {
+                core.warning(`Could not clean up sticky comment for PR #${prNumber}: ${e.message}`);
+              }
+              return;
+            }
+
+            let components = [];
+            try {
+              const parsed = JSON.parse(process.env.COMPONENTS || '[]');
+              if (Array.isArray(parsed)) {
+                components = parsed.filter(c => typeof c === 'string');
+              }
+            } catch (_) {
+              components = [];
+            }
+            const bumpWorthy = process.env.BUMP_WORTHY === 'true';
+            const componentList = components.length
+              ? components.map(c => `\`${c}\``).join(', ')
+              : '_none detected under managed package paths_';
+            const labelList = active.map(l => `\`${l}\``).join(', ');
+
+            const body = [
+              STICKY_MARKER,
+              '⚠️ **A release fan-out gate was bypassed.**',
+              '',
+              `Active bypass label(s): ${labelList}`,
+              '',
+              '**Consequence:** release-please will open a **separate release PR for every managed component this PR touches**, because it scopes commits by **changed file path** (not by title scope alone).',
+              '',
+              `Touched release-please component(s): ${componentList}`,
+              '',
+              bumpWorthy
+                ? 'This PR title is currently **bump-worthy** (`feat`/`fix`/visible type or `!`), so fan-out is live on merge.'
+                : 'This PR title does **not** currently look bump-worthy. Fan-out still matters if the squash-merge subject is later rewritten to a bump-worthy type (or a `BEGIN_COMMIT_OVERRIDE` block makes it one).',
+              '',
+              '### Confirm intentional, or split',
+              '',
+              'Prefer:',
+              '',
+              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change.',
+              '2. One `chore(deps): ...` PR for cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).',
+              '',
+              'Remove the bypass label(s) to re-enable the blocking checks.',
+              '',
+              '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
+              '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
+              '📖 [Reverting a merged-but-unreleased PR](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#reverting-a-merged-but-unreleased-pr)',
+            ].join('\n');
+
+            await postStickyOrSummary(
+              body,
+              'Release fan-out bypass active; warning comment could not be posted',
+            );

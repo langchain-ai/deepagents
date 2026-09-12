@@ -6,13 +6,18 @@ runtime defaults with how Codex was trained to operate — autonomous
 senior engineer demeanor, bias to action, parallel tool use, and TODO
 hygiene.
 
-The suffix is appended to whatever `base_system_prompt` is ultimately
-assembled for the agent, so it layers cleanly on top of user- or
-SDK-provided base prompts without fighting them.
+The suffix is appended last to each assembled prompt, so it layers cleanly
+on top of caller and profile content for the main agent and each subagent's
+own authored base prompt.
 
 Per-model keys (not the `"openai"` prefix) keep the default behavior of
 non-Codex OpenAI models unchanged.
 """
+
+from typing import Any
+
+from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
@@ -61,8 +66,23 @@ finish with pending items."""
 """Text appended to the assembled base system prompt."""
 
 
+def _build_extra_middleware() -> list[AgentMiddleware[Any, Any, Any]]:
+    """Build fresh Codex behavioral middleware for each assembled agent stack.
+
+    Includes `TodoListMiddleware` (the `write_todos` tool) since the Codex
+    system prompt references reconciling TODO/plan items via `write_todos`; the
+    SDK no longer provides it by default. A fresh instance per stack avoids
+    sharing state across stacks.
+    """
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
+    return middleware
+
+
 def register() -> None:
     """Register the built-in Codex harness profile for each Codex spec."""
-    profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
+    profile = HarnessProfile(
+        system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
+        extra_middleware=_build_extra_middleware,
+    )
     for spec in _CODEX_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

@@ -6,8 +6,14 @@ ID) correctly deduplicates on DeltaChannel replay — without needing a
 in the same super-step.
 """
 
+from typing import Any
+
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
@@ -15,21 +21,36 @@ from deepagents.backends import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
-class _FakeModel:
-    """Minimal fake model that always responds with a short AIMessage."""
+class _FakeModel(BaseChatModel):
+    """Minimal real `BaseChatModel` that always responds with a short `AIMessage`.
 
-    name = "fake"
+    A genuine `BaseChatModel` subclass (rather than a bare duck-typed stand-in) so it
+    carries the real `.profile`/`_llm_type` attributes production code relies on.
+    """
 
-    def bind_tools(self, *args, **kwargs):  # noqa: ANN002, ANN003
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    def bind_tools(self, *args: Any, **kwargs: Any) -> "_FakeModel":
         return self
 
-    def with_structured_output(self, *args, **kwargs):  # noqa: ANN002, ANN003
+    def with_structured_output(self, *args: Any, **kwargs: Any) -> "_FakeModel":
         return self
 
-    def invoke(self, messages, config=None, **kw):  # noqa: ANN003
+    def invoke(self, messages: LanguageModelInput, config: RunnableConfig | None = None, **kw: Any) -> AIMessage:
         return AIMessage(content="ok")
 
-    async def ainvoke(self, messages, config=None, **kw):  # noqa: ANN003
+    async def ainvoke(self, messages: LanguageModelInput, config: RunnableConfig | None = None, **kw: Any) -> AIMessage:
         return AIMessage(content="ok")
 
 

@@ -12,21 +12,19 @@ import subprocess
 import tempfile
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import Protocol, cast
 
 from deepagents_talon.channels.base import ASR_ELIGIBLE_MEDIA_TYPES
+from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMessage
-
-if TYPE_CHECKING:
-    from deepagents_talon.config import TalonConfig
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 _DEFAULT_LOCAL_VOICE_DEVICE = "cpu"
-_local_pipelines: dict[tuple[str, str], _LocalSpeechPipeline] = {}
+_local_pipelines: dict[tuple[str, str, Path], _LocalSpeechPipeline] = {}
 _local_model_lock = threading.Lock()
 
 
@@ -45,7 +43,7 @@ class VoiceTranscriber(Protocol):
 
 
 class _LocalSpeechPipeline(Protocol):
-    def __call__(self, audio_path: str) -> object:
+    def __call__(self, audio_path: str, /) -> object:
         """Transcribe one audio path."""
 
 
@@ -56,10 +54,12 @@ class LocalParakeetVoiceTranscriber:
     Args:
         model: Hugging Face model identifier to load.
         device: Inference device for the local model.
+        config: Talon home configuration; defaults to the process environment.
     """
 
     model: str = DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL
     device: str = _DEFAULT_LOCAL_VOICE_DEVICE
+    config: TalonConfig = field(default_factory=TalonConfig.from_env, kw_only=True)
 
     async def transcribe(self, message: ChannelMessage) -> str | None:
         """Transcribe the local audio path in message metadata.
@@ -76,7 +76,9 @@ class LocalParakeetVoiceTranscriber:
         if not path.is_file():
             logger.warning("Voice transcription skipped because media file is missing: %s", path)
             return None
-        text = await _transcribe_local(path, model=self.model, device=self.device)
+        text = await _transcribe_local(
+            path, model=self.model, device=self.device, config=self.config
+        )
         return text or None
 
 
@@ -148,6 +150,7 @@ def build_voice_transcriber(config: TalonConfig) -> VoiceTranscriber | None:
         return LocalParakeetVoiceTranscriber(
             model=model or DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
             device=device,
+            config=config,
         )
     return OpenAIVoiceTranscriber(model=model)
 
@@ -214,16 +217,18 @@ def _is_local_voice_model(model: str) -> bool:
     return model == DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL or model.startswith("nvidia/parakeet")
 
 
-async def _transcribe_local(path: Path, *, model: str, device: str) -> str:
-    return await asyncio.to_thread(_transcribe_local_sync, path, model=model, device=device)
+async def _transcribe_local(path: Path, *, model: str, device: str, config: TalonConfig) -> str:
+    return await asyncio.to_thread(
+        _transcribe_local_sync, path, model=model, device=device, config=config
+    )
 
 
-def _transcribe_local_sync(path: Path, *, model: str, device: str) -> str:
+def _transcribe_local_sync(path: Path, *, model: str, device: str, config: TalonConfig) -> str:
     wav_path: Path | None = None
     try:
         wav_path = _convert_to_wav(path)
         with _local_model_lock:
-            speech_pipeline = _load_local_pipeline(model, device)
+            speech_pipeline = _load_local_pipeline(model, device, config)
             result = speech_pipeline(str(wav_path))
         return _pipeline_text(result)
     except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -237,14 +242,16 @@ def _transcribe_local_sync(path: Path, *, model: str, device: str) -> str:
                 logger.debug("Could not delete temporary voice transcription file: %s", wav_path)
 
 
-def _load_local_pipeline(model: str, device: str) -> _LocalSpeechPipeline:
-    key = (model, device)
+def _load_local_pipeline(model: str, device: str, config: TalonConfig) -> _LocalSpeechPipeline:
+    cache = config.huggingface_cache_dir
+    key = (model, device, cache)
     cached = _local_pipelines.get(key)
     if cached is not None:
         return cached
 
     try:
         module = importlib.import_module("transformers")
+        hub = importlib.import_module("huggingface_hub")
     except ImportError as exc:
         msg = (
             "Local voice transcription dependencies are missing. Install the `media` "
@@ -253,9 +260,18 @@ def _load_local_pipeline(model: str, device: str) -> _LocalSpeechPipeline:
         raise ImportError(msg) from exc
 
     logger.info("Loading local voice transcription model %s on device=%s", model, device)
+    snapshot = hub.snapshot_download(repo_id=model, cache_dir=str(cache), token=False)
+    local_model = module.AutoModel.from_pretrained(
+        snapshot, local_files_only=True, trust_remote_code=False
+    )
+    processor = module.AutoProcessor.from_pretrained(
+        snapshot, local_files_only=True, trust_remote_code=False
+    )
     loaded = module.pipeline(
         "automatic-speech-recognition",
-        model=model,
+        model=local_model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
         device=device,
     )
     _local_pipelines[key] = loaded

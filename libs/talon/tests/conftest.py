@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
@@ -12,6 +14,13 @@ from deepagents_talon.interfaces import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def isolated_talon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "talon-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
 class RecordingChannel:
@@ -30,6 +39,7 @@ class RecordingChannel:
         self.stopped = False
         self.sent: list[tuple[str, str]] = []
         self.media: list[tuple[str, ChannelMedia]] = []
+        self.typing_calls: list[str] = []
         self.status_report = ChannelStatus(provider=provider, connected=True, detail="connected")
 
     async def start(self) -> None:
@@ -61,7 +71,7 @@ class RecordingChannel:
         return SendResult(success=True)
 
     async def send_typing(self, conversation_id: str) -> None:
-        pass
+        self.typing_calls.append(conversation_id)
 
     async def status(self) -> ChannelStatus:
         return self.status_report

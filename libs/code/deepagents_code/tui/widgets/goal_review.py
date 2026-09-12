@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict
 
 from textual.binding import Binding, BindingType
@@ -16,9 +17,22 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-from deepagents_code import theme
-from deepagents_code.config import get_glyphs, is_ascii_mode
-from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+from deepagents_code.config import get_glyphs
+from deepagents_code.editor import editor_display_name
+from deepagents_code.goal_state_limits import (
+    GoalStateSizeError,
+    validate_goal_application,
+)
+from deepagents_code.tui.widgets._inline_prompt import (
+    InlinePromptCompletion,
+    InlinePromptOption,
+    InlinePromptTextArea,
+    apply_inline_prompt_border,
+    newline_hint,
+    stop_inline_prompt_blur,
+)
+
+logger = logging.getLogger(__name__)
 
 # Menu options in display order: (label, `action_*` suffix). The list index is
 # the cursor position, so labels and dispatch stay aligned from one source.
@@ -28,6 +42,14 @@ _OPTIONS: tuple[tuple[str, str], ...] = (
     ("3. Reject with message (r)", "reject_with_message"),
     ("4. Cancel (n)", "cancel"),
 )
+
+
+def _editor_hint() -> str:
+    """Return the current editor shortcut hint."""
+    editor = editor_display_name()
+    return (
+        f"Ctrl+G edit in {editor}" if editor is not None else "Ctrl+G external editor"
+    )
 
 
 class GoalReviewAccepted(TypedDict):
@@ -69,8 +91,11 @@ GoalReviewResult = (
 )
 
 
-class GoalReviewTextArea(AskUserTextArea):
+class GoalReviewTextArea(InlinePromptTextArea):
     """Text input that keeps goal-review edit keystrokes inside the editor."""
+
+    class Submitted(InlinePromptTextArea.Submitted):
+        """Posted when the user presses Enter to submit goal-review text."""
 
     class CancelEdit(Message):
         """Posted when Escape should leave goal criteria edit mode."""
@@ -132,20 +157,28 @@ class GoalReviewMenu(Container):
         self,
         objective: str,
         criteria: str,
+        *,
+        amendment: bool = False,
         id: str | None = None,  # noqa: A002
     ) -> None:
         """Initialize the goal review menu."""
-        super().__init__(id=id or "goal-review-menu", classes="goal-review-menu")
+        super().__init__(
+            id=id or "goal-review-menu",
+            classes="inline-prompt goal-review-menu",
+        )
         self._objective = objective
         """Goal objective whose generated criteria are being reviewed."""
 
         self._criteria = criteria
         """Generated acceptance criteria proposed for the goal."""
 
+        self._amendment = amendment
+        """Whether this review updates an existing goal."""
+
         self._selected = 0
         """Index of the currently highlighted action option."""
 
-        self._option_widgets: list[Static] = []
+        self._option_widgets: list[InlinePromptOption] = []
         """Mounted option widgets updated when selection changes."""
 
         self._help_widget: Static | None = None
@@ -157,15 +190,14 @@ class GoalReviewMenu(Container):
         self._input_mode: Literal["edit", "reject"] | None = None
         """Whether an inline text input is currently active."""
 
-        self._future: asyncio.Future[GoalReviewResult] | None = None
-        """Future resolved when the user accepts, edits, or cancels."""
-
-        self._submitted = False
-        """Whether a terminal decision has already been emitted."""
+        self._completion: InlinePromptCompletion[GoalReviewResult] = (
+            InlinePromptCompletion()
+        )
+        """One-shot resolver for accepted, edited, rejected, or cancelled results."""
 
     def set_future(self, future: asyncio.Future[GoalReviewResult]) -> None:
         """Set the future to resolve when the user decides."""
-        self._future = future
+        self._completion.set_future(future)
 
     def compose(self) -> ComposeResult:
         """Compose the review widget.
@@ -174,35 +206,46 @@ class GoalReviewMenu(Container):
             Widgets for the title, criteria preview, actions, editor, and help text.
         """
         glyphs = get_glyphs()
+        title = "Review goal amendment" if self._amendment else "Review goal criteria"
         yield Static(
-            Content.from_markup("$cursor Review goal criteria", cursor=glyphs.cursor),
-            classes="goal-review-title",
+            Content.from_markup("$cursor $title", cursor=glyphs.cursor, title=title),
+            classes="inline-prompt-title goal-review-title",
         )
         with (
             VerticalScroll(classes="goal-review-content"),
             Vertical(classes="goal-review-body"),
         ):
-            yield Markdown(
-                f"**Proposed criteria**\n\n{self._criteria}",
-                classes="goal-review-markdown",
-            )
+            source = f"**Proposed criteria**\n\n{self._criteria}"
+            if self._amendment:
+                source = (
+                    f"**Proposed objective**\n\n{self._objective}\n\n"
+                    f"**Proposed criteria**\n\n{self._criteria}"
+                )
+            yield Markdown(source, classes="goal-review-markdown")
         with Container(classes="goal-review-options-container"):
-            for _ in _OPTIONS:
-                widget = Static("", classes="goal-review-option")
+            for i, (label, _) in enumerate(_OPTIONS):
+                widget = InlinePromptOption(
+                    label,
+                    i,
+                    selected=i == self._selected,
+                    selected_class="goal-review-option-selected",
+                    classes="goal-review-option",
+                )
                 self._option_widgets.append(widget)
                 yield widget
         self._edit_input = GoalReviewTextArea(classes="goal-review-edit-input")
         self._edit_input.text = self._criteria
         self._edit_input.display = False
         yield self._edit_input
-        self._help_widget = Static("", classes="goal-review-help")
+        self._help_widget = Static(
+            "",
+            classes="inline-prompt-help goal-review-help",
+        )
         yield self._help_widget
 
     async def on_mount(self) -> None:
         """Focus the menu and render options after mount."""
-        if is_ascii_mode():
-            colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.success)
+        apply_inline_prompt_border(self)
         self._update_options()
         self.focus()
 
@@ -242,29 +285,31 @@ class GoalReviewMenu(Container):
 
     def action_edit(self) -> None:
         """Open the inline editor for revised criteria."""
-        if self._submitted or self._input_mode is not None:
+        if self._completion.resolved or self._input_mode is not None:
             return
         self._input_mode = "edit"
         if self._edit_input is not None:
             self._edit_input.text = self._criteria
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
 
     def action_reject_with_message(self) -> None:
         """Open the inline feedback input for regenerating criteria."""
-        if self._submitted or self._input_mode is not None:
+        if self._completion.resolved or self._input_mode is not None:
             return
         self._input_mode = "reject"
         if self._edit_input is not None:
             self._edit_input.text = ""
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
 
     def action_cancel(self) -> None:
         """Cancel editing or cancel the whole proposal."""
-        if self._submitted:
+        if self._completion.resolved:
             return
         if self._input_mode is not None:
             self._input_mode = None
@@ -275,9 +320,9 @@ class GoalReviewMenu(Container):
             return
         self._submit({"type": "cancelled"})
 
-    def on_ask_user_text_area_submitted(
+    def on_goal_review_text_area_submitted(
         self,
-        event: AskUserTextArea.Submitted,
+        event: GoalReviewTextArea.Submitted,
     ) -> None:
         """Submit edited criteria when Enter is pressed in the editor."""
         if event.text_area is not self._edit_input:
@@ -299,15 +344,23 @@ class GoalReviewMenu(Container):
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
         """Prevent blur from dismissing the review prompt."""
-        event.stop()
+        stop_inline_prompt_blur(event)
 
     def _submit_edit(self) -> None:
         """Submit the current editor text as revised criteria."""
         if self._edit_input is None:
             return
-        criteria = self._edit_input.text.strip()
+        criteria = self._edit_input.submitted_value.strip()
         if not criteria:
             self._hint_empty_submission("criteria")
+            return
+        try:
+            validate_goal_application(self._objective, criteria)
+        except GoalStateSizeError as exc:
+            # Narrower than `ValueError` on purpose: the hint frames its text as
+            # "shorten this", so an unrelated `ValueError` must not be rendered
+            # there as if it were a size problem.
+            self._hint_invalid_submission(str(exc))
             return
         self._submit({"type": "edited", "criteria": criteria})
 
@@ -315,7 +368,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as regeneration feedback."""
         if self._edit_input is None:
             return
-        message = self._edit_input.text.strip()
+        message = self._edit_input.submitted_value.strip()
         if not message:
             self._hint_empty_submission("feedback")
             return
@@ -335,29 +388,40 @@ class GoalReviewMenu(Container):
         glyphs = get_glyphs()
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
-            "Shift+Enter newline"
+            f"{newline_hint()} {glyphs.bullet} {_editor_hint()}"
+        )
+
+    def _hint_invalid_submission(self, error: str) -> None:
+        """Keep an invalid edit open and explain how to correct it inline."""
+        if self._help_widget is None:
+            # The caller has already abandoned the submission, so without the
+            # hint the editor no-ops on Enter with nothing shown at all. Log it
+            # rather than leaving the rejection completely invisible.
+            logger.warning(
+                "Suppressed goal-review validation hint (no help widget): %s",
+                error,
+            )
+            return
+        glyphs = get_glyphs()
+        self._help_widget.update(
+            f"{error} {glyphs.bullet} Ctrl+G external editor {glyphs.bullet} Esc back"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:
         """Resolve the result future and post the decision message."""
-        if self._submitted:
+        if self._completion.resolved:
             return
-        self._submitted = True
         self.display = False
-        if self._future is not None and not self._future.done():
-            self._future.set_result(result)
-        self.post_message(self.Decided(result, self))
+        if self._completion.resolve(result):
+            self.post_message(self.Decided(result, self))
 
     def _update_options(self) -> None:
         """Render option labels and help text."""
-        for i, ((text, _), widget) in enumerate(
-            zip(_OPTIONS, self._option_widgets, strict=True)
-        ):
-            cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
-            widget.update(f"{cursor}{text}")
-            widget.remove_class("goal-review-option-selected")
-            if i == self._selected and self._input_mode is None:
-                widget.add_class("goal-review-option-selected")
+        for i, widget in enumerate(self._option_widgets):
+            widget.set_state(
+                cursor=i == self._selected,
+                highlighted=i == self._selected and self._input_mode is None,
+            )
 
         if self._help_widget is None:
             return
@@ -365,13 +429,15 @@ class GoalReviewMenu(Container):
         if self._input_mode == "edit":
             self._help_widget.update(
                 f"Enter save edits {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"{newline_hint()} {glyphs.bullet} "
+                f"{_editor_hint()} {glyphs.bullet} Esc back"
             )
             return
         if self._input_mode == "reject":
             self._help_widget.update(
                 f"Enter regenerate {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"{newline_hint()} {glyphs.bullet} "
+                f"{_editor_hint()} {glyphs.bullet} Esc back"
             )
             return
         self._help_widget.update(

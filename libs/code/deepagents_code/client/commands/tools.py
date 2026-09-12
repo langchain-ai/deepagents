@@ -1,8 +1,8 @@
 """The `dcode tools` command group: provision managed external tools.
 
 `dcode tools install` fetches the pinned, SHA-256-verified ripgrep binary into
-`~/.deepagents/bin` (the same managed path used on first run) and is also handy
-for repairing a missing or stale `rg`. The install script calls this verb
+the dcode installation (the same managed path used on first run) and is also
+handy for repairing a missing or stale `rg`. The install script calls this verb
 instead of re-encoding the pinned version + checksum table in bash.
 
 `dcode tools list` prints the tools available to the agent, grouped by source
@@ -69,8 +69,9 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     `tool_catalog.collect_catalog`) so names and descriptions never drift from
     what the model sees. The same runtime options that shape the agent's tool
     set are honored: the resolved interpreter setting controls whether `js_eval`
-    is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
-    `--trust-project-mcp`) control MCP discovery. Those are top-level flags, so
+    is listed, `--allow-fs-tools` restricts filesystem tools, and the MCP options
+    (`--no-mcp`, `--mcp-config`, `--trust-project-mcp`) control MCP discovery.
+    Those are top-level flags, so
     they must precede the subcommand (e.g. `dcode --no-mcp tools list`).
 
     MCP discovery is best-effort: the built-in tools always render. Servers that
@@ -88,16 +89,19 @@ def _run_tools_list(args: argparse.Namespace) -> int:
 
     Args:
         args: Parsed CLI namespace. Reads `output_format`, `agent`,
-            `interpreter`, `sandbox`, `no_mcp`, `mcp_config`, and
-            `trust_project_mcp`.
+            `interpreter`, `sandbox`, `allow_fs_tools`, `no_mcp`, `mcp_config`,
+            and `trust_project_mcp`.
 
     Returns:
         `0` on success (including best-effort MCP degradation); `1` when an
         explicit `--mcp-config` was given but MCP discovery failed.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
-    from deepagents_code._server_config import _resolve_enable_interpreter
-    from deepagents_code.main import _resolve_agent_arg
+    from deepagents_code.main import (
+        _parse_allow_fs_tools_flag,
+        _resolve_agent_arg,
+        _resolve_interpreter_enabled,
+    )
     from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
@@ -105,12 +109,15 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     assistant_id = (
         _resolve_agent_arg(args) if hasattr(args, "agent") else DEFAULT_AGENT_NAME
     )
-    enable_interpreter = _resolve_enable_interpreter(
-        getattr(args, "interpreter", None), getattr(args, "sandbox", None)
-    )
+    # Shares the launch's resolution rule so the catalog cannot claim a tool
+    # the launch would refuse to build (or omit one policy enables).
+    # `strict=False`: a listing has nothing to abort, so an unsatisfiable
+    # combination reports the interpreter as absent, which it would be.
+    enable_interpreter = _resolve_interpreter_enabled(args, strict=False)
     catalog = collect_catalog(
         assistant_id=assistant_id,
         enable_interpreter=enable_interpreter,
+        fs_tools=_parse_allow_fs_tools_flag(getattr(args, "allow_fs_tools", None)),
         include_mcp=not getattr(args, "no_mcp", False),
         mcp_config_path=mcp_config_path,
         trust_project_mcp=_tools_list_project_mcp_trust(args),
@@ -161,7 +168,7 @@ def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
 
     Returns:
         `True` when project MCP trust was explicitly requested, otherwise
-        `None` so MCP discovery can consult persisted trust.
+        `None` so MCP discovery falls back to the user's per-server allow-list.
     """
     if getattr(args, "trust_project_mcp", False):
         return True
@@ -226,6 +233,7 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     if not servers:
         return
     from deepagents_code.config import console
+    from deepagents_code.tool_catalog import unavailable_server_display
 
     name_width = max(len(server.name) for server in servers)
     console.print()
@@ -234,11 +242,16 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     )
     for server in servers:
         padded = server.name.ljust(name_width)
-        # `status: detail` (ASCII-only, no em-dash) so legacy consoles don't hit
-        # an encoding error; detail is discovery's own curated reason string.
-        detail = f": {server.detail}" if server.detail else ""
+        # `status: detail`, where detail is discovery's own curated reason string
+        # (ASCII on this CLI path, so legacy consoles don't hit an encoding
+        # error). `unavailable_server_display` collapses a disabled server to
+        # "disabled by user" with no detail; other statuses keep discovery's
+        # reason string. (The TUI's em-dash reconnect guidance is never produced
+        # by CLI discovery, so it cannot reach this column here.)
+        status, detail_text = unavailable_server_display(server)
+        detail = f": {detail_text}" if detail_text else ""
         console.print(
-            f"  {padded}  {server.status}{detail}".rstrip(),
+            f"  {padded}  {status}{detail}".rstrip(),
             style="dim",
             markup=False,
             highlight=False,

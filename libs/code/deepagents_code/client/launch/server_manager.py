@@ -26,13 +26,18 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from deepagents import FsToolName
+
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.mcp_tools import MCPSessionManager
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-from deepagents_code.client.launch.server import _EPHEMERAL_PORT
+from deepagents_code.client.launch.server import (
+    _EPHEMERAL_PORT,
+    emit_preserved_log_notices,
+)
 from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -170,7 +175,7 @@ def _write_pyproject(work_dir: Path) -> None:
     content = f"""[project]
 name = "deepagents-server-runtime"
 version = "0.0.1"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "{_runtime_package_dependency()}",
 ]
@@ -291,7 +296,10 @@ async def start_server_and_get_agent(
     *,
     assistant_id: str,
     model_name: str | None = None,
+    summarization_model: str | None = None,
     model_params: dict[str, Any] | None = None,
+    cli_max_retries: int | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -304,21 +312,30 @@ async def start_server_and_get_agent(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
+    cwd: str | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
     Args:
         assistant_id: Agent identifier.
         model_name: Model spec string.
+        summarization_model: Model spec used only for context-compaction summaries.
         model_params: Extra model kwargs.
+        cli_max_retries: Explicit `--max-retries` value.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -330,20 +347,30 @@ async def start_server_and_get_agent(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc: Invocation-scoped PTC allowlist override.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        auto_classifier_model: Auto classifier model spec; `None` resolves from
+            env / `config.toml` and then reuses the main model.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from runtime configuration at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
+        extension_paths: Explicit one-run extension files or directories.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
+        cwd: Explicit project workspace to bind to new threads.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -354,11 +381,16 @@ async def start_server_and_get_agent(
         MCPConfigError: The explicit `--mcp-config` path is malformed,
             missing, or references contradictory transport fields. Raised
             from the pre-flight validator before any subprocess is spawned.
+        RuntimeError: If no explicit workspace can be resolved.
     """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
 
-    project_context = _capture_project_context()
+    project_context = (
+        ProjectContext.from_user_cwd(Path(cwd))
+        if cwd is not None
+        else _capture_project_context()
+    )
 
     _preflight_validate_mcp_config(
         mcp_config_path=mcp_config_path,
@@ -368,7 +400,10 @@ async def start_server_and_get_agent(
     config = ServerConfig.from_cli_args(
         project_context=project_context,
         model_name=model_name,
+        summarization_model=summarization_model,
         model_params=model_params,
+        cli_max_retries=cli_max_retries,
+        profile_overrides=profile_overrides,
         assistant_id=assistant_id,
         auto_approve=auto_approve,
         interrupt_shell_only=interrupt_shell_only,
@@ -382,12 +417,17 @@ async def start_server_and_get_agent(
         enable_interpreter=enable_interpreter,
         interpreter_ptc=interpreter_ptc,
         interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+        allow_fs_tools=allow_fs_tools,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
+        auto_classifier_model=auto_classifier_model,
+        recursion_limit=recursion_limit,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        trust_project_extensions=trust_project_extensions,
+        extension_paths=extension_paths,
     )
     _apply_server_config(config)
 
@@ -409,6 +449,14 @@ async def start_server_and_get_agent(
             url=server.url,
             graph_name="agent",
         )
+        if project_context is None:
+            msg = "A workspace is required to start the remote agent."
+            raise RuntimeError(msg)
+        agent.set_workspace(
+            str(project_context.user_cwd),
+            config.to_session_workspace_claim(),
+            config_fingerprint=config.session_workspace_fingerprint(),
+        )
         started = True
         return agent, server, None
     finally:
@@ -423,6 +471,14 @@ async def start_server_and_get_agent(
             # `BaseException`, so an `except Exception` guard would skip cleanup
             # and orphan the process. The inner guard stops a `stop()` error
             # from masking the exception already propagating.
+            #
+            # `stop()` only *queues* any debug-preserved log path; it is not
+            # announced here. This helper is awaited by callers that still own
+            # the terminal (the initial TUI startup worker and the in-session
+            # cwd-switch flow), where a stderr print would be swallowed by the
+            # alternate screen. The queue is process-global, so the outer
+            # terminal teardown (`run_textual_app` / `server_session` finally)
+            # drains this failed server's path once the terminal is restored.
             try:
                 server.stop()
             except Exception:
@@ -441,7 +497,10 @@ async def server_session(
     *,
     assistant_id: str,
     model_name: str | None = None,
+    summarization_model: str | None = None,
     model_params: dict[str, Any] | None = None,
+    cli_max_retries: int | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -454,14 +513,20 @@ async def server_session(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
+    cwd: str | None = None,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -471,7 +536,10 @@ async def server_session(
     Args:
         assistant_id: Agent identifier.
         model_name: Model spec string.
+        summarization_model: Model spec used only for context-compaction summaries.
         model_params: Extra model kwargs.
+        cli_max_retries: Explicit `--max-retries` value.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -483,20 +551,30 @@ async def server_session(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc: Invocation-scoped PTC allowlist override.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        auto_classifier_model: Auto classifier model spec; `None` resolves from
+            env / `config.toml` and then reuses the main model.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from runtime configuration at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
+        extension_paths: Explicit one-run extension files or directories.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
+        cwd: Explicit project workspace to bind to new threads.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.
@@ -507,7 +585,10 @@ async def server_session(
         agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
             assistant_id=assistant_id,
             model_name=model_name,
+            summarization_model=summarization_model,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
+            profile_overrides=profile_overrides,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
             shell_allow_list=shell_allow_list,
@@ -520,14 +601,20 @@ async def server_session(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            auto_classifier_model=auto_classifier_model,
+            recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=extension_paths,
             interactive=interactive,
             host=host,
             port=port,
+            cwd=cwd,
         )
         yield agent, server_proc
     finally:
@@ -538,3 +625,8 @@ async def server_session(
                 logger.warning("MCP session cleanup failed", exc_info=True)
         if server_proc is not None:
             server_proc.stop()
+        # Drain unconditionally: when startup fails inside
+        # `start_server_and_get_agent`, `server_proc` is never assigned here,
+        # yet the failed server may have queued a debug-preserved log path.
+        # This runs with no TUI active, so the notice reaches the user.
+        emit_preserved_log_notices()

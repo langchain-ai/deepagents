@@ -110,6 +110,20 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Persist and load sessions
+
+`AgentServerACP` can advertise and implement ACP's `session/load` capability when the
+agent uses a durable LangGraph checkpointer:
+
+```python
+server = AgentServerACP(agent, load_sessions=True)
+```
+
+The checkpointer must remain available across agent-process restarts. An in-memory
+checkpointer is suitable for tests but does not provide restart persistence. On load, the
+adapter restores the LangGraph thread, verifies the original working directory, and replays
+the conversation to the client through `session/update` before returning.
+
 ### Launch with Toad
 
 ```sh

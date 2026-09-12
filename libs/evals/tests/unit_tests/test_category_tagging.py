@@ -30,6 +30,8 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_todos",
         "test_tool_usage_incident_graph",
         "test_external_benchmarks",
+        "test_goal_tools",
+        "test_auto_mode_authorization",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
     "conversation": [

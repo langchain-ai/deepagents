@@ -14,7 +14,13 @@ EVALS = ROOT / "libs" / "evals"
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
+    deps = pyproject["project"]["dependencies"]
+    assert "harbor[langsmith]>=0.20.0,<0.21.0" in deps
+    # harbor-langsmith 0.3.0+ honors experiment_name (no job-id suffix); pin its
+    # floor explicitly since harbor's extra leaves it unconstrained (would resolve
+    # an older, still-suffixing release otherwise).
+    assert "harbor-langsmith>=0.3.0,<0.4.0" in deps
+    # Published packages only — no git override / uv source for harbor.
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 
@@ -24,10 +30,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     target = target.split("\n\n", maxsplit=1)[0]
 
     assert "HARBOR_AGENT_IMPL ?= dcode" in makefile
-    assert (
-        "HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)"
-        in makefile
-    )
+    assert "HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)" in makefile
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT)" in makefile
@@ -81,7 +84,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     edits elsewhere (descriptions, input defaults, dataset options, echo lines)
     don't break the test.
     """
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
 
     # The retired manual experiment wiring must stay gone.
     assert "create-experiment" not in workflow
@@ -98,8 +101,9 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--dataset "$HARBOR_DATASET"' in run_step
     assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
     # Results are written under a jobs dir the aggregate job later collects.
-    assert "--jobs-dir harbor-jobs/" in run_step
-    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
+    assert '--jobs-dir "$HARBOR_JOBS_DIR"' in run_step
+    # LangSmith is driven by harbor's stock plugin (harbor-langsmith >=0.3.0 honors
+    # experiment_name, so all shards of a leaf converge on one queryable experiment).
     assert "--plugin langsmith" in run_step
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
@@ -113,7 +117,7 @@ def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
     pin them here — scoped to the extracted step, which is stronger than a
     whole-file substring match (a regex in an unrelated step wouldn't satisfy it).
     """
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
     run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
     run_step = run_step.split("      - name:", maxsplit=1)[0]
 
@@ -125,7 +129,7 @@ def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
 
 
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
 
     _, harbor_job = workflow.split("  harbor:", maxsplit=1)
     job_env = harbor_job.split("    steps:", maxsplit=1)[0]
@@ -141,7 +145,6 @@ def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
         "GOOGLE_API_KEY",
         "GROQ_API_KEY",
         "LANGSMITH_API_KEY",
-        "LANGSMITH_SANDBOX_API_KEY",
         "NVIDIA_API_KEY",
         "OLLAMA_API_KEY",
         "OPENAI_API_KEY",
@@ -152,7 +155,6 @@ def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
 
     assert "secrets." not in install_step
     assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in run_step
-    assert "inputs.sandbox_env == 'langsmith'" in run_step
     assert "startsWith(matrix.model, 'fireworks:')" in run_step
     assert "startsWith(matrix.model, 'ollama:')" in run_step
 
@@ -226,30 +228,32 @@ def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
 
 
 def test_harbor_workflow_wires_tau3_subset() -> None:
+    # "tau3-subset" is a selectable dataset on the dispatch workflow.
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
-
-    # "tau3-subset" is a selectable dataset.
     assert '- "tau3-subset"' in workflow
+
+    # Its resolution + run wiring lives in the reusable leaf.
+    leaf = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
     # Its resolution step pulls the committed task filter, runs against the real
     # registry dataset, and names the LangSmith dataset "tau3-subset".
-    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in workflow
-    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
-    assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
-    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in leaf
+    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in leaf
+    assert "HARBOR_DATASET=sierra-research/tau3-bench" in leaf
+    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in leaf
     # Injecting the task filter is the whole point of the step: it must be
     # written and it must land in $GITHUB_ENV, or the run silently uses the full
     # dataset. Guard both the payload line and the redirect.
-    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in workflow
-    assert '} >> "$GITHUB_ENV"' in workflow
+    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in leaf
+    assert '} >> "$GITHUB_ENV"' in leaf
     # The resolve step must fail loudly on a wrong-sized filter (empty => full
     # dataset), so the count tripwire must stay wired.
-    assert 'if [ "$task_count" -ne 30 ]; then' in workflow
-    # tau3's verifier/user simulator needs OpenAI even when the agent model is
-    # hosted by another provider, so missing credentials should fail preflight.
-    assert "contains(inputs.dataset, 'tau3')" in workflow
-    assert "contains(inputs.dataset_override, 'tau3')" in workflow
-    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in workflow
-    assert '[ "$model_provider" != "openai" ]' in workflow
+    assert 'if [ "$task_count" -ne 30 ]; then' in leaf
+    # tau3's verifier/judge is always an OpenAI model, so the leaf provides the
+    # OpenAI key unconditionally, and the preflight fails loudly if it is missing
+    # for a tau3 run whose agent model is hosted by another provider.
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in leaf
+    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in leaf
+    assert '[ "$model_provider" != "openai" ]' in leaf
 
 
 def test_tau3_subset_constant_is_well_formed() -> None:

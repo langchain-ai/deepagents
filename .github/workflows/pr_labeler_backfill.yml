@@ -2,7 +2,7 @@
 #
 # Manual-only workflow that applies the same labels as pr_labeler.yml
 # (size, file, title, contributor classification) to existing open PRs.
-# Reuses shared logic from .github/scripts/pr-labeler.js.
+# Reuses shared logic from .github/scripts/labeling/pr-labeler.js.
 
 name: "🏷️ PR Labeler Backfill"
 
@@ -26,13 +26,13 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
       - name: Backfill labels on open PRs
@@ -48,7 +48,7 @@ jobs:
               return;
             }
 
-            const { config, h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             for (const name of [...h.sizeLabels, ...h.tierLabels]) {
               await h.ensureLabel(name);

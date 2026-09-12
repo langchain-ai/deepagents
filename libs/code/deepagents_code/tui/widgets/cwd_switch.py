@@ -1,14 +1,16 @@
-"""Prompt for switching cwd when resuming threads."""
+"""Prompt for switching cwd when resuming or switching threads."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, assert_never, cast
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.sessions import format_path
 
 if TYPE_CHECKING:
@@ -20,13 +22,29 @@ if TYPE_CHECKING:
 CwdSwitchChoice = Literal["switch", "stay", "abort"]
 """Outcome of the cwd switch prompt.
 
-`"abort"` is only offered when the prompt is opened with `allow_abort=True`
-(launch-time `-r` resume) and means "don't resume; start a new session".
+`"abort"` is only offered when the prompt is opened with an `abort` mode set;
+its meaning depends on that mode (see `CwdSwitchAbortMode`).
 """
+
+CwdSwitchAbortMode = Literal["resume", "thread_switch"]
+"""Which flow opened an abort-capable prompt, selecting the abort wording.
+
+Passed as the prompt's `abort` argument; `None` there means abort is not
+offered. `"resume"` is the launch-time `-r` resume (abort starts a new
+session); `"thread_switch"` is the in-session `/threads` switcher (abort keeps
+the current thread). Its members are kept disjoint from `CwdSwitchChoice`'s as a
+naming convention -- not a type guarantee (these are distinct `Literal` types
+used at distinct sites, so a checker already keeps them apart) -- so a mode token
+is never mistaken for an outcome token in a log, test, or debugger.
+`test_abort_mode_tokens_disjoint_from_choice` enforces it.
+"""
+
+CwdSwitchServerRefusal = Literal["restart", "unavailable"]
+"""How the client can respond to the server's workspace refusal."""
 
 
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
-    """Modal asking whether to switch cwd before resuming a thread."""
+    """Modal asking whether to switch cwd when resuming or switching to a thread."""
 
     can_focus = True
     can_focus_children = False
@@ -86,30 +104,62 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         current_cwd: str,
         thread_cwd: str,
         project_settings_change_detected: bool = False,
-        allow_abort: bool = False,
+        abort: CwdSwitchAbortMode | None = None,
+        server_refusal: CwdSwitchServerRefusal | None = None,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
         self._current_cwd = current_cwd
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
-        self._allow_abort = allow_abort
+        self._abort: CwdSwitchAbortMode | None = abort
+        self._server_refusal = server_refusal
+
+    def _title_text(self) -> str:
+        """Return the title, phrased for the flow that opened the prompt.
+
+        The in-session `/threads` switcher (`"thread_switch"`) asks about
+        switching; every other flow (launch-time resume, or no abort mode) asks
+        about resuming. Structured for `assert_never` exhaustiveness so a new
+        mode fails statically here rather than silently inheriting the resume
+        wording.
+        """
+        if self._server_refusal == "restart":
+            return "Restart required to switch directories"
+        if self._server_refusal == "unavailable":
+            return "Cannot switch directories from this client"
+        if self._abort is None or self._abort == "resume":
+            return "Resume from the thread's original directory?"
+        if self._abort == "thread_switch":
+            return "Switch to the thread's original directory?"
+        assert_never(self._abort)
 
     def _body_text(self) -> str:
         """Return the prompt body text."""
         current = format_path(self._current_cwd)
         target = format_path(self._thread_cwd)
+        if self._server_refusal == "restart":
+            return (
+                f"To use {target}, restart the agent server. "
+                "Any running work will stop."
+            )
+        if self._server_refusal == "unavailable":
+            return (
+                f"This client cannot switch to {target}. Open this thread in a "
+                "client that can use that directory."
+            )
         settings_note = (
-            "\n\nSwitching may also reload project-specific config like .env, "
+            "\n\nSwitching will also reload project-specific config like .env, "
             "MCP, skills, and AGENTS.md."
             if self._project_settings_change_detected
             else ""
         )
-        abort_note = (
-            "\n\nOr abort to start a new session instead of resuming."
-            if self._allow_abort
-            else ""
-        )
+        if self._abort is None or self._abort == "thread_switch":
+            abort_note = ""
+        elif self._abort == "resume":
+            abort_note = "\n\nOr abort to start a new session instead of resuming."
+        else:
+            assert_never(self._abort)
         return (
             "This thread was last used from:\n"
             f"  {target}\n\n"
@@ -121,6 +171,23 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             f"the current directory.{settings_note}{abort_note}"
         )
 
+    def _help_text(self) -> str:
+        """Return the help line text, naming the mode's abort action if offered."""
+        if self._server_refusal == "restart":
+            return f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
+        if self._server_refusal == "unavailable":
+            return "Enter or Esc: stay here"
+        help_text = f"Enter: switch {get_glyphs().separator} Esc: stay in cwd"
+        if self._abort is None:
+            return help_text
+        if self._abort == "resume":
+            abort_help = "A: don't resume"
+        elif self._abort == "thread_switch":
+            abort_help = "A: don't switch"
+        else:
+            assert_never(self._abort)
+        return f"{help_text} {get_glyphs().separator} {abort_help}"
+
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
 
@@ -129,7 +196,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """
         with Vertical():
             yield Static(
-                "Resume from the thread's original directory?",
+                self._title_text(),
                 classes="cwd-switch-title",
                 markup=False,
             )
@@ -138,13 +205,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 classes="cwd-switch-body",
                 markup=False,
             )
-            help_text = (
-                "Enter: switch · Esc: stay here · A: don't resume"
-                if self._allow_abort
-                else "Enter: switch · Esc: stay here"
-            )
             yield Static(
-                help_text,
+                self._help_text(),
                 classes="cwd-switch-help",
                 markup=False,
             )
@@ -160,20 +222,29 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     ) -> bool | None:
         """Disable the `abort` binding unless the prompt was opened for it.
 
-        Makes the disabled state first-class: when `allow_abort` is False the
-        `a` key is not bound to anything (it passes through) rather than firing
-        a no-op action.
+        Textual gates a binding's action on a truthy `check_action` result, so
+        both `False` and `None` stop `a` from dispatching `action_abort` -- in
+        neither case does the key fire the action, and it falls through the same
+        way. They differ only in footer presentation (`False` hides the binding,
+        `None` shows it grayed out), which is moot here anyway: every binding is
+        declared `show=False` and the modal renders its own help line instead of
+        a `Footer`. We return `False` to mark the disabled state explicitly; the
+        actual inertness backstop is `action_abort`'s own `self._abort is None`
+        guard, should the action ever be dispatched.
 
         Returns:
-            `self._allow_abort` for the `abort` action so the binding is only
-                active when abort was offered; `True` for every other action.
+            `self._abort is not None` for the `abort` action, so the binding is
+                enabled only when abort was offered; `True` for every other action.
         """
         if action == "abort":
-            return self._allow_abort
+            return self._abort is not None
         return True
 
     def action_switch(self) -> None:
-        """Dismiss with `switch`."""
+        """Dismiss with `switch`, or stay when no switch is available."""
+        if self._server_refusal == "unavailable":
+            self.action_stay()
+            return
         self.dismiss("switch")
 
     def action_stay(self) -> None:
@@ -181,8 +252,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self.dismiss("stay")
 
     def action_abort(self) -> None:
-        """Dismiss with `abort` to skip the resume, when the prompt allows it."""
-        if not self._allow_abort:
+        """Dismiss with `abort` to skip the resume/switch, when the prompt allows it."""
+        if self._abort is None:
             return
         self.dismiss("abort")
 
@@ -197,3 +268,86 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     def action_quit_app(self) -> None:
         """Delegate Ctrl+D to the app-level quit handler."""
         cast("DeepAgentsApp", self.app).action_quit_app()
+
+
+HookTrustChoice = Literal["allow_once", "always_allow", "deny"]
+
+
+class HookTrustScreen(ModalScreen[HookTrustChoice]):
+    """Ask how project hooks in a newly entered workspace should be trusted."""
+
+    can_focus = True
+    can_focus_children = False
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "allow_once", "Allow once", show=False, priority=True),
+        Binding("a", "always_allow", "Always allow", show=False, priority=True),
+        Binding("escape", "deny", "Deny", show=False, priority=True),
+    ]
+
+    CSS = CwdSwitchPromptScreen.CSS.replace(
+        "CwdSwitchPromptScreen", "HookTrustScreen"
+    ).replace("width: 72;", "width: 76;")
+
+    def __init__(self, *, project_root: str, config_path: str) -> None:
+        """Initialize the project-hooks trust prompt.
+
+        Args:
+            project_root: Workspace root governing the trust decision.
+            config_path: Project hooks file that may execute commands.
+        """
+        super().__init__()
+        self._project_root = project_root
+        self._config_path = config_path
+
+    def compose(self) -> ComposeResult:
+        """Compose the project-hooks trust dialog.
+
+        Yields:
+            Title, warning body, and keyboard help widgets.
+        """
+        with Vertical():
+            yield Static(
+                "Project hooks can run arbitrary shell commands on your machine",
+                classes="cwd-switch-title",
+                markup=False,
+            )
+            yield Static(
+                Content.from_markup(
+                    "[bold]$root[/bold] contains project hooks at "
+                    "[bold]$path[/bold]. Only trust projects you control. "
+                    '"Allow once" runs the file as it is now; "always allow" '
+                    "trusts [bold]$root[/bold] for future sessions and future "
+                    "edits.",
+                    root=self._project_root,
+                    path=self._config_path,
+                ),
+                classes="cwd-switch-body",
+                markup=False,
+            )
+            yield Static(
+                f"Enter: allow once {get_glyphs().separator} A: always allow "
+                f"{get_glyphs().separator} Esc: deny",
+                classes="cwd-switch-help",
+                markup=False,
+            )
+
+    def on_mount(self) -> None:
+        """Focus the modal so its bindings receive keyboard input."""
+        self.focus()
+
+    def action_allow_once(self) -> None:
+        """Approve the current file contents for this session."""
+        self.dismiss("allow_once")
+
+    def action_always_allow(self) -> None:
+        """Approve this workspace persistently."""
+        self.dismiss("always_allow")
+
+    def action_deny(self) -> None:
+        """Deny project hooks in this workspace."""
+        self.dismiss("deny")
+
+    def action_cancel(self) -> None:
+        """Treat app-level cancellation as deny."""
+        self.action_deny()

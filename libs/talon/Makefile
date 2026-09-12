@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test tests test_watch help
+.PHONY: lint format type typecheck test tests test_bridge test_watch help
 
 .DEFAULT_GOAL := help
 
@@ -6,12 +6,16 @@
 UV_FROZEN = true
 
 TEST_FILE ?= tests/
+COV_ARGS ?= --cov=deepagents_talon --cov-report=term-missing
 PYTEST_EXTRA ?=
 
 test: ## Run unit tests
-test tests:
+test tests: test_bridge
 	uv run --group test pytest --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
-		--timeout 10 --cov=deepagents_talon --cov-report=term-missing
+		--timeout 10 $(COV_ARGS)
+
+test_bridge: ## Run WhatsApp bridge unit tests
+	node --test tests/channels/whatsapp_bridge/*.test.js
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

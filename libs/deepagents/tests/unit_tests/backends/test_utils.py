@@ -9,10 +9,12 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    InvalidGlobPatternError,
     _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
     _looks_like_regex,
+    compile_grep_include_glob,
     grep_matches_from_files,
     perform_string_replacement,
     regex_literal_hint,
@@ -189,7 +191,11 @@ class TestValidatePath:
 
 
 class TestGlobSearchFiles:
-    """Tests for _glob_search_files."""
+    """Tests for `_glob_search_files` under the shared backend glob contract.
+
+    Bare basename patterns (`*.py`) match at any depth — same rules as
+    `compile_grep_include_glob` / FilesystemBackend.
+    """
 
     @pytest.fixture
     def sample_files(self) -> dict[str, Any]:
@@ -202,21 +208,40 @@ class TestGlobSearchFiles:
             "/test.py": {"modified_at": "2024-01-01T12:00:00"},
         }
 
-    def test_basic_glob(self, sample_files: dict[str, Any]) -> None:
-        """Test basic glob matching."""
-        result = _glob_search_files(sample_files, "*.py", "/")
-        assert "/test.py" in result
+    def _paths(self, result: str) -> set[str]:
+        if result == "No files found":
+            return set()
+        return set(result.strip().split("\n"))
 
-    def test_recursive_glob(self, sample_files: dict[str, Any]) -> None:
-        """Test recursive glob pattern."""
-        result = _glob_search_files(sample_files, "**/*.py", "/")
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" in result
+    def test_slashless_basename_glob_matches_at_any_depth(self, sample_files: dict[str, Any]) -> None:
+        """`*.py` matches nested and top-level Python files."""
+        assert self._paths(_glob_search_files(sample_files, "*.py", "/")) == {
+            "/test.py",
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
 
-    def test_path_filter(self, sample_files: dict[str, Any]) -> None:
-        """Test glob respects path parameter."""
+    def test_globstar_matches_same_python_set(self, sample_files: dict[str, Any]) -> None:
+        """`**/*.py` matches the same files as bare `*.py`."""
+        bare = self._paths(_glob_search_files(sample_files, "*.py", "/"))
+        recursive = self._paths(_glob_search_files(sample_files, "**/*.py", "/"))
+        assert bare == recursive
+
+    def test_path_filter_still_matches_nested_under_root(self, sample_files: dict[str, Any]) -> None:
+        """Path scopes the tree; bare patterns still match nested basenames under it."""
+        result = _glob_search_files(sample_files, "*.py", "/src/")
+        assert self._paths(result) == {
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
+        assert "/test.py" not in result
+
+    def test_path_filter_nested_directory(self, sample_files: dict[str, Any]) -> None:
+        """Scoping to a nested directory excludes sibling trees."""
         result = _glob_search_files(sample_files, "*.py", "/src/utils/")
-        assert "/src/utils/helper.py" in result
+        assert self._paths(result) == {"/src/utils/helper.py", "/src/utils/common.py"}
         assert "/src/main.py" not in result
 
     def test_no_matches(self, sample_files: dict[str, Any]) -> None:
@@ -225,7 +250,7 @@ class TestGlobSearchFiles:
 
     def test_sorted_by_modification_time(self, sample_files: dict[str, Any]) -> None:
         """Test results sorted by modification time (most recent first)."""
-        result = _glob_search_files(sample_files, "**/*.py", "/")
+        result = _glob_search_files(sample_files, "*.py", "/")
         assert result.strip().split("\n")[0] == "/test.py"
 
     def test_path_traversal_rejected(self, sample_files: dict[str, Any]) -> None:
@@ -233,8 +258,22 @@ class TestGlobSearchFiles:
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
 
-    def test_leading_slash_in_pattern(self, sample_files: dict[str, Any]) -> None:
-        """Patterns with a leading slash should still match (models often produce them)."""
+    def test_path_relative_pattern(self, sample_files: dict[str, Any]) -> None:
+        """Patterns containing `/` match relative to the search root."""
+        result = _glob_search_files(sample_files, "src/**/*.py", "/")
+        assert self._paths(result) == {
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
+        assert "/test.py" not in result
+
+    def test_leading_slash_anchors_to_root(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` anchors to the search root (top-level only for `/*.py`)."""
+        assert self._paths(_glob_search_files(sample_files, "/*.py", "/")) == {"/test.py"}
+
+    def test_leading_slash_with_globstar(self, sample_files: dict[str, Any]) -> None:
+        """Patterns with a leading slash and `**` match from the root."""
         result = _glob_search_files(sample_files, "/src/**/*.py", "/")
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
@@ -250,6 +289,44 @@ class TestGlobSearchFiles:
         assert "/foo/a.md" in result
         assert "/foo/c.md" in result
         assert "/foo/b.txt" not in result
+
+    def test_missing_modified_at_does_not_raise(self) -> None:
+        """`modified_at` is NotRequired on FileData, so glob must not assume it.
+
+        Seeded state can carry files without timestamps; matching should still
+        return them instead of raising KeyError.
+        """
+        files = {
+            "/a.py": {"content": "x", "encoding": "utf-8"},
+            "/b.py": {"content": "y", "encoding": "utf-8"},
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert "/a.py" in result
+        assert "/b.py" in result
+
+
+class TestCompileGrepIncludeGlobRefusals:
+    """Refusals are a public `ValueError` subtype backends can catch precisely."""
+
+    def test_pattern_wcmatch_refuses_raises_invalid_glob_pattern(self) -> None:
+        """Backends catch `InvalidGlobPatternError`; wcmatch's own type is private."""
+        with pytest.raises(InvalidGlobPatternError, match="Invalid glob pattern"):
+            compile_grep_include_glob("{a,b}" * 40 + "*.py")
+
+    def test_refusal_is_a_value_error(self) -> None:
+        """Subclassing `ValueError` keeps pre-existing handlers working."""
+        assert issubclass(InvalidGlobPatternError, ValueError)
+
+    def test_traversal_pattern_is_refused(self) -> None:
+        """`..` is rejected in the shared matcher so every backend agrees."""
+        for pattern in ("../*.py", "a/../../etc/*", "/../*.py"):
+            with pytest.raises(InvalidGlobPatternError, match="traversal"):
+                compile_grep_include_glob(pattern)
+
+    def test_malformed_but_compilable_patterns_do_not_raise(self) -> None:
+        """`*.{py` and `[a-` compile fine and simply match nothing."""
+        for pattern in ("*.{py", "[a-", "a{b,c"):
+            assert compile_grep_include_glob(pattern)("a.py") is False
 
 
 class TestGrepIncludeGlob:
@@ -341,6 +418,29 @@ class TestPerformStringReplacement:
     def test_basic_single_replacement(self) -> None:
         result = perform_string_replacement("hello world", "world", "there")
         assert result == ("hello there", 1)
+
+    def test_empty_old_string_returns_error(self) -> None:
+        """Empty `old_string` is never a valid search target.
+
+        `str.count("")` returns `len(content)+1`, so without this guard a
+        non-empty file always reports a spurious multiple-occurrences error,
+        and `replace_all=True` inserts `new_string` between every character.
+        """
+        result = perform_string_replacement("hello world", "", "x")
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
+
+    def test_empty_old_string_with_replace_all_returns_error(self) -> None:
+        """The `replace_all` path must never run `content.replace("", new)`."""
+        result = perform_string_replacement("hello world", "", "x", replace_all=True)
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
+
+    def test_empty_old_string_on_empty_file_returns_error(self) -> None:
+        """An empty file must not silently "succeed" an empty search."""
+        result = perform_string_replacement("", "", "x")
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
 
     def test_not_found_returns_error_string(self) -> None:
         result = perform_string_replacement("hello world", "missing", "x")
@@ -441,45 +541,193 @@ class TestSliceReadResponse:
     def _file(content: str) -> FileData:
         return FileData(content=content, encoding="utf-8")
 
+    @staticmethod
+    def _content(result: ReadResult) -> str:
+        assert result.file_data is not None
+        return result.file_data["content"]
+
     def test_preserves_trailing_newline_when_file_has_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar\n"), offset=0, limit=2000)
-        assert result == "foo\nbar\n"
+        assert self._content(result) == "foo\nbar\n"
 
     def test_preserves_no_trailing_newline_when_file_lacks_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar"), offset=0, limit=2000)
-        assert result == "foo\nbar"
+        assert self._content(result) == "foo\nbar"
 
     def test_normalizes_crlf_to_lf(self) -> None:
         """State/Store callers may carry CRLF; downstream tooling assumes LF."""
         result = slice_read_response(self._file("foo\r\nbar\r\n"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_normalizes_bare_cr_to_lf(self) -> None:
         result = slice_read_response(self._file("foo\rbar\r"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_partial_window_keeps_terminator_on_internal_lines(self) -> None:
         """A window ending on a non-terminal line still ends with that line's terminator."""
         result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
-        assert result == "b\nc\n"
+        assert self._content(result) == "b\nc\n"
 
     def test_partial_window_normalizes_crlf(self) -> None:
         """An internal CRLF slice is LF-normalized even though only the window is rewritten."""
         result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=1, limit=2)
-        assert result == "b\nc\n"
-        assert "\r" not in result
+        content = self._content(result)
+        assert content == "b\nc\n"
+        assert "\r" not in content
 
     def test_partial_window_ending_on_unterminated_last_line(self) -> None:
         """A window covering the last line keeps that line's missing-terminator state."""
         result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)
-        assert result == "c"
+        assert self._content(result) == "c"
+
+    def test_partial_window_includes_pagination_metadata(self) -> None:
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        assert result.total_lines == 4
+        assert result.start_line == 2
+        assert result.end_line == 3
+        assert result.next_offset == 3
+
+    def test_empty_content_returns_result_without_pagination(self) -> None:
+        """Empty files short-circuit to a success result with no pagination metadata."""
+        result = slice_read_response(self._file(""), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_whitespace_only_content_returns_result_without_pagination(self) -> None:
+        """Whitespace-only content takes the empty branch and is returned verbatim."""
+        result = slice_read_response(self._file("   \n\t\n"), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == "   \n\t\n"
+        assert result.total_lines is None
+
+    def test_preserves_timestamps_on_sliced_result(self) -> None:
+        """The sliced copy carries `created_at`/`modified_at` through unchanged."""
+        file_data = FileData(content="a\nb\nc\nd\n", encoding="utf-8")
+        file_data["created_at"] = "t0"
+        file_data["modified_at"] = "t1"
+        result = slice_read_response(file_data, offset=1, limit=2)
+        assert result.file_data is not None
+        assert result.file_data.get("created_at") == "t0"
+        assert result.file_data.get("modified_at") == "t1"
 
     def test_offset_beyond_file_returns_error_result(self) -> None:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
-        assert isinstance(result, ReadResult)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_non_positive_limit_returns_empty_read(self, limit: int) -> None:
+        """A degenerate `limit` reads nothing instead of raising on the line range.
+
+        `no_lines_requested` flags the window as never inspected so the
+        middleware can tell it apart from an inspected-but-empty file, whose
+        `ReadResult` is otherwise identical.
+        """
+        result = slice_read_response(self._file("a\nb\nc"), offset=0, limit=limit)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.no_lines_requested is True
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_negative_offset_reads_from_first_line(self) -> None:
+        """A degenerate `offset` is clamped rather than reported as line 0."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=-1, limit=2)
+        assert result.error is None
+        assert self._content(result) == "a\nb\n"
+        assert result.start_line == 1
+        assert result.end_line == 2
+        assert result.next_offset == 2
+
+    def test_negative_offset_and_non_positive_limit_combine(self) -> None:
+        """Both bounds degenerate at once still yields an empty read."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=-3, limit=-3)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.start_line is None
+
+    def test_zero_limit_takes_precedence_over_offset_past_eof(self) -> None:
+        """The zero-limit check runs before the bounds check, so no error is raised.
+
+        Pins the ordering rather than endorsing it: the offset is also invalid
+        here, and reporting the empty read first costs the caller a round trip
+        to discover that. Reordering would have to change all four read paths.
+        """
+        result = slice_read_response(self._file("a\nb\nc"), offset=99, limit=0)
+        assert result.error is None
+        assert self._content(result) == ""
+
+    def test_blank_content_takes_precedence_over_zero_limit(self) -> None:
+        """Whitespace-only content is returned verbatim even for a zero limit.
+
+        The blank-content branch precedes the zero-limit branch, so the content
+        is the whitespace rather than `""`. The middleware maps either to a
+        reminder, but the two branches must not be reordered silently.
+        """
+        result = slice_read_response(self._file("   \n\t\n"), offset=0, limit=0)
+        assert result.error is None
+        assert self._content(result) == "   \n\t\n"
+
+
+class TestGrepMaxCount:
+    """`max_count` total-cap semantics for `grep_matches_from_files`.
+
+    Backs `StateBackend`/`StoreBackend`, which delegate their `grep` here.
+    """
+
+    @staticmethod
+    def _files() -> dict[str, Any]:
+        # Two files, three matching lines total.
+        return {
+            "/a.txt": {"content": "hit\nhit\n"},
+            "/b.txt": {"content": "hit\n"},
+        }
+
+    def test_over_cap_truncates(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=2)
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
+    def test_exact_cap_not_truncated(self) -> None:
+        """Exactly `max_count` matches with none dropped is reported complete."""
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=3)
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False
+
+    def test_no_cap_returns_all(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/")
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False
+
+
+class TestGrepRefusedGlobIsAResultNotAnException:
+    """`grep(glob=...)` is a tool boundary too, and `sync_grep` has no try/except."""
+
+    def test_refused_glob_returns_error(self) -> None:
+        files = {"/a.py": {"content": "x", "created_at": "", "modified_at": ""}}
+
+        result = grep_matches_from_files(files, "x", "/", "{a,b}" * 40 + "*.py")
+
+        assert result.error is not None
+        assert "Invalid glob pattern" in result.error
+
+    def test_traversal_glob_returns_error(self) -> None:
+        files = {"/a.py": {"content": "x", "created_at": "", "modified_at": ""}}
+
+        result = grep_matches_from_files(files, "x", "/", "../*.py")
+
+        assert result.error is not None
+        assert "traversal" in result.error

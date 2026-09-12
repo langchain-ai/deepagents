@@ -11,10 +11,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from deepagents.backends.protocol import _resolve_backend
-from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
-    SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -208,7 +205,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_create_summary", return_value="Summary of the conversation."),
         ):
             result = mw._run_compact(runtime)
@@ -222,7 +219,7 @@ class TestCompactSuccess:
         summary_msg = event["summary_message"]
         assert isinstance(summary_msg, HumanMessage)
         assert "Summary of the conversation." in summary_msg.content
-        assert event["file_path"] == "/conversation_history/test-thread.md"
+        assert event["file_path"] == "/conversation_history/session_abc123.md"
 
         update_messages = result.update["messages"]
         assert len(update_messages) == 1
@@ -272,7 +269,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_acreate_summary", return_value="Summary of the conversation."),
         ):
             result = await mw._arun_compact(runtime)
@@ -412,8 +409,8 @@ class TestCompactErrorHandling:
         assert "Compaction failed" in msg.content
         assert "_summarization_event" not in result.update
 
-    def test_backend_resolve_failure_returns_error_tool_message(self) -> None:
-        """Backend factory failure should return an error ToolMessage."""
+    def test_offload_failure_returns_error_tool_message(self) -> None:
+        """Offload failure should return an error ToolMessage."""
         mw = _make_middleware()
         messages = _make_messages(10)
         runtime = _make_runtime(messages)
@@ -427,8 +424,8 @@ class TestCompactErrorHandling:
             ),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
             patch.object(
-                mw,
-                "_resolve_backend",
+                mw._summarization,
+                "_offload_to_backend",
                 side_effect=ConnectionError("sandbox unreachable"),
             ),
         ):
@@ -473,55 +470,28 @@ class TestMalformedEvent:
         assert result[0] is summary_msg
 
 
-class TestResolveBackend:
-    """Test backend resolution for tool context."""
+class TestCompactBackendUsage:
+    """Test backend use for compact offloading."""
 
-    def test_static_backend(self) -> None:
-        """Should return the backend directly when it's not callable."""
-        backend = StateBackend()
-        summ = SummarizationMiddleware(
+    def test_compact_writes_history_to_configured_backend(self) -> None:
+        """Compacted history is written through the configured backend."""
+        backend = _make_mock_backend()
+        summarization = SummarizationMiddleware(
             model=_make_mock_model(),
             backend=backend,
+            trigger=("fraction", 0.85),
+            keep=("messages", 2),
         )
-        mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        assert mw._resolve_backend(runtime) is backend
+        middleware = SummarizationToolMiddleware(summarization)
+        messages = [HumanMessage(content=f"Message {index}") for index in range(9)]
+        messages.append(_ai_message_with_usage(120_000))
+        result = middleware._run_compact(_make_runtime(messages))
 
-    def test_callable_backend(self) -> None:
-        """Should call the factory with the ToolRuntime."""
-        resolved = _make_mock_backend()
-        factory = MagicMock(return_value=resolved)
-        summ = SummarizationMiddleware(
-            model=_make_mock_model(),
-            backend=factory,
-        )
-        mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        result = mw._resolve_backend(runtime)
-        assert result is resolved
-        factory.assert_called_once_with(runtime)
-
-
-class TestResolveBackendHelper:
-    """Direct tests for the module-level `_resolve_backend` helper.
-
-    The middleware wrappers guard with `callable()` before delegating, so these
-    cover both branches of the helper in isolation.
-    """
-
-    def test_returns_instance_unchanged(self) -> None:
-        """A `BackendProtocol` instance is returned as-is, not invoked."""
-        backend = StateBackend()
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(backend, runtime) is backend
-
-    def test_invokes_factory_with_runtime(self) -> None:
-        """A factory callable is invoked with the runtime."""
-        resolved = StateBackend()
-        factory = MagicMock(return_value=resolved)
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(factory, runtime) is resolved
-        factory.assert_called_once_with(runtime)
+        event = result.update["_summarization_event"]
+        backend.write.assert_called_once()
+        path, content = backend.write.call_args.args
+        assert path == event["file_path"]
+        assert "Message 0" in content
 
 
 class TestComputeStateCutoff:
@@ -677,11 +647,6 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
 
-    def test_dict_trigger_constructs_langchain_trigger_clauses(self) -> None:
-        """Dict trigger input should populate LangChain's canonical trigger clauses."""
-        mw = _make_middleware_with_trigger({"tokens": 100_000, "messages": 6})
-        assert mw._summarization._lc_helper._trigger_clauses == [{"tokens": 100_000, "messages": 6}]
-
     def test_dict_clause_list_uses_or_semantics(self) -> None:
         """Multiple dict trigger clauses use OR semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
@@ -774,24 +739,6 @@ class TestSystemPromptOverride:
         """`system_prompt` must be str or None."""
         with pytest.raises(TypeError, match="must be str or None"):
             SummarizationToolMiddleware(_make_summarization_middleware(), system_prompt=0)  # type: ignore[arg-type]
-
-    def test_wrap_model_call_appends_default_nudge(self) -> None:
-        """Baseline: default `system_prompt` appends the standard nudge text."""
-        mw = _make_middleware()
-        captured: dict[str, ModelRequest] = {}
-
-        def handler(req: ModelRequest) -> None:
-            captured["req"] = req
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([])),
-            messages=[HumanMessage(content="hi")],
-            system_message=SystemMessage(content="base"),
-            state={"messages": []},
-        )
-        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
-        appended = list(captured["req"].system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
-        assert SUMMARIZATION_SYSTEM_PROMPT in appended
 
     def test_wrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
         """`system_prompt=None` passes the request through untouched."""

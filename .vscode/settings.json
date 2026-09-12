@@ -67,7 +67,6 @@
     "editor.insertSpaces": true
   },
   "python.terminal.activateEnvironment": false,
-  "python.defaultInterpreterPath": "./.venv/bin/python",
   "github.copilot.chat.commitMessageGeneration.instructions": [
     {
       "file": ".github/workflows/pr_lint.yml"

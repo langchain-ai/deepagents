@@ -11,15 +11,15 @@
 #    - Repository: Issues (write)
 #    - Organization: Members (read)
 # 2. Install the app on your organization and this repository
-# 3. Add these repository secrets:
-#    - ORG_MEMBERSHIP_APP_CLIENT_ID: Your app's Client ID
-#    - ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
+# 3. Add the repository credentials:
+#    - Variable ORG_MEMBERSHIP_APP_CLIENT_ID: Your app's Client ID
+#    - Secret ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
 #
 # The GitHub App token is required to check private organization membership.
 # Without it, the workflow will fail.
 #
 # Contributor tier thresholds and label colors are in
-# .github/scripts/pr-labeler-config.json
+# .github/scripts/labeling/pr-labeler-config.json
 
 name: Tag External Issues
 
@@ -49,13 +49,13 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
       - name: Check if contributor is external
@@ -66,7 +66,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const author = context.payload.sender.login;
             const { isExternal } = await h.checkMembership(
@@ -84,7 +84,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const issue = context.payload.issue;
             // new-contributor is only meaningful on PRs, not issues
@@ -99,7 +99,7 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.issue.number;
 
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const label = '${{ steps.check-membership.outputs.is-external }}' === 'true'
               ? 'external' : 'internal';
@@ -117,13 +117,13 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
       - name: Backfill labels on open issues
@@ -139,7 +139,7 @@ jobs:
               return;
             }
 
-            const { config, h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const tierLabels = ['trusted-contributor'];
             for (const name of tierLabels) {

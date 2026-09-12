@@ -238,8 +238,12 @@ def set_terminal_background(color: str) -> bool:
     """Set the terminal's dynamic default background color with `OSC 11`.
 
     This is cosmetic and intentionally best-effort. Terminals that don't
-    support `OSC 11` ignore it; `OSC 111` is emitted from `atexit` to restore
-    the default background when this call succeeds.
+    support `OSC 11` ignore it. `OSC 111` restores the default background at
+    shutdown, but only when this call succeeds.
+
+    Apple Terminal applies the `OSC 11` background but does not restore the
+    original background on `OSC 111`. Callers that must not leave a changed
+    background behind must skip Apple Terminal.
 
     Args:
         color: Terminal color payload, usually a CSS-style hex color such as
@@ -262,11 +266,16 @@ def set_terminal_background(color: str) -> bool:
 def reset_terminal_background() -> bool:
     """Reset the terminal's dynamic default background color with `OSC 111`.
 
+    This is a no-op when `set_terminal_background` never succeeded, so the app
+    does not send a restore for a background it did not change.
+
     Returns:
         `True` if the sequence was written.
     """
     global _terminal_background_active  # noqa: PLW0603
 
+    if not _terminal_background_active:
+        return False
     written = write_osc("111", st=True)
     if written:
         _terminal_background_active = False

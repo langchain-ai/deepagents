@@ -104,14 +104,15 @@ async def _serve_example_agent() -> None:
         {"value": "baseten:zai-org/GLM-5.2", "name": "GLM-5.2"},
     ]
     anthropic_models = [
-        {"value": "anthropic:claude-opus-4-8", "name": "Claude Opus 4.8"},
+        {"value": "anthropic:claude-opus-5", "name": "Claude Opus 5"},
         {"value": "anthropic:claude-sonnet-5", "name": "Claude Sonnet 5"},
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]
     openai_models = [
+        {"value": "openai:gpt-5.6-sol", "name": "GPT-5.6-Sol"},
+        {"value": "openai:gpt-5.6-terra", "name": "GPT-5.6-Terra"},
+        {"value": "openai:gpt-5.6-luna", "name": "GPT-5.6-Luna"},
         {"value": "openai:gpt-5.5", "name": "GPT-5.5"},
-        {"value": "openai:gpt-5.4-pro", "name": "GPT-5.4 Pro"},
-        {"value": "openai:gpt-5.3-codex", "name": "GPT-5.3 Codex"},
     ]
     models = baseten_models + anthropic_models + openai_models
 

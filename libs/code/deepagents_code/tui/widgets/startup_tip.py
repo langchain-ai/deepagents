@@ -9,36 +9,54 @@ from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
+from deepagents_code.editor import editor_display_name
+
+_TIP_EXTERNAL_EDITOR = "Press ctrl+g to compose prompts in your external editor"
+"""Generic editor tip replaced at construction when an editor is configured."""
+
+_TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO modes"
+"""Tip used when `startup.yolo_switcher` keeps YOLO in the approval cycle."""
+
+_TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
+"""Tip used when orgs/users disable YOLO entry via the approval switcher."""
 
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
-    "Use /offload when your conversation gets long": 2,
-    "Use /copy to copy the latest assistant message": 3,
-    "Use /mcp to search your MCP servers and inspect tool parameters": 1,
-    "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
+    "Use /offload to summarize older messages and free up the context window": 2,
+    "Use /context to see context window usage and remaining space": 1,
+    "Use /context-doctor to audit the token cost of injected context": 1,
+    "Use /copy to copy the latest message": 3,
+    "Press Ctrl+R to search and reuse submitted prompts": 2,
+    "Use /cost to see a breakdown of estimated spend": 1,
+    "Use /tools to list the tools available to the agent": 1,
+    "Open /mcp and press Enter on a remote server to sign in again": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
-    "Use /effort high to change the current model's reasoning effort": 1,
-    "Press ctrl+x to compose prompts in your external editor": 1,
-    "Press ctrl+u to delete to the start of the line in the chat input": 1,
+    "Use /summarization-model to choose a model for compaction summaries": 1,
+    "Use /uninstall to remove an optional integration": 1,
+    "Use /effort to change the current model's reasoning effort": 1,
+    "Start with --show-reasoning to display provider-visible reasoning": 1,
+    _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
-    "Type /update to check for and install updates": 1,
-    "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
-    "Use /auto-update to toggle automatic updates": 1,
     "Use /timestamps to show or hide message timestamp footers": 1,
+    "Click a collapsed message or press Ctrl+O to expand it": 1,
+    "Drag the chat input's top border to resize it": 1,
     "Use /agents to browse and switch between your available agents": 2,
-    "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
-    "Press Shift+Tab to toggle auto-approve mode": 2,
-    "Use --startup-cmd to run a shell command before the first prompt": 1,
+    "Use /auto model to review Auto actions with a faster, cheaper model": 1,
+    _TIP_SHIFT_TAB_WITH_YOLO: 2,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
 """Tips shown above the chat input. One is chosen at random per launch,
-weighted by these relative selection weights."""
+weighted by these relative selection weights.
+
+The Shift+Tab tip is varied at pick time via `_active_tips` so disabled-YOLO
+installs do not advertise a switcher path that policy has removed.
+"""
 
 # Fail fast at import if the registry is ever emptied or given a non-positive
 # weight: `random.choices` would otherwise raise a cryptic error at widget
@@ -52,15 +70,48 @@ if any(weight <= 0 for weight in _TIPS.values()):
     raise ValueError(msg)
 
 
-def _pick_tip() -> str:
-    """Pick one startup tip using the configured relative weights.
+def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]:
+    """Return the weighted tip registry for the current switcher policy.
+
+    Args:
+        yolo_switcher_enabled: Override for whether YOLO appears in the
+            Shift+Tab cycle. When omitted, resolves `startup.yolo_switcher`.
 
     Returns:
-        Tip text selected from `_TIPS`.
+        Weighted tip map appropriate for the active YOLO switcher setting.
     """
-    tips = list(_TIPS.keys())
-    weights = list(_TIPS.values())
-    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
+    if yolo_switcher_enabled is None:
+        from deepagents_code.config import is_yolo_switcher_enabled
+
+        yolo_switcher_enabled = is_yolo_switcher_enabled()
+
+    tips = dict(_TIPS)
+    editor = editor_display_name()
+    if editor is not None:
+        weight = tips.pop(_TIP_EXTERNAL_EDITOR)
+        tips[f"Press ctrl+g to compose prompts in {editor}"] = weight
+
+    if not yolo_switcher_enabled:
+        # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
+        # splash never claims Shift+Tab can enter unrestricted mode when policy
+        # has removed that entry from the switcher.
+        weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
+        if weight is not None:
+            tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
+    return tips
+
+
+def _pick_tip(*, yolo_switcher_enabled: bool | None = None) -> str:
+    """Pick one startup tip using the configured relative weights.
+
+    Args:
+        yolo_switcher_enabled: Optional override forwarded to `_active_tips`.
+
+    Returns:
+        Tip text selected from the active tip registry.
+    """
+    tips = _active_tips(yolo_switcher_enabled=yolo_switcher_enabled)
+    return random.choices(list(tips.keys()), weights=list(tips.values()), k=1)[0]  # noqa: S311
 
 
 def show_startup_tip() -> bool:

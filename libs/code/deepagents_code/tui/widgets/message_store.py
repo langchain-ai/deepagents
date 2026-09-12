@@ -19,7 +19,12 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.widget import Widget
+
+    from deepagents_code.diff_utils import DiffStats
+    from deepagents_code.file_ops import DiffOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,16 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "content",
         "tool_status",
         "tool_output",
+        "tool_duration",
         "tool_expanded",
         "tool_reject_reason",
+        "tool_diff_superseded",
+        "tool_display_caveat",
+        "tool_group_expanded",
         "skill_expanded",
+        "rubric_expanded",
+        "reasoning_expanded",
+        "user_expanded",
         "is_streaming",
     }
 )
@@ -63,8 +75,14 @@ class MessageType(StrEnum):
     ASSISTANT = "assistant"
     """Streamed agent response rendered with markdown."""
 
+    REASONING = "reasoning"
+    """Provider-visible reasoning rendered separately from the final answer."""
+
     TOOL = "tool"
     """Record of a tool invocation, including its args, status, and output."""
+
+    TOOL_GROUP = "tool_group"
+    """Lazy summary retaining completed tool rows as data until expanded."""
 
     SKILL = "skill"
     """Record of a skill invocation, carrying its SKILL.md body and metadata."""
@@ -74,6 +92,9 @@ class MessageType(StrEnum):
 
     APP = "app"
     """App-status note from the app itself (version info, command feedback)."""
+
+    RUBRIC = "rubric"
+    """Rubric grader result with a compact summary and expandable details."""
 
     SUMMARIZATION = "summarization"
     """Notification that the prior conversation was summarized/offloaded."""
@@ -148,16 +169,80 @@ class MessageData:
     tool_output: str | None = None
     """Output returned by the tool after execution."""
 
+    tool_duration: float | None = None
+    """Elapsed run time in seconds for a completed timed tool call."""
+
     tool_expanded: bool = False
     """Whether the tool output section is expanded in the UI."""
 
     tool_reject_reason: str | None = None
     """User-supplied reason attached to a HITL reject decision (if any)."""
 
+    tool_diff_superseded: bool = False
+    """Whether a mounted diff replaces this successful tool row."""
+
+    tool_display_caveat: bool = False
+    """Whether `tool_output` opens with a caveat that must not be folded away.
+
+    Persisted rather than re-derived from the output text: matching prose would
+    tie rehydration to the caveat's exact wording, and the cost of getting it
+    wrong is a transcript that folds the change's only account into a summary
+    line. See `ToolCallMessage.has_display_caveat`.
+    """
+
+    tool_group_messages: list[MessageData] = field(default_factory=list)
+    """Completed tool/diff rows retained by a lazy `TOOL_GROUP` summary."""
+
+    tool_group_expanded: bool = False
+    """Whether a lazy tool group currently has its detail widgets mounted."""
+
     # ---
 
     diff_file_path: str | None = None
     """File path associated with the diff (DIFF messages only)."""
+
+    diff_tool_name: str | None = None
+    """Name of the file tool that produced the diff (DIFF messages only)."""
+
+    diff_before_content: str | None = None
+    """Content prefix before the change, used to highlight DIFF messages.
+
+    Bounded by `diff.MAX_HIGHLIGHT_CHARS` as trimmed by
+    `highlight_source_prefixes` on the way to the widget; `from_widget` reads the
+    already-trimmed value.
+
+    `__post_init__` enforces the same *length* limit, but not the same rule: it
+    slices characters, so a value it truncates can end mid-line, which
+    `highlight_source_prefixes` — keyed on the diff's line numbers — never
+    produces. Such a prefix lexes into a partial final line and trips the drift
+    check in `_highlighted_rows`. It is a backstop against a direct constructor
+    call parking an unbounded copy of a file in a store whose whole point is
+    that thousands of messages cost little, not a second way to build a prefix.
+    """
+
+    diff_after_content: str | None = None
+    """Content prefix after the change, same bound and same caveat."""
+
+    diff_stats: DiffStats | None = None
+    """True change counts, which survive a truncated DIFF body."""
+
+    diff_outcome: DiffOutcome = "shown"
+    """What the operation could honestly say about what it changed.
+
+    One field rather than a `stats`-plus-"counts unknown" pair, so a rehydrated
+    diff cannot come back holding counts it also declares fictional.
+    """
+
+    diff_show_numbers: bool = True
+    """Whether file-relative line numbers are shown in this DIFF message."""
+
+    diff_show_caveat: bool = True
+    """Whether the DIFF renders its outcome's caveat, or leaves it to its row.
+
+    Persisted rather than recomputed because the decision depends on what else
+    was mounted at the time, which rehydration cannot see. Without it a diff
+    whose row carries the caveat comes back printing the same sentence twice.
+    """
 
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
@@ -178,11 +263,44 @@ class MessageData:
     skill_expanded: bool = False
     """Whether the skill body is expanded in the UI."""
 
+    rubric_details: str | None = None
+    """Complete grader details for RUBRIC messages."""
+
+    rubric_expanded: bool = False
+    """Whether the grader details are expanded in the UI."""
+
+    reasoning_expanded: bool = False
+    """Whether provider-visible reasoning is expanded in the UI."""
+
+    # USER message fields - only populated for USER messages
+    user_expanded: bool = False
+    """Whether a collapsed long user message is expanded in the UI."""
+
+    user_detect_mode: bool = True
+    """Whether the message renders a leading `/`/`!` trigger as a mode glyph.
+
+    Submitted prompts are constructed with mode detection off (a leading slash
+    is literal text there), so this has to survive virtualization or a rehydrated
+    message would strip a prefix it should render — changing both its glyph and
+    its collapse threshold.
+    """
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
     While `True`, the corresponding widget is actively receiving content
     chunks and should not be pruned or re-hydrated.
+    """
+
+    assistant_local_only: bool = False
+    """Whether an `ASSISTANT` row holds client-side output, not agent output.
+
+    Set for both `!` and `!!` shell output, which render through
+    `AssistantMessage` without invoking the agent. Lets callers ask whether the
+    *agent* produced anything in a thread rather than trusting the row type —
+    see `_store_has_server_output` and the `/copy` scan in `app.py`.
+    Never set on a restored transcript: shell output reaches thread state as a
+    `<user_shell_command>` human message, not as an assistant turn.
     """
 
     is_markdown: bool = False
@@ -195,7 +313,7 @@ class MessageData:
     height_hint: int | None = None
     """Cached rendered widget height in terminal rows, or None if unmeasured.
 
-    Measured after layout by `_measure_message_height` in `app.py` and stored
+    Measured after layout by `_measure_message_heights` in `app.py` and stored
     via `set_height_hint`. Consumed by `estimate_height`/`range_height` to size
     the transcript spacers and to keep the scroll anchor stable across
     hydrate-above/below. When None (not yet measured), `estimate_height` falls
@@ -206,18 +324,47 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name` or a SKILL
-                message is missing `skill_name`.
+            ValueError: If a TOOL message is missing `tool_name`, a TOOL_GROUP
+                has no detail rows, a SKILL message is missing `skill_name`, or a
+                RUBRIC message is missing `rubric_details`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
             raise ValueError(msg)
+        if self.type == MessageType.TOOL_GROUP and not self.tool_group_messages:
+            msg = "TOOL_GROUP messages must have detail rows"
+            raise ValueError(msg)
         if self.type == MessageType.SKILL and not self.skill_name:
             msg = "SKILL messages must have a skill_name"
             raise ValueError(msg)
+        # A summary-only grader result stays an AppMessage; a RUBRIC message
+        # exists precisely to carry expandable details, so require them.
+        if self.type == MessageType.RUBRIC and not self.rubric_details:
+            msg = "RUBRIC messages must have rubric_details"
+            raise ValueError(msg)
+        # Enforce the bound the highlight fields document. `from_widget` already
+        # supplies trimmed values, so this only catches direct construction —
+        # which is exactly the path that could otherwise park an unbounded copy
+        # of a file in a store whose whole point is that thousands of messages
+        # cost little. Imported here rather than at module scope to keep the
+        # widget module off the startup import path (AGENTS.md).
+        from deepagents_code.tui.widgets.diff import MAX_HIGHLIGHT_CHARS
 
-    def to_widget(self) -> Widget:
+        if self.diff_before_content is not None:
+            self.diff_before_content = self.diff_before_content[:MAX_HIGHLIGHT_CHARS]
+        if self.diff_after_content is not None:
+            self.diff_after_content = self.diff_after_content[:MAX_HIGHLIGHT_CHARS]
+
+    def to_widget(
+        self,
+        *,
+        tool_group_detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+    ) -> Widget:
         """Recreate a widget from this message data.
+
+        Args:
+            tool_group_detail_builder: Optional lazy tool-detail widget factory.
 
         Returns:
             The appropriate message widget for this data.
@@ -228,6 +375,9 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            LazyToolGroupSummary,
+            ReasoningMessage,
+            RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
@@ -236,10 +386,26 @@ class MessageData:
 
         match self.type:
             case MessageType.USER:
-                return UserMessage(self.content, id=self.id)
+                widget = UserMessage(
+                    self.content,
+                    id=self.id,
+                    detect_mode=self.user_detect_mode,
+                )
+                widget._deferred_expanded = self.user_expanded
+                return widget
 
             case MessageType.ASSISTANT:
-                return AssistantMessage(self.content, id=self.id)
+                # Carry `local_only` back so a row pruned by virtualization and
+                # rehydrated does not read as agent output on the next
+                # `from_widget` round trip.
+                return AssistantMessage(
+                    self.content, id=self.id, local_only=self.assistant_local_only
+                )
+
+            case MessageType.REASONING:
+                widget = ReasoningMessage(self.content, id=self.id)
+                widget._deferred_expanded = self.reasoning_expanded
+                return widget
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -251,8 +417,25 @@ class MessageData:
                 # via _restore_deferred_state
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
+                widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
+                if self.tool_display_caveat:
+                    widget._mark_display_caveat()
+                if self.tool_diff_superseded:
+                    # Go through the widget's own setter so a rehydrated row
+                    # passes the same tool-name guard as the live path; writing
+                    # the flag directly could hide a row no diff can replace.
+                    widget.mark_superseded_by_diff()
+                return widget
+
+            case MessageType.TOOL_GROUP:
+                widget = LazyToolGroupSummary(
+                    self.tool_group_messages,
+                    detail_builder=tool_group_detail_builder,
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.tool_group_expanded
                 return widget
 
             case MessageType.SKILL:
@@ -273,6 +456,15 @@ class MessageData:
             case MessageType.APP:
                 return AppMessage(self.content, markdown=self.is_markdown, id=self.id)
 
+            case MessageType.RUBRIC:
+                widget = RubricResultMessage(
+                    self.content,
+                    self.rubric_details or "",
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.rubric_expanded
+                return widget
+
             case MessageType.SUMMARIZATION:
                 return SummarizationMessage(self.content, id=self.id)
 
@@ -280,6 +472,13 @@ class MessageData:
                 return DiffMessage(
                     self.content,
                     file_path=self.diff_file_path or "",
+                    tool_name=self.diff_tool_name,
+                    before=self.diff_before_content or "",
+                    after=self.diff_after_content or "",
+                    stats=self.diff_stats,
+                    outcome=self.diff_outcome,
+                    show_caveat=self.diff_show_caveat,
+                    show_numbers=self.diff_show_numbers,
                     id=self.id,
                 )
 
@@ -308,6 +507,8 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            ReasoningMessage,
+            RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
@@ -334,6 +535,8 @@ class MessageData:
                 type=MessageType.USER,
                 content=widget._content,
                 id=widget_id,
+                user_expanded=widget._expanded,
+                user_detect_mode=widget._detect_mode,
             )
 
         if isinstance(widget, AssistantMessage):
@@ -342,6 +545,16 @@ class MessageData:
                 content=widget._content,
                 id=widget_id,
                 is_streaming=widget._stream is not None,
+                assistant_local_only=widget._local_only,
+            )
+
+        if isinstance(widget, ReasoningMessage):
+            return cls(
+                type=MessageType.REASONING,
+                content=widget._content,
+                id=widget_id,
+                is_streaming=widget._streaming,
+                reasoning_expanded=widget._expanded,
             )
 
         if isinstance(widget, ToolCallMessage):
@@ -364,8 +577,16 @@ class MessageData:
                 tool_args=widget._args,
                 tool_status=tool_status,
                 tool_output=widget._output,
+                tool_duration=widget._duration,
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
+                # The raw flag, deliberately, not the `_superseded_by_diff`
+                # property: that property conjoins `is_success`, so persisting
+                # it would bake the current status into the stored value and a
+                # later error-to-success flip would lose the supersession. Do
+                # not "fix" this to use the public property.
+                tool_diff_superseded=widget._diff_superseded,
+                tool_display_caveat=widget.has_display_caveat,
             )
 
         if isinstance(widget, ErrorMessage):
@@ -384,6 +605,13 @@ class MessageData:
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+                diff_tool_name=widget._tool_name,
+                diff_before_content=widget._before,
+                diff_after_content=widget._after,
+                diff_stats=widget._stats,
+                diff_outcome=widget._outcome,
+                diff_show_caveat=widget._show_caveat,
+                diff_show_numbers=widget._show_numbers,
             )
 
         if isinstance(widget, SummarizationMessage):
@@ -391,6 +619,15 @@ class MessageData:
                 type=MessageType.SUMMARIZATION,
                 content=str(widget._content),
                 id=widget_id,
+            )
+
+        if isinstance(widget, RubricResultMessage):
+            return cls(
+                type=MessageType.RUBRIC,
+                content=widget._summary,
+                id=widget_id,
+                rubric_details=widget._details,
+                rubric_expanded=widget._expanded,
             )
 
         if isinstance(widget, AppMessage):
@@ -420,20 +657,24 @@ class MessageStore:
     of widgets that are actually mounted in the DOM.
 
     Attributes:
-        WINDOW_SIZE: Maximum number of messages to keep mounted in the DOM.
+        INITIAL_WINDOW_SIZE: Messages mounted synchronously when resuming a thread.
+        WINDOW_SIZE: Soft target for the mounted message window.
 
-            Trades DOM cost against scroll smoothness. Note each message may
-            also mount a timestamp footer, so the live widget count is up to
-            ~2x this value. Spacer rows above/below the window preserve full
-            scroll geometry, so this only bounds how much is rendered at once,
-            not what the user can scroll to.
-        HYDRATE_BUFFER: Number of messages to hydrate when scrolling near edge.
-
-            Provides enough buffer to avoid visible loading pauses.
+            Hydration may temporarily exceed this target while the user scrolls;
+            pruning returns to it after scrolling settles. Note each message may
+            also mount a timestamp footer, so the live widget count is up to ~2x
+            this value.
+        HARD_WINDOW_SIZE: Mounted-message limit that triggers immediate pruning.
+        HYDRATE_BUFFER: Messages mounted or removed per event-loop slice.
+        PREFETCH_VIEWPORTS: Distance from a virtual spacer boundary at which
+            hydration starts.
     """
 
-    WINDOW_SIZE: int = 200
-    HYDRATE_BUFFER: int = 15
+    INITIAL_WINDOW_SIZE: int = 30
+    WINDOW_SIZE: int = 800
+    HARD_WINDOW_SIZE: int = 900
+    HYDRATE_BUFFER: int = 8
+    PREFETCH_VIEWPORTS: int = 8
 
     def __init__(self) -> None:
         """Initialize the message store."""
@@ -466,6 +707,27 @@ class MessageStore:
     def total_count(self) -> int:
         """Total number of messages stored."""
         return len(self._messages)
+
+    @property
+    def turn_count(self) -> int:
+        """Number of user-authored rows stored, including local-only commands.
+
+        Counts `USER` and `SKILL` rows. A `/skill` invocation mounts a `SKILL` row
+        *instead of* a `USER` row, so each skill turn contributes exactly one;
+        everything else (`ASSISTANT`, `TOOL`, `APP`, `ERROR`, ...) is excluded.
+
+        This counts stored transcript rows, not server turns: it spans the whole
+        store rather than the rendered window (`visible_count`), and it includes
+        local-only flows such as `!shell` and most slash commands, which mount a
+        `UserMessage` without ever invoking the server. It is therefore a broader
+        population than the "conversation turns" the offload report derives from
+        graph state, which counts only non-internal `HumanMessage`s the model
+        actually saw. Do not converge the two -- they answer different questions.
+        """
+        return sum(
+            message.type in {MessageType.USER, MessageType.SKILL}
+            for message in self._messages
+        )
 
     @property
     def visible_count(self) -> int:
@@ -506,8 +768,9 @@ class MessageStore:
         """Load many messages at once, keeping only the tail visible.
 
         This is optimized for thread resumption: all messages are stored as
-        lightweight data, but only the last `WINDOW_SIZE` entries are marked
-        visible (i.e. will need DOM widgets).
+        lightweight data, but only the last `INITIAL_WINDOW_SIZE` entries are
+        marked visible. A smaller monkeypatched `WINDOW_SIZE` still caps the
+        initial window, which keeps focused virtualization tests deterministic.
 
         Args:
             messages: Ordered list of message data to load.
@@ -526,10 +789,11 @@ class MessageStore:
             self._index[msg.id] = msg
         total = len(self._messages)
 
-        if total <= self.WINDOW_SIZE:
+        initial_window = min(self.INITIAL_WINDOW_SIZE, self.WINDOW_SIZE)
+        if total <= initial_window:
             self._visible_start = 0
         else:
-            self._visible_start = total - self.WINDOW_SIZE
+            self._visible_start = total - initial_window
 
         self._visible_end = total
 
@@ -646,12 +910,20 @@ class MessageStore:
         return message_id in self._protection_reasons
 
     def window_exceeded(self) -> bool:
-        """Check if the visible window exceeds the maximum size.
+        """Check if the visible window exceeds the soft target size.
 
         Returns:
-            True if we should prune some widgets.
+            True if pruning should eventually return the window to its target.
         """
         return self.visible_count > self.WINDOW_SIZE
+
+    def hard_window_exceeded(self) -> bool:
+        """Check if mounted history exceeds the immediate-pruning limit.
+
+        Returns:
+            Whether pruning should run without waiting for scroll inactivity.
+        """
+        return self.visible_count > max(self.WINDOW_SIZE, self.HARD_WINDOW_SIZE)
 
     def get_messages_to_prune(self, count: int | None = None) -> list[MessageData]:
         """Get the oldest visible messages that should be pruned.
@@ -797,24 +1069,52 @@ class MessageStore:
         """
         self._visible_end = min(len(self._messages), self._visible_end + count)
 
+    def get_tail_window(self, count: int) -> list[MessageData] | None:
+        """Return a bounded tail window when moving there preserves live rows.
+
+        Returns:
+            The tail rows, or None when the move would archive a protected row.
+        """
+        start = max(0, len(self._messages) - max(0, count))
+        if any(self.is_protected(message.id) for message in self._messages[:start]):
+            return None
+        return self._messages[start:]
+
+    def move_visible_window_to_tail(self, count: int) -> list[MessageData] | None:
+        """Move the visible range directly to a bounded protected-safe tail.
+
+        Returns:
+            The new visible tail, or None when a protected row blocks the move.
+        """
+        tail = self.get_tail_window(count)
+        if tail is None:
+            return None
+        self._visible_end = len(self._messages)
+        self._visible_start = self._visible_end - len(tail)
+        return tail
+
     def should_hydrate_above(
-        self, scroll_position: float, viewport_height: int
+        self,
+        scroll_position: float,
+        viewport_height: int,
+        top_spacer_bottom: int,
     ) -> bool:
-        """Check if we should hydrate messages above the current view.
+        """Check if older messages should hydrate near the mounted-window edge.
 
         Args:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
+            top_spacer_bottom: Estimated row where mounted messages begin.
 
         Returns:
-            True if user is scrolling near the top and we have archived messages.
+            Whether the viewport is approaching the virtual top spacer.
         """
         if not self.has_messages_above:
             return False
 
-        # Hydrate when within 2x viewport height of the top
-        threshold = viewport_height * 2
-        return scroll_position < threshold
+        distance_from_top_spacer = scroll_position - top_spacer_bottom
+        threshold = viewport_height * self.PREFETCH_VIEWPORTS
+        return distance_from_top_spacer < threshold
 
     def should_prune_below(
         self, scroll_position: float, viewport_height: int, content_height: int
@@ -846,6 +1146,8 @@ class MessageStore:
         scroll_position: float,
         viewport_height: int,
         bottom_spacer_top: int,
+        *,
+        max_scroll: float | None = None,
     ) -> bool:
         """Check if we should hydrate messages below the current view.
 
@@ -853,15 +1155,25 @@ class MessageStore:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
             bottom_spacer_top: Estimated row where the bottom spacer begins.
+            max_scroll: Maximum scroll offset of the viewport, when known. When
+                the view is scrolled to this edge but history is still archived
+                below, hydration must run regardless of the spacer-distance
+                heuristic: the user cannot scroll any further, and estimated
+                spacer heights can drift from the real DOM layout enough to
+                leave the distance check just short of its threshold, stranding
+                the tail. Mirrors how scrolling to the top (offset 0) always
+                hydrates above.
 
         Returns:
-            True if the viewport is near the bottom spacer.
+            True if the viewport is near (or at) the bottom spacer.
         """
         if not self.has_messages_below:
             return False
+        if max_scroll is not None and scroll_position >= max_scroll:
+            return True
         viewport_bottom = scroll_position + viewport_height
         distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
-        threshold = viewport_height * 2
+        threshold = viewport_height * self.PREFETCH_VIEWPORTS
         return distance_from_bottom_spacer < threshold
 
     def clear(self) -> None:

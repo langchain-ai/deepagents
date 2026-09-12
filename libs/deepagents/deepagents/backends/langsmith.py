@@ -20,12 +20,20 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
 
 if TYPE_CHECKING:
-    from langsmith.sandbox import Sandbox
+    from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _execute_response(result: ExecutionResult) -> ExecuteResponse:
+    """Build an `ExecuteResponse` from a LangSmith SDK execution result."""
+    output = result.stdout or ""
+    if result.stderr:
+        output += "\n" + result.stderr if output else result.stderr
+    return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
 def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
@@ -60,6 +68,8 @@ class LangSmithSandbox(BaseSandbox):
         """
         self._sandbox = sandbox
         self._default_timeout: int = 30 * 60
+        self._async_sandbox: AsyncSandbox | None = None
+        self._async_client: AsyncSandboxClient | None = None
 
     @property
     def id(self) -> str:
@@ -82,17 +92,51 @@ class LangSmithSandbox(BaseSandbox):
             `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        result = self._sandbox.run(command, timeout=effective_timeout)
+        return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
 
-        output = result.stdout or ""
-        if result.stderr:
-            output += "\n" + result.stderr if output else result.stderr
+    def _aget_sandbox(self) -> AsyncSandbox:
+        """Return the cached `AsyncSandbox`, creating it on first async use.
 
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.exit_code,
-            truncated=False,
-        )
+        `Sandbox.to_async()` builds a fresh client with its own connection pool
+        on every call, so it is cached: rebuilding per command would add a TCP
+        and TLS handshake to each one. The client belongs to the event loop that
+        created it, as does this backend — reusing one instance across loops is
+        not supported.
+        """
+        if self._async_sandbox is None:
+            # The SDK exposes no public accessor for a sandbox's client, and
+            # the async client is held here so `aclose()` can reach its pool.
+            self._async_client = self._sandbox._client.to_async()
+            self._async_sandbox = self._sandbox.to_async(client=self._async_client)
+        return self._async_sandbox
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+        """Execute a shell command inside the sandbox.
+
+        Overrides the protocol default, which offloads the blocking `execute()`
+        to a worker thread. `BaseSandbox` routes every async filesystem
+        operation through `aexecute`, so using the SDK's async client here keeps
+        all of them off the sync transport.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If `None`, uses the backend's default timeout.
+
+        Returns:
+            `ExecuteResponse` containing output, exit code, and truncation flag.
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        sandbox = self._aget_sandbox()
+        return _execute_response(await sandbox.run(command, timeout=effective_timeout))
+
+    async def aclose(self) -> None:
+        """Close the cached async client's connection pool, if one was created."""
+        client = self._async_client
+        self._async_sandbox = self._async_client = None
+        if client is not None:
+            await client.aclose()
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write content using the LangSmith SDK to avoid ARG_MAX.
@@ -142,6 +186,9 @@ class LangSmithSandbox(BaseSandbox):
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
             with `TRUNCATION_MSG` appended on overflow.
+        - A negative `offset` is clamped to the start of the file, and a
+            non-positive `limit` returns empty content with no pagination
+            metadata.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -197,14 +244,23 @@ class LangSmithSandbox(BaseSandbox):
         if lines and lines[-1] == "":
             lines.pop()
 
-        offset = int(offset)
-        limit = int(limit)
+        offset, limit = normalize_read_bounds(offset, limit)
 
-        if not lines or offset >= len(lines):
-            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({len(lines)} lines)")
+        # Nothing was requested: no line range to describe, and nothing for the
+        # byte cap below to shorten. Guarded at `<= 0` so this holds even if the
+        # clamp above is ever bypassed or removed. `no_lines_requested` flags
+        # the window as never inspected so the middleware can tell it apart
+        # from a genuinely empty file.
+        if limit <= 0:
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"), no_lines_requested=True)
+
+        total_lines = len(lines)
+        if not lines or offset >= total_lines:
+            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
 
         page = lines[offset : offset + limit]
         content = "\n".join(page)
+        returned_lines = len(page)
 
         # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
         # large pages don't reintroduce the transport-size symptom this
@@ -213,9 +269,27 @@ class LangSmithSandbox(BaseSandbox):
         msg_bytes = TRUNCATION_MSG.encode("utf-8")
         effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
         if len(encoded) > effective_limit:
-            content = encoded[:effective_limit].decode("utf-8", errors="ignore") + TRUNCATION_MSG
+            truncated = encoded[:effective_limit].decode("utf-8", errors="ignore")
+            # The byte cap can drop whole lines from the page and cut the final
+            # rendered line mid-way. Advance the resume offset only past lines
+            # that were fully rendered (each is followed by its "\n"), so a
+            # re-read from `next_offset` never silently skips unshown lines; the
+            # partial boundary line is re-read from its start. Fall back to 1
+            # when even the first line overflows the cap, to guarantee forward
+            # progress instead of re-reading the same truncated page.
+            returned_lines = truncated.count("\n") or 1
+            content = truncated + TRUNCATION_MSG
 
-        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
+        end_line = offset + returned_lines
+        next_offset = end_line if end_line < total_lines else None
+
+        return ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=total_lines,
+            start_line=offset + 1,
+            end_line=end_line,
+            next_offset=next_offset,
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.

@@ -24,7 +24,9 @@ custom/unregistered type:
 
 from __future__ import annotations
 
+import hmac
 import logging
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import bsdiff4
@@ -39,6 +41,64 @@ PATCH = "patch"
 CLEAR = "clear"
 
 SnapshotRecord = tuple[str, bytes]
+
+# Domain-separation prefix folded into every signed message so a snapshot HMAC
+# can never be confused with an HMAC computed over some other blob using the
+# same key. Bump the version suffix if the signed-message layout ever changes.
+_HMAC_DOMAIN = b"langchain-quickjs/snapshot-hmac/v1"
+
+
+def normalize_signing_key(key: str | bytes) -> bytes:
+    """Coerce a user-supplied signing key into raw ``bytes``.
+
+    ``str`` keys are UTF-8 encoded; ``bytes`` are used verbatim. Empty keys are
+    rejected because an empty HMAC key provides no integrity guarantee.
+    """
+    material = key.encode("utf-8") if isinstance(key, str) else bytes(key)
+    if not material:
+        msg = "`snapshot_signing_key` must be a non-empty str or bytes."
+        raise ValueError(msg)
+    return material
+
+
+def sign_snapshot(key: bytes, payload: bytes, thread_id: str) -> bytes:
+    """Return the HMAC-SHA256 tag over a fully materialized snapshot.
+
+    The tag is computed over the *completed materialized* snapshot bytes (the
+    full heap serialization) bound to ``thread_id``, so a valid snapshot for one
+    thread cannot be replayed into another by a state-store adversary. This is
+    signed before the payload is delta-encoded (``encode_snapshot``) and flushed
+    onto the ``bsdiff`` patch chain; verification recomputes the tag over the
+    materialized bytes the chain replays back to.
+    """
+    return hmac.new(key, _signed_message(payload, thread_id), sha256).digest()
+
+
+def verify_snapshot(
+    key: bytes, payload: bytes, thread_id: str, tag: bytes | None
+) -> bool:
+    """Constant-time check that ``tag`` authenticates ``payload`` for ``thread_id``.
+
+    Returns ``False`` for a missing/short tag or any mismatch. The comparison uses
+    :func:`hmac.compare_digest` to avoid leaking timing information about how much
+    of the tag matched.
+    """
+    if not tag:
+        return False
+    expected = sign_snapshot(key, payload, thread_id)
+    return hmac.compare_digest(expected, bytes(tag))
+
+
+def _signed_message(payload: bytes, thread_id: str) -> bytes:
+    """Build the length-prefixed message HMAC is computed over.
+
+    Framing (domain, then a length-prefixed ``thread_id``, then the payload)
+    makes no two distinct ``(thread_id, payload)`` pairs can serialize to the
+    same byte string, so an attacker cannot shift bytes across the boundary
+    to forge a collision.
+    """
+    tid = thread_id.encode("utf-8")
+    return b"".join((_HMAC_DOMAIN, len(tid).to_bytes(8, "big"), tid, bytes(payload)))
 
 
 def coerce_record(write: object) -> tuple[str, bytes] | None:

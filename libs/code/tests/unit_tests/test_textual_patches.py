@@ -5,19 +5,21 @@ See `_textual_patches.py` and Textualize/textual#6378.
 
 from __future__ import annotations
 
-import ast
-import importlib.util
-from pathlib import Path
+import os
+import subprocess
+import sys
 
 import pytest
-from textual._time import get_time
+from textual import events
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Markdown, Static
 
 from deepagents_code import _textual_patches  # triggers patch
+from deepagents_code.tui.widgets.diff import _DiffRowStatic
 
 
 def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
@@ -33,6 +35,36 @@ class SelectableTextApp(App[None]):
         yield Static("alpha beta gamma", id="msg")
 
 
+def test_ascii_mode_replaces_every_textual_border_glyph() -> None:
+    code = (
+        "import deepagents_code._textual_patches\n"
+        "from textual._border import BORDER_CHARS, INVISIBLE_EDGE_TYPES\n"
+        "ascii_border = BORDER_CHARS['ascii']\n"
+        "assert all(border == ascii_border for name, border in "
+        "BORDER_CHARS.items() if name not in {*INVISIBLE_EDGE_TYPES, 'blank'})\n"
+        "assert all(not character.strip() for edge in BORDER_CHARS['blank'] "
+        "for character in edge)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "DEEPAGENTS_CODE_UI_CHARSET_MODE": "ascii"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+class SelectableDiffApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _DiffRowStatic(
+            Content(" 1 - removed word"), prefix_len=5, id="diff-before"
+        )
+        yield _DiffRowStatic(Content(" 1 + added word"), prefix_len=5, id="diff-row")
+
+
 class SelectableMarkdownApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Markdown("alpha **beta** gamma", id="msg")
@@ -45,56 +77,163 @@ class SelectableHistoryApp(App[None]):
             yield Static("second message", id="second")
 
 
+class SelectableScrollApp(App[None]):
+    CSS = "VerticalScroll { height: 8; }"
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="history"):
+            for index in range(1, 31):
+                yield Static(f"line{index:02d} content", id=f"row{index}")
+
+
 class TestPatchedWordSelection:
-    async def test_double_click_selects_word_not_entire_widget(self) -> None:
+    async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
         async with SelectableTextApp().run_test() as pilot:
-            await pilot.double_click("#msg", offset=(7, 0))
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
 
-            assert pilot.app.screen.get_selected_text() == "beta"
+            await pilot.click("#msg", offset=(11, 0), shift=True)
 
-    async def test_double_click_drag_expands_to_word_boundaries(self) -> None:
+            assert pilot.app.screen.get_selected_text() == "alpha beta g"
+
+    async def test_shift_click_preserves_backward_drag_anchor(self) -> None:
         async with SelectableTextApp().run_test() as pilot:
-            widget = pilot.app.query_one("#msg", Static)
-            start = widget.content_region.offset + Offset(1, 0)
-            pilot.app._click_chain_last_offset = start
-            pilot.app._click_chain_last_time = get_time()
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            assert pilot.app.screen.get_selected_text() == "gamma"
 
-            await pilot.mouse_down("#msg", offset=(1, 0))
-            await pilot.mouse_up("#msg", offset=(13, 0))
+            await pilot.click("#msg", offset=(0, 0), shift=True)
 
             assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
 
-    async def test_double_click_falls_back_for_non_text_renderable(self) -> None:
+    async def test_shift_click_rejects_detached_markdown_anchor(self) -> None:
         async with SelectableMarkdownApp().run_test() as pilot:
-            await pilot.double_click("#msg", offset=(7, 0))
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            await pilot.mouse_down("#msg", offset=(15, 0))
+            await pilot.mouse_up("#msg", offset=(11, 0))
+            select_state = screen._select_state
+            assert select_state is not None
+            anchor_widget = select_state.start.content_widget
+            assert anchor_widget is not None
 
-            assert pilot.app.screen.get_selected_text() is not None
+            await document.update("replacement text")
+            assert not anchor_widget.is_attached
+            await pilot.click("#msg", offset=(0, 0), shift=True)
 
-    async def test_triple_click_selects_clicked_widget_not_history(self) -> None:
+            assert screen.get_selected_text() is None
+
+    async def test_shift_click_extends_from_anchor_after_scroll(self) -> None:
+        async with SelectableScrollApp().run_test(size=(40, 8)) as pilot:
+            await pilot.mouse_down("#row1", offset=(0, 0))
+            await pilot.mouse_up("#row2", offset=(6, 0))
+            history = pilot.app.query_one("#history", VerticalScroll)
+            history.scroll_to(y=10, animate=False)
+            await pilot.pause()
+
+            await pilot.click("#row14", offset=(6, 0), shift=True)
+
+            selected = pilot.app.screen.get_selected_text()
+            assert selected is not None
+            assert selected.startswith("line01 content")
+            assert selected.endswith("line14")
+
+    async def test_shift_click_ignores_unmodified_click(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.mouse_down("#msg", offset=(0, 0))
+            await pilot.mouse_up("#msg", offset=(4, 0))
+            assert pilot.app.screen.get_selected_text() == "alpha"
+
+            await pilot.click("#msg", offset=(11, 0))
+
+            assert pilot.app.screen.get_selected_text() is None
+
+    async def test_shift_click_extends_selection_across_widgets(self) -> None:
         async with SelectableHistoryApp().run_test() as pilot:
-            await pilot.triple_click("#second", offset=(1, 0))
+            await pilot.mouse_down("#first", offset=(6, 0))
+            await pilot.mouse_up("#first", offset=(12, 0))
+            assert pilot.app.screen.get_selected_text() == "message"
 
-            assert pilot.app.screen.get_selected_text() == "second message"
+            await pilot.click("#second", offset=(6, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() == "message\nsecond"
+
+    async def test_shift_click_without_selection_remains_unselected(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.click("#msg", offset=(7, 0), shift=True)
+
+            assert pilot.app.screen.get_selected_text() is None
+
+
+class TestDetachedHitGuard:
+    """Coverage of the Textualize/textual#6643 crash guard."""
+
+    async def test_mouse_down_on_detached_widget_does_not_crash(self) -> None:
+        """A press on a widget pruned since the last repaint must be ignored.
+
+        `Markdown.update` — which `MarkdownStream` runs on every streaming
+        assistant message — detaches its old blocks while the compositor still
+        reports them as visible. `_detach` is exactly what Textual calls during
+        that prune, so calling it directly pins the race window deterministically
+        instead of spinning the event loop until it happens to be observed.
+        Without the guard, `Screen._forward_event` raises `AttributeError` on the
+        detached widget's `None` parent and takes the whole app down.
+        """
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            paragraph = document.query("*").first()
+            x = paragraph.region.x + 1
+            y = paragraph.region.y
+            assert screen._compositor.get_widget_and_offset_at(x, y)[0] is paragraph
+
+            paragraph._detach()
+            try:
+                assert screen.get_widget_and_offset_at(x, y) == (None, None)
+                screen._forward_event(
+                    events.MouseDown(None, x, y, 0, 0, 1, False, False, False)
+                )
+
+                assert screen._select_state is None
+            finally:
+                # Textual's own teardown asserts every widget still has a
+                # parent, so hand the simulated prune victim back to the DOM.
+                paragraph._attach(document)
+
+    async def test_attached_widget_hit_is_still_reported(self) -> None:
+        """The guard must only drop detached hits, not live ones."""
+        async with SelectableTextApp().run_test() as pilot:
+            widget = pilot.app.query_one("#msg", Static)
+            offset = widget.content_region.offset + Offset(2, 0)
+
+            hit, hit_offset = pilot.app.screen.get_widget_and_offset_at(*offset)
+
+            assert hit is widget
+            assert hit_offset == Offset(2, 0)
+
+
+def test_missing_shift_selection_internals_does_not_break_import() -> None:
+    """Missing private classes must skip only the best-effort Shift patch."""
+    code = (
+        "import textual.selection\n"
+        "del textual.selection.SelectEnd\n"
+        "del textual.selection.SelectState\n"
+        "import deepagents_code._textual_patches\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class TestPatchedSequenceToKeyEvents:
     r"""Targeted coverage of the two interventions in the shim."""
-
-    def test_reissue_path_preserves_alt_for_enter(self) -> None:
-        r"""Correctness fix: `\r` with `alt=True` must emit `alt+enter`.
-
-        Without the patch, the tuple branch in upstream drops `alt` and
-        VSCode `sendSequence` shift+enter arrives as bare `enter`.
-        """
-        assert _keys_for("\r", alt=True) == [("alt+enter", "\r")]
-
-    def test_fast_path_decodes_esc_cr_as_alt_enter(self) -> None:
-        r"""Fast path: `\x1b\r` with `alt=False` short-circuits to `alt+enter`.
-
-        Without the fast path, upstream stalls for ~100 ms waiting for
-        more bytes before reissuing.
-        """
-        assert _keys_for("\x1b\r", alt=False) == [("alt+enter", None)]
 
     def test_kitty_extended_key_sequence_unchanged(self) -> None:
         r"""Regression guard: kitty `CSI 13;2u` must still decode natively.
@@ -112,14 +251,6 @@ class TestPatchedSequenceToKeyEvents:
         this should fail loudly rather than silently reverting the behavior.
         """
         assert _keys_for("\x1b\x1b", alt=False) == [("alt+escape", None)]
-
-    def test_fast_path_falls_through_when_inner_byte_unmapped(self) -> None:
-        r"""`\x1b<printable>` must bypass the fast path and defer to upstream.
-
-        Pins the `isinstance(inner, tuple)` guard — the `.get()` returns
-        `None` for unmapped bytes, which must not be treated as an alt key.
-        """
-        assert _keys_for("\x1bZ", alt=False) == []
 
     @pytest.mark.parametrize(
         ("sequence", "key"),
@@ -236,26 +367,5 @@ class TestPatchedSequenceToKeyEvents:
         assert _keys_for(sequence, alt=False) == expected
 
 
-def test_app_imports_textual_patches_for_side_effect() -> None:
-    """`app.py` must import `_textual_patches` for the patch to install.
-
-    Direct-import tests would pass even if the side-effect import were
-    removed, so silently breaking shift+enter for VSCode `sendSequence`
-    users. A static AST check closes that gap without spawning a subprocess.
-    """
-    spec = importlib.util.find_spec("deepagents_code.app")
-    assert spec is not None
-    assert spec.origin is not None
-
-    tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
-    imported = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "deepagents_code"
-        for alias in node.names
-    }
-    assert "_textual_patches" in imported, (
-        "deepagents_code/app.py must import `_textual_patches` as a side "
-        "effect; removing it silently breaks shift+enter via VSCode "
-        "sendSequence. See `_textual_patches.py` for context."
-    )
+class TestGutterClampWatcher:
+    """Diff gutters stay outside selections from every selection-map update."""

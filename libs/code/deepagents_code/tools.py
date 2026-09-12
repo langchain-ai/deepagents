@@ -3,26 +3,44 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import logging
 import socket
 import threading
 from html.parser import HTMLParser
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urljoin, urlparse
 
-from langchain_core.runnables import RunnableConfig  # noqa: TC002  # runtime hint
 from langchain_core.tools import tool
+from langgraph.config import get_config
+from pydantic import Field
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from langchain_core.tools import BaseTool
     from tavily import TavilyClient
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
+
+_WEB_SEARCH_MARKER = "deepagents_web_search"
+"""Tool-metadata key marking a workspace-bound `web_search` variant.
+
+Read by `is_web_search_tool`, the same way MCP read-only hints are read off
+tool metadata, so a variant does not have to be registered anywhere.
+"""
+
+_WEB_SEARCH_TOKEN = object()
+"""Value `is_web_search_tool` requires under `_WEB_SEARCH_MARKER`.
+
+A module-private object rather than `True` so the marker cannot be forged: MCP
+tool metadata is deserialized JSON, which can carry the key but never this
+identity. Callers therefore need no separate "is this tool remote?" guard.
+"""
 
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
@@ -281,6 +299,31 @@ def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> s
     return parser.get_text()
 
 
+def _missing_tavily_key_error(query: object) -> dict[str, object]:
+    """Return the payload the model sees when no Tavily key is configured.
+
+    Shared by the built-in and workspace-bound variants: `is_web_search_tool`
+    treats them as one tool, so they have to fail identically.
+
+    Returns:
+        Error payload naming the env var to set.
+    """
+    return {
+        "error": "Tavily API key not configured. "
+        "Please set TAVILY_API_KEY environment variable.",
+        "query": query,
+    }
+
+
+def _missing_package_error(exc: ImportError) -> dict[str, str]:
+    """Return the payload the model sees when an optional package is absent.
+
+    Returns:
+        Error payload naming the missing package.
+    """
+    return {"error": f"Required package not installed: {exc.name}."}
+
+
 def _get_tavily_client() -> TavilyClient | None:
     """Get or initialize the lazy Tavily client singleton.
 
@@ -291,65 +334,137 @@ def _get_tavily_client() -> TavilyClient | None:
     if _tavily_client is not _UNSET:
         return _tavily_client  # ty: ignore[invalid-return-type]  # narrowed by sentinel check
 
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
 
-    if settings.has_tavily:
+    if credentials.has_tavily:
         from tavily import TavilyClient as _TavilyClient
 
-        _tavily_client = _TavilyClient(api_key=settings.tavily_api_key)
+        _tavily_client = _TavilyClient(api_key=credentials.tavily_api_key)
     else:
         _tavily_client = None
     return _tavily_client
 
 
-@tool
-def get_current_thread_id(config: RunnableConfig) -> str:
-    """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
+def create_web_search_tool(api_key: str) -> BaseTool:
+    """Bind web search to one workspace credential.
 
-    Args:
-        config: Runtime config injected by LangChain.
+    The schema is taken from `web_search` via `functools.wraps` so the built-in
+    and workspace-bound variants can never present different arguments. The two
+    also have to fail the same way: `is_web_search_tool` treats them as one, so
+    a missing package or an unusable key must return the payload the model can
+    act on rather than raising.
+
+    Returns:
+        Workspace-bound web search tool.
+    """
+    # Built on first use and reused: a per-call client would open a fresh
+    # connection pool and repeat the TLS handshake for every search.
+    client: TavilyClient | None = None
+
+    @tool("web_search")
+    @functools.wraps(web_search)
+    def workspace_web_search(**kwargs: Any) -> object:
+        nonlocal client
+        if not api_key:
+            return _missing_tavily_key_error(kwargs.get("query"))
+        if client is None:
+            try:
+                from tavily import TavilyClient as _TavilyClient
+
+                client = _TavilyClient(api_key=api_key)
+            except ImportError as exc:
+                return _missing_package_error(exc)
+        return _search_with_tavily(client, **kwargs)
+
+    workspace_web_search.metadata = {
+        **(workspace_web_search.metadata or {}),
+        _WEB_SEARCH_MARKER: _WEB_SEARCH_TOKEN,
+    }
+    return workspace_web_search
+
+
+def is_web_search_tool(candidate: object) -> bool:
+    """Return whether `candidate` is a built-in or workspace-bound search tool.
+
+    Returns:
+        `True` for the module-level tool or any variant the factory marked.
+    """
+    if candidate is web_search:
+        return True
+    metadata = getattr(candidate, "metadata", None) or {}
+    return metadata.get(_WEB_SEARCH_MARKER) is _WEB_SEARCH_TOKEN
+
+
+@tool
+def get_current_thread_id() -> str:
+    """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
 
     Returns:
         The current `configurable.thread_id`, or an explanatory message if missing.
     """
-    thread_id = config.get("configurable", {}).get("thread_id")
+    thread_id = get_config().get("configurable", {}).get("thread_id")
     if isinstance(thread_id, str) and thread_id:
         return thread_id
     return "No current thread ID is available."
 
 
 def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configuration
-    query: str,
-    max_results: int = 5,
-    topic: Literal["general", "news", "finance"] = "general",
-    include_raw_content: bool = False,
+    query: Annotated[
+        str,
+        Field(description="The search query (be specific and detailed)."),
+    ],
+    max_results: Annotated[
+        int,
+        Field(description="Number of results to return."),
+    ] = 5,
+    topic: Annotated[
+        Literal["general", "news", "finance"],
+        Field(
+            description=(
+                'Search topic type: "general" for most queries, "news" for '
+                'current events, or "finance".'
+            )
+        ),
+    ] = "general",
+    include_raw_content: Annotated[
+        bool,
+        Field(
+            description=(
+                "Include full page content (uses more tokens). Prefer `fetch_url` "
+                "for a single URL."
+            )
+        ),
+    ] = False,
 ):
-    """Search the web using Tavily for current information and documentation.
-
-    This tool searches the web and returns relevant results. After receiving results,
-    you MUST synthesize the information into a natural, helpful response for the user.
-
-    Args:
-        query: The search query (be specific and detailed)
-        max_results: Number of results to return (default: 5)
-        topic: Search topic type - "general" for most queries, "news" for current events
-        include_raw_content: Include full page content (warning: uses more tokens)
+    """Search the web for current information.
 
     Returns:
-        Dictionary containing:
-        - results: List of search results, each with:
-            - title: Page title
-            - url: Page URL
-            - content: Relevant excerpt from the page
-            - score: Relevance score (0-1)
-        - query: The original search query
+        Search hits with title, URL, snippet, and score.
+    """
+    client = _get_tavily_client()
+    if client is None:
+        return _missing_tavily_key_error(query)
+    return _search_with_tavily(
+        client,
+        query=query,
+        max_results=max_results,
+        topic=topic,
+        include_raw_content=include_raw_content,
+    )
 
-    IMPORTANT: After using this tool:
-    1. Read through the 'content' field of each result
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. Cite sources by mentioning the page titles or URLs
-    5. NEVER show the raw JSON to the user - always provide a formatted response
+
+def _search_with_tavily(
+    client: TavilyClient,
+    *,
+    query: str,
+    max_results: int,
+    topic: Literal["general", "news", "finance"],
+    include_raw_content: bool,
+) -> object:
+    """Execute a Tavily search with the standard error translation.
+
+    Returns:
+        Search hits or a translated error payload.
     """
     try:
         import requests
@@ -361,15 +476,7 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         )
         from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
-
-    client = _get_tavily_client()
-    if client is None:
-        return {
-            "error": "Tavily API key not configured. "
-            "Please set TAVILY_API_KEY environment variable.",
-            "query": query,
-        }
+        return _missing_package_error(exc)
 
     try:
         return client.search(
@@ -393,36 +500,26 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         return {"error": f"Web search error: {e!s}", "query": query}
 
 
-def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
-    """Fetch content from a URL and convert HTML to markdown format.
-
-    This tool fetches web page content and converts it to clean markdown text,
-    making it easy to read and process HTML content. After receiving the markdown,
-    you MUST synthesize the information into a natural, helpful response for the user.
-
-    Args:
-        url: The URL to fetch (must be a valid HTTP/HTTPS URL)
-        timeout: Request timeout in seconds (default: 30)
+def fetch_url(
+    url: Annotated[
+        str,
+        Field(description="The URL to fetch (must be a valid HTTP/HTTPS URL)."),
+    ],
+    timeout: Annotated[
+        int,
+        Field(description="Request timeout in seconds."),
+    ] = 30,
+) -> dict[str, Any]:
+    """Fetch a URL and return the page content as markdown.
 
     Returns:
-        Dictionary containing:
-        - success: Whether the request succeeded
-        - url: The final URL after redirects
-        - markdown_content: The page content converted to markdown
-        - status_code: HTTP status code
-        - content_length: Length of the markdown content in characters
-
-    IMPORTANT: After using this tool:
-    1. Read through the markdown content
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. NEVER show the raw markdown to the user unless specifically requested
+        Fetched page markdown plus status metadata.
     """
     try:
         import requests
         from markdownify import markdownify
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
+        return _missing_package_error(exc)
 
     try:
         response = _fetch_with_redirects(url, timeout=timeout)

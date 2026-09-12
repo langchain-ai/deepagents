@@ -12,12 +12,15 @@ from deepagents_talon.channels.base import (
     send_with_retry,
     validate_media,
 )
+from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 
 __all__ = [
     "ChannelExposure",
     "ChannelMediaError",
+    "DiscordChannel",
+    "DiscordChannelConfig",
     "ExposureMode",
     "TelegramChannel",
     "TelegramChannelConfig",

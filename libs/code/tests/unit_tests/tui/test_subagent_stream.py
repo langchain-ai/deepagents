@@ -25,6 +25,11 @@ def test_rejects_nested_namespace() -> None:
     assert _is_renderable_subagent_event(_event(), is_main_agent=False) is False
 
 
+def test_rejects_non_dict_payload() -> None:
+    assert _is_renderable_subagent_event("nope", is_main_agent=True) is False
+    assert _is_renderable_subagent_event(None, is_main_agent=True) is False
+
+
 def test_rejects_non_subagent_custom_payload() -> None:
     # Unrelated custom events (some other producer) must not reach the panel.
     assert (
@@ -34,8 +39,3 @@ def test_rejects_non_subagent_custom_payload() -> None:
 
 def test_rejects_payload_without_type() -> None:
     assert _is_renderable_subagent_event({"id": "a"}, is_main_agent=True) is False
-
-
-def test_rejects_non_dict_payload() -> None:
-    assert _is_renderable_subagent_event("nope", is_main_agent=True) is False
-    assert _is_renderable_subagent_event(None, is_main_agent=True) is False

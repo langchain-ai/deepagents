@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +22,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 
@@ -31,6 +33,7 @@ from langchain_quickjs._repl import _clear_exception_references, _Registry, _Thr
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
+    call_subagent_task_tool,
 )
 
 if TYPE_CHECKING:
@@ -79,6 +82,14 @@ def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
         capture_console=True,
         max_stdout_chars=4000,
     )
+
+
+def _new_slot_state(mw: CodeInterpreterMiddleware) -> dict[str, Any]:
+    update = mw.before_agent(state={}, runtime=MagicMock())
+    assert isinstance(update, dict)
+    slot_id = update.get("_quickjs_slot_id")
+    assert isinstance(slot_id, str)
+    return {"_quickjs_slot_id": slot_id}
 
 
 # ---------------------------------------------------------------------------
@@ -749,17 +760,18 @@ def test_after_agent_evicts_current_thread_slot() -> None:
     """`after_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
-        # Force a slot to exist for the middleware's fallback thread id.
-        repl = mw._registry.get(mw._fallback_thread_id)
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.counter = 10")
-        assert mw._fallback_thread_id in mw._registry._slots
-        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert slot_id in mw._registry._slots
+        update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
         # First write (no prior snapshot) is a full anchor record.
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -768,15 +780,17 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
     """`aafter_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.counter = 10")
-        assert mw._fallback_thread_id in mw._registry._slots
-        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert slot_id in mw._registry._slots
+        update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -785,6 +799,46 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
     mw = CodeInterpreterMiddleware(mode="call")
     try:
         tool = mw.tools[0]
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        runtime = ToolRuntime(
+            state=state,
+            context={},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tools=[tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        assert tool.coroutine is not None
+        first_repl = mw._registry.get(slot_id)
+        first_runtime = mw._registry._slots[slot_id].runtime
+        first = await tool.coroutine(
+            runtime=runtime,
+            code="globalThis.answer = 42; answer",
+        )
+        assert "<result>42</result>" in first.content
+        after_first = mw._registry.get_if_exists(slot_id)
+        assert after_first is not None
+        assert after_first is not first_repl
+        assert mw._registry._slots[slot_id].runtime is first_runtime
+
+        second = await tool.coroutine(runtime=runtime, code="typeof answer")
+        assert "<result>undefined</result>" in second.content
+        after_second = mw._registry.get_if_exists(slot_id)
+        assert after_second is not None
+        assert after_second is not after_first
+        assert mw._registry._slots[slot_id].runtime is first_runtime
+    finally:
+        mw._registry.close()
+
+
+async def test_eval_without_middleware_initialized_slot_fails_fast() -> None:
+    """Eval should not create hidden fallback interpreter state."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        tool = mw.tools[0]
+        assert tool.coroutine is not None
         runtime = ToolRuntime(
             state={},
             context={},
@@ -794,25 +848,9 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
             tool_call_id="outer_eval_call",
             store=None,
         )
-        assert tool.coroutine is not None
-        first_repl = mw._registry.get(mw._fallback_thread_id)
-        first_runtime = mw._registry._slots[mw._fallback_thread_id].runtime
-        first = await tool.coroutine(
-            runtime=runtime,
-            code="globalThis.answer = 42; answer",
-        )
-        assert "<result>42</result>" in first.content
-        after_first = mw._registry.get_if_exists(mw._fallback_thread_id)
-        assert after_first is not None
-        assert after_first is not first_repl
-        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
-
-        second = await tool.coroutine(runtime=runtime, code="typeof answer")
-        assert "<result>undefined</result>" in second.content
-        after_second = mw._registry.get_if_exists(mw._fallback_thread_id)
-        assert after_second is not None
-        assert after_second is not after_first
-        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
+        with pytest.raises(ValueError, match="before_agent"):
+            await tool.coroutine(runtime=runtime, code="1 + 1")
+        assert mw._registry._slots == {}
     finally:
         mw._registry.close()
 
@@ -870,6 +908,74 @@ def _subagent_runtime(
     runnable: Any,
 ) -> ToolRuntime:
     return _subagent_runtime_from_task_tool(_task_tool_for_runnable(runnable))
+
+
+async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class _TaskTool:
+        name = "task"
+
+        async def arun(
+            self,
+            tool_input: dict[str, Any],
+            *,
+            config: dict[str, Any] | None = None,
+            tool_call_id: str | None = None,
+        ) -> str:
+            calls.append(
+                {
+                    "tool_input": tool_input,
+                    "config": config,
+                    "tool_call_id": tool_call_id,
+                }
+            )
+            return "ok"
+
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {"thread_id": "parent-thread"}},
+        stream_writer=lambda _chunk: None,
+        tools=[],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+
+    result = await call_subagent_task_tool(
+        cast("BaseTool", _TaskTool()),
+        description="work",
+        subagent_type="worker",
+        response_schema=None,
+        runtime=runtime,
+    )
+
+    assert result == "ok"
+    assert calls
+    assert calls[0]["config"] == runtime.config
+    assert calls[0]["tool_call_id"].startswith("ptc_task_")
+    assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
+
+
+async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -> None:
+    interrupt = GraphInterrupt([Interrupt(value={"action_requests": []})])
+
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        raise interrupt
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_async,
+    )
+
+    with pytest.raises(GraphInterrupt) as exc_info:
+        await repl.eval_async(
+            "await task({description: 'work', subagentType: 'worker'})",
+            outer_runtime=_subagent_runtime(runnable),
+        )
+
+    assert exc_info.value is interrupt
 
 
 def test_runtime_with_response_format_uses_configurable() -> None:
@@ -999,10 +1105,19 @@ async def test_eval_tool_does_not_install_subagent_when_disabled() -> None:
     try:
         tool = mw.tools[0]
         assert tool.coroutine is not None
-        runtime = _subagent_runtime(
+        task_tool = _task_tool_for_runnable(
             RunnableLambda(
                 lambda _state, _config: {"messages": [AIMessage(content="ok")]}
             )
+        )
+        runtime = ToolRuntime(
+            state=_new_slot_state(mw),
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="outer_eval_call",
+            store=None,
         )
 
         result = await tool.coroutine(runtime=runtime, code="typeof task")

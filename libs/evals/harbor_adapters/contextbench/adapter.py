@@ -23,6 +23,11 @@ def vendor_dir() -> Path:
     return Path(__file__).resolve().parent / "vendor"
 
 
+def _templates_dir() -> Path:
+    """Return the directory holding the verifier templates (`test.sh`, `judge.py`)."""
+    return Path(__file__).resolve().parent / "templates"
+
+
 def parse_task_id(task_id: str) -> tuple[str, int]:
     """Parse a `cb-<suite>-<i>` task id.
 
@@ -122,13 +127,18 @@ def generate_task(
 
 
 def populate_corpus(dataset_dir: Path) -> int:
-    """Copy the vendored corpus into each Context-Bench task's build context.
+    """Regenerate each Context-Bench task's single-sourced, git-ignored files.
 
-    The corpus is identical for every cloud task, so it is single-sourced under
-    `vendor/files/` and NOT committed into the per-task `environment/files/`
-    directories (which are git-ignored). This regenerates those directories from
-    the single vendored copy so Harbor can build each task image — run it before
-    `harbor run --path <dataset_dir>`.
+    Two kinds of per-task files are identical across every cloud task, so they
+    are single-sourced and NOT committed (git-ignored per task):
+
+    * the corpus under `environment/files/` (single-sourced in `vendor/files/`);
+    * the invariant verifier files `tests/{test.sh,judge.py,rubric.txt}`
+      (single-sourced in `templates/` and `vendor/rubric.txt`).
+
+    This regenerates both from their single copies so Harbor can build and grade
+    each task — run it before `harbor run --path <dataset_dir>`. The committed
+    per-task `tests/case.json` (question + ground truth) is left untouched.
 
     Args:
         dataset_dir: Dataset directory containing generated task directories.
@@ -156,6 +166,7 @@ def populate_corpus(dataset_dir: Path) -> int:
         files_dir = task_dir / "environment" / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
         _copy_corpus(source_files_dir, files_dir)
+        _copy_verifier_invariants(task_dir / "tests")
         populated += 1
     return populated
 
@@ -204,7 +215,9 @@ def stamp_calibrated_tiers(dataset_dir: Path, calibration_path: Path) -> int:
         # Containment: only a direct child of the dataset dir with a task.toml.
         if task_toml.parent.resolve().parent != dataset_root or not task_toml.is_file():
             continue
-        updated, count = _DIFFICULTY_LINE_RE.subn(f'difficulty = "{tier}"', task_toml.read_text(), count=1)
+        updated, count = _DIFFICULTY_LINE_RE.subn(
+            f'difficulty = "{tier}"', task_toml.read_text(), count=1
+        )
         if count:
             task_toml.write_text(updated)
             stamped += 1
@@ -226,6 +239,22 @@ def _extra_mapping(value: object) -> dict[str, object]:
 def _copy_corpus(source_files_dir: Path, destination: Path) -> None:
     for source_file in sorted(source_files_dir.glob("*.txt")):
         shutil.copy2(source_file, destination / source_file.name)
+
+
+def _copy_verifier_invariants(tests_dir: Path) -> None:
+    """Copy the task-invariant verifier files into `tests_dir`.
+
+    `test.sh`, `judge.py`, and `rubric.txt` are byte-identical across every task,
+    so they are single-sourced (in `templates/` and `vendor/`) and git-ignored
+    per task. Both task generation and `populate_corpus` lay them down from the
+    single copy, mirroring how the shared corpus is handled. Only `case.json`
+    (the per-task question + ground truth) is committed per task.
+    """
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    templates_dir = _templates_dir()
+    shutil.copy2(templates_dir / "test.sh", tests_dir / "test.sh")
+    shutil.copy2(templates_dir / "judge.py", tests_dir / "judge.py")
+    shutil.copy2(vendor_dir() / "rubric.txt", tests_dir / "rubric.txt")
 
 
 def _write_task_files(
@@ -260,18 +289,23 @@ def _write_task_files(
         f"#!/bin/sh\nset -eu\nprintf '%s\\n' {shlex.quote(answer)} > /app/answer.txt\n"
     )
 
+    # Grade exactly as upstream Letta letta-evals does: an LLM `model_judge`
+    # against the vendored `rubric.txt` (phrasing/name/number tolerant, buckets
+    # 0.0/0.5/1.0), NOT string equality. `judge.py` reproduces the upstream
+    # `RubricGrader` (OpenAI provider); it reads the per-task question and
+    # ground truth from `case.json`, the rubric from `rubric.txt`, and the
+    # agent's answer from `/app/answer.txt`. The judge model + credentials come
+    # from the verifier environment the harness injects (`JUDGE_MODELS`,
+    # `OPENAI_API_KEY`, `OPENAI_BASE_URL`); `api.openai.com` is already in the
+    # task network allowlist below.
     tests_dir = task_dir / "tests"
     tests_dir.mkdir()
-    expected = shlex.quote(answer.lower())
-    (tests_dir / "test.sh").write_text(
-        "#!/bin/sh\nset -eu\n"
-        "answer=$(tr '[:upper:]' '[:lower:]' < /app/answer.txt | tr -cd '[:alnum:][:space:]')\n"
-        f"expected=$(printf '%s' {expected} | tr -cd '[:alnum:][:space:]')\n"
-        'if [ "$answer" = "$expected" ]; then\n'
-        "  printf '1.0\\n' > /logs/verifier/reward.txt\n"
-        "else\n"
-        "  printf '0.0\\n' > /logs/verifier/reward.txt\n"
-        "fi\n"
+    _copy_verifier_invariants(tests_dir)
+    # `case.json` is the only per-task verifier input (question + ground truth),
+    # so it is committed; the invariant files above are single-sourced and
+    # git-ignored (regenerated by `populate_corpus`), like the corpus.
+    (tests_dir / "case.json").write_text(
+        json.dumps({"input": question, "ground_truth": answer}, ensure_ascii=False) + "\n",
     )
 
     difficulty = _string_extra(extra, "difficulty")

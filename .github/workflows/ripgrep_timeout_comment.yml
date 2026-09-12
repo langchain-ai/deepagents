@@ -1,0 +1,231 @@
+# Posts a sticky PR comment when a ripgrep install in `_test.yml` gave up, so a
+# reviewer can see that the affected legs ran without ripgrep. Two steps produce
+# the marker artifact: the bounded install on an ordinary PR (hit its timeout)
+# and the unbounded strict install on a release PR (failed and was bypassed
+# under `bypass-ripgrep-check`). The comment wording distinguishes the two.
+#
+# Trigger — `workflow_run` of ci.yml, completed, rather than `pull_request`:
+# a `pull_request` run from a fork gets a read-only token and cannot comment.
+# This workflow runs in the base repository's context, so it holds the
+# `issues: write` needed to post. That token must never be handed to
+# PR-authored code:
+#
+#   DO NOT add `actions/checkout` (or any step that runs code from the PR)
+#   to this workflow. It reads artifact *names* through the API only, never
+#   artifact contents, and the comment body is fully static.
+#
+# Not a merge gate. This posts a comment; it never blocks anything.
+
+name: "🔍 Ripgrep timeout warning"
+
+on:
+  workflow_run:
+    workflows: ["🔧 CI"]
+    types: [completed]
+
+# `issues: write` covers createComment/updateComment/deleteComment — PR
+# conversation comments are the issues API. `pull-requests: read` covers
+# `pulls.get` and `pulls.list` for resolving the PR number.
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  # Keyed on the head SHA, not the branch: two CI runs for different commits
+  # must not cancel each other, or the surviving run can be discarded by the
+  # stale-SHA guard below and no comment is ever managed.
+  group: ripgrep-timeout-comment-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  manage-comment:
+    # A cancelled or startup-failed run produces no artifacts, which is
+    # indistinguishable from "no timeout" and would wrongly delete a valid
+    # warning. Only act on runs that actually reached a conclusion.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.conclusion == 'success' ||
+      github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Manage PR warning comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const marker = '<!-- ripgrep-install-timeout -->';
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+
+            // `workflow_run.pull_requests` is empty for fork PRs, and
+            // `listPullRequestsAssociatedWithCommit` often fails to resolve a
+            // commit that lives in the fork. Resolving by head ref works for
+            // both same-repo and fork PRs, so it is the primary lookup.
+            let prNumber = run.pull_requests?.[0]?.number;
+            if (!prNumber) {
+              const candidates = await github.paginate(
+                github.rest.pulls.list,
+                {
+                  owner,
+                  repo,
+                  state: 'open',
+                  head: `${run.head_repository.owner.login}:${run.head_branch}`,
+                  per_page: 100,
+                },
+              );
+              prNumber = candidates.find(c => c.head.sha === run.head_sha)?.number;
+            }
+
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: run.id, per_page: 100 },
+            );
+            const timeoutArtifacts = artifacts.filter(
+              artifact => !artifact.expired && artifact.name.startsWith('ripgrep-timeout-'),
+            );
+
+            if (!prNumber) {
+              // A PR that was closed or had its head branch deleted between
+              // CI completing and this workflow firing resolves to nothing —
+              // that is a normal race, not a broken mechanism, and there is
+              // no conversation left to warn. The `::warning::` annotation in
+              // the CI run itself is the record of the timeout.
+              const message = `CI run ${run.id} has no resolvable pull request.`;
+              if (timeoutArtifacts.length > 0) {
+                core.warning(`${message} A ripgrep timeout goes unreported; the artifacts are ${timeoutArtifacts.map(a => a.name).join(', ')}.`);
+              } else {
+                core.info(`${message} No timeout to report.`);
+              }
+              return;
+            }
+
+            // Guards against a re-run of an old CI run posting a warning for a
+            // commit the PR has already moved past.
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            if (pullRequest.head.sha !== run.head_sha) {
+              core.info(`Ignoring stale CI run ${run.id}; PR #${prNumber} now points at ${pullRequest.head.sha}.`);
+              return;
+            }
+
+            // Which failure mode the comment describes is decided by the PR
+            // kind, not by the label. On a release PR the only producer of
+            // these artifacts is the strict step's bypass path, which has no
+            // timeout -- so claiming "took more than two minutes" there would
+            // be false. Matches `_test.yml`'s release-PR predicate; keep the
+            // two in step (`test_ci_workflow.py` asserts they agree).
+            const isReleasePullRequest =
+              pullRequest.head.ref.startsWith('release-please--') ||
+              pullRequest.title.startsWith('release(');
+            // The label only decides one sentence: whether the merge will carry
+            // the bypass into the publish run. A failed read leaves it false,
+            // which downgrades that sentence to "could not confirm" rather than
+            // asserting either outcome.
+            let hasBypassLabel = false;
+            try {
+              const labels = await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+              hasBypassLabel = labels.some(label => label.name === 'bypass-ripgrep-check');
+            } catch (error) {
+              core.warning(
+                `Could not read labels for PR #${prNumber} ` +
+                  `(status ${error.status ?? 'unknown'}: ${error.message}); ` +
+                  'treating bypass-ripgrep-check as unconfirmed.',
+              );
+            }
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNumber, per_page: 100 },
+            );
+            // Matched on the marker AND the bot login: matching the marker
+            // alone lets a PR author pre-post the marker and capture the
+            // sticky-comment slot — the update/delete call then fails (or
+            // the warning stays user-owned and editable), so the genuine
+            // timeout warning is never managed. If the posting identity ever
+            // changes, update this login; a missed match only means one extra
+            // comment, while a hijacked slot means no warning at all.
+            const existing = comments.find(
+              comment => comment.user?.login === 'github-actions[bot]' &&
+                (comment.body ?? '').startsWith(marker),
+            );
+
+            if (timeoutArtifacts.length === 0) {
+              if (existing) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: existing.id,
+                  });
+                  core.info('Removed the obsolete ripgrep timeout warning comment.');
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  core.info('Comment was already removed.');
+                }
+              }
+              return;
+            }
+
+            // Artifact names carry the package, OS, and Python version, so the
+            // comment can name the affected legs instead of hedging.
+            const legs = timeoutArtifacts
+              .map(artifact => artifact.name.replace(/^ripgrep-timeout-/, ''))
+              .sort();
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${run.id}`;
+            const body = isReleasePullRequest
+              ? [
+                  marker,
+                  '**Notice: the strict ripgrep install failed and was bypassed.**',
+                  '',
+                  'Installation failed on these release-PR test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners continued without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check.',
+                  '',
+                  hasBypassLabel
+                    ? 'If the `bypass-ripgrep-check` label is still on this PR when it merges, the publish run is dispatched with `dangerous-skip-ripgrep-check=true`. A repeat apt failure there is then tolerated, and the rg-gated artifact tests skip instead of failing the release.'
+                    : 'The `bypass-ripgrep-check` label could not be read on this PR. If it is absent at merge time, the publish run enforces the strict install and an apt failure there fails the release.',
+                  '',
+                  `Merge only if the apt failure is transient. Remove the label and re-run CI to restore ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n')
+              : [
+                  marker,
+                  '**Warning: ripgrep did not install in time.**',
+                  '',
+                  'Installation took more than two minutes on these test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners ran without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check. `grep` on the filesystem backend used the Python fallback, which is slower and does not skip `.gitignore`d or hidden files, so some results differ.',
+                  '',
+                  'Release PRs, merge-queue runs, and the release workflow do not use this timeout. They fail if ripgrep does not install.',
+                  '',
+                  `No action is needed to merge. Re-run CI to get ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info('Updated the ripgrep timeout warning comment.');
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+              core.info('Created the ripgrep timeout warning comment.');
+            }

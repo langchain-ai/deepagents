@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypedDict
 
 from langchain.agents.structured_output import AutoStrategy
+from langgraph.errors import GraphInterrupt
 
 from langchain_quickjs._format import coerce_tool_output_for_ptc
 
@@ -239,8 +240,12 @@ async def call_subagent_task_tool(
                 "description": description,
                 "subagent_type": subagent_type,
                 "runtime": runtime,
-            }
+            },
+            config=getattr(runtime, "config", None),
+            tool_call_id=subagent_id,
         )
+    except GraphInterrupt:
+        raise
     except Exception as e:
         error_event: SubagentErrorEvent = {
             "type": SUBAGENT_STREAM_EVENT_TYPE,

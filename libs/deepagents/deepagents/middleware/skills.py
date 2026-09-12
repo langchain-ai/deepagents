@@ -115,7 +115,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 from typing import NotRequired, TypedDict
 
@@ -126,10 +126,11 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
-from langgraph.prebuilt import ToolRuntime
 
-from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult, _resolve_backend
+from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
 
@@ -798,12 +799,15 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         source_labels: Display labels aligned by index with `sources`.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = SkillsState
 
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -847,35 +851,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
-
-    def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
-
-        Returns:
-            Resolved backend instance
-        """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            backend = _resolve_backend(self._backend, tool_runtime)
-            if backend is None:
-                msg = "SkillsMiddleware requires a valid backend instance"
-                raise AssertionError(msg)
-            return backend
-
-        return self._backend
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -955,7 +930,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (synchronous).
 
         Loads skills once per session from all configured sources. If
@@ -977,8 +952,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 
@@ -1001,7 +975,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             update["skills_load_errors"] = skills_load_errors
         return update
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (async).
 
         Loads skills once per session from all configured sources. If
@@ -1023,8 +997,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 

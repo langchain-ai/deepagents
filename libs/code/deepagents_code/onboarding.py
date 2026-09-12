@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
-from deepagents_code._env_vars import DEBUG_ONBOARDING, is_env_truthy
+from deepagents_code._env_vars import ONBOARDING, classify_env_bool
 from deepagents_code.model_config import DEFAULT_STATE_DIR
 
 if TYPE_CHECKING:
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 ONBOARDING_MARKER_FILENAME = "onboarding_complete"
 """Marker filename under `~/.deepagents/.state` after onboarding has completed."""
+
+GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME = "goal_auto_accept_criteria_prompted_v1"
+"""Marker written after the first goal-criteria preference prompt is answered."""
 
 ONBOARDING_NAME_MEMORY_START = "<!-- deepagents:onboarding-name:start -->"
 """Start marker for the managed onboarding name memory block."""
@@ -71,6 +75,57 @@ def mark_onboarding_complete(state_dir: Path | None = None) -> bool:
     return True
 
 
+def goal_auto_accept_prompt_marker_path(state_dir: Path | None = None) -> Path:
+    """Return the goal criteria preference prompt marker path.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        Path to the versioned one-time prompt marker.
+    """
+    return (state_dir or DEFAULT_STATE_DIR) / GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
+
+
+def has_shown_goal_auto_accept_prompt(state_dir: Path | None = None) -> bool:
+    """Return whether the goal criteria preference prompt was answered.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        `True` when the prompt marker exists, otherwise `False`.
+    """
+    try:
+        return goal_auto_accept_prompt_marker_path(state_dir).exists()
+    except OSError:
+        logger.warning("Could not inspect goal preference prompt marker", exc_info=True)
+        return False
+
+
+def mark_goal_auto_accept_prompt_shown(state_dir: Path | None = None) -> bool:
+    """Persist that the goal criteria preference prompt was answered.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        `True` when the marker was written, otherwise `False`.
+    """
+    path = goal_auto_accept_prompt_marker_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1\n", encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "Could not write goal preference prompt marker at %s",
+            path,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def write_onboarding_name_memory(
     name: str,
     assistant_id: str,
@@ -94,9 +149,19 @@ def write_onboarding_name_memory(
         return False
 
     if memory_path is None:
-        from deepagents_code.config import settings
+        from deepagents_code._paths import get_user_agent_md_path
 
-        path = settings.get_user_agent_md_path(assistant_id)
+        try:
+            path = get_user_agent_md_path(assistant_id)
+        except ValueError:
+            # An invalid or app-owned agent name. Writing the marker anyway is
+            # what would stamp `AGENTS.md` into app state, so skip it.
+            logger.warning(
+                "Skipping onboarding name memory for agent %r",
+                assistant_id,
+                exc_info=True,
+            )
+            return False
     else:
         path = memory_path
 
@@ -212,12 +277,24 @@ def strip_onboarding_name_markers(text: str) -> str:
 def should_run_onboarding(state_dir: Path | None = None) -> bool:
     """Return whether onboarding should open at interactive startup.
 
+    `DEEPAGENTS_CODE_ONBOARDING` overrides the marker in both directions: a
+    truthy value forces the flow open on every startup, and a falsy value keeps
+    it closed even on a fresh install. An unset or unrecognized value leaves the
+    marker in charge, so the override never has to be unset to get first-run
+    behavior back.
+
     Args:
         state_dir: Optional state directory override for tests.
 
     Returns:
-        `True` when the debug override is enabled or no completion marker exists.
+        `True` when the env override is truthy, or when it does not apply and no
+            completion marker exists.
     """
-    if is_env_truthy(DEBUG_ONBOARDING):
-        return True
+    raw = os.environ.get(ONBOARDING)
+    if raw is not None:
+        override = classify_env_bool(raw)
+        if override is None:
+            logger.warning("Ignoring %s=%r (expected bool)", ONBOARDING, raw)
+        else:
+            return override
     return not has_completed_onboarding(state_dir)

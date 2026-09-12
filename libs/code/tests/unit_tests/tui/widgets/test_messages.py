@@ -1,29 +1,42 @@
 """Unit tests for message widgets markup safety."""
 
 import asyncio
+import logging
+from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import ClassVar
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from deepagents.backends.utils import (
+    MAX_LINE_LENGTH,
+    _format_source_block,
+    format_content_with_line_numbers,
+)
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content
-from textual.widgets import Markdown
+from textual.widgets import Markdown, Static
 
+import deepagents_code
 from deepagents_code import theme
+from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.formatting import format_duration
-from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
 )
+from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
+    _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    ReasoningMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -56,12 +69,6 @@ class TestUserMessageMarkupSafety:
         msg = UserMessage(content)
         assert msg._content == content
 
-    def test_user_message_preserves_content_exactly(self) -> None:
-        """UserMessage should preserve user content without modification."""
-        content = "[bold]test[/bold] with [brackets]"
-        msg = UserMessage(content)
-        assert msg._content == content
-
 
 class TestErrorMessageMarkupSafety:
     """Test ErrorMessage handles content with brackets safely."""
@@ -71,72 +78,6 @@ class TestErrorMessageMarkupSafety:
         """ErrorMessage should not raise MarkupError on bracket content."""
         # Instantiation should not raise - this is the key test
         ErrorMessage(content)
-
-    def test_error_message_instantiates(self) -> None:
-        """ErrorMessage should instantiate with bracket content."""
-        error = "Failed: array[0] is undefined"
-        msg = ErrorMessage(error)
-        assert msg is not None
-
-    def test_error_message_has_prefix_and_body(self) -> None:
-        """ErrorMessage content should have `'Error: '` prefix followed by the body."""
-        msg = ErrorMessage("something broke")
-        rendered = msg.render()
-        assert isinstance(rendered, Content)
-        assert rendered.plain == "Error: something broke"
-
-    def test_error_message_accepts_content_with_link_span(self) -> None:
-        """Pre-built `Content` with `link` spans passes through to render output."""
-        from textual.style import Style as TStyle
-
-        url = "https://docs.langchain.com/oss/python/deepagents/code/providers"
-        body = Content.assemble(
-            "see ",
-            (url, TStyle(underline=True, link=url)),
-        )
-        rendered = ErrorMessage(body).render()
-        assert isinstance(rendered, Content)
-        links = [
-            getattr(span.style, "link", None)
-            for span in rendered.spans
-            if getattr(span.style, "link", None)
-        ]
-        assert links == [url]
-        assert rendered.plain == f"Error: see {url}"
-
-    def test_error_message_click_on_link_opens_url(self) -> None:
-        """Click on a `link`-styled span should route through `open_style_link`."""
-        from types import SimpleNamespace
-
-        msg = ErrorMessage("see https://example.com")
-        event = SimpleNamespace(
-            style=SimpleNamespace(link="https://example.com"),
-            app=SimpleNamespace(notify=MagicMock()),
-            stop=MagicMock(),
-        )
-        with patch(
-            "deepagents_code.tui.widgets.messages.open_style_link"
-        ) as mock_open_link:
-            msg.on_click(event)  # ty: ignore
-
-        mock_open_link.assert_called_once_with(event)
-
-    def test_error_message_click_off_link_no_ops(self) -> None:
-        """Click outside a link span should not perform timestamp side effects."""
-        from types import SimpleNamespace
-
-        msg = ErrorMessage("plain error, no URL")
-        event = SimpleNamespace(
-            style=SimpleNamespace(link=None),
-            app=SimpleNamespace(notify=MagicMock()),
-            stop=MagicMock(),
-        )
-        with patch(
-            "deepagents_code.tui.widgets.messages.open_style_link"
-        ) as mock_open_link:
-            msg.on_click(event)  # ty: ignore
-
-        mock_open_link.assert_not_called()
 
 
 class TestAppMessageMarkupSafety:
@@ -148,37 +89,16 @@ class TestAppMessageMarkupSafety:
         # Instantiation should not raise - this is the key test
         AppMessage(content)
 
-    def test_app_message_instantiates(self) -> None:
-        """AppMessage should instantiate with bracket content."""
-        content = "Status: processing items[0-10]"
-        msg = AppMessage(content)
-        assert msg is not None
+    def test_app_message_markdown_renders_selectable_content(self) -> None:
+        """`markdown=True` should render selectable `Content`, not a `RichVisual`.
 
-    def test_app_message_str_gets_dim_italic(self) -> None:
-        """String input should be rendered as dim italic `Content`."""
-        msg = AppMessage("hello")
-        rendered = msg._Static__content  # ty: ignore
-        assert isinstance(rendered, Content)
-        assert rendered.plain == "hello"
-
-    def test_app_message_content_passthrough(self) -> None:
-        """Pre-styled `Content` should pass through unchanged."""
-        pre = Content.styled("styled", "bold cyan")
-        msg = AppMessage(pre)
-        rendered = msg._Static__content  # ty: ignore
-        assert rendered is pre
-
-    def test_app_message_markdown_uses_muted_wrapper(self) -> None:
-        """`markdown=True` should route through `_MutedRichMarkdown`."""
+        Textual text-selection only works over `Content`/`Text` visuals, so
+        markdown must resolve to `Content` for its text to be copyable.
+        """
         msg = AppMessage("### heading", markdown=True)
-        rendered = msg._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
-
-    def test_app_message_markdown_requires_string(self) -> None:
-        """`markdown=True` with non-string input should raise `TypeError`."""
-        pre = Content.styled("styled", "bold")
-        with pytest.raises(TypeError):
-            AppMessage(pre, markdown=True)
+        rendered = msg.render()
+        assert isinstance(rendered, Content)
+        assert "heading" in rendered.plain
 
 
 class TestMutedRichMarkdown:
@@ -193,40 +113,20 @@ class TestMutedRichMarkdown:
     )
 
     @staticmethod
-    def _render(renderable: object) -> str:
+    def _render(renderable: object, *, width: int = 80, color: bool = True) -> str:
         import io
 
         from rich.console import Console
 
         console = Console(
             file=io.StringIO(),
-            force_terminal=True,
-            color_system="truecolor",
-            width=80,
+            force_terminal=color,
+            color_system="truecolor" if color else None,
+            width=width,
             legacy_windows=False,
         )
         console.print(renderable)
         return console.file.getvalue()  # ty: ignore
-
-    def test_strips_heading_and_table_colors(self) -> None:
-        """Muted wrapper should drop magenta/cyan from headings and tables."""
-        muted = self._render(_MutedRichMarkdown(self._DOC))
-
-        # Some Rich versions paint headings/tables magenta/cyan by default.
-        # The wrapper should not emit those hues regardless of Rich's baseline.
-        assert "\x1b[35m" not in muted
-        assert ";35m" not in muted
-        assert "\x1b[36m" not in muted
-        assert ";36m" not in muted
-
-    def test_applies_dim_to_body_and_headings(self) -> None:
-        """Muted wrapper should layer `dim` onto body, headings, and tables."""
-        muted = self._render(_MutedRichMarkdown(self._DOC))
-
-        # `dim` is ANSI code 2. Heading should be bold+dim ("1;2"),
-        # plain cells should be dim ("2m"), and both must be present.
-        assert "\x1b[1;2m" in muted
-        assert "\x1b[2m" in muted
 
     def test_render_failure_falls_back_to_plain_source(self) -> None:
         """A crash inside Rich markdown rendering must not escape.
@@ -247,55 +147,6 @@ class TestMutedRichMarkdown:
 class TestAssistantMessageMarkdownRendering:
     """Tests for assistant markdown render lifecycle."""
 
-    async def test_write_initial_content_uses_full_markdown_update(self) -> None:
-        """Preloaded assistant messages should not keep stream state alive."""
-        msg = AssistantMessage("```python\nprint('hello')\n```")
-        markdown = MagicMock()
-        markdown.update = AsyncMock()
-        msg._markdown = markdown
-
-        await msg.write_initial_content()
-
-        markdown.update.assert_awaited_once_with("```python\nprint('hello')\n```")
-        assert msg._stream is None
-
-    async def test_stop_stream_rerenders_complete_markdown(self) -> None:
-        """Completed streams should get a full parse after incremental updates."""
-        msg = AssistantMessage()
-        markdown = MagicMock()
-        markdown.update = AsyncMock()
-        stream = MagicMock()
-        stream.stop = AsyncMock()
-        msg._markdown = markdown
-        msg._stream = stream
-        msg._content = "```python\nprint('wrapped text')\n```"
-
-        await msg.stop_stream()
-
-        stream.stop.assert_awaited_once_with()
-        markdown.update.assert_awaited_once_with(
-            "```python\nprint('wrapped text')\n```"
-        )
-        assert msg._stream is None
-
-    async def test_set_content_replaces_stream_with_single_update(self) -> None:
-        """Replacing content should cancel the stream and update exactly once."""
-        msg = AssistantMessage()
-        markdown = MagicMock()
-        markdown.update = AsyncMock()
-        stream = MagicMock()
-        stream.stop = AsyncMock()
-        msg._markdown = markdown
-        msg._stream = stream
-        msg._content = "old streamed content"
-
-        await msg.set_content("```python\nnew content\n```")
-
-        stream.stop.assert_awaited_once_with()
-        markdown.update.assert_awaited_once_with("```python\nnew content\n```")
-        assert msg._stream is None
-        assert msg._content == "```python\nnew content\n```"
-
 
 class _AssistantMessageApp(App[None]):
     """Minimal app that mounts an AssistantMessage for runtime tests."""
@@ -306,8 +157,8 @@ class _AssistantMessageApp(App[None]):
         yield widget
 
 
-class TestAssistantMessageLinkPointer:
-    """Tests for the pointer cursor shown when hovering markdown links."""
+class TestAssistantMessagePointer:
+    """Tests for pointer shapes over assistant-message content."""
 
     @staticmethod
     def _move_event(
@@ -315,125 +166,99 @@ class TestAssistantMessageLinkPointer:
     ) -> SimpleNamespace:
         """Build a minimal mouse-move-like event exposing the hovered style.
 
-        The handlers only read `event.style.link` and `event.style.meta`, so a
-        namespace is enough; the assertions run against the real `Markdown`
-        widget mounted by `_AssistantMessageApp`.
+        A namespace is enough because the handlers only read `event.style.link`
+        and `event.style.meta`. It cannot validate the hitbox itself, though: it
+        hard-codes the same `offset` key the implementation reads, so the
+        `test_real_hover_*` cases below are what actually pin that behavior.
         """
         return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
 
-    async def test_hovering_markdown_link_sets_pointer_cursor(self) -> None:
-        """A markdown `@click=link(...)` span switches the real pointer to pointer."""
-        async with _AssistantMessageApp().run_test() as pilot:
-            msg = pilot.app.query_one("#assistant", AssistantMessage)
-
-            msg.on_mouse_move(self._move_event(meta={"@click": "link('https://x')"}))  # ty: ignore
-
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "pointer"
-
-    async def test_hovering_osc8_link_sets_pointer_cursor(self) -> None:
-        """An OSC 8 `Style(link=...)` span also switches the pointer to pointer."""
-        async with _AssistantMessageApp().run_test() as pilot:
-            msg = pilot.app.query_one("#assistant", AssistantMessage)
-
-            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
-
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "pointer"
-
-    async def test_hovering_text_sets_text_pointer(self) -> None:
-        """Plain markdown text keeps the text pointer."""
+    async def test_hovering_blank_space_sets_default_pointer(self) -> None:
+        """A cell without rendered text uses the default pointer."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
 
             msg.on_mouse_move(self._move_event())  # ty: ignore
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "text"
+            assert msg.styles.pointer == "default"
 
-    async def test_leave_resets_pointer(self) -> None:
-        """Leaving the message resets the pointer to text after a link hover."""
-        async with _AssistantMessageApp().run_test() as pilot:
+    async def test_real_hover_limits_text_pointer_to_rendered_cells(self) -> None:
+        """Real mouse routing distinguishes message text from trailing blank space."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
-            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+            await msg.set_content("hello")
+            await msg.write_initial_content()
+            await pilot.pause()
 
-            msg.on_leave()
+            assert msg.styles.pointer == "default"
 
-            assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "text"
+            await pilot.hover("#assistant-content", offset=(0, 0))
+            assert msg.styles.pointer == "text"
 
-    async def test_markdown_open_links_is_disabled(self) -> None:
-        """The app handles Markdown links so it can show URL-opened toasts."""
-        async with _AssistantMessageApp().run_test() as pilot:
-            markdown = pilot.app.query_one("#assistant-content", Markdown)
+            # The boundary itself: `hello` ends at column 4, so column 5 is the
+            # first cell an off-by-one in the hitbox would still claim as text.
+            await pilot.hover("#assistant-content", offset=(4, 0))
+            assert msg.styles.pointer == "text"
 
-            assert markdown._open_links is False
+            await pilot.hover("#assistant-content", offset=(5, 0))
+            assert msg.styles.pointer == "default"
 
-    async def test_markdown_link_clicked_uses_checked_toast_helper(self) -> None:
-        """Clicked Markdown links should use the checked browser/toast helper."""
-        async with _AssistantMessageApp().run_test() as pilot:
+    async def test_real_hover_over_markdown_link_sets_pointer_cursor(self) -> None:
+        """A rendered markdown link really resolves to the hand pointer.
+
+        The fake-event cases above assert that `@click` meta means "link",
+        which is an assumption about what Textual's `Markdown` attaches rather
+        than a fact about rendered output. This drives the real span, so a
+        change in Markdown's link metadata cannot pass silently.
+        """
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
-            event = SimpleNamespace(href="https://example.com/docs", stop=MagicMock())
+            await msg.set_content("see [docs](https://example.com) now")
+            await msg.write_initial_content()
+            await pilot.pause()
 
-            with patch(
-                "deepagents_code.tui.widgets.messages.open_checked_url_async",
-                new=AsyncMock(return_value=True),
-            ) as mock_open:
-                await msg.on_markdown_link_clicked(event)  # ty: ignore
+            # Renders as `see docs now`, putting the link on columns 4-7.
+            await pilot.hover("#assistant-content", offset=(1, 0))
+            assert msg.styles.pointer == "text"
 
-            event.stop.assert_called_once()
-            mock_open.assert_awaited_once_with(
-                "https://example.com/docs",
-                app=pilot.app,
-                notify_on_success=True,
-            )
+            await pilot.hover("#assistant-content", offset=(4, 0))
+            assert msg.styles.pointer == "pointer"
 
-    async def test_markdown_link_clicked_blocks_suspicious_url(self) -> None:
-        """Markdown links should apply the same URL safety check as style links."""
-        async with _AssistantMessageApp().run_test() as pilot:
+            # Back onto plain text without leaving the widget: `on_leave` never
+            # fires here, so only the handler's non-link branch can clear the
+            # hand cursor.
+            await pilot.hover("#assistant-content", offset=(9, 0))
+            assert msg.styles.pointer == "text"
+
+    async def test_real_hover_over_multi_block_content(self) -> None:
+        """Blank inter-block rows read as blank space; fenced code reads as text."""
+        async with _AssistantMessageApp().run_test(size=(60, 24)) as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
-            event = SimpleNamespace(
-                href="https://example.com/\u200b[admin]",
-                stop=MagicMock(),
-            )
+            await msg.set_content("para one\n\n```python\nx = 1\n```\n")
+            await msg.write_initial_content()
+            await pilot.pause()
 
-            with (
-                patch.object(pilot.app, "notify") as notify,
-                patch(
-                    "deepagents_code.tui.widgets._links.webbrowser.open"
-                ) as mock_open,
-            ):
-                await msg.on_markdown_link_clicked(event)  # ty: ignore
+            await pilot.hover("#assistant-content", offset=(0, 0))
+            assert msg.styles.pointer == "text"
 
-            event.stop.assert_called_once()
-            mock_open.assert_not_called()
-            notify.assert_called_once()
-            args, kwargs = notify.call_args
-            assert "Blocked suspicious URL" in args[0]
-            assert "https://example.com/[admin]" in args[0]
-            assert kwargs["severity"] == "warning"
-            assert kwargs["markup"] is False
+            # The margin row separating the paragraph from the fence.
+            await pilot.hover("#assistant-content", offset=(0, 1))
+            assert msg.styles.pointer == "default"
 
-    def test_mouse_move_before_mount_is_noop(self) -> None:
-        """Hovering before mount (no markdown widget yet) must not raise."""
-        msg = AssistantMessage()
-        assert msg._markdown is None
+            # Fenced code renders through `MarkdownFence` rather than the prose
+            # path, and sits two columns inside its block.
+            await pilot.hover("#assistant-content", offset=(2, 3))
+            assert msg.styles.pointer == "text"
 
-        msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
-
-    def test_leave_before_mount_is_noop(self) -> None:
-        """Leaving before mount (no markdown widget yet) must not raise."""
-        msg = AssistantMessage()
-        assert msg._markdown is None
-
-        msg.on_leave()
+            await pilot.hover("#assistant-content", offset=(0, 3))
+            assert msg.styles.pointer == "default"
 
 
 class TestAssistantMessageStreamCoalescing:
     """Tests for the throttled streaming flush that keeps input responsive."""
 
-    async def test_append_buffers_until_flush(self) -> None:
-        """Tokens accumulate in `_content` but defer the markdown write."""
+    async def test_first_append_flushes_immediately(self) -> None:
+        """The first fragment renders immediately while later text is buffered."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -441,16 +266,17 @@ class TestAssistantMessageStreamCoalescing:
             msg._stream = stream
 
             await msg.append_content("hello ")
+            stream.write.assert_awaited_once_with("hello ")
+
             await msg.append_content("world")
 
-            # No immediate write — tokens are buffered for the timer.
-            stream.write.assert_not_awaited()
+            assert stream.write.await_count == 1
             assert msg._content == "hello world"
-            assert msg._pending_append == "hello world"
+            assert msg._pending_append == "world"
             assert msg._flush_timer is not None
 
-    async def test_timer_flushes_coalesced_text_once(self) -> None:
-        """The throttled timer writes buffered tokens as a single fragment."""
+    async def test_timer_flushes_later_text(self) -> None:
+        """The throttled timer coalesces fragments after the immediate first write."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             stream = MagicMock()
@@ -462,7 +288,7 @@ class TestAssistantMessageStreamCoalescing:
             await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
             await pilot.pause()
 
-            stream.write.assert_awaited_once_with("foobar")
+            assert stream.write.await_args_list[:2] == [call("foo"), call("bar")]
             assert msg._pending_append == ""
 
     async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
@@ -507,26 +333,10 @@ class TestAssistantMessageStreamCoalescing:
 
             assert msg._flush_timer is None
             assert msg._pending_append == ""
-            # Buffered token must not bleed into the replacement render.
-            stream.write.assert_not_awaited()
+            # The initial fragment rendered immediately and must not bleed into
+            # the replacement render again.
+            stream.write.assert_awaited_once_with("buffered")
             markdown.update.assert_awaited_once_with("replacement")
-
-    async def test_timer_created_once_across_appends(self) -> None:
-        """Repeated appends reuse a single flush timer rather than spawning many."""
-        async with _AssistantMessageApp().run_test() as pilot:
-            msg = pilot.app.query_one("#assistant", AssistantMessage)
-            stream = MagicMock()
-            stream.write = AsyncMock()
-            msg._stream = stream
-
-            await msg.append_content("a")
-            timer = msg._flush_timer
-            assert timer is not None
-
-            await msg.append_content("b")
-            await msg.append_content("c")
-
-            assert msg._flush_timer is timer
 
     async def test_flush_drains_successive_batches(self) -> None:
         """Each flush writes the latest batch; an empty buffer is a no-op."""
@@ -573,7 +383,8 @@ class TestAssistantMessageStreamCoalescing:
             # via the Textual timer's exception handler.
             await msg._flush_pending_append()
 
-            stream.write.assert_awaited_once_with("kept")
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("kept")
             assert msg._pending_append == "kept"
 
             # Text arriving after the failure queues behind the retried fragment.
@@ -583,30 +394,6 @@ class TestAssistantMessageStreamCoalescing:
 
 class TestSummarizationMessage:
     """Tests for summarization notification widget."""
-
-    def test_summarization_message_instantiates(self) -> None:
-        """SummarizationMessage should instantiate with default content."""
-        msg = SummarizationMessage()
-        assert msg is not None
-
-    def test_summarization_message_is_app_message(self) -> None:
-        """SummarizationMessage should be treated like an AppMessage."""
-        msg = SummarizationMessage()
-        assert isinstance(msg, AppMessage)
-
-    def test_summarization_message_str_input(self) -> None:
-        """String input should be rendered as bold cyan `Content`."""
-        msg = SummarizationMessage("custom text")
-        rendered = msg._Static__content  # ty: ignore
-        assert isinstance(rendered, Content)
-        assert rendered.plain == "custom text"
-
-    def test_summarization_message_content_passthrough(self) -> None:
-        """Pre-styled `Content` should pass through unchanged."""
-        pre = Content.styled("pre-styled", "bold cyan")
-        msg = SummarizationMessage(pre)
-        rendered = msg._Static__content  # ty: ignore
-        assert rendered is pre
 
 
 class TestToolCallMessageMarkupSafety:
@@ -653,106 +440,189 @@ class TestToolCallMessageMarkupSafety:
         assert "[foo]" in content.plain
         assert "[/dim]" in content.plain
 
-    def test_ask_user_args_are_collapsed_by_default(self) -> None:
-        """`ask_user` should show compact header without inline raw args."""
-        msg = ToolCallMessage(
-            "ask_user",
-            {
-                "questions": [
-                    {
-                        "question": 'Your prompt is just "hi" - what should I build?',
-                        "type": "text",
-                    }
-                    for _ in range(4)
-                ]
-            },
+
+class TestDiffMessageCredentialRedaction:
+    """`DiffMessage` must not render the contents of credential files."""
+
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
+    def test_env_file_diff_is_hidden(self) -> None:
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
         )
+        texts = self._texts(message)
+        assert any("may contain credentials" in text for text in texts)
+        assert all("supersecret" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
 
-        widgets = list(msg.compose())
-        visible = []
-        for widget in widgets[:3]:
-            content = widget._Static__content  # ty: ignore
-            visible.append(content.plain if isinstance(content, Content) else content)
-        visible_plain = "\n".join(visible)
+    def test_regular_file_diff_is_rendered(self) -> None:
+        diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
+        texts = self._texts(DiffMessage(diff, file_path="main.py"))
+        assert all("may contain credentials" not in text for text in texts)
+        assert any("print('b')" in text for text in texts)
 
-        assert "ask_user(4 questions)" in visible_plain
-        assert "Your prompt is just" not in visible_plain
-        assert msg.has_expandable_args is True
+    def test_app_config_can_hide_file_line_numbers(self) -> None:
+        """The app-level preference removes gutters from file-relative diffs."""
+        diff = "@@ -10 +12 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, file_path="main.py", show_numbers=False))
+        assert "- old" in texts
+        assert "+ new" in texts
+        assert not any(text.lstrip().startswith(("10", "12")) for text in texts)
+
+    def test_empty_file_path_renders_diff(self) -> None:
+        """An unknown (empty) path renders normally rather than falsely hiding.
+
+        Callers always populate `file_path`, so a blank path means "unknown",
+        not "credential"; it must not surface the redaction notice.
+        """
+        diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
+        texts = self._texts(DiffMessage(diff, file_path=""))
+        assert all("may contain credentials" not in text for text in texts)
+        assert any("print('b')" in text for text in texts)
+
+    def test_redaction_and_an_unknown_change_are_both_reported(self) -> None:
+        """Redaction drops the body; the caveat still says it was never known.
+
+        The two say different things. Redaction alone reads as "the change is
+        known and deliberately withheld", which is a stronger claim than the
+        truth when the pre-image could not be read at all. The caveat names the
+        tool and the failure and quotes no file content, so it is safe to show
+        beside the redaction notice — while the contents themselves must still
+        be dropped rather than merely left unrendered.
+        """
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            tool_name="edit_file",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
+            outcome="untrusted_before",
+        )
+        texts = self._texts(message)
+        assert any("may contain credentials" in text for text in texts)
+        assert any("prior contents could not be read" in text for text in texts)
+        assert all("supersecret" not in text for text in texts)
+        assert all("API_KEY=old" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
+
+
+class TestDiffMessageNoChanges:
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
+    def test_truncated_body_without_stats_says_counts_are_unavailable(self) -> None:
+        """A number known to be short is worse than no number.
+
+        Recounting a clipped body silently undercounts — an 800-row clip of a
+        900-line change would render `+799`, indistinguishable from correct. With
+        no authoritative counts to fall back on, say they are unavailable:
+        rendering nothing is indistinguishable from a widget that forgot them.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  change counts unavailable"
+
+    def test_unreadable_before_content_does_not_claim_no_changes(self) -> None:
+        """Without the pre-edit content, "no changes" would be a false claim."""
+        texts = self._texts(
+            DiffMessage(
+                "", "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
+        )
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
+
+    def test_unreadable_before_content_suppresses_the_whole_diff(self) -> None:
+        """A diff against a lost pre-image reads as a whole-file insertion.
+
+        Reporting `+2` would present a two-line edit as a rewrite — but so does
+        rendering `+one` and `+two` as added rows, and far more loudly. The
+        caveat has to replace the body, not just the counts, or the widget keeps
+        making the same false claim in the element that dominates it.
+        """
+        diff = "--- a/main.py\n+++ b/main.py\n@@ -0,0 +1,2 @@\n+one\n+two"
+        texts = self._texts(
+            DiffMessage(
+                diff, "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
+        )
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
+        assert not any("one" in text or "two" in text for text in texts[1:])
+        assert not any("+2" in text for text in texts)
 
 
 class TestToolCallMessageDuration:
-    """Tests for the post-run duration shown on `execute` tool calls."""
+    """Tests for the post-run duration shown on long-running tool calls.
 
-    async def test_execute_shows_took_after_success(self) -> None:
-        """`execute` keeps its status row and reports how long it ran."""
+    The "Took <duration>" string itself is covered by `TestFormatDuration`;
+    these tests assert only state: that a timed run captures its elapsed
+    duration, and that the captured value survives rehydration.
+    """
+
+    async def test_execute_captures_elapsed_duration(self) -> None:
+        """A timed `execute` run stores its elapsed time on success."""
         app = _tool_msg_app("execute", {"command": "sleep 1"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
-            app.msg._start_time -= 5  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
-            status = app.msg._status_widget
-            assert status is not None
-            assert status.display is True
-            content = status._Static__content  # ty: ignore
-            assert isinstance(content, Content)
-            assert content.plain == "Took 5s"
+            assert app.msg._duration is not None
+            assert app.msg._duration > 0
 
-    async def test_execute_shows_fractional_seconds(self) -> None:
-        """Sub-minute `execute` runs report tenths — `elapsed` is a float.
-
-        The running spinner truncates to whole seconds, but `set_success`
-        passes the raw float to `format_duration`, so a regression that
-        truncated `elapsed` to `int` would be caught here.
-        """
-        app = _tool_msg_app("execute", {"command": "true"})
+    async def test_task_captures_elapsed_duration(self) -> None:
+        """A timed `task` run stores its elapsed time on success."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
-            app.msg._start_time -= 0.3  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
-            status = app.msg._status_widget
-            assert status is not None
-            content = status._Static__content  # ty: ignore
-            assert isinstance(content, Content)
-            assert content.plain == "Took 0.3s"
+            assert app.msg._duration is not None
+            assert app.msg._duration > 0
 
-    async def test_execute_without_run_falls_back_to_success_status(self) -> None:
-        """`execute` success with no recorded start time hides the row.
-
-        Without a prior `set_running`, `_start_time` is `None`, so the
-        `elapsed is not None` guard must route to `_show_success_status`
-        (which hides the row here because output is present) rather than
-        computing a duration from `None` and crashing.
-        """
-        app = _tool_msg_app("execute", {"command": "true"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success("done")
-            await pilot.pause()
-
-            status = app.msg._status_widget
-            assert status is not None
-            assert status.display is False
-
-    async def test_non_execute_hides_status_on_success(self) -> None:
-        """Non-`execute` tools hide the status row and never show a duration."""
-        app = _tool_msg_app("read_file", {"file_path": "a.py"})
+    async def test_task_took_duration_survives_rehydration(self) -> None:
+        """A virtualized task row restores its completed duration."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
-            app.msg.set_success("contents")
+            app.msg.set_success("done")
+            data = MessageData.from_widget(app.msg)
+            assert data.tool_duration is not None
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        rehydrated_app = _tool_msg_app("task")
+        rehydrated_app.msg = restored
+        async with rehydrated_app.run_test() as pilot:
             await pilot.pause()
 
-            status = app.msg._status_widget
-            assert status is not None
-            assert status.display is False
-            content = status._Static__content  # ty: ignore
-            assert "Took" not in getattr(content, "plain", str(content))
+            assert restored._duration == data.tool_duration
+            assert restored._status == "success"
 
 
 class TestToolCallMessageTerminalStateGuards:
@@ -802,15 +672,37 @@ class TestToolCallMessageTerminalStateGuards:
             assert app.msg._status == "skipped"
             assert app.msg.is_success is False
 
-    async def test_set_error_noop_on_skipped_row(self) -> None:
-        """A skipped row keeps its terminal state instead of flipping to error."""
-        app = _tool_msg_app("execute", {"command": "ls"})
+
+class TestToolCallMessageDeferredSuccess:
+    """A row awaiting a richer result must survive the teardown sweeps.
+
+    An answered `ask_user` stays tracked so its streamed `ToolMessage` can settle
+    it with the full transcript. Every teardown sweep terminates tracked rows as
+    failures, so without `defer_success` an answered question renders as rejected
+    or as an agent error.
+    """
+
+    async def test_cleared_deferred_success_lets_a_real_error_land(self) -> None:
+        """The authoritative result wins, including when it is an error.
+
+        The `ToolMessage` path clears the deferral before settling the row, so a
+        genuine tool failure (a mismatched answer count, whose transcript is all
+        `(error: ...)` placeholders) still renders as an error.
+        """
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.set_skipped()
-            app.msg.set_error("boom")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.clear_deferred_success()
+            app.msg.set_error("Q: Name?\nA: (error: count mismatch)")
             await pilot.pause()
-            assert app.msg._status == "skipped"
+
+            assert app.msg._status == "error"
+            assert app.msg.deferred_success_output is None
+
+
+class TestToolCallMessageStatusTint:
+    """The row tints itself green/red/amber to match its terminal outcome."""
 
 
 class TestToolCallMessageArgs:
@@ -832,17 +724,6 @@ class TestToolCallMessageArgs:
         returned["injected"] = True
         assert msg.args == {"file_path": "a.py", "content": "x"}
         assert msg._args == {"file_path": "a.py", "content": "x"}
-
-    def test_args_nested_values_are_shared(self) -> None:
-        """The copy is shallow: nested mutables are shared, not deep-copied.
-
-        Pins the documented boundary of the `args` accessor so a future reader
-        does not mistake the shallow copy for a deep one.
-        """
-        msg = ToolCallMessage("edit_file", {"edits": [{"old": "a"}]})
-        returned = msg.args
-        returned["edits"][0]["old"] = "mutated"
-        assert msg._args["edits"][0]["old"] == "mutated"
 
 
 class TestToolCallMessageTodos:
@@ -893,35 +774,6 @@ class TestToolCallMessageTodos:
             assert long not in content.plain
             assert app.msg._hint_widget.display is True
 
-    async def test_todo_short_fully_visible_output_does_not_expand(self) -> None:
-        """Clicking fully visible todo output should not show a collapse hint."""
-        from textual.app import App, ComposeResult
-
-        output = repr([{"content": "Write tests", "status": "pending"}])
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("write_todos")
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._hint_widget is not None
-            assert app.msg._hint_widget.display is False
-
-            app.msg.toggle_output()
-            await pilot.pause()
-
-            assert app.msg._expanded is False
-            assert app.msg._hint_widget.display is False
-
     def test_todo_expanded_shows_full_wrapped_content(self) -> None:
         """Expanded todo output should wrap long content without truncating."""
         long = (
@@ -936,29 +788,17 @@ class TestToolCallMessageTodos:
         )
         plain = result.content.plain
 
+        # Continuation lines hang-indent to the width of the status label, which
+        # starts flush at the gutter (the formatter emits no leading pad).
+        from deepagents_code.config import get_glyphs
+
+        indent = "\n" + " " * len(f"{get_glyphs().circle_filled} active ")
         assert "..." not in plain
         assert long.replace(" ", "") == plain.split("active ", 1)[1].replace(
-            "\n             ",
+            indent,
             "",
         ).replace(" ", "")
-        assert "\n             " in plain
-
-    def test_todo_expanded_continuation_aligns_content_column(self) -> None:
-        """Wrapped continuation lines should align under the todo text."""
-        long = "Write integration tests for " + "token refresh revocation " * 4
-        msg = ToolCallMessage("write_todos")
-
-        result = msg._format_todos_output(
-            repr([{"content": long, "status": "pending"}]),
-            is_preview=False,
-        )
-        lines = result.content.plain.splitlines()
-        todo_start = next(
-            index for index, line in enumerate(lines) if "todo   " in line
-        )
-
-        assert len(lines) > todo_start + 1
-        assert lines[todo_start + 1].startswith("             ")
+        assert indent in plain
 
 
 class _ToolMsgApp(App[None]):
@@ -972,6 +812,12 @@ class _ToolMsgApp(App[None]):
         yield self.msg
 
 
+class _AsciiToolMsgApp(_ToolMsgApp):
+    """Tool-message app that loads the app-level ASCII overrides."""
+
+    CSS_PATH = Path(deepagents_code.__file__).resolve().parent / "app.tcss"
+
+
 def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
 
@@ -983,6 +829,263 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
         An unmounted `App` exposing the message as `app.msg`.
     """
     return _ToolMsgApp(tool_name, args)
+
+
+class TestToolCallMessageAppearance:
+    """Tool rows align their prefix and hover affordance with real actions."""
+
+    async def test_short_execute_output_has_no_actionable_hover(self) -> None:
+        """Fully visible shell output must not advertise a dead row action."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+            assert app.msg._expanded is False
+
+    async def test_expandable_execute_output_has_actionable_hover(self) -> None:
+        """Truncated shell output opts the row into hover and click expansion."""
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _tool_msg_app("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
+
+    async def test_emptied_output_drops_the_actionable_hover(self) -> None:
+        """Losing the output must release the hover border, not just the click.
+
+        `_update_output_display` bails out early when `_output` is empty, so the
+        row would otherwise keep the class its expandable output added and
+        advertise a click that `on_click` now refuses.
+        """
+        output = "\n".join(f"line {index}" for index in range(30))
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+            assert app.msg.has_class("-row-actionable")
+
+            app.msg.set_error("")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class("-row-actionable")
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_not_called()
+
+    async def test_long_execute_command_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A truncated command carries the row action even when output is short.
+
+        Guards the `has_expandable_args` term of `has_row_action`: dropping it
+        leaves this row unclickable, because `on_click` returns before reaching
+        its args fallthrough.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("hi")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._args_expanded is True
+
+    async def test_multiline_js_eval_is_actionable_without_expandable_output(
+        self,
+    ) -> None:
+        """A short `js_eval` result still leaves its code block clickable."""
+        app = _tool_msg_app("js_eval", {"code": "const a = 1;\nreturn a;"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("1")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_long_task_description_is_actionable_without_other_expansions(
+        self,
+    ) -> None:
+        """A truncated `task` description alone earns the row action.
+
+        Guards the `has_expandable_task_desc` term: without it this row loses
+        both its hover border and its click.
+        """
+        app = _tool_msg_app("task", {"description": "d" * 300})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is False
+            assert app.msg.has_expandable_args is False
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+            event = MagicMock()
+            app.msg.on_click(event)
+            event.stop.assert_called_once()
+            assert app.msg._task_desc_expanded is True
+
+    async def test_short_task_description_is_not_actionable(self) -> None:
+        """A `task` row with nothing truncated advertises no row action."""
+        app = _tool_msg_app("task", {"description": "short"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_row_is_actionable_before_output_arrives(self) -> None:
+        """A long command is clickable while the tool is still running.
+
+        Covers the `on_mount` sync, the only path that classes a row whose
+        output has never been set.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        app = _tool_msg_app("execute", {"command": command})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_pending_short_row_is_not_actionable(self) -> None:
+        """A pending row with nothing to reveal stays inert."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_read_file_output_is_actionable(self) -> None:
+        """Collapse-by-default output is actionable regardless of its size.
+
+        The counter-example to "short output means no action": `read_file`
+        hides its whole body because the header already names the path, so a
+        five-character result still expands. Covers the
+        `_COLLAPSE_OUTPUT_BY_DEFAULT` return in `_update_output_display`, which
+        exits before the shared sync at the end.
+        """
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("x = 1")
+            await pilot.pause()
+
+            assert app.msg.has_row_action is True
+            assert app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "output"),
+        [("grep", "No matches found"), ("glob", "No files found")],
+    )
+    async def test_empty_search_result_is_not_actionable(
+        self, tool_name: str, output: str
+    ) -> None:
+        """A terminal no-result message renders inline, so nothing can expand."""
+        app = _tool_msg_app(tool_name, {"pattern": "zzz"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_short_error_row_is_force_expanded_without_row_action(self) -> None:
+        """A force-expanded short error offers no collapse to advertise."""
+        app = _tool_msg_app("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg.has_row_action is False
+            assert not app.msg.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_row_action_class_survives_rehydration(self) -> None:
+        """A row rebuilt from stored data re-derives its action from its args.
+
+        The hydrated path never calls `set_success`, so the class comes solely
+        from the `on_mount` sync after `_restore_deferred_state`. Also pins that
+        the store keeps `tool_args`: without them the row loses its action.
+        """
+        command = "echo " + "x" * (EXECUTE_HEADER_MAX_LENGTH + 20)
+        source = _tool_msg_app("execute", {"command": command})
+        async with source.run_test() as pilot:
+            await pilot.pause()
+            source.msg.set_success("hi")
+            await pilot.pause()
+            data = MessageData.from_widget(source.msg)
+
+        assert data is not None
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _RestoredApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _RestoredApp().run_test() as pilot:
+            await pilot.pause()
+
+            assert restored.has_row_action is True
+            assert restored.has_class(_TOOL_ROW_ACTION_CLASS)
+
+    async def test_ascii_hover_requires_actionable_row(self) -> None:
+        """ASCII borders brighten only when clicking the row has an effect."""
+        app = _AsciiToolMsgApp("execute", {"command": "echo hi"})
+        async with app.run_test() as pilot:
+            app.msg.set_success("hi")
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left == default_border
+
+        output = "\n".join(f"line {index}" for index in range(10))
+        app = _AsciiToolMsgApp("execute", {"command": "printf lots"})
+        async with app.run_test() as pilot:
+            app.msg.set_success(output)
+            app.msg.add_class("-ascii")
+            await pilot.pause()
+            default_border = app.msg.styles.border_left
+
+            await pilot.hover(app.msg)
+
+            assert app.msg.mouse_hover
+            assert app.msg.styles.border_left != default_border
 
 
 class TestToolCallMessageOutputGutter:
@@ -1174,21 +1277,12 @@ class TestToolCallMessageSearchOutput:
         assert result.content.plain.split("\n") == lines
 
 
+class TestToolCallMessageLsOutput:
+    """Tests for `ls` directory-listing formatting in `_format_ls_output`."""
+
+
 class TestToolCallMessageEditFileOutput:
     """edit_file hides its success result line but still surfaces errors."""
-
-    def test_edit_file_success_preview_renders_no_lines(self) -> None:
-        """A successful edit preview stays hidden; the status glyph speaks for it."""
-        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
-        msg._status = "success"
-
-        result = msg._format_edit_file_output(
-            "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'",
-            is_preview=True,
-        )
-
-        assert result.content.plain == ""
-        assert result.truncation is None
 
     def test_edit_file_success_full_renders_original_output(self) -> None:
         """A successful edit's full output remains recoverable."""
@@ -1201,164 +1295,13 @@ class TestToolCallMessageEditFileOutput:
         assert result.content.plain == output
         assert result.truncation is None
 
-    def test_edit_file_error_still_renders(self) -> None:
-        """Errors must still render so failures stay visible."""
-        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
-        msg._status = "error"
-
-        result = msg._format_edit_file_output(
-            "Error: String not found in file", is_preview=False
-        )
-
-        assert "String not found in file" in result.content.plain
-
-    async def test_edit_file_success_expands_to_original_output(self) -> None:
-        """End to end: a successful edit_file hides preview but expands to output."""
-        output = "Successfully replaced 2 instance(s) of the string in '/tmp/f.py'"
-        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._preview_row is not None
-            assert app.msg._full_row is not None
-            assert app.msg._hint_widget is not None
-            assert app.msg._preview_row.display is False
-            assert app.msg._full_row.display is False
-            assert app.msg._hint_widget.display is True
-            assert app.msg._has_expandable_output() is True
-
-            app.msg.toggle_output()
-            await pilot.pause()
-
-            assert app.msg._expanded is True
-            assert app.msg._preview_row.display is False
-            assert app.msg._full_row.display is True
-            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert full.plain == output
-
 
 class TestToolCallMessageSuccessStatus:
     """A successful call with no output shows a "Success!" status marker."""
 
-    async def test_success_without_output_shows_success_status(self) -> None:
-        """edit_file (no visible output) shows the success marker instead of hiding."""
-        from deepagents_code.config import get_glyphs
-
-        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(
-                "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
-            )
-            await pilot.pause()
-
-            assert app.msg._status_widget is not None
-            assert app.msg._status_widget.display is True
-            assert app.msg._status_widget.has_class("success")
-            content = app.msg._status_widget._Static__content  # ty: ignore
-            assert get_glyphs().checkmark in content.plain
-            assert "Success!" in content.plain
-
-    async def test_success_with_output_keeps_status_hidden(self) -> None:
-        """A tool whose output speaks for itself keeps the status hidden."""
-        app = _tool_msg_app("read_file", {"file_path": "/tmp/f.py"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success("line one\nline two")
-            await pilot.pause()
-
-            assert app.msg._status_widget is not None
-            assert app.msg._status_widget.display is False
-            assert not app.msg._status_widget.has_class("success")
-
 
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
-
-    async def test_long_single_line_search_output_collapses_and_expands(self) -> None:
-        """Long single-line grep/glob output collapses by default and expands.
-
-        grep/glob collapse their body entirely (the header names the pattern),
-        so even long output shows a count-free expand hint instead of a
-        truncated preview; expanding reveals the full untruncated content.
-        """
-        from textual.app import App, ComposeResult
-
-        output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
-        assert "\n" not in output
-        assert len(output) > ToolCallMessage._PREVIEW_CHARS
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._hint_widget is not None
-            assert app.msg._hint_widget.display is True
-            assert app.msg._has_expandable_output() is True
-            # Preview is collapsed away; a count-free expand affordance is shown.
-            assert app.msg._preview_row is not None
-            assert app.msg._preview_row.display is False
-            hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert "expand" in hint.plain
-            assert "more" not in hint.plain
-
-            app.msg.toggle_output()
-            await pilot.pause()
-
-            assert app.msg._expanded is True
-            assert app.msg._hint_widget.display is True
-            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert full.plain == output
-
-    @pytest.mark.parametrize(
-        ("tool", "error"),
-        [
-            ("glob", "Error: glob timed out after 20.0s. Try a narrower path."),
-            ("grep", "Error: invalid regex: unterminated character class."),
-        ],
-    )
-    async def test_short_error_force_expanded_has_no_collapse_hint(
-        self, tool: str, error: str
-    ) -> None:
-        """A short force-expanded error must not show a collapse affordance.
-
-        `set_error` force-expands so the full error is always visible. When the
-        error is short enough that the collapsed form would be identical, there
-        is nothing to collapse — so no hint, and toggling is a no-op. grep and
-        glob share the collapse-by-default branch, so both must honor this.
-        """
-        assert "\n" not in error
-        assert len(error) < ToolCallMessage._PREVIEW_CHARS
-
-        app = _tool_msg_app(tool, {"pattern": "**/*.py"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_error(error)
-            await pilot.pause()
-
-            assert app.msg._expanded is True
-            assert app.msg._hint_widget is not None
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
-
-            app.msg.toggle_output()
-            await pilot.pause()
-
-            # Nothing to collapse — stays expanded with the hint hidden.
-            assert app.msg._expanded is True
-            assert app.msg._hint_widget.display is False
 
     async def test_multiline_error_force_expanded_offers_collapse(self) -> None:
         """A long force-expanded error should still offer a collapse affordance.
@@ -1391,37 +1334,6 @@ class TestToolCallMessageExpandHint:
             collapsed = app.msg._hint_widget._Static__content
             assert "expand" in collapsed.plain
 
-    async def test_long_grep_output_collapses_and_expands(self) -> None:
-        """A multi-line grep result collapses its preview then expands on toggle."""
-        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
-        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
-
-        app = _tool_msg_app("grep", {"pattern": "hit"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._expanded is False
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._preview_row is not None
-            assert app.msg._full_widget is not None
-            assert app.msg._hint_widget is not None
-            assert app.msg._hint_widget.display is True
-            hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in hint.plain
-            # The preview is collapsed away entirely rather than truncated.
-            assert app.msg._preview_row.display is False
-
-            app.msg.toggle_output()
-            await pilot.pause()
-
-            assert app.msg._expanded is True
-            full = app.msg._full_widget._Static__content
-            assert "hit 7" in full.plain
-            collapsed = app.msg._hint_widget._Static__content
-            assert "collapse" in collapsed.plain
-
     async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
         """Short non-todo output uses non-preview formatting and shows no hint.
 
@@ -1448,100 +1360,6 @@ class TestToolCallMessageExpandHint:
             preview = app.msg._preview_widget._Static__content  # ty: ignore
             assert "line 0" in preview.plain
             assert "line 4" in preview.plain
-
-    async def test_read_file_collapses_preview_by_default(self) -> None:
-        """`read_file` hides its content preview by default but stays expandable.
-
-        The file path is already shown in the header, so echoing the contents
-        inline is noise. The collapsed view shows an expand hint instead of the
-        preview, and expanding reveals the full content.
-        """
-        # Short output that any other tool would render fully inline.
-        output = "\n".join(f"line {index}" for index in range(3))
-
-        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._expanded is False
-            assert app.msg._preview_row is not None
-            assert app.msg._hint_widget is not None
-            # Preview is collapsed away; an expand affordance is shown instead.
-            assert app.msg._preview_row.display is False
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._hint_widget.display is True
-            hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in hint.plain
-
-            # Expanding reveals the full content.
-            app.msg.toggle_output()
-            await pilot.pause()
-            assert app.msg._expanded is True
-            assert app.msg._full_row is not None
-            assert app.msg._full_row.display is True
-            assert app.msg._full_widget is not None
-            full = app.msg._full_widget._Static__content  # ty: ignore
-            assert "line 0" in full.plain
-            assert "line 2" in full.plain
-
-    async def test_large_read_file_collapses_preview_regardless_of_size(
-        self,
-    ) -> None:
-        """Large `read_file` output collapses with a count-free hint and round-trips.
-
-        The short-output case can't prove the "collapse regardless of size"
-        invariant — short output wouldn't preview-truncate for any tool. This
-        uses output well over `_PREVIEW_LINES`, so a normal tool would render a
-        truncated preview with an "N more lines" hint. `read_file` instead hides
-        the preview entirely and shows a count-free expand affordance, then
-        toggles cleanly back to collapsed.
-        """
-        line_count = ToolCallMessage._PREVIEW_LINES * 5
-        output = "\n".join(f"line {index}" for index in range(line_count))
-
-        app = _tool_msg_app("read_file", {"path": "/tmp/big"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._expanded is False
-            assert app.msg._preview_row is not None
-            assert app.msg._full_row is not None
-            assert app.msg._hint_widget is not None
-            # Preview stays hidden even though the size would normally truncate.
-            assert app.msg._preview_row.display is False
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._hint_widget.display is True
-            # The hint is count-free — no "N more lines" prefix other tools show.
-            hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in hint.plain
-            assert "more" not in hint.plain
-
-            # Expanding reveals the full content — including the last line — and
-            # offers a collapse affordance.
-            app.msg.toggle_output()
-            await pilot.pause()
-            assert app.msg._expanded is True
-            assert app.msg._full_row.display is True
-            assert app.msg._full_widget is not None
-            full = app.msg._full_widget._Static__content  # ty: ignore
-            assert f"line {line_count - 1}" in full.plain
-            assert app.msg._hint_widget.display is True
-            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "collapse" in collapse_hint.plain
-
-            # Toggling again re-collapses back to the count-free expand hint.
-            app.msg.toggle_output()
-            await pilot.pause()
-            assert app.msg._expanded is False
-            assert app.msg._preview_row.display is False
-            assert app.msg._full_row.display is False
-            recollapsed = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in recollapsed.plain
-            assert "more" not in recollapsed.plain
 
     async def test_read_file_click_toggles_output(self) -> None:
         """Clicking a collapsed `read_file` expands it via `has_expandable_output`.
@@ -1596,346 +1414,205 @@ class TestToolCallMessageExpandHint:
             assert app.msg._hint_widget.display is False
             assert app.msg._full_row.display is True
 
-    @pytest.mark.parametrize(
-        ("tool", "output", "expected"),
-        [
-            ("grep", "file.py:1:hit one\nfile.py:2:hit two", "hit one"),
-            ("glob", "['a.py', 'b.py']", "a.py"),
-        ],
-    )
-    async def test_search_collapses_preview_by_default(
-        self, tool: str, output: str, expected: str
-    ) -> None:
-        """`grep`/`glob` hide their result preview by default but stay expandable.
 
-        The search pattern is already shown in the header, so echoing the matches
-        inline is noise. The collapsed view shows an expand hint instead of the
-        preview, and expanding reveals the full content.
+class TestToolCallMessageAskUserOutput:
+    """`ask_user` rows summarize the answer and expand to the full transcript."""
+
+    _TRANSCRIPT = "Q: What is your name?\nA: Alice\n\nQ: Favorite color?\nA: blue"
+    _ARGS: ClassVar[dict[str, list[dict[str, str]]]] = {
+        "questions": [
+            {"question": "What is your name?", "type": "text"},
+            {"question": "Favorite color?", "type": "text"},
+        ]
+    }
+
+    def test_expanded_keeps_an_undecodable_multi_select_answer_verbatim(self) -> None:
+        """A cancelled prompt has placeholders, not JSON, in every slot."""
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        transcript = "Q: Where?\nA: (cancelled)"
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(transcript, is_preview=False)
+
+        assert result.content.plain == transcript
+
+    async def test_fallback_summary_suppression_survives_rehydration(self) -> None:
+        """A rebuilt fallback row still advertises no expansion.
+
+        The suppression is derived from the recorded output, not from
+        `_deferred_success_settled`, precisely because that flag is not persisted by
+        `MessageStore`. Virtualization alone re-creates the widget — scrolling a
+        settled row out of the viewport and back is enough — so a flag-based check
+        would resurrect the dead affordance mid-session: a "… 2 answers" hint over a
+        body that is only `"User answered"`.
         """
-        app = _tool_msg_app(tool, {"pattern": "x"})
+        app = _tool_msg_app("ask_user", self._ARGS)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.set_success(output)
+            # A fresh widget carrying only what the store round-trips: status and
+            # output. No deferred state at all.
+            app.msg.set_success(ASK_USER_ANSWERED_SUMMARY)
             await pilot.pause()
 
-            assert app.msg._expanded is False
+            assert app.msg._deferred_success_settled is False
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+    def test_set_success_keeps_a_command_trailer_in_an_answer(self) -> None:
+        """`ask_user` output is user-authored, so no trailer stripping.
+
+        `_strip_success_exit_line` would otherwise eat an answer that happens to end
+        in a command-success trailer. The sibling `execute` case is covered by
+        `test_set_success_strips_trailer`.
+        """
+        answer = "Q: Paste the output\nA: [Command succeeded with exit code 0]"
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        msg.set_success(answer)
+
+        assert msg._output == answer
+
+    async def test_unusable_question_args_fall_back_and_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed `questions` degrades to generic formatting, loudly and once.
+
+        The collapsed row then shows the transcript rather than a summary — the
+        opposite of the design — so it must not pass in silence. `_args` is
+        unvalidated on the streamed and persisted paths, so this is reachable.
+        """
+        app = _tool_msg_app("ask_user", {"questions": "not-a-list"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with caplog.at_level(logging.WARNING):
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+
+        warnings = [
+            record
+            for record in caplog.records
+            if "no usable `questions` args" in record.message
+        ]
+        assert len(warnings) == 1
+
+    async def test_fallback_summary_does_not_advertise_expansion(self) -> None:
+        """A row without an authoritative transcript has nothing to expand."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.settle_deferred_success()
+            await pilot.pause()
+
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == ASK_USER_ANSWERED_SUMMARY
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+    def test_literal_cancelled_answer_still_says_answered(self) -> None:
+        """Free-form answer text must not be interpreted as control state."""
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+
+        result = msg._format_ask_user_output(
+            "Q: Name?\nA: (cancelled)", is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
+
+    async def test_short_transcript_collapses_and_expands(self) -> None:
+        """End to end: a short answer still hides behind the summary line."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(self._TRANSCRIPT)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
             assert app.msg._preview_row is not None
             assert app.msg._hint_widget is not None
-            # Preview is collapsed away; an expand affordance is shown instead.
-            assert app.msg._preview_row.display is False
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._hint_widget.display is True
-            hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in hint.plain
+            assert app.msg._preview_row.display is True
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == "User answered"
+            assert app.msg.has_expandable_output is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            # `has_expandable_args` is unconditionally true for `ask_user`, so
+            # Ctrl+O is routed to the questions block and the hint must advertise
+            # the click that actually reveals the answers.
+            assert hint.plain.endswith("2 answers — click to expand")
 
-            # Expanding reveals the full content.
             app.msg.toggle_output()
             await pilot.pause()
-            assert app.msg._expanded is True
+
             assert app.msg._full_row is not None
             assert app.msg._full_row.display is True
-            assert app.msg._full_widget is not None
-            full = app.msg._full_widget._Static__content  # ty: ignore
-            assert expected in full.plain
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "A: Alice" in full.plain
+            assert "A: blue" in full.plain
 
-    @pytest.mark.parametrize(
-        "tool",
-        ["grep", "glob"],
-    )
-    async def test_large_search_collapses_preview_regardless_of_size(
-        self, tool: str
+    async def test_clicking_body_reveals_answers_and_header_reveals_questions(
+        self,
     ) -> None:
-        """Large `grep`/`glob` output collapses with a count-free hint.
+        """Clicking is the only route to the answers, so pin both click targets.
 
-        Output well over `_PREVIEW_LINES` would normally render a truncated
-        preview with an "N more lines/files" hint. grep/glob instead hide the
-        preview entirely and show a count-free expand affordance.
+        `toggle_output` is reachable from a body click; the header toggles the
+        arguments block instead. A regression in that routing would leave the
+        answers unreachable by any input while the direct-call tests still pass.
         """
-        line_count = ToolCallMessage._PREVIEW_LINES * 5
-        if tool == "glob":
-            output = repr([f"/tmp/result_{index}.py" for index in range(line_count)])
-        else:
-            output = "\n".join(f"file.py:{index}:hit" for index in range(line_count))
-
-        app = _tool_msg_app(tool, {"pattern": "x"})
+        app = _tool_msg_app("ask_user", self._ARGS)
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.set_success(output)
+            app.msg.set_success(self._TRANSCRIPT)
             await pilot.pause()
 
-            assert app.msg._expanded is False
-            assert app.msg._preview_row is not None
-            assert app.msg._hint_widget is not None
-            # Preview stays hidden even though the size would normally truncate.
-            assert app.msg._preview_row.display is False
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._hint_widget.display is True
-            # The hint is count-free — no "N more" prefix other tools show.
-            hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "expand" in hint.plain
-            assert "more" not in hint.plain
+            await pilot.click(app.msg._preview_widget)
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._args_expanded is False
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "A: Alice" in full.plain
 
-            # Expanding reveals the full content and offers a collapse affordance.
+            # Collapsing clicks the full-output widget: expanding hid the preview.
+            await pilot.click(app.msg._full_widget)
+            await pilot.pause()
+            assert app.msg._expanded is False
+
+            await pilot.click(app.msg._header_widget)
+            await pilot.pause()
+            assert app.msg._args_expanded is True
+            assert app.msg._expanded is False
+
+    async def test_literal_cancelled_answer_stays_expandable(self) -> None:
+        """A literal `(cancelled)` answer remains an ordinary visible answer."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: Name?\nA: (cancelled)")
+            await pilot.pause()
+
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == "User answered"
+            assert app.msg.has_expandable_output is True
+
             app.msg.toggle_output()
             await pilot.pause()
-            assert app.msg._expanded is True
-            assert app.msg._full_widget is not None
-            full = app.msg._full_widget._Static__content  # ty: ignore
-            assert f"{line_count - 1}" in full.plain
-            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore
-            assert "collapse" in collapse_hint.plain
 
-    async def test_search_click_toggles_output(self) -> None:
-        """Clicking a collapsed `grep` expands it via `has_expandable_output`."""
-        output = "file.py:1:hit one\nfile.py:2:hit two"
-
-        app = _tool_msg_app("grep", {"pattern": "x"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg.has_expandable_output is True
-            assert app.msg._expanded is False
-
-            event = MagicMock()
-            app.msg.on_click(event)
-            await pilot.pause()
-            event.stop.assert_called_once()
-            assert app.msg._expanded is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == "Q: Name?\nA: (cancelled)"
 
 
 class TestToolCallMessageEmptyResult:
     """Empty file-op results render nothing instead of an empty box."""
 
-    @pytest.mark.parametrize(
-        ("tool", "output"),
-        [
-            ("glob", "[]"),
-            ("grep", "[]"),
-            ("ls", "[]"),
-            ("glob", "   "),
-            # `read_file` has its own collapse branch in `_update_output_display`
-            # that sits *below* the shared empty guard; a whitespace-only read
-            # must still be suppressed by the guard rather than reaching that
-            # branch and rendering an empty box with a bogus expand hint.
-            ("read_file", "   "),
-        ],
-    )
-    async def test_empty_serialized_result_hides_output(
-        self, tool: str, output: str
-    ) -> None:
-        """A non-empty raw string that formats to nothing must not render a box.
-
-        `[]` is a synthetic stand-in for output that is a non-empty raw string
-        yet formats to no visible content. It is not what the tools actually
-        emit for an empty result — real grep/glob return "No matches found" /
-        "No files found" (non-empty), which render inline (see
-        `test_search_no_result_message_renders_without_expand_hint`). The raw
-        output here is truthy, so the early empty guard doesn't fire; without the
-        formatted-emptiness check the preview row would render as an empty box
-        with a misleading expand affordance. The whitespace-only case ("   ")
-        exercises the same check now that the collapsed branch's own empty guard
-        is gone.
-        """
-        app = _tool_msg_app(tool)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._preview_row is not None
-            assert app.msg._full_row is not None
-            assert app.msg._hint_widget is not None
-            assert app.msg._preview_row.display is False
-            assert app.msg._full_row.display is False
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
-
-    @pytest.mark.parametrize(
-        ("tool", "output"),
-        [
-            ("grep", "No matches found"),
-            ("glob", "No files found"),
-        ],
-    )
-    async def test_search_no_result_message_renders_without_expand_hint(
-        self, tool: str, output: str
-    ) -> None:
-        """Search no-result messages stay visible and are not expandable."""
-        app = _tool_msg_app(tool)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success(output)
-            await pilot.pause()
-
-            assert app.msg._preview_row is not None
-            assert app.msg._preview_widget is not None
-            assert app.msg._full_row is not None
-            assert app.msg._hint_widget is not None
-            assert app.msg._preview_row.display is True
-            assert app.msg._full_row.display is False
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
-            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert preview.plain == output
-
-    async def test_non_empty_serialized_result_still_renders(self) -> None:
-        """A populated result must still render — the guard can't false-positive.
-
-        glob collapses its body by default, so "renders" here means it stays
-        expandable (not hidden by the empty guard) and the content is reachable
-        once expanded, rather than shown inline.
-        """
-        app = _tool_msg_app("glob")
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_success("['a.py', 'b.py']")
-            await pilot.pause()
-
-            assert app.msg._has_expandable_output() is True
-            assert app.msg._hint_widget is not None
-            assert app.msg._hint_widget.display is True
-
-            app.msg.toggle_output()
-            await pilot.pause()
-            assert app.msg._expanded is True
-            assert app.msg._full_widget is not None
-            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert "a.py" in full.plain
-
-    async def test_error_body_is_not_hidden(self) -> None:
-        """A real (non-empty) error body must stay visible.
-
-        The emptiness guard runs regardless of status, so this pins the
-        invariant that a human-readable error — which always formats non-empty —
-        is shown in full rather than collapsed away.
-        """
-        app = _tool_msg_app("grep", {"pattern": "x"})
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.msg.set_error("grep: invalid pattern")
-            await pilot.pause()
-
-            assert app.msg._full_row is not None
-            assert app.msg._full_widget is not None
-            assert app.msg._full_row.display is True
-            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert "invalid pattern" in full.plain
-
 
 class TestToolCallMessageExpandableArgs:
     """Tests for the `ask_user` expandable-arguments toggle."""
-
-    def test_has_expandable_args_false_for_non_ask_user(self) -> None:
-        """Only `ask_user` should expose expandable args."""
-        msg = ToolCallMessage("read_file", {"path": "/tmp/x"})
-        assert msg.has_expandable_args is False
-
-    def test_has_expandable_args_false_for_ask_user_without_args(self) -> None:
-        """Empty args dict should not be expandable."""
-        msg = ToolCallMessage("ask_user", {})
-        assert msg.has_expandable_args is False
-
-    def test_tool_name_property_exposes_underlying_name(self) -> None:
-        """Public `tool_name` property should mirror the constructor arg."""
-        msg = ToolCallMessage("ask_user", {"questions": []})
-        assert msg.tool_name == "ask_user"
-
-    def test_toggle_args_no_op_before_mount(self) -> None:
-        """Calling `toggle_args` before mount should not flip state."""
-        msg = ToolCallMessage("ask_user", {"questions": [{"question": "?"}]})
-        # Without `on_mount`, widget refs are None — `_update_args_display`
-        # short-circuits and the expanded flag should not be flipped either,
-        # since the user can't possibly see the result.
-        msg.toggle_args()
-        assert msg._args_expanded is True  # state flips
-        # but rendering is a no-op:
-        assert msg._args_widget is None
-
-    async def test_toggle_args_swaps_display_state(self) -> None:
-        """`toggle_args` should flip the args widget's display after mount."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage(
-                    "ask_user",
-                    {"questions": [{"question": "Name?", "type": "text"}]},
-                )
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            msg = app.msg
-
-            # Initial state: hint visible, full args hidden.
-            assert msg._args_widget is not None
-            assert msg._args_hint_widget is not None
-            assert msg._args_widget.display is False
-            assert msg._args_hint_widget.display is True
-
-            msg.toggle_args()
-            await pilot.pause()
-            assert msg._args_expanded is True
-            assert msg._args_widget.display is True
-
-            msg.toggle_args()
-            await pilot.pause()
-            assert msg._args_expanded is False
-            assert msg._args_widget.display is False
-
-    async def test_on_click_routes_ask_user_to_toggle_args(self) -> None:
-        """Clicking an `ask_user` row (no output) should expand args."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage(
-                    "ask_user",
-                    {"questions": [{"question": "?"}]},
-                )
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            msg = app.msg
-            event = MagicMock()
-            msg.on_click(event)
-            await pilot.pause()
-            event.stop.assert_called_once()
-            assert msg._args_expanded is True
-
-    async def test_toggle_output_does_not_fall_through_to_args(self) -> None:
-        """`toggle_output` is strictly about output; args stay collapsed."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage(
-                    "ask_user",
-                    {"questions": [{"question": "?"}]},
-                )
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            msg = app.msg
-            msg.toggle_output()
-            await pilot.pause()
-            assert msg._args_expanded is False
 
     async def test_js_eval_click_toggles_code_when_result_unexpandable(self) -> None:
         """After a short `js_eval` result, clicking must toggle the code block.
@@ -1975,36 +1652,22 @@ class TestToolCallMessageExpandableArgs:
             # Falls through to the code block instead of no-op output toggle.
             assert msg._args_expanded is True
 
-    async def test_js_eval_click_prefers_expandable_output(self) -> None:
-        """When the result *is* expandable, clicking still toggles output."""
-        from textual.app import App, ComposeResult
 
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage(
-                    "js_eval",
-                    {"code": "const x = 1;\nx + 1"},
-                )
+class TestToolCallMessageTaskDescription:
+    """Tests for the expandable, truncated `task` description line."""
 
-            def compose(self) -> ComposeResult:
-                yield self.msg
+    def test_description_at_limit_not_expandable(self) -> None:
+        """The threshold is strict `>`: a description of exactly the limit fits.
 
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            msg = app.msg
-            # A long multi-line stdout makes the output expandable.
-            body = "\n".join(str(i) for i in range(50))
-            msg.set_success(f"<stdout>\n{body}\n</stdout>\n<result>done</result>")
-            await pilot.pause()
-            assert msg.has_expandable_output is True
-
-            event = MagicMock()
-            msg.on_click(event)
-            await pilot.pause()
-            assert msg._expanded is True
-            assert msg._args_expanded is False
+        Guards against a `>`-to-`>=` regression (or an off-by-one in the slice)
+        that every `MAX + 1` test would still pass.
+        """
+        for length in (
+            ToolCallMessage._TASK_DESC_MAX_LENGTH,
+            ToolCallMessage._TASK_DESC_MAX_LENGTH - 1,
+        ):
+            msg = ToolCallMessage("task", {"description": "x" * length})
+            assert msg.has_expandable_task_desc is False
 
 
 class TestToolCallMessageExecuteCommandExpand:
@@ -2224,17 +1887,6 @@ class TestToolCallMessageShellCommand:
     included in the error output for visibility.
     """
 
-    def test_shell_error_includes_full_command(self) -> None:
-        """Error output should include the full command that was executed."""
-        long_cmd = "pip install " + " ".join(f"package{i}" for i in range(50))
-        assert len(long_cmd) > 120  # Exceeds truncation limit
-
-        msg = ToolCallMessage("execute", {"command": long_cmd})
-        msg.set_error("Command not found: pip")
-
-        # The error output should include the full command
-        assert long_cmd in msg._output
-
     def test_shell_error_command_prefix(self) -> None:
         """Error output should have shell prompt prefix."""
         cmd = "echo hello"
@@ -2253,56 +1905,6 @@ class TestToolCallMessageShellCommand:
 
         assert msg._output == error
         assert not msg._output.startswith("$ ")
-
-    def test_shell_error_with_none_command(self) -> None:
-        """Shell tool with None command should fall back to error-only output."""
-        msg = ToolCallMessage("execute", {"command": None})
-        error = "Some error"
-        msg.set_error(error)
-
-        assert "$ None" not in msg._output
-        assert msg._output == error
-
-    def test_shell_error_with_empty_command(self) -> None:
-        """Shell tool with empty command should fall back to error-only output."""
-        msg = ToolCallMessage("execute", {"command": ""})
-        error = "Some error"
-        msg.set_error(error)
-
-        assert msg._output == error
-        assert not msg._output.startswith("$ ")
-
-    def test_shell_error_with_whitespace_command(self) -> None:
-        """Shell tool with whitespace command should fall back to error-only output."""
-        msg = ToolCallMessage("execute", {"command": "   "})
-        error = "Some error"
-        msg.set_error(error)
-
-        assert msg._output == error
-
-    def test_shell_error_with_no_command_key(self) -> None:
-        """Shell tool with no command key should fall back to error-only output."""
-        msg = ToolCallMessage("execute", {"other_arg": "value"})
-        error = "Some error"
-        msg.set_error(error)
-
-        assert msg._output == error
-        assert not msg._output.startswith("$ ")
-
-    def test_format_shell_output_styles_only_first_line_dim(self) -> None:
-        """Shell output formatting should only style the first command line in dim."""
-        msg = ToolCallMessage("execute", {"command": "echo test"})
-        output = "$ echo test\ntest output\n$ not a command"
-        result = msg._format_shell_output(output, is_preview=False)
-
-        assert isinstance(result.content, Content)
-        lines = result.content.split("\n")
-        # First line (the command) should be styled dim
-        assert lines[0].plain == "$ echo test"
-        assert "dim" in lines[0].markup
-        # Subsequent lines should NOT be dim
-        assert lines[2].plain == "$ not a command"
-        assert "dim" not in lines[2].markup
 
     def test_format_shell_output_preview_truncates_long_single_line(self) -> None:
         """Preview should char-truncate single-line output past the budget."""
@@ -2361,36 +1963,6 @@ class TestToolCallMessageShellCommand:
         assert result.truncation is None
         assert result.content.plain == output
 
-    def test_format_output_preserves_first_line_leading_indent(self) -> None:
-        """`_format_output` must keep the first line's own leading indentation.
-
-        A bare `strip()` lstrips only the first line while continuation lines
-        keep their indent, so uniformly indented command output (e.g.
-        `git branch -r`, which prefixes every branch with two spaces) renders
-        misaligned. All rows should retain their leading spaces.
-        """
-        msg = ToolCallMessage("execute", {"command": "git branch -r"})
-        # Mirror `git branch -r`: every row indented by two spaces, trailing \n.
-        output = "  origin/HEAD -> origin/main\n  origin/main\n  origin/dev\n"
-        result = msg._format_output(output, is_preview=False)
-
-        lines = result.content.plain.split("\n")
-        assert lines == [
-            "  origin/HEAD -> origin/main",
-            "  origin/main",
-            "  origin/dev",
-        ]
-        # Every line shares the same leading indent, so they align beside the
-        # fixed glyph gutter.
-        assert all(line.startswith("  ") for line in lines)
-
-    def test_format_output_still_trims_leading_blank_lines(self) -> None:
-        """Leading blank lines are trimmed while first-line indent survives."""
-        msg = ToolCallMessage("execute", {"command": "noop"})
-        result = msg._format_output("\n\n  indented\n", is_preview=False)
-
-        assert result.content.plain == "  indented"
-
 
 class TestToolCallMessageJsEvalOutput:
     """Tests for `_format_js_eval_output`.
@@ -2400,21 +1972,6 @@ class TestToolCallMessageJsEvalOutput:
     formatter unwraps that into labeled, styled sections instead of dumping the
     raw blob.
     """
-
-    def test_format_single_scalar_result_renders_inline(self) -> None:
-        """A lone short scalar result renders inline as `result: value`."""
-        msg = ToolCallMessage("js_eval", {"code": "1 + 1"})
-        result = msg._format_output("<result>2</result>", is_preview=False)
-
-        assert result.content.plain == "result: 2"
-        assert result.truncation is None
-
-    def test_format_empty_string_result_stays_empty(self) -> None:
-        """An empty string result must not be rewritten as `undefined`."""
-        msg = ToolCallMessage("js_eval", {"code": "''"})
-        result = msg._format_output("<result></result>", is_preview=False)
-
-        assert result.content.plain == "result: "
 
     def test_format_newline_only_result_preserves_body(self) -> None:
         """A newline-only string result remains a real value in block form."""
@@ -2438,16 +1995,6 @@ class TestToolCallMessageJsEvalOutput:
 
         assert result.content.plain.split("\n") == ["result", f"  {body}"]
 
-    def test_format_stdout_and_result(self) -> None:
-        """Stdout and result both render as separate labeled sections."""
-        msg = ToolCallMessage("js_eval", {"code": "console.log('hi'); 42"})
-        output = "<stdout>\nhi\n</stdout>\n<result>42</result>"
-        result = msg._format_output(output, is_preview=False)
-
-        # stdout present -> result is not collapsed inline.
-        lines = result.content.plain.split("\n")
-        assert lines == ["stdout", "  hi", "result", "  42"]
-
     def test_format_unescapes_xml_entities(self) -> None:
         """Escaped `<`, `>`, `&` in the body are restored for display."""
         msg = ToolCallMessage("js_eval", {"code": "x"})
@@ -2465,64 +2012,6 @@ class TestToolCallMessageJsEvalOutput:
 
         lines = result.content.plain.split("\n")
         assert lines == ["error (ReferenceError)", "  boom is not defined"]
-
-    def test_format_handle_result_labeled(self) -> None:
-        """A `kind`-tagged result is labeled as a handle."""
-        msg = ToolCallMessage("js_eval", {"code": "() => 1"})
-        output = '<result kind="handle">[Function] arity=0</result>'
-        result = msg._format_output(output, is_preview=False)
-
-        lines = result.content.plain.split("\n")
-        assert lines == ["result (handle)", "  [Function] arity=0"]
-
-    def test_format_preview_truncates_long_output(self) -> None:
-        """Preview mode caps lines and reports the count of hidden lines."""
-        msg = ToolCallMessage("js_eval", {"code": "x"})
-        body = "\n".join(str(i) for i in range(50))
-        output = f"<stdout>\n{body}\n</stdout>\n<result>done</result>"
-        result = msg._format_output(output, is_preview=True)
-
-        shown = len(result.content.plain.split("\n"))
-        assert shown <= msg._PREVIEW_LINES
-        # Full render is the stdout label + 50 stdout lines + result label + 1
-        # result line; the hint reports exactly what the preview dropped.
-        assert result.truncation == f"{53 - shown} more lines"
-
-    def test_format_falls_back_for_unexpected_shape(self) -> None:
-        """Output without the REPL envelope falls back to plain lines."""
-        msg = ToolCallMessage("js_eval", {"code": "x"})
-        result = msg._format_output("just some text", is_preview=False)
-
-        assert result.content.plain == "just some text"
-
-    def test_format_preview_caps_long_single_line_by_char_budget(self) -> None:
-        """A single huge result line is char-clipped under the preview budget.
-
-        Line-count capping alone left a multi-thousand-char single-line result
-        rendered in full with no truncation hint, flooding the collapsed TUI.
-        """
-        msg = ToolCallMessage("js_eval", {"code": "x"})
-        body = "x" * 10_000
-        output = f"<result>{body}</result>"
-        result = msg._format_output(output, is_preview=True)
-
-        # The body line is clipped to the char budget (plus the two-space
-        # indent) and the hint quantifies the chars dropped from that line so it
-        # can be expanded.
-        assert result.truncation == f"{10_000 - msg._PREVIEW_CHARS} more chars"
-        assert len(result.content.plain) <= msg._PREVIEW_CHARS + len("  ") + len(
-            "result\n"
-        )
-
-    def test_format_no_char_cap_when_not_preview(self) -> None:
-        """Outside preview mode the full long result renders untruncated."""
-        msg = ToolCallMessage("js_eval", {"code": "x"})
-        body = "x" * 10_000
-        output = f"<result>{body}</result>"
-        result = msg._format_output(output, is_preview=False)
-
-        assert result.truncation is None
-        assert body in result.content.plain
 
     def test_format_stdout_with_fake_tags_is_not_misparsed(self) -> None:
         """Raw tag-like text printed to stdout is preserved, not parsed.
@@ -2551,22 +2040,11 @@ class TestToolCallMessageJsEvalArgs:
     block when the snippet spans more than one line.
     """
 
-    def test_js_eval_in_tools_with_header_info(self) -> None:
-        """`js_eval` is registered so the generic `code=` args line is hidden."""
-        from deepagents_code.tui.widgets.messages import _TOOLS_WITH_HEADER_INFO
-
-        assert "js_eval" in _TOOLS_WITH_HEADER_INFO
-
     def test_delete_in_tools_with_header_info(self) -> None:
         """`delete` is registered so its path stays in the header only."""
         from deepagents_code.tui.widgets.messages import _TOOLS_WITH_HEADER_INFO
 
         assert "delete" in _TOOLS_WITH_HEADER_INFO
-
-    def test_single_line_code_not_expandable(self) -> None:
-        """One-line code is fully shown in the header — nothing to expand."""
-        msg = ToolCallMessage("js_eval", {"code": "1 + 1"})
-        assert msg.has_expandable_args is False
 
     def test_multiline_code_is_expandable(self) -> None:
         """Multi-line code offers a collapsible block."""
@@ -2582,12 +2060,6 @@ class TestToolCallMessageJsEvalArgs:
         long_line = "x".ljust(JS_EVAL_HEADER_MAX_LENGTH + 1, "y")
         msg = ToolCallMessage("js_eval", {"code": long_line})
         assert msg.has_expandable_args is True
-
-    def test_short_single_line_code_not_expandable(self) -> None:
-        """A single line that fits in the header has nothing to expand."""
-        short_line = "x" * (JS_EVAL_HEADER_MAX_LENGTH - 1)
-        msg = ToolCallMessage("js_eval", {"code": short_line})
-        assert msg.has_expandable_args is False
 
     def test_code_detail_is_plain_and_left_aligned(self) -> None:
         """The code is plain `Content`, left-aligned, with blank padding lines."""
@@ -2607,29 +2079,6 @@ class TestToolCallMessageJsEvalArgs:
             "x + 1",
             "",
         ]
-
-    def test_code_detail_is_unstyled(self) -> None:
-        """No syntax highlighting: the rendered code carries no style spans."""
-        msg = ToolCallMessage("js_eval", {"code": "const x = 1;\nx + 1"})
-        detail = msg._format_code_detail()
-
-        assert not detail.spans
-
-    def test_code_detail_strips_surrounding_blank_lines(self) -> None:
-        """Code's own surrounding blanks are trimmed (padding lines remain)."""
-        msg = ToolCallMessage("js_eval", {"code": "\n\nconst x = 1;\n\n"})
-        detail = msg._format_code_detail()
-
-        # One blank padding line top and bottom, around the trimmed code.
-        assert detail.plain == "\nconst x = 1;\n"
-
-    def test_code_detail_marks_hidden_unicode(self) -> None:
-        """Hidden controls in expanded code are rendered as visible markers."""
-        msg = ToolCallMessage("js_eval", {"code": "const safe = 1;\n//\u202e hidden"})
-        detail = msg._format_code_detail()
-
-        assert "\u202e" not in detail.plain
-        assert "<U+202E RIGHT-TO-LEFT OVERRIDE>" in detail.plain
 
 
 class TestToolCallMessageFileOutput:
@@ -2757,14 +2206,15 @@ class TestToolCallMessageFileOutput:
 
         assert result.truncation == "2 more lines"
 
-    def test_format_output_compacts_line_number_gutter(self) -> None:
-        r"""Line-number gutters are tightened, all rows aligned to one column.
+    def test_format_output_compacts_legacy_cat_n_gutter(self) -> None:
+        r"""Legacy `cat -n` gutters are tightened, all rows aligned to one column.
 
-        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — which renders far from the line numbers and (when
-        the first row's padding was stripped) misaligned. The TUI recomputes a
-        compact gutter: numbers right-justified to the widest number present,
-        two spaces, then the original source indentation.
+        deepagents versions predating #4561 emitted `f"{line_num:6d}\t{line}"` —
+        a 6-wide right-justified number plus a tab — which renders far from the
+        line numbers and (when the first row's padding was stripped) misaligned.
+        Such output may still surface from cached or persisted transcripts. The
+        TUI recomputes a compact gutter: numbers right-justified to the widest
+        number present, two spaces, then the original source indentation.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
         # cat -n style: 6-wide right-justified number + tab + source line.
@@ -2774,6 +2224,23 @@ class TestToolCallMessageFileOutput:
         # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
         # indentation (the 4 spaces on line 3) preserved verbatim.
         assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+
+    def test_format_output_leaves_current_two_space_gutter_intact(self) -> None:
+        r"""The current SDK gutter is already compact, so compaction is a no-op.
+
+        `read_file` now emits `f"{marker:>width}  {line}"` — a right-justified
+        marker, two spaces, then source. Re-justifying to the widest marker
+        reproduces the same string, and crucially a tab-indented source line
+        keeps its leading tab (the two-space separator, not the source tab, is
+        consumed). Regression guard: the old tab-splitting gutter dropped that
+        indentation, re-introducing the ambiguity this format fixes.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # Two-digit max marker => width 2; line 2 is tab-indented source.
+        output = " 9  def build_config():\n10  \treturn {}"
+        result = msg._format_output(output, is_preview=False)
+
+        assert result.content.plain == " 9  def build_config():\n10  \treturn {}"
 
     def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
         r"""Multi-digit line numbers set a uniform, right-justified gutter."""
@@ -2795,30 +2262,216 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == "  1  first\n1.1  wrapped"
 
-    def test_compact_line_gutter_preserves_source_tabs(self) -> None:
-        r"""Only the first (gutter) tab is consumed; source tabs stay put.
+    def test_compact_line_gutter_preserves_source_tabs_legacy(self) -> None:
+        r"""Only the gutter tab is consumed; a legacy row's source tab stays put.
 
-        Tab-indented source means a tab immediately after the gutter tab.
-        `partition` splits on the first tab only, so the source tab survives.
+        Tab-indented source means a tab immediately after the gutter tab. The
+        gutter regex consumes only the separator, so the source tab survives.
         """
         output = "     1\t\tdef foo():"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         assert compacted == "1  \tdef foo():"
 
+    def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
+        r"""A current-format row's leading source tab (and a blank row) survive.
+
+        The current gutter separator is two spaces, so a tab-indented source
+        line reads as `"N  \tsource"`. Only the two spaces are consumed; the
+        source tab must remain. This is the regression guard for the tab-
+        splitting gutter that used to drop it. A blank source line (`"N  "` —
+        marker, separator, empty source) round-trips unchanged too; the
+        `_compact_line_gutter` return preserves its trailing separator (the
+        display path may later strip trailing space, but the compactor does not).
+        """
+        output = "1  def foo():\n2  \treturn 1\n3  "
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  def foo():\n2  \treturn 1\n3  "
+
+    def test_compact_line_gutter_parses_real_producer_output(self) -> None:
+        r"""Round-trip guard against producer/consumer separator drift.
+
+        Feeds real `format_content_with_line_numbers` output (the authoritative
+        producer, in the deepagents package) through the TUI parser. If the
+        producer separator ever changes without this parser following, the exact
+        assertion fails in CI instead of the gutter silently failing to compact
+        (or, on a widened separator, leaking a phantom space into every source
+        line). Line 2 is tab-indented source — the ambiguity this format fixes.
+        """
+        output = format_content_with_line_numbers(
+            ["def f():", "\treturn 1"], start_line=1
+        )
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  def f():\n2  \treturn 1"
+
+    def test_compact_line_gutter_round_trips_continuation_and_padding(self) -> None:
+        r"""Real-producer round-trip exercising continuation + multi-digit padding.
+
+        The base round-trip test feeds short, unpadded lines. This one forces a
+        wrapped line (an `N.M` continuation marker) and a two-digit line number,
+        so the continuation marker drives the column width and the shorter
+        markers get leading-space padding — all through the real producer, not a
+        hand-built string. Line 3 is tab-indented source, which must survive.
+        Extends drift protection to the continuation and padding paths, not just
+        the base separator.
+        """
+        long_line = "x" * (MAX_LINE_LENGTH + 5)  # forces an `N.1` continuation
+        output = format_content_with_line_numbers(
+            ["short", long_line, "\treturn 1"], start_line=9
+        )
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        lines = compacted.split("\n")
+        assert lines[0] == "   9  short"  # width 4, driven by the "10.1" marker
+        assert lines[2].startswith("10.1  ")
+        assert lines[-1] == "  11  \treturn 1"  # tab-indented source survives
+
+    def test_compact_line_gutter_preserves_double_spaced_source(self) -> None:
+        r"""Only the first separator is consumed; the rest of the source is verbatim.
+
+        A source line whose own text starts with digits and two spaces
+        (`"42  meaning"`) must survive intact: the regex captures the leading
+        gutter marker and emits everything after the first two-space separator
+        untouched, including the embedded double space. Guards the `(.*)` capture
+        against a future separator group that might reprocess or collapse
+        interior spacing (e.g. widening `(?:  |\t)` to `\s+`).
+        """
+        # width 2 (max marker "10"); row 5's source begins with digits + 2 spaces.
+        output = "5  42  meaning\n10  ok"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 5  42  meaning\n10  ok"
+
+    def test_read_status_header_renders_as_gutter(self) -> None:
+        r"""The header is dropped and the gutter counts from the range it states.
+
+        Line numbers live in the header rather than on each row, so the display
+        gutter has to start from the header's first line, not from 1.
+        """
+        output = (
+            "@@ lines 100-101 of 500 | next offset 101 @@\n    def foo():\n\treturn 1"
+        )
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        # Width 3 from "101"; source indentation (spaces and tab) untouched.
+        assert compacted == "100      def foo():\n101  \treturn 1"
+
+    def test_read_status_header_numbers_every_following_line(self) -> None:
+        """Rows that mimic a header or a notice are content, and are numbered.
+
+        Source is returned verbatim, so a file can contain either shape. Only
+        line 1 is the harness's, which is what keeps such rows from reading as
+        protocol text.
+        """
+        output = (
+            "@@ lines 1-3 of 3 @@\n"
+            "@@ lines 9-9 of 9 @@\n"
+            "[Read 2 lines (lines 1-2 of 9 total).]\n"
+            "after"
+        )
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == (
+            "1  @@ lines 9-9 of 9 @@\n"
+            "2  [Read 2 lines (lines 1-2 of 9 total).]\n"
+            "3  after"
+        )
+
+    def test_read_status_header_ignores_trailing_fields_when_numbering(self) -> None:
+        """Truncation fields describe the read; they do not shift the gutter."""
+        output = "@@ lines 1-1 of 1 | truncated mid-line | 40 of 9000 chars @@\nxxxx"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "1  xxxx"
+
+    def test_read_status_header_single_line_window(self) -> None:
+        """A one-line window needs no padding."""
+        output = "@@ lines 7-7 of 12 | next offset 7 @@\nonly"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "7  only"
+
+    def test_read_status_header_blank_rows_keep_their_gutter(self) -> None:
+        """Blank source rows still get a numbered row."""
+        output = "@@ lines 1-4 of 5 | next offset 4 @@\na\nb\n\n"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "1  a\n2  b\n3  \n4  "
+
+    def test_read_status_header_parses_real_producer_output(self) -> None:
+        r"""Round-trip guard against producer/consumer header drift.
+
+        Builds a header with the deepagents helpers that produce it and feeds it
+        through the TUI parser. If the header shape changes without this parser
+        following, the exact assertion fails in CI instead of the header
+        silently leaking into the displayed source.
+        """
+        from deepagents.backends.protocol import ReadResult
+        from deepagents.middleware.filesystem import _assemble_read, _window_fields
+
+        read_result = ReadResult(
+            total_lines=40, start_line=9, end_line=10, next_offset=10
+        )
+        output = _assemble_read(
+            _format_source_block(["def f():", "\treturn 1"]),
+            _window_fields(read_result),
+            [],
+        )
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  def f():\n10  \treturn 1"
+
+    def test_read_status_header_malformed_falls_back(self) -> None:
+        """A near-miss header is not a header and takes the gutter path."""
+        output = "@@ lines abc @@\n1  one"
+
+        assert ToolCallMessage._compact_line_gutter(output) == "@@ lines abc @@\n1  one"
+
+    def test_legacy_gutter_containing_a_header_line_still_compacts(self) -> None:
+        r"""Gutter output whose source mentions a header still gets compacted.
+
+        Dispatching on the substring alone would hand this to the header
+        renderer, which rejects it, and the gutter would then render unchanged.
+        """
+        output = "     9\tnine\n    10\t@@ lines 1-2 of 5 @@"
+
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  nine\n10  @@ lines 1-2 of 5 @@"
+
+    def test_read_status_header_ignored_deep_in_source(self) -> None:
+        """A header-shaped line past the notice window is source, not a header.
+
+        `read_file` places at most two explanation lines above the header, so a
+        match further down belongs to the file and must not be treated as the
+        start of the content region.
+        """
+        output = "alpha\nbeta\ngamma\ndelta\n@@ lines 1-2 of 5 @@\nepsilon"
+
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
-        """Output without a cat -n gutter is returned unchanged."""
+        """Output without a gutter is returned unchanged."""
         output = "plain text\nno line numbers here"
         assert ToolCallMessage._compact_line_gutter(output) == output
 
     def test_compact_line_gutter_rejects_malformed_number_heads(self) -> None:
         r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
 
-        Guards against corrupting tab-separated data whose first column merely
-        resembles a number (leading/trailing dot, multiple dots).
+        Guards against corrupting data whose first column merely resembles a
+        number (leading/trailing dot, multiple dots) — in both the legacy tab
+        and current two-space forms, since a malformed head fails the marker
+        pattern before the separator alternation is ever reached.
         """
-        # Leading dot, trailing dot, and multi-dot heads must all pass through.
-        output = "   .5\tweird\n   5.\talso\n 1.2.3\tnope"
+        # Leading dot, trailing dot, and multi-dot heads must all pass through,
+        # whichever separator follows. All lines are non-gutter, so nothing
+        # matches and the whole output is returned verbatim.
+        output = (
+            "   .5\tweird\n   5.\talso\n 1.2.3\tnope\n"
+            ".5  two-space\n5.  two-space\n1.2.3  two-space"
+        )
         assert ToolCallMessage._compact_line_gutter(output) == output
 
     def test_compact_line_gutter_preview_truncates_with_compacted_gutters(
@@ -2845,52 +2498,6 @@ class TestToolCallMessageFileOutput:
 
 class TestToolCallMessageAwaitingApproval:
     """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
-
-    def test_set_awaiting_approval_hides_widget(self) -> None:
-        """`set_awaiting_approval` should mark the widget as hidden."""
-        msg = ToolCallMessage("execute", {"command": "echo hi"})
-        assert msg._awaiting_approval is False
-        msg.set_awaiting_approval()
-        assert msg._awaiting_approval is True
-        assert msg.display is False
-
-    def test_clear_awaiting_approval_restores_widget(self) -> None:
-        """`clear_awaiting_approval` should restore visibility."""
-        msg = ToolCallMessage("execute", {"command": "echo hi"})
-        msg.set_awaiting_approval()
-        msg.clear_awaiting_approval()
-        assert msg._awaiting_approval is False
-        assert msg.display is True
-
-    def test_clear_awaiting_approval_no_op_when_not_set(self) -> None:
-        """Clearing before setting should not touch widget visibility."""
-        msg = ToolCallMessage("execute", {"command": "echo hi"})
-        msg.clear_awaiting_approval()
-        assert msg._awaiting_approval is False
-
-    async def test_awaiting_approval_round_trip_in_mounted_widget(self) -> None:
-        """Mounted widget should hide on set, reappear on clear."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            msg = app.msg
-            assert msg.display is True
-            msg.set_awaiting_approval()
-            await pilot.pause()
-            assert msg.display is False
-            msg.clear_awaiting_approval()
-            await pilot.pause()
-            assert msg.display is True
 
 
 class TestToolCallMessageRunningSpinner:
@@ -3063,73 +2670,6 @@ class TestToolCallMessageRunningSpinner:
 class TestToolCallMessageRejectReason:
     """Tests for surfacing a user-supplied HITL reject reason."""
 
-    async def test_set_rejected_with_reason_renders_line(self) -> None:
-        """`set_rejected(reason=...)` should display the reason beneath the status."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        async with _Harness().run_test() as pilot:
-            await pilot.pause()
-            app = pilot.app
-            assert isinstance(app, _Harness)
-            msg = app.msg
-            msg.set_rejected(reason="please dry-run first")
-            await pilot.pause()
-            assert msg._reject_reason == "please dry-run first"
-            assert msg._reject_reason_widget is not None
-            assert msg._reject_reason_widget.display is True
-
-    async def test_set_rejected_without_reason_hides_line(self) -> None:
-        """`set_rejected()` with no reason keeps the reason line hidden."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        async with _Harness().run_test() as pilot:
-            await pilot.pause()
-            app = pilot.app
-            assert isinstance(app, _Harness)
-            msg = app.msg
-            msg.set_rejected()
-            await pilot.pause()
-            assert msg._reject_reason is None
-            assert msg._reject_reason_widget is not None
-            assert msg._reject_reason_widget.display is False
-
-    async def test_blank_reason_does_not_set_attribute(self) -> None:
-        """Whitespace-only reasons are treated as no reason."""
-        from textual.app import App, ComposeResult
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        async with _Harness().run_test() as pilot:
-            await pilot.pause()
-            app = pilot.app
-            assert isinstance(app, _Harness)
-            msg = app.msg
-            msg.set_rejected(reason="   ")
-            await pilot.pause()
-            assert msg._reject_reason is None
-
     async def test_reason_with_markup_brackets_renders_safely(self) -> None:
         """User-controlled reasons must round-trip through Rich markup unscathed.
 
@@ -3166,49 +2706,6 @@ class TestToolCallMessageRejectReason:
 class TestUserMessageHighlighting:
     """Test UserMessage highlighting of `@mentions` and `/commands`."""
 
-    def test_at_mention_highlighted(self) -> None:
-        """`@file` mentions should be styled in the output."""
-        content = "look at @README.md please"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        assert len(matches) == 1
-        assert matches[0].group() == "@README.md"
-
-    def test_slash_command_highlighted_at_start(self) -> None:
-        """Slash commands at start should be detected."""
-        content = "/help me with something"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        assert len(matches) == 1
-        assert matches[0].group() == "/help"
-        assert matches[0].start() == 0
-
-    def test_slash_command_not_matched_mid_text(self) -> None:
-        """Slash in middle of text should not match as command due to ^ anchor."""
-        content = "check the /usr/bin path"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        # The ^ anchor means /usr doesn't match when not at start of string
-        assert len(matches) == 0
-
-    def test_multiple_at_mentions(self) -> None:
-        """Multiple `@mentions` should all be detected."""
-        content = "compare @file1.py with @file2.py"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        assert len(matches) == 2
-        assert matches[0].group() == "@file1.py"
-        assert matches[1].group() == "@file2.py"
-
-    def test_at_mention_with_path(self) -> None:
-        """`@mentions` with paths should be fully captured."""
-        content = "read @src/utils/helpers.py"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        assert len(matches) == 1
-        assert matches[0].group() == "@src/utils/helpers.py"
-
-    def test_no_matches_in_plain_text(self) -> None:
-        """Plain text without `@` or `/` should have no matches."""
-        content = "just some normal text here"
-        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
-        assert len(matches) == 0
-
 
 def _render_content(widget: UserMessage | QueuedUserMessage) -> Content:
     """Extract the `Content` object from a message widget's render method."""
@@ -3224,82 +2721,13 @@ class TestUserMessageModeRendering:
     `DARK_COLORS`, so assertions check for hex values from that palette.
     """
 
-    def test_shell_prefix_renders_dollar_indicator(self) -> None:
-        """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
-        content = _render_content(UserMessage("!ls"))
-        assert content.plain == "$ ls"
-        first_span = content._spans[0]
-        assert theme.DARK_COLORS.mode_bash in str(first_span.style)
-
-    def test_incognito_shell_prefix_renders_dollar_indicator(self) -> None:
-        """`UserMessage('!!ls')` should strip the full incognito prefix."""
-        content = _render_content(UserMessage("!!ls"))
-        assert content.plain == "$ ls"
-        first_span = content._spans[0]
-        assert theme.DARK_COLORS.mode_incognito in str(first_span.style)
-
-    def test_command_prefix_renders_slash_indicator(self) -> None:
-        """`UserMessage('/help')` should render with `'/ '` prefix and body."""
-        content = _render_content(UserMessage("/help"))
-        assert content.plain == "/ help"
-        first_span = content._spans[0]
-        assert theme.DARK_COLORS.mode_command in str(first_span.style)
-
-    def test_normal_message_renders_angle_bracket(self) -> None:
-        """`UserMessage('hello')` should render with `'> '` prefix."""
-        content = _render_content(UserMessage("hello"))
-        assert content.plain == "> hello"
-        first_span = content._spans[0]
-        assert theme.DARK_COLORS.primary in str(first_span.style)
-
-    def test_empty_content_renders_angle_bracket(self) -> None:
-        """`UserMessage('')` should not crash and should render `'> '` prefix."""
-        content = _render_content(UserMessage(""))
-        assert content.plain == "> "
-
 
 class TestModeColorsDrift:
     """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
 
-    def test_mode_color_returns_non_primary_for_all_modes(self) -> None:
-        from deepagents_code.config import MODE_PREFIXES
-        from deepagents_code.tui.widgets.messages import _mode_color
-
-        primary = _mode_color(None)
-        for mode in MODE_PREFIXES:
-            color = _mode_color(mode)
-            assert color != primary, (
-                f"_mode_color({mode!r}) returned primary; add a branch for this mode"
-            )
-
 
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
-
-    def test_shell_prefix_renders_dimmed_dollar(self) -> None:
-        """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
-        content = _render_content(QueuedUserMessage("!ls"))
-        assert content.plain == "$ ls"
-
-    def test_incognito_shell_prefix_renders_dimmed_dollar(self) -> None:
-        """`QueuedUserMessage('!!ls')` should strip the full incognito prefix."""
-        content = _render_content(QueuedUserMessage("!!ls"))
-        assert content.plain == "$ ls"
-
-    def test_command_prefix_renders_dimmed_slash(self) -> None:
-        """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
-        content = _render_content(QueuedUserMessage("/help"))
-        assert content.plain == "/ help"
-
-    def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
-        """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
-        content = _render_content(QueuedUserMessage("hello"))
-        assert content.plain == "> hello"
-
-    def test_empty_content_renders_angle_bracket(self) -> None:
-        """`QueuedUserMessage('')` should not crash and should render `'> '`."""
-        content = _render_content(QueuedUserMessage(""))
-        assert content.plain == "> "
 
 
 class TestStripPromptPrefix:
@@ -3438,12 +2866,147 @@ class TestUserMessageGetSelection:
             assert result[0] == "pwd"
 
 
+class _MarkdownAppMessageApp(App[None]):
+    """Mount a markdown `AppMessage` so selection has an active app + layout."""
+
+    _MARKDOWN = (
+        "### Core dependencies\n"
+        "\n"
+        "| Package | Version |\n"
+        "| --- | --- |\n"
+        "| langchain | 1.2.3 |\n"
+        "| langgraph | not installed |\n"
+    )
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage(self._MARKDOWN, markdown=True, id="md")
+
+
+class TestAppMessageMarkdownSelectable:
+    """Markdown `AppMessage` output must be selectable and copyable.
+
+    Regression guard: rendering markdown as a raw Rich renderable produces a
+    `RichVisual`, which Textual cannot select or copy. The text must resolve to
+    `Content` so `/version` tables and incognito shell output stay copyable.
+    """
+
+    async def test_markdown_renders_content_visual(self) -> None:
+        from textual.content import Content
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert isinstance(widget._render(), Content)
+
+    async def test_markdown_select_all_copies_table_text(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            selected = result[0]
+            assert "Core dependencies" in selected
+            assert "langchain" in selected
+            assert "not installed" in selected
+
+    async def test_markdown_selection_has_no_trailing_padding(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert not any(line != line.rstrip() for line in result[0].splitlines())
+
+    async def test_markdown_reflows_on_resize(self) -> None:
+        """Shrinking the terminal re-lays-out markdown to the new width.
+
+        Guards the width-keyed cache invalidation (`_markdown_cache[0] != width`):
+        a regression that dropped the width key would keep serving the stale,
+        wider `Content`.
+        """
+        markdown = "This is a fairly long paragraph of prose " * 6
+        app = _MarkdownAppMessageApp()
+        app._MARKDOWN = markdown
+        async with app.run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            wide = widget.render()
+            wide_cache = widget._markdown_cache
+            assert wide_cache is not None
+            wide_key = wide_cache[0]
+
+            await pilot.resize_terminal(40, 24)
+            await pilot.pause()
+            narrow = widget.render()
+            narrow_cache = widget._markdown_cache
+            assert narrow_cache is not None
+            narrow_key = narrow_cache[0]
+
+            assert narrow is not wide
+            assert narrow_key < wide_key
+            wide_max = max(len(line) for line in wide.plain.splitlines())
+            narrow_max = max(len(line) for line in narrow.plain.splitlines())
+            assert narrow_max < wide_max
+            assert narrow_max <= narrow_key
+
+    async def test_markdown_content_has_style_spans(self) -> None:
+        """Styled markdown keeps its spans so emphasis survives to selection."""
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert widget.render().spans
+
+
+class TestMarkdownToContent:
+    """Direct unit tests for `_markdown_to_content` edge cases."""
+
+    def test_empty_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("", 40).plain
+
+    def test_whitespace_only_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("   \n   \n", 40).plain
+
+    def test_trailing_blank_lines_are_trimmed(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        content = _markdown_to_content("# Title\n\n\n", 40)
+        assert "Title" in content.plain
+        # Block-level trim: no empty trailing lines left in the joined content.
+        assert content.plain == content.plain.rstrip("\n ")
+
+    def test_style_conversion_failure_keeps_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing style conversion drops the span but keeps text, warns once."""
+        import logging
+
+        from textual.style import Style
+
+        from deepagents_code.tui.widgets import messages as messages_module
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        def _boom(_style: object) -> Style:
+            msg = "unconvertible"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(Style, "from_rich_style", staticmethod(_boom))
+        monkeypatch.setattr(
+            messages_module, "_markdown_style_conversion_warned", [False]
+        )
+
+        with caplog.at_level(logging.WARNING, logger=messages_module.__name__):
+            content = _markdown_to_content("### heading", 40)
+
+        assert "heading" in content.plain
+        assert not content.spans
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
 class TestAppMessageAutoLinksDisabled:
     """Tests that `auto_links` is disabled to prevent hover flicker."""
-
-    def test_auto_links_is_false(self) -> None:
-        """`AppMessage` should disable Textual's `auto_links`."""
-        assert AppMessage.auto_links is False
 
 
 _WEBBROWSER_OPEN = "deepagents_code.tui.widgets._links.webbrowser.open"
@@ -3451,30 +3014,6 @@ _WEBBROWSER_OPEN = "deepagents_code.tui.widgets._links.webbrowser.open"
 
 class TestAppMessageOnClickOpensLink:
     """Tests for `AppMessage.on_click` opening style-embedded hyperlinks."""
-
-    def test_click_on_link_opens_browser(self) -> None:
-        """Clicking a styled link should call `webbrowser.open`."""
-        msg = AppMessage("test")
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            msg.on_click(event)
-
-        mock_open.assert_called_once_with("https://example.com")
-        event.stop.assert_called_once()
-
-    def test_click_without_link_is_noop(self) -> None:
-        """Clicking on non-link text should not open the browser."""
-        msg = AppMessage("test")
-        event = MagicMock()
-        event.style = Style()
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            msg.on_click(event)
-
-        mock_open.assert_not_called()
-        event.stop.assert_not_called()
 
     def test_click_with_browser_error_is_graceful(self) -> None:
         """Browser failure should not crash the widget."""
@@ -3500,35 +3039,198 @@ class TestAppMessageOnClickOpensLink:
         event.stop.assert_not_called()
 
 
+class _AppMessageApp(App[None]):
+    """Minimal app that mounts an `AppMessage` for runtime pointer tests."""
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage("Resumed thread: tid-1", id="app-msg")
+
+
+class TestAppMessagePointer:
+    """Tests for pointer shapes over app-message content."""
+
+    @staticmethod
+    def _move_event(
+        *, link: str | None = None, meta: dict | None = None
+    ) -> SimpleNamespace:
+        """Build a minimal mouse-move-like event exposing the hovered style."""
+        return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
+
+    async def test_hovering_link_sets_pointer_cursor(self) -> None:
+        """An OSC 8 `Style(link=...)` span switches the pointer to pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            assert msg.styles.pointer == "pointer"
+
+    async def test_hovering_text_sets_text_pointer(self) -> None:
+        """A cell carrying Textual's selection offset uses the text pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+    async def test_hovering_blank_space_sets_default_pointer(self) -> None:
+        """A cell without rendered text uses the default pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg.styles.pointer == "default"
+
+    async def test_leave_resets_pointer(self) -> None:
+        """Leaving the message resets the pointer after a link hover."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            msg.on_leave()
+
+            assert msg.styles.pointer == "default"
+
+    async def test_link_then_text_resets_pointer_without_leaving(self) -> None:
+        """Moving off a link onto plain text resets the pointer without leaving.
+
+        `on_leave` cannot cover this: the mouse stays inside the widget, so only
+        the handler's non-link branch clears the inline `pointer` set by the
+        previous move. Without it the hand cursor sticks over non-link text.
+        """
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+            assert msg.styles.pointer == "pointer"
+
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+
+class _LinkedAppMessageApp(App[None]):
+    """Mounts an `AppMessage` whose thread ID is a real OSC 8 link span."""
+
+    PREFIX = "Resumed thread: "
+    URL = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+
+    def compose(self) -> ComposeResult:
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        note = TStyle(dim=True, italic=True)
+        yield AppMessage(
+            Content.assemble(
+                (self.PREFIX, note),
+                ("tid-123", TStyle(dim=True, italic=True, link=self.URL)),
+            ),
+            id="app-msg",
+        )
+
+
+class TestAppMessagePointerEventDelivery:
+    """Pins that Textual actually delivers hover events to `AppMessage`.
+
+    Every other pointer test in this repo calls `on_mouse_move` directly with a
+    stand-in event, which cannot catch Textual routing `MouseMove` elsewhere or
+    leaving `event.style` unpopulated at the hovered offset. This drives a real
+    `pilot.hover` instead, so the delivery assumption the whole family of
+    pointer handlers shares is verified in one place.
+    """
+
+    async def test_hover_over_real_link_span_toggles_pointer(self) -> None:
+        """Hovering a real link span sets the pointer and moving off resets it."""
+        async with _LinkedAppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            # `AppMessage` pads by 1 column, so content offset N sits at N + 1.
+            link_x = len(_LinkedAppMessageApp.PREFIX) + 1
+            prefix_x = 1
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#app-msg", offset=(link_x, 0))
+            assert msg.styles.pointer == "pointer"
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
+
+            # Past the end of the rendered line the widget is blank, so the
+            # I-beam must not follow the mouse across the rest of the row.
+            blank_x = len(_LinkedAppMessageApp.PREFIX) + len("tid-123") + 2
+            await pilot.hover("#app-msg", offset=(blank_x, 0))
+            assert msg.styles.pointer == "default"
+
+
+def _pointer_probe_app(widget: Static) -> App[None]:
+    """Wrap a message widget in a bare app so its hover shapes can be probed.
+
+    Args:
+        widget: The message widget to mount, which is given the id `msg`.
+
+    Returns:
+        An app mounting only that widget.
+    """
+    widget.id = "msg"
+
+    class _ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield widget
+
+    return _ProbeApp()
+
+
+class TestMessageWidgetsDropTextPointerOverBlankSpace:
+    """Every message widget resolves its pointer per cell, not per widget.
+
+    These widgets used to declare `pointer: text` in CSS, which Textual applies
+    across a widget's whole rectangle — so a short line showed an I-beam over
+    the empty remainder of its row. One real hover on either side of the text
+    covers each widget; the offsets account for the differing border and
+    padding declared in each widget's own `DEFAULT_CSS`.
+    """
+
+    @pytest.mark.parametrize(
+        ("widget", "text_offset", "blank_offset"),
+        [
+            # `UserMessage` pads vertically, so its body sits on row 1.
+            pytest.param(UserMessage("hi"), (2, 1), (10, 1), id="user"),
+            pytest.param(QueuedUserMessage("hi"), (2, 0), (10, 0), id="queued"),
+            # `ErrorMessage` pads vertically, so its body sits on row 1.
+            pytest.param(ErrorMessage("hi"), (2, 1), (15, 1), id="error"),
+            pytest.param(
+                DiffMessage("--- a\n+++ b\n+hi\n", "f.py"),
+                (2, 0),
+                (16, 0),
+                id="diff",
+            ),
+            pytest.param(AppMessage("hi"), (1, 0), (10, 0), id="app"),
+            pytest.param(
+                SummarizationMessage("hi"), (2, 0), (10, 0), id="summarization"
+            ),
+        ],
+    )
+    async def test_text_pointer_stops_at_end_of_rendered_text(
+        self,
+        widget: Static,
+        text_offset: tuple[int, int],
+        blank_offset: tuple[int, int],
+    ) -> None:
+        """Rendered cells get the I-beam; the blank rest of the row does not."""
+        async with _pointer_probe_app(widget).run_test(size=(40, 24)) as pilot:
+            msg = pilot.app.query_one("#msg", Static)
+
+            await pilot.hover("#msg", offset=text_offset)
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#msg", offset=blank_offset)
+            assert msg.styles.pointer == "default"
+
+
 class TestMountMessageIdSync:
     """Tests for widget id sync in `_mount_message`."""
-
-    def test_widget_id_assigned_from_message_data(self) -> None:
-        """Widget with no id should get the MessageData id after from_widget."""
-        from deepagents_code.tui.widgets.message_store import MessageData
-
-        widget = UserMessage("hello")
-        assert widget.id is None
-
-        data = MessageData.from_widget(widget)
-        # Simulate what _mount_message does
-        if not widget.id:
-            widget.id = data.id
-
-        assert widget.id == data.id
-        assert widget.id is not None
-
-    def test_widget_with_existing_id_is_preserved(self) -> None:
-        """Widget with an explicit id should keep it."""
-        from deepagents_code.tui.widgets.message_store import MessageData
-
-        widget = UserMessage("hello", id="my-custom-id")
-        data = MessageData.from_widget(widget)
-
-        if not widget.id:
-            widget.id = data.id
-
-        assert widget.id == "my-custom-id"
 
 
 class TestGenericPreviewTruncation:
@@ -3538,74 +3240,13 @@ class TestGenericPreviewTruncation:
         """Create a ToolCallMessage with the given tool name."""
         return ToolCallMessage(tool_name, {})
 
-    def test_unknown_tool_many_lines_truncated_in_preview(self) -> None:
-        """Unknown tool output exceeding line limit should be truncated."""
-        msg = self._make_msg()
-        output = "\n".join(f"line {i}" for i in range(10))
-        result = msg._format_output(output, is_preview=True)
-        assert result.truncation is not None
-        assert "more lines" in result.truncation
-
-    def test_unknown_tool_long_single_line_truncated_in_preview(self) -> None:
-        """Unknown tool output exceeding char limit should be char-truncated."""
-        msg = self._make_msg()
-        output = "x" * 500
-        result = msg._format_output(output, is_preview=True)
-        assert result.truncation is not None
-        assert "100 more chars" in result.truncation
-        assert len(result.content.plain) == 400
-
-    def test_unknown_tool_short_output_no_truncation(self) -> None:
-        """Short output from unknown tool should pass through untruncated."""
-        msg = self._make_msg()
-        output = "short output"
-        result = msg._format_output(output, is_preview=True)
-        assert result.truncation is None
-        assert result.content.plain == "short output"
-
-    def test_unknown_tool_exact_preview_lines_not_truncated(self) -> None:
-        """Output with exactly _PREVIEW_LINES lines should NOT be line-truncated."""
-        msg = self._make_msg()
-        output = "\n".join(f"line {i}" for i in range(msg._PREVIEW_LINES))
-        result = msg._format_output(output, is_preview=True)
-        # Boundary: exactly at limit should pass through without line truncation
-        truncation = result.truncation or ""
-        assert result.truncation is None or "more lines" not in truncation
-
-    def test_unknown_tool_full_output_no_truncation(self) -> None:
-        """Non-preview mode should return full output regardless of length."""
-        msg = self._make_msg()
-        output = "x" * 500
-        result = msg._format_output(output, is_preview=False)
-        assert result.truncation is None
-        assert result.content.plain == output
-
 
 class TestStripFrontmatter:
     """Test _strip_frontmatter helper."""
 
-    def test_strips_yaml_frontmatter(self) -> None:
-        text = "---\nname: test\ndescription: A test\n---\n\n# Body\nContent"
-        assert _strip_frontmatter(text) == "# Body\nContent"
 
-    def test_no_frontmatter_unchanged(self) -> None:
-        text = "# No frontmatter\nJust content"
-        assert _strip_frontmatter(text) == text
-
-    def test_unclosed_frontmatter_unchanged(self) -> None:
-        text = "---\nname: test\nno closing marker"
-        assert _strip_frontmatter(text) == text
-
-    def test_empty_string(self) -> None:
-        assert _strip_frontmatter("") == ""
-
-    def test_leading_whitespace_before_frontmatter(self) -> None:
-        text = "\n  ---\nname: test\n---\n\nBody"
-        assert _strip_frontmatter(text) == "Body"
-
-    def test_frontmatter_only(self) -> None:
-        text = "---\nname: test\n---\n"
-        assert _strip_frontmatter(text) == ""
+class TestSkillMessageAppearance:
+    """Skill invocation rows align their slash marker with the transcript edge."""
 
 
 class TestSkillMessageMarkupSafety:
@@ -3625,92 +3266,13 @@ class TestSkillMessageMarkupSafety:
         assert msg._description == content
         assert msg._args == content
 
-    def test_skill_message_stores_fields(self) -> None:
-        msg = SkillMessage(
-            skill_name="web-research",
-            description="Research topics",
-            source="user",
-            body="# Instructions\nDo stuff",
-            args="find quantum",
-        )
-        assert msg._skill_name == "web-research"
-        assert msg._description == "Research topics"
-        assert msg._source == "user"
-        assert msg._body == "# Instructions\nDo stuff"
-        assert msg._args == "find quantum"
-        assert msg._expanded is False
-
-    def test_skill_message_strips_frontmatter(self) -> None:
-        """Body with frontmatter should have it stripped for display."""
-        body = "---\nname: test\ndescription: A test\n---\n\n# Real content"
-        msg = SkillMessage(skill_name="test", body=body)
-        assert msg._stripped_body == "# Real content"
-        # Raw body preserved for serialization
-        assert msg._body == body
-
-    def test_skill_message_no_args_skips_field(self) -> None:
-        """When no args are provided, internal state should reflect that."""
-        msg = SkillMessage(skill_name="test", args="")
-        assert msg._args == ""
-        assert msg._description == ""
-
-    def test_skill_message_with_description_and_args(self) -> None:
-        msg = SkillMessage(
-            skill_name="test",
-            description="A test skill",
-            args="do something",
-        )
-        assert msg._description == "A test skill"
-        assert msg._args == "do something"
-
-    def test_skill_message_toggle_state(self) -> None:
-        msg = SkillMessage(skill_name="test", body="some body")
-        assert msg._expanded is False
-        msg._expanded = True
-        assert msg._expanded is True
-
 
 class TestStripSuccessExitLine:
     """Test _strip_success_exit_line helper."""
 
-    def test_strips_success_trailer(self) -> None:
-        text = "hello world\n[Command succeeded with exit code 0]"
-        assert _strip_success_exit_line(text) == "hello world"
 
-    def test_strips_success_trailer_with_trailing_whitespace(self) -> None:
-        text = "output\n[Command succeeded with exit code 0]  \n"
-        assert _strip_success_exit_line(text) == "output"
-
-    def test_preserves_failed_exit_code(self) -> None:
-        text = "error\n[Command failed with exit code 1]"
-        assert _strip_success_exit_line(text) == text
-
-    def test_preserves_non_zero_success_code(self) -> None:
-        """Only exit code 0 is stripped; other codes are untouched."""
-        text = "output\n[Command succeeded with exit code 2]"
-        assert _strip_success_exit_line(text) == text
-
-    def test_empty_string(self) -> None:
-        assert _strip_success_exit_line("") == ""
-
-    def test_no_trailer(self) -> None:
-        text = "just some output"
-        assert _strip_success_exit_line(text) == text
-
-    def test_only_trailer(self) -> None:
-        text = "[Command succeeded with exit code 0]"
-        assert _strip_success_exit_line(text) == ""
-
-    def test_preserves_mid_string_trailer(self) -> None:
-        """Trailer not at end of string should be left intact."""
-        text = "before\n[Command succeeded with exit code 0]\nafter"
-        assert _strip_success_exit_line(text) == text
-
-    def test_set_success_strips_trailer(self) -> None:
-        """Integration: set_success should strip the exit code 0 line."""
-        msg = ToolCallMessage("execute", {"command": "echo hi"})
-        msg.set_success("hi\n[Command succeeded with exit code 0]")
-        assert msg._output == "hi"
+class TestUserMessageAppearance:
+    """User prompts remain visually distinct from transcript output."""
 
 
 class TestUserMessageCancelled:
@@ -3732,42 +3294,442 @@ class TestUserMessageCancelled:
             assert msg.has_class("-cancelled")
 
 
+def _calls(*names: str) -> list[tuple[str, dict]]:
+    """Build argument-less calls, where every call counts for itself.
+
+    With no argument naming a target, nothing can be judged a repeat, so these
+    exercise phrasing and category aggregation without target collapsing. See
+    `TestSummaryTargetCounting` for the target-aware behavior.
+    """
+    return [(name, {}) for name in names]
+
+
 class TestSummarizeToolGroup:
     """Tests for the tool-group summary phrasing."""
 
+
+class TestSummaryTargetCounting:
+    """The lead noun counts distinct targets, not calls."""
+
     @pytest.mark.parametrize(
-        ("names", "expected"),
+        ("calls", "expected"),
         [
-            (["execute"], "Ran 1 shell command"),
+            # The bug this guards: one file read twice is one file.
             (
-                ["read_file", "read_file", "execute", "execute", "execute"],
-                "Read 2 files, ran 3 shell commands",
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
             ),
-            (["grep"], "Searched for 1 pattern"),
-            (["grep", "glob", "glob"], "Searched for 3 patterns"),
-            (["read_file"], "Read 1 file"),
-            (["web_search", "web_search"], "Searched the web 2 times"),
-            (["web_search"], "Searched the web"),
-            (["write_todos"], "Updated todos"),
-            (["task", "task"], "Ran 2 agents"),
+            # Distinct paths are distinct work.
             (
-                ["edit_file", "write_file", "read_file"],
-                "Edited 1 file, wrote 1 file, read 1 file",
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "b.py"}),
+                ],
+                "Read 2 files",
             ),
-            (["mystery", "mystery"], "Ran 2 mystery calls"),
+            # Lexically equal paths collapse; `normpath` needs no filesystem.
+            (
+                [
+                    ("read_file", {"file_path": "./a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [
+                    ("read_file", {"file_path": "d//a.py"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # The middleware anchors relative paths at the virtual root.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # Different canonical paths remain distinct.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "/repo/a.py"}),
+                ],
+                "Read 2 files",
+            ),
+            # Same path, different category: reading then editing is two acts.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file, edited 1 file",
+            ),
+            # `path` is accepted as a fallback spelling, mirroring the tolerance
+            # `_filtered_args` already shows for either key.
+            (
+                [("read_file", {"path": "a.py"}), ("read_file", {"file_path": "a.py"})],
+                "Read 1 file",
+            ),
+            # `file_path` wins when a call carries both spellings.
+            (
+                [
+                    ("read_file", {"file_path": "a.py", "path": "b.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # The fallback keeps scanning past a `file_path` that is present but
+            # unusable, which is the backend shape the fallback list exists for.
+            # Stopping at the first key that appears would silently disable it.
+            (
+                [
+                    ("read_file", {"file_path": "", "path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [
+                    ("read_file", {"file_path": None, "path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # A trailing slash is not a distinct file. This is a collapse, the
+            # direction that must never be wrong, so it is pinned explicitly.
+            (
+                [
+                    ("read_file", {"file_path": "d/a.py/"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [
+                    ("read_file", {"file_path": "d/./a.py"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # URLs collapse on exact match.
+            (
+                [
+                    ("fetch_url", {"url": "http://x/y"}),
+                    ("fetch_url", {"url": "http://x/y"}),
+                ],
+                "Fetched 1 URL (2 calls)",
+            ),
+            # A URL is compared exactly, never with path rules: a server can
+            # answer each of these differently, so collapsing would undercount.
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a//b"}),
+                    ("fetch_url", {"url": "http://x/a/b"}),
+                ],
+                "Fetched 2 URLs",
+            ),
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a/"}),
+                    ("fetch_url", {"url": "http://x/a"}),
+                ],
+                "Fetched 2 URLs",
+            ),
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a/../b"}),
+                    ("fetch_url", {"url": "http://x/b"}),
+                ],
+                "Fetched 2 URLs",
+            ),
+            # Attempt-counting categories never collapse: two runs of one
+            # command are genuinely two runs.
+            (
+                [("execute", {"command": "ls"}), ("execute", {"command": "ls"})],
+                "Ran 2 shell commands",
+            ),
+            (
+                [("grep", {"pattern": "x"}), ("grep", {"pattern": "x"})],
+                "Searched for 2 patterns",
+            ),
+            # A listing is a snapshot, not a durable object: a group spans a
+            # whole step, so an intervening write can make the second listing of
+            # one directory show something different.
+            (
+                [("ls", {"path": "/repo"}), ("ls", {"path": "/repo"})],
+                "Listed 2 directories",
+            ),
+            # `web_search` phrases its own repeats, so it never collapses either.
+            (
+                [("web_search", {"query": "x"}), ("web_search", {"query": "x"})],
+                "Searched the web 2 times",
+            ),
+            # A `..` segment disables normalization: resolving it lexically would
+            # merge `d/../a.py` with `a.py`, which differ when `d` is a symlink.
+            (
+                [
+                    ("read_file", {"file_path": "d/../a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 2 files",
+            ),
+            # Every mutating category reports repeats, deletes included: a group
+            # spans a step, so delete/write/delete is two real deletions.
+            (
+                [
+                    ("delete", {"file_path": "a.py"}),
+                    ("write_file", {"file_path": "a.py"}),
+                    ("delete", {"file_path": "a.py"}),
+                ],
+                "Deleted 1 file (2 deletions), wrote 1 file",
+            ),
+            # Unidentifiable targets fail open: counting each merely restores the
+            # old count, while collapsing would invent a repeat.
+            ([("read_file", {}), ("read_file", {})], "Read 2 files"),
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": None})],
+                "Read 2 files",
+            ),
+            # Empty is rejected before normalizing, which would turn it into "."
+            # and collapse two unknown paths into one.
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": ""})],
+                "Read 2 files",
+            ),
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": "."})],
+                "Read 2 files",
+            ),
+            # The middleware accepts backslashes as path separators.
+            (
+                [
+                    ("read_file", {"file_path": "a\\b"}),
+                    ("read_file", {"file_path": "a/b"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [("read_file", {"file_path": 42}), ("read_file", {"file_path": 42})],
+                "Read 2 files",
+            ),
         ],
     )
-    def test_summary_phrasing(self, names: list[str], expected: str) -> None:
-        """The summary aggregates by category and lowercases trailing verbs."""
+    def test_distinct_target_counting(
+        self, calls: list[tuple[str, dict]], expected: str
+    ) -> None:
+        """Repeat targets collapse; distinct and unidentifiable ones do not."""
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
-        assert summarize_tool_group(names) == expected
+        assert summarize_tool_group(calls) == expected
 
-    def test_empty_group_has_fallback(self) -> None:
-        """An empty tool list yields a generic fallback rather than crashing."""
+    def test_repeat_detection_is_scoped_per_category(self) -> None:
+        """One category's targets never mask another's.
+
+        The tally shares a single `seen` set, so identities must be namespaced by
+        category. Without that, `b.py` is already seen from the read when the
+        second edit arrives, and the edits collapse to "edited 1 file".
+        """
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
-        assert summarize_tool_group([]) == "Ran tools"
+        calls = [
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "b.py"}),
+            ("edit_file", {"file_path": "b.py"}),
+            ("edit_file", {"file_path": "a.py"}),
+        ]
+        assert summarize_tool_group(calls) == "Read 2 files, edited 2 files"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "a.py",
+            "/a.py",
+            r"a\b",
+            "a/b",
+            "d//a.py",
+            "./a.py",
+            "d/a.py/",
+            "d/./a.py",
+            "/repo/a.py",
+            "//a/b",
+            ".",
+        ],
+    )
+    def test_path_normalization_matches_filesystem_middleware(self, path: str) -> None:
+        r"""Summary identities use the canonical paths executed by file tools.
+
+        Compared against `validate_path` itself rather than against hand-written
+        expectations: the identity only has to be *the middleware's* canonical
+        form, so pinning the two together is what catches drift. Two spellings
+        the middleware resolves to one file must tally as one file, and only the
+        middleware decides which spellings those are.
+        """
+        from deepagents.backends.utils import validate_path
+
+        from deepagents_code.tui.widgets.messages import _normalize_path_target
+
+        assert _normalize_path_target(path) == validate_path(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "d/../a.py",
+            "~",
+            "~/a.py",
+            "C:/a.py",
+            r"C:\a.py",
+        ],
+    )
+    def test_paths_the_middleware_rejects_are_left_alone(self, path: str) -> None:
+        """A path the middleware refuses is never canonicalized.
+
+        Normalizing one would fold a call that could not have run into a valid
+        target's tally. Each is returned verbatim precisely because there is no
+        canonical form to agree with. The middleware rejects more than traversal
+        — `~` and drive prefixes too — so every rejected form is covered here,
+        not just the `..` case.
+        """
+        from deepagents.backends.utils import validate_path
+
+        from deepagents_code.tui.widgets.messages import _normalize_path_target
+
+        with pytest.raises(ValueError):  # noqa: PT011
+            validate_path(path)
+        assert _normalize_path_target(path) == path
+
+    def test_rejected_path_does_not_collapse_into_its_valid_twin(self) -> None:
+        """`~` and `/~` are two different reads, so the group must say two.
+
+        Canonicalizing the rejected spelling would make both identities `/~` and
+        undercount the group — the one error this summary must never make.
+        """
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("read_file", {"file_path": "~"}),
+            ("read_file", {"file_path": "/~"}),
+        ]
+        assert summarize_tool_group(calls) == "Read 2 files"
+
+    def test_repeat_nouns_require_a_target_arg(self) -> None:
+        """A repeat noun is dead unless its category also names a target.
+
+        `calls` can only exceed `targets` for a category that has a target, so a
+        noun added without one would silently never render.
+        """
+        from deepagents_code.tui.widgets.messages import (
+            _REPEAT_COUNT_NOUNS,
+            _TOOL_SUMMARY_TARGET_ARGS,
+        )
+
+        assert _REPEAT_COUNT_NOUNS.keys() <= _TOOL_SUMMARY_TARGET_ARGS.keys()
+
+    def test_path_compared_categories_all_name_a_target(self) -> None:
+        """Path normalization is unreachable for a category with no target arg."""
+        from deepagents_code.tui.widgets.messages import (
+            _PATH_TARGET_CATEGORIES,
+            _TOOL_SUMMARY_TARGET_ARGS,
+        )
+
+        assert _TOOL_SUMMARY_TARGET_ARGS.keys() >= _PATH_TARGET_CATEGORIES
+
+    def test_category_order_follows_first_call(self) -> None:
+        """Collapsing a repeat does not disturb first-appearance ordering."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("execute", {"command": "ls"}),
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "a.py"}),
+        ]
+        assert summarize_tool_group(calls) == "Ran 1 shell command, read 1 file"
+
+    def test_repeated_read_reports_one_file_in_both_tenses(self) -> None:
+        """The user-visible payoff: neither tense claims two files."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "a.py"}),
+        ]
+        assert summarize_tool_group(calls, tense="past") == "Read 1 file"
+        assert summarize_tool_group(calls, tense="present") == "Reading 1 file"
+
+
+class TestRepeatOperationCounts:
+    """Mutations report repeat work on a target; reads collapse silently."""
+
+    @pytest.mark.parametrize(
+        ("calls", "expected"),
+        [
+            # A mutation is an event with its own diff, so three edits of one
+            # file must not read as a single edit.
+            (
+                [("edit_file", {"file_path": "a.py"})] * 3,
+                "Edited 1 file (3 edits)",
+            ),
+            # Both numbers survive when files and edits disagree.
+            (
+                [
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "b.py"}),
+                ],
+                "Edited 2 files (3 edits)",
+            ),
+            # No repeats, no parenthetical.
+            (
+                [
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "b.py"}),
+                ],
+                "Edited 2 files",
+            ),
+            ([("edit_file", {"file_path": "a.py"})], "Edited 1 file"),
+            (
+                [("write_file", {"file_path": "a.py"})] * 2,
+                "Wrote 1 file (2 writes)",
+            ),
+            # Reads repeat for pagination, where the count is noise.
+            ([("read_file", {"file_path": "a.py"})] * 3, "Read 1 file"),
+            # A repeated fetch of one URL is a deliberate re-request, so the
+            # call count stays visible.
+            ([("fetch_url", {"url": "http://x"})] * 2, "Fetched 1 URL (2 calls)"),
+        ],
+    )
+    def test_repeat_counts(self, calls: list[tuple[str, dict]], expected: str) -> None:
+        """Only mutating categories append the operation count."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        assert summarize_tool_group(calls) == expected
+
+    def test_present_tense_keeps_the_parenthetical(self) -> None:
+        """An in-flight burst of edits reports both numbers too."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [("edit_file", {"file_path": "a.py"})] * 2
+        assert (
+            summarize_tool_group(calls, tense="present") == "Editing 1 file (2 edits)"
+        )
+
+    def test_parenthetical_lowercases_in_trailing_position(self) -> None:
+        """The segment still joins correctly when it is not the lead."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("execute", {"command": "ls"}),
+            ("edit_file", {"file_path": "a.py"}),
+            ("edit_file", {"file_path": "a.py"}),
+        ]
+        assert (
+            summarize_tool_group(calls)
+            == "Ran 1 shell command, edited 1 file (2 edits)"
+        )
 
 
 class _ToolGroupApp(App[None]):
@@ -3790,70 +3752,90 @@ class _ToolGroupApp(App[None]):
 class TestToolGroupSummary:
     """Runtime collapse/expand behavior for the group summary widget."""
 
-    async def test_collapsed_hides_members_and_renders_summary(self) -> None:
-        """On mount the summary collapses its members and shows the count line."""
+    async def test_repeated_read_of_one_file_counts_once(self) -> None:
+        """A file read twice renders as one file, not two."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
-        async with _ToolGroupApp().run_test() as pilot:
-            summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            t1 = pilot.app.query_one("#t1", ToolCallMessage)
-            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+        class _RepeatReadApp(App[None]):
+            def compose(self) -> ComposeResult:
+                t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+                t1.id = "t1"
+                t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+                t2.id = "t2"
+                summary = ToolGroupSummary(tools=[t1, t2], collapsible=[t1, t2])
+                summary.id = "summary"
+                yield summary
+                yield t1
+                yield t2
 
-            assert summary._collapsed is True
-            assert t1.display is False
-            assert t2.display is False
+        async with _RepeatReadApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file, ran 1 shell command" in rendered.plain
-
-    async def test_toggle_expands_and_recollapses_members(self) -> None:
-        """Toggling flips member visibility and the disclosure glyph."""
-        from deepagents_code.tui.widgets.messages import ToolGroupSummary
-
-        async with _ToolGroupApp().run_test() as pilot:
-            summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            t1 = pilot.app.query_one("#t1", ToolCallMessage)
-            t2 = pilot.app.query_one("#t2", ToolCallMessage)
-
-            summary.toggle()
-            await pilot.pause()
-            assert summary._collapsed is False
-            assert t1.display is True
-            assert t2.display is True
-
-            summary.toggle()
-            await pilot.pause()
-            assert summary._collapsed is True
-            assert t1.display is False
-            assert t2.display is False
-
-    async def test_has_attached_members_tracks_removal(self) -> None:
-        """`has_attached_members` flips to False once members are removed."""
-        from deepagents_code.tui.widgets.messages import ToolGroupSummary
-
-        async with _ToolGroupApp().run_test() as pilot:
-            summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            assert summary.has_attached_members is True
-
-            await pilot.app.query_one("#t1", ToolCallMessage).remove()
-            await pilot.app.query_one("#t2", ToolCallMessage).remove()
-            await pilot.pause()
-            assert summary.has_attached_members is False
+            assert "Read 1 file" in rendered.plain
+            assert "2 files" not in rendered.plain
 
 
 class TestSummarizeToolGroupPresentTense:
     """Present-tense phrasing used while a step's tools are still running."""
 
-    def test_present_tense(self) -> None:
-        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+class TestSummarizeLiveToolGroup:
+    """Mixed past/present phrasing for an in-flight step's tool calls."""
+
+    def test_completed_and_pending_mixed_tense(self) -> None:
+        """Finished calls read past tense; still-running calls read present."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
 
         assert (
-            summarize_tool_group(["execute"], tense="present")
-            == "Running 1 shell command"
+            summarize_live_tool_group(_calls("execute", "execute"), _calls("task"))
+            == "Ran 2 shell commands, running 1 agent"
         )
+
+    def test_only_pending_is_present_tense(self) -> None:
+        """With nothing finished yet the line is purely present tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
         assert (
-            summarize_tool_group(["read_file", "read_file", "grep"], tense="present")
-            == "Reading 2 files, searching for 1 pattern"
+            summarize_live_tool_group([], _calls("read_file", "read_file"))
+            == "Reading 2 files"
+        )
+
+    def test_only_completed_is_past_tense(self) -> None:
+        """With nothing left running the line is purely past tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group(_calls("execute"), []) == "Ran 1 shell command"
+
+    def test_empty_returns_blank(self) -> None:
+        """No members at all yields an empty string, not a fallback phrase."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group([], []) == ""
+
+    def test_one_target_across_the_split_counts_in_both_halves(self) -> None:
+        """A file whose second read is still running stays visible as reading.
+
+        The two halves are tallied independently on purpose: collapsing across
+        the split would drop the file from the present-tense half and the line
+        would stop reporting the step as reading at all.
+        """
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        one_read = [("read_file", {"file_path": "a.py"})]
+        assert (
+            summarize_live_tool_group(one_read, one_read)
+            == "Read 1 file, reading 1 file"
+        )
+
+    def test_repeats_within_a_half_still_collapse(self) -> None:
+        """Independent tallies do not disable collapsing inside either half."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        two_edits = [("edit_file", {"file_path": "a.py"})] * 2
+        assert (
+            summarize_live_tool_group(two_edits, two_edits)
+            == "Edited 1 file (2 edits), editing 1 file (2 edits)"
         )
 
 
@@ -3874,83 +3856,251 @@ class _LiveToolGroupApp(App[None]):
         yield t2
 
 
+class _LiveToolGroupSameCategoryApp(App[None]):
+    """Live group with two tools of the same category (both shell commands)."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("execute", {"command": "ls"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("execute", {"command": "pwd"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class _LiveToolGroupOnePathApp(App[None]):
+    """Live group whose two reads name the same file."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class _LiveToolGroupTwoEditsApp(App[None]):
+    """Live group whose two edits name the same file."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("edit_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("edit_file", {"file_path": "a.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
 
-    async def test_present_tense_while_running_then_past_on_close(self) -> None:
+    async def test_live_line_reads_targets_not_just_names(self) -> None:
+        """The live path collapses repeats, and re-renders when one finishes.
+
+        Without args reaching the live render path both reads would count as two
+        files; without the target in the cache key the line would keep the stale
+        text once the first read finished.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupOnePathApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            first = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(first)
+            summary.add_member(pilot.app.query_one("#t2", ToolCallMessage))
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Reading 1 file" in rendered.plain
+            assert "2 files" not in rendered.plain
+
+            # One read finishes: the line must rebuild, counting the file in both
+            # halves so the step still reads as reading.
+            first.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file, reading 1 file" in rendered.plain
+
+    async def test_live_line_keeps_completed_in_past_tense(self) -> None:
+        """Finished tools stay on the live line in past tense while others run."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupApp().run_test() as pilot:
             summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            done = pilot.app.query_one("#t1", ToolCallMessage)  # execute
+            running = pilot.app.query_one("#t2", ToolCallMessage)  # read_file
 
-            # add_member renders synchronously; avoid pilot.pause() while the
-            # live spinner timer is running (it keeps the app from going idle).
-            summary.add_member(t1)
+            summary.add_member(done)
+            summary.add_member(running)
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Running 1 shell command" in rendered.plain
-            assert t1.display is False  # collapsed from the start
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
 
-            t1.set_success("done")
-            summary.close()  # stops the spinner timer, flips to past tense
+            # The shell command finishes but the read is still in flight: the
+            # completed command flips to past tense yet stays visible so the
+            # work already done in the step isn't lost.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command, reading 1 file" in rendered.plain
 
+    async def test_live_line_decrements_same_category_count(self) -> None:
+        """One of two shell commands finishing splits the line by tense."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupSameCategoryApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)
+            running = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(done)
+            summary.add_member(running)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 2 shell commands" in rendered.plain
+
+            # One command finishes; the surviving pending tuple shrinks from
+            # ("execute", "execute") to ("execute",), which must invalidate the
+            # cached line even though the category (and membership) is unchanged.
+            # The finished command is now reported in the past tense.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command, running 1 shell command" in rendered.plain
+            assert "2 shell commands" not in rendered.plain
+
+    async def test_pending_member_is_revealed_for_approval(self) -> None:
+        """Only unfinished calls leave the collapsed group before approval."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("done")
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert completed.display is False
+            assert completed.has_class("-grouped")
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._tools == [completed]
             rendered = summary.render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command" in rendered.plain
-            assert t1.display is False
-            # Survives the idle tick after close — guards against the summary's
-            # state attributes colliding with Textual's MessagePump internals
-            # (e.g. `_closed`), which would silently prune the widget.
-            await pilot.pause()
-            assert summary.is_attached
-            assert bool(pilot.app.query(ToolGroupSummary))
 
-    async def test_failed_member_is_evicted_on_close(self) -> None:
+    async def test_suppressed_pending_member_stays_hidden(self) -> None:
+        """A command mirrored in the approval menu is detached without duplication."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            pending = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(pending)
+            pending.set_awaiting_approval()
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert pending.display is False
+            assert not pending.has_class("-grouped")
+            assert not summary.is_attached
+
+            pending.clear_awaiting_approval()
+            assert pending.display is True
+
+    async def test_evicting_a_failed_edit_shrinks_the_repeat_count(self) -> None:
+        """An edit that errored is not counted among the edits that landed.
+
+        The repeat parenthetical asserts work reached the tree, so it has to
+        shrink with the group: two edits of one file where one fails must close
+        as "Edited 1 file", never "Edited 1 file (2 edits)".
+
+        Both edits are settled and rendered first so the past-tense line is
+        cached as "(2 edits)" before the failure arrives — a late terminal
+        result is exactly the case `close` exists for. That ordering is what
+        makes the cache reset in `_evict_unfoldable` load-bearing rather than
+        defensive, so the assertion fails if the reset is dropped.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupTwoEditsApp().run_test() as pilot:
             summary = pilot.app.query_one("#summary", ToolGroupSummary)
             t1 = pilot.app.query_one("#t1", ToolCallMessage)
             t2 = pilot.app.query_one("#t2", ToolCallMessage)
 
             summary.add_member(t1)
             summary.add_member(t2)
+            t1.set_success("ok")
+            t2.set_success("ok")
+            summary._render_line()
+            cached = summary.render()
+            assert isinstance(cached, Content)
+            assert "(2 edits)" in cached.plain
+
             t1.set_error("boom")
-            t2.set_success("ok")
             summary.close()
             await pilot.pause()
 
-            # The errored tool is un-folded; the successful one stays collapsed.
-            assert t1.display is True
-            assert not t1.has_class("-grouped")
-            assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file" in rendered.plain
+            assert "Edited 1 file" in rendered.plain
+            assert "2 edits" not in rendered.plain
 
-    async def test_rejected_member_is_evicted_on_close(self) -> None:
-        """A rejected tool stays visible, mirroring the errored-tool path."""
+    async def test_close_waits_for_pending_member_terminal_status(self) -> None:
+        """A stream boundary must not report a still-pending tool as having run."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupApp().run_test() as pilot:
             summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            t1 = pilot.app.query_one("#t1", ToolCallMessage)
-            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+            shell = pilot.app.query_one("#t1", ToolCallMessage)
+            read = pilot.app.query_one("#t2", ToolCallMessage)
 
-            summary.add_member(t1)
-            summary.add_member(t2)
-            t1.set_rejected(reason="not now")
-            t2.set_success("ok")
+            summary.add_member(shell)
+            summary.add_member(read)
             summary.close()
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+            assert summary._finalized is False
+
+            shell.set_error("authorization classifier unavailable")
+            read.set_success("ok")
+            summary._tick()
             await pilot.pause()
 
-            assert t1.display is True
-            assert not t1.has_class("-grouped")
-            assert t2.display is False
+            assert summary._finalized is True
+            assert shell.display is True
+            assert not shell.has_class("-grouped")
+            assert read.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
+            assert "shell command" not in rendered.plain
 
     async def test_skipped_member_is_evicted_and_uncounted_on_close(self) -> None:
         """A skipped tool stays visible and is left out of the summary count.
@@ -3983,116 +4133,152 @@ class TestLiveToolGroupSummary:
             # The skipped execute must not be summarized as if it had run.
             assert "shell command" not in rendered.plain
 
-    async def test_all_failed_members_remove_summary_on_close(self) -> None:
-        """When every member fails, the empty summary removes itself."""
-        from deepagents_code.tui.widgets.messages import ToolGroupSummary
-
-        async with _LiveToolGroupApp().run_test() as pilot:
-            summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            t1 = pilot.app.query_one("#t1", ToolCallMessage)
-            t2 = pilot.app.query_one("#t2", ToolCallMessage)
-
-            summary.add_member(t1)
-            summary.add_member(t2)
-            t1.set_error("boom")
-            t2.set_rejected(reason="no")
-            summary.close()
-            await pilot.pause()
-
-            # Nothing left to summarize: the summary detaches, both tools show.
-            assert not summary.is_attached
-            assert not pilot.app.query(ToolGroupSummary)
-            assert t1.display is True
-            assert t2.display is True
-
 
 class TestUserMessageTruncation:
     """Test head+tail truncation of very long user messages at render time."""
 
-    def test_short_message_not_truncated(self) -> None:
-        """Messages under the threshold should render in full."""
-        from deepagents_code.tui.widgets.messages import _truncate_for_display
+    def test_will_truncate_boundary(self) -> None:
+        """`will_truncate` is false at the threshold and true above it."""
+        assert UserMessage.will_truncate("C" * 10_000) is False
+        assert UserMessage.will_truncate("C" * 10_001) is True
 
-        text = "short message"
-        assert _truncate_for_display(text) == text
+    def test_collapsed_render_includes_expand_hint(self) -> None:
+        """Collapsed long messages show a clickable expand affordance."""
+        content = _render_content(UserMessage("A" * 12_000))
+        plain = content.plain
+        assert plain.startswith("> ")
+        assert "show full message" in plain
+        assert "click or Ctrl+O" in plain
+        # Head and tail are both preserved verbatim around the elision.
+        assert plain[2:].startswith("A" * 2500)
+        assert plain.endswith("A" * 2500)
+        # ...and nothing beyond them is shown.
+        assert plain.count("A") == 5000
 
-    def test_long_message_truncated_with_elision(self) -> None:
-        """Messages over 10k chars should get head+tail+elision marker."""
-        from deepagents_code.tui.widgets.messages import _truncate_for_display
+        # Click meta is on the affordance span only
+        def _has_toggle_click(style: object) -> bool:
+            meta = getattr(style, "meta", None)
+            return isinstance(meta, dict) and meta.get("@click") == "toggle_expand"
 
-        text = "A" * 12_000
-        result = _truncate_for_display(text)
-        assert "… +" in result
-        assert " lines …" in result
-        # Head and tail are preserved
-        assert result.startswith("A" * 2500)
-        assert result.endswith("A" * 2500)
+        assert any(_has_toggle_click(span.style) for span in content.spans)
 
-    def test_truncation_counts_hidden_lines(self) -> None:
-        """The elision marker should report the correct hidden line count."""
-        from deepagents_code.tui.widgets.messages import _truncate_for_display
+    def test_collapsed_hint_action_exists_on_widget(self) -> None:
+        """The `@click` meta names a real action method.
 
-        lines = [f"line {i:04d} " + "x" * 20 for i in range(600)]
-        text = "\n".join(lines)
-        assert len(text) > 10_000
-        result = _truncate_for_display(text)
-        assert "… +" in result
-        assert " lines …" in result
-
-    def test_full_content_preserved_in_widget(self) -> None:
-        """The widget should store full content even when display is truncated."""
-        big = "B" * 12_000
-        msg = UserMessage(big)
-        assert msg._content == big
-        assert len(msg._content) == 12_000
-
-    def test_message_at_boundary_not_truncated(self) -> None:
-        """Messages exactly at the threshold should not be truncated."""
-        from deepagents_code.tui.widgets.messages import _truncate_for_display
-
-        text = "C" * 10_000
-        assert _truncate_for_display(text) == text
-
-    async def test_selection_returns_full_content_not_truncated(self) -> None:
-        """Selecting a truncated message should return the full original text."""
-        from textual.geometry import Offset
-        from textual.selection import Selection
-
-        big = "X" * 12_000
-        msg = UserMessage(big)
-
-        class _TestApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield msg
-
-        app = _TestApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Select the entire message body (skip prefix glyph)
-            selection = Selection(Offset(2, 0), None)
-            result = msg.get_selection(selection)
-            assert result is not None
-            text, _ending = result
-            assert text == big
-            assert "…" not in text
-
-    def test_truncation_reports_exact_hidden_newline_count(self) -> None:
-        """The elision marker reports the exact number of hidden newlines."""
-        from deepagents_code.tui.widgets.messages import _truncate_for_display
-
-        text = "H" * 6000 + "\n" * 50 + "T" * 6000
-        result = _truncate_for_display(text)
-        assert "… +50 lines …" in result
-
-    async def test_partial_selection_uses_visible_render(self) -> None:
-        """A partial selection defers to the on-screen (truncated) render.
-
-        Select-all extracts from the full content, but a partial selection must
-        stay aligned with what is visible, so it delegates to the base widget.
+        Guards the rename path: the meta is a string, so renaming
+        `action_toggle_expand` would otherwise leave the click silently dead.
         """
+        msg = UserMessage("A" * 12_000)
+        content = _render_content(msg)
+        actions: set[str] = set()
+        for span in content.spans:
+            style = span.style
+            if isinstance(style, str):
+                continue
+            if "@click" in style.meta:
+                actions.add(style.meta["@click"])
+        assert actions
+        for action in actions:
+            assert callable(getattr(msg, f"action_{action}", None))
+
+    def test_collapsed_hint_reports_characters_for_single_line_body(self) -> None:
+        """A single-line paste reports hidden characters, never "+0 lines"."""
+        plain = _render_content(UserMessage("x" * 12_000)).plain
+        assert "+0 lines" not in plain
+        assert "+7,000 characters" in plain
+
+    def test_collapsed_hint_reports_lines_for_multiline_body(self) -> None:
+        """A body with hidden newlines reports the line count."""
+        text = "H" * 6000 + "\n" * 50 + "T" * 6000
+        plain = _render_content(UserMessage(text)).plain
+        assert "+50 lines" in plain
+        assert "characters" not in plain
+
+    async def test_click_on_hint_expands_message(self) -> None:
+        """Clicking the affordance row actually toggles expansion."""
+        from textual.geometry import Offset
+
+        msg = UserMessage("A" * 12_000)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        # Wide and tall enough that the 2500-char head, the affordance, and the
+        # tail all fit on screen — `pilot.click` refuses off-screen targets.
+        async with app.run_test(size=(200, 50)) as pilot:
+            await pilot.pause()
+            # Locate the affordance in the wrapped content rather than computing
+            # it from the body length, which depends on terminal width. Pilot
+            # offsets include the widget's padding, while render_line rows do not.
+            hint_row = next(
+                y
+                for y in range(msg.size.height)
+                if "show full message" in msg.render_line(y).text
+            )
+            click_row = hint_row + msg.styles.padding.top
+            await pilot.click(UserMessage, offset=Offset(4, click_row))
+            await pilot.pause()
+            assert msg._expanded is True
+
+    async def test_expand_hint_is_not_styled_as_a_link(self) -> None:
+        """The affordance stays dim italic despite carrying `@click` meta.
+
+        Textual adds `link_style` to any span whose meta has `@click`, which by
+        default underlines it, drops `dim`, and turns it bold on an accent block
+        when hovered. `UserMessage.DEFAULT_CSS` neutralizes that; without those
+        rules the hint stops matching every other hint in this module.
+        """
+        msg = UserMessage("A" * 12_000)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test(size=(200, 50)) as pilot:
+            await pilot.pause()
+            row = next(
+                y
+                for y in range(msg.size.height)
+                if "show full message" in msg.render_line(y).text
+            )
+            styles = [
+                seg.style
+                for seg in msg.render_line(row)
+                if "show full message" in seg.text and seg.style is not None
+            ]
+            assert styles
+            for style in styles:
+                assert style.dim is True
+                assert style.italic is True
+                assert not style.underline
+                assert not style.bold
+
+    def test_expanded_render_includes_full_body_and_collapse_hint(self) -> None:
+        """Toggling expansion shows the full body plus a collapse hint."""
+        msg = UserMessage("B" * 12_000)
+        msg.toggle_expanded()
+        content = _render_content(msg)
+        plain = content.plain
+        assert "B" * 12_000 in plain
+        assert "click or Ctrl+O to collapse" in plain
+        assert "show full message" not in plain
+
+    def test_toggle_round_trips_back_to_collapsed(self) -> None:
+        """Expanding then collapsing restores the original collapsed render."""
+        msg = UserMessage("A" * 12_000)
+        collapsed = _render_content(msg).plain
+        msg.toggle_expanded()
+        msg.toggle_expanded()
+        assert msg._expanded is False
+        assert _render_content(msg).plain == collapsed
+
+    async def test_selection_on_expanded_message_excludes_hint(self) -> None:
+        """Select-all on an expanded message copies the body without the hint."""
         from textual.geometry import Offset
         from textual.selection import Selection
-        from textual.widgets import Static
 
         big = "X" * 12_000
         msg = UserMessage(big)
@@ -4104,39 +4290,217 @@ class TestUserMessageTruncation:
         app = _TestApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            partial = Selection(Offset(2, 0), Offset(6, 0))
-            expected = _strip_prompt_prefix(Static.get_selection(msg, partial), partial)
-            result = msg.get_selection(partial)
-            # Delegates to the base (truncated) extraction, so it must not
-            # return the full 12k body the way full-content extraction would.
-            assert result == expected
-            assert result is not None
-            assert result[0] != big
-
-    def test_queued_message_render_truncates(self) -> None:
-        """QueuedUserMessage render truncates long content with an elision marker."""
-        content = _render_content(QueuedUserMessage("Q" * 12_000))
-        assert content.plain.startswith("> ")
-        assert "… +" in content.plain
-        assert len(content.plain) < 12_000
-
-    async def test_queued_selection_returns_full_content(self) -> None:
-        """Select-all on a truncated QueuedUserMessage returns the full text."""
-        from textual.geometry import Offset
-        from textual.selection import Selection
-
-        big = "Y" * 12_000
-        msg = QueuedUserMessage(big)
-
-        class _TestApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield msg
-
-        app = _TestApp()
-        async with app.run_test() as pilot:
+            msg.toggle_expanded()
             await pilot.pause()
             result = msg.get_selection(Selection(Offset(2, 0), None))
             assert result is not None
             text, _ending = result
             assert text == big
-            assert "…" not in text
+            assert "Ctrl+O" not in text
+
+    def test_toggle_is_noop_for_short_messages(self) -> None:
+        """Short messages are not expandable."""
+        msg = UserMessage("short")
+        assert msg.has_expandable_body is False
+        msg.toggle_expanded()
+        assert msg._expanded is False
+
+    def test_has_expandable_body_accounts_for_mode_prefix(self) -> None:
+        """The threshold applies to the body, after any mode trigger is stripped."""
+        # With detection on, the leading "/" is a prefix glyph, not body text,
+        # so the body lands exactly on the threshold and stays inline.
+        assert UserMessage("/" + "x" * 10_000).has_expandable_body is False
+        assert UserMessage("/" + "x" * 10_001).has_expandable_body is True
+        # With detection off the slash is literal body text and counts.
+        assert (
+            UserMessage("/" + "x" * 10_000, detect_mode=False).has_expandable_body
+            is True
+        )
+
+
+class _ReasoningApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ReasoningMessage(id="reasoning")
+
+
+async def test_reasoning_message_renders_provider_text_as_plain_content() -> None:
+    app = _ReasoningApp()
+
+    async with app.run_test() as pilot:
+        message = app.query_one("#reasoning", ReasoningMessage)
+        await message.append_content("[bold]not markup[/bold]")
+        await pilot.pause()
+
+        assert str(message.query_one("#reasoning-body", Static).content) == (
+            "[bold]not markup[/bold]"
+        )
+        assert message._expanded is True
+
+        await message.stop_stream()
+        await pilot.pause()
+        assert message._expanded is False
+        assert message.query_one("#reasoning-body", Static).display is False
+
+
+class _RecordingReasoningApp(App[None]):
+    """Records `ExpansionChanged` messages posted by mounted reasoning rows."""
+
+    def __init__(self, *, deferred_expanded: bool = True, content: str = "t") -> None:
+        super().__init__()
+        self.expansions: list[bool] = []
+        self._deferred = deferred_expanded
+        self._initial = content
+
+    def compose(self) -> ComposeResult:
+        widget = ReasoningMessage(self._initial, id="reasoning-events")
+        widget._deferred_expanded = self._deferred
+        yield widget
+
+    def on_reasoning_message_expansion_changed(
+        self,
+        event: ReasoningMessage.ExpansionChanged,
+    ) -> None:
+        self.expansions.append(event.expanded)
+
+
+@pytest.mark.parametrize("deferred_expanded", [True, False])
+async def test_reasoning_mount_publishes_no_expansion_event(
+    deferred_expanded: bool,
+) -> None:
+    """Mounting must not echo state the store already holds.
+
+    The reactive's initialization watcher and the deferred restore both assign
+    `_expanded`. Without seeding `_published_expanded` they publish anyway, so
+    every restored row costs a redundant store write and a height re-measure.
+    """
+    app = _RecordingReasoningApp(deferred_expanded=deferred_expanded)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        message = app.query_one("#reasoning-events", ReasoningMessage)
+        assert message._expanded is deferred_expanded
+        assert app.expansions == []
+
+        message.toggle_expanded()
+        await pilot.pause()
+
+        assert app.expansions == [not deferred_expanded]
+
+
+async def test_empty_reasoning_hides_its_hint_and_refuses_to_toggle() -> None:
+    """A contentless row must not claim the expand affordance.
+
+    It can reach the transcript when a stream dies before its first delta, and
+    an unguarded row would advertise a toggle over nothing and swallow Ctrl+O
+    for every older row behind it.
+    """
+    app = _RecordingReasoningApp(content="")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        message = app.query_one("#reasoning-events", ReasoningMessage)
+        assert message.has_content is False
+        assert message.query_one("#reasoning-hint", Static).display is False
+
+        message.toggle_expanded()
+        await pilot.pause()
+
+        assert message._expanded is True
+        assert app.expansions == []
+
+        await message.append_content("now there is text")
+        await pilot.pause()
+
+        assert message.has_content is True
+        assert message.query_one("#reasoning-hint", Static).display is True
+
+
+class _RubricResultApp(App[None]):
+    """Minimal app mounting a rubric result."""
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\n" + "complete detail " * 200,
+            id="rubric-result",
+        )
+
+
+class _DeferredExpandedRubricApp(App[None]):
+    """Mounts a rubric result whose expansion was restored from virtualization."""
+
+    def compose(self) -> ComposeResult:
+        widget = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-deferred",
+        )
+        widget._deferred_expanded = True
+        yield widget
+
+
+class _RecordingRubricApp(App[None]):
+    """Records `ExpansionChanged` messages posted by a mounted rubric result."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expansions: list[bool] = []
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-events",
+        )
+
+    def on_rubric_result_message_expansion_changed(
+        self,
+        event: RubricResultMessage.ExpansionChanged,
+    ) -> None:
+        self.expansions.append(event.expanded)
+
+
+class TestRubricResultMessage:
+    """Grader details stay complete, collapsed, and scrollable."""
+
+
+class _CaveatGroupApp(App[None]):
+    """Live group holding two groupable write rows."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("write_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("write_file", {"file_path": "b.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class TestCaveatedRowsLeaveTheGroup:
+    """A caveat is carried in the row, so folding the row hides the caveat.
+
+    `write_file` and `delete` are groupable, and the collapsed summary is built
+    from tool names and arguments, never from tool output. Without eviction,
+    deleting a 5,000-line file whose contents could not be read renders as
+    `▸ Wrote 1 file` — indistinguishable from the successful case.
+    """
+
+    async def test_a_caveat_survives_its_own_setter(self) -> None:
+        """`set_success_with_caveat` delegates to `set_success`, which now clears.
+
+        Ordering regression guard: clearing after the flag is set would make the
+        pairing unsettable at all, silently disabling every caveat.
+        """
+        async with _CaveatGroupApp().run_test() as pilot:
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+
+            applied = tool.set_success_with_caveat("could not be shown", "Wrote file")
+
+            assert applied is True
+            assert tool.has_display_caveat is True
+            assert tool._output.startswith("could not be shown")

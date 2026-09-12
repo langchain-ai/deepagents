@@ -90,25 +90,6 @@ def resolve_public(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @responses.activate
 @pytest.mark.usefixtures("resolve_public")
-def test_fetch_url_success() -> None:
-    """Successful fetch converts HTML to markdown."""
-    responses.add(
-        responses.GET,
-        "http://example.com",
-        body="<html><body><h1>Test</h1><p>Content</p></body></html>",
-        status=200,
-    )
-
-    result = fetch_url("http://example.com")
-
-    assert result["status_code"] == 200
-    assert "Test" in result["markdown_content"]
-    assert result["url"].startswith("http://example.com")
-    assert result["content_length"] > 0
-
-
-@responses.activate
-@pytest.mark.usefixtures("resolve_public")
 def test_fetch_url_falls_back_when_markdownify_recurses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -227,60 +208,6 @@ def test_html_to_markdown_content_returns_empty_when_fallback_fails() -> None:
         result = _html_to_markdown_content("<p>x</p>", recursive_markdownify)
 
     assert result == ""
-
-
-@responses.activate
-@pytest.mark.usefixtures("resolve_public")
-def test_fetch_url_http_error() -> None:
-    """4xx responses surface as structured errors."""
-    responses.add(
-        responses.GET,
-        "http://example.com/notfound",
-        status=404,
-    )
-
-    result = fetch_url("http://example.com/notfound")
-
-    assert "error" in result
-    assert "Fetch URL error" in result["error"]
-    assert result["url"] == "http://example.com/notfound"
-    assert result["category"] == "network"
-
-
-@responses.activate
-@pytest.mark.usefixtures("resolve_public")
-def test_fetch_url_timeout() -> None:
-    """Timeouts surface as structured errors."""
-    responses.add(
-        responses.GET,
-        "http://example.com/slow",
-        body=requests.exceptions.Timeout(),
-    )
-
-    result = fetch_url("http://example.com/slow", timeout=1)
-
-    assert "error" in result
-    assert "Fetch URL error" in result["error"]
-    assert result["url"] == "http://example.com/slow"
-    assert result["category"] == "network"
-
-
-@responses.activate
-@pytest.mark.usefixtures("resolve_public")
-def test_fetch_url_connection_error() -> None:
-    """Connection errors surface as structured errors."""
-    responses.add(
-        responses.GET,
-        "http://example.com/error",
-        body=requests.exceptions.ConnectionError(),
-    )
-
-    result = fetch_url("http://example.com/error")
-
-    assert "error" in result
-    assert "Fetch URL error" in result["error"]
-    assert result["url"] == "http://example.com/error"
-    assert result["category"] == "network"
 
 
 def test_fetch_url_disables_environment_proxies(

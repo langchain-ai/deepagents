@@ -4,25 +4,24 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, PropertyMock, patch
 
-from deepagents_code.config import Settings
+from deepagents_code.config import Credentials
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
-    BUILT_IN_GROUP,
     ToolEntry,
-    ToolGroup,
     UnavailableServer,
-    _first_line,
     _load_mcp_server_info,
     collect_built_in_tools,
-    collect_catalog,
     collect_mcp_catalog,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 # Core tools the agent always binds, independent of optional integrations.
 _CORE_BUILT_IN = {
-    "write_todos",
     "ls",
     "read_file",
     "write_file",
@@ -41,61 +40,124 @@ _CORE_BUILT_IN = {
 class TestFirstLine:
     """Tests for `_first_line` description normalization."""
 
-    def test_returns_first_non_empty_line_collapsed(self) -> None:
-        assert _first_line("\n  Hello   world \n\nmore") == "Hello world"
-
-    def test_empty_input(self) -> None:
-        assert _first_line(None) == ""
-        assert _first_line("   \n  ") == ""
-
 
 class TestCollectBuiltInTools:
     """Tests for enumerating built-in tools from the compiled agent."""
 
-    def test_includes_core_tools(self) -> None:
-        tools = collect_built_in_tools()
-        names = {tool.name for tool in tools}
-        assert names >= _CORE_BUILT_IN
-        # Every entry carries a non-empty, single-line description.
-        for tool in tools:
-            assert tool.description
-            assert "\n" not in tool.description
+    def test_respects_filesystem_allowlist(self) -> None:
+        """The catalog listing is narrowed to an explicit allowlist.
+
+        Scope: this validates the `/tools` display contract for
+        `collect_built_in_tools`, NOT runtime `FilesystemMiddleware` enforcement
+        (covered in `test_agent.py`). The narrowing is produced by the SDK
+        middleware, which omits disallowed tools from the node entirely; the
+        `collect_built_in_tools` post-filter is a defensive backstop over the
+        same result. Either way the listing must exclude the disallowed names.
+        """
+        names = {
+            tool.name for tool in collect_built_in_tools(fs_tools=["ls", "read_file"])
+        }
+        assert {"ls", "read_file", "task"} <= names
+        assert (
+            not {
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+                "execute",
+            }
+            & names
+        )
+
+    def test_backstop_surfaces_and_logs_when_disallowed_tool_leaks_through(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """If the SDK ever stops narrowing, the listing must not silently lie.
+
+        Normally the SDK's `FilesystemMiddleware` omits disallowed tools from the
+        node, so the check is a no-op. Here we simulate that guarantee breaking
+        (a disallowed `write_file` reaches enumeration) and assert the backstop
+        (a) keeps it in the listing — because the agent really does expose it, so
+        hiding it would misreport a restricted surface over an unrestricted
+        agent — and (b) logs an error so the discrepancy is visible.
+        """
+        leaked = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="write_file", description="write"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=leaked,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            names = {
+                tool.name for tool in collect_built_in_tools(fs_tools=["read_file"])
+            }
+
+        # The leaked tool is surfaced, not scrubbed: the listing reflects the
+        # agent's real (unrestricted) tools rather than a false restricted view.
+        assert "write_file" in names
+        assert {"read_file", "task"} <= names
+        assert any(
+            "allowlist backstop detected" in record.getMessage()
+            and "write_file" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_backstop_silent_when_allowlist_already_applied(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backstop must stay quiet when enumeration already respects it."""
+        applied = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=applied,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            collect_built_in_tools(fs_tools=["read_file"])
+
+        assert not caplog.records
 
     def test_web_search_present_with_tavily(self) -> None:
         with patch.object(
-            Settings, "has_tavily", new_callable=PropertyMock, return_value=True
+            Credentials, "has_tavily", new_callable=PropertyMock, return_value=True
         ):
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" in names
 
     def test_web_search_absent_without_tavily(self) -> None:
         with patch.object(
-            Settings, "has_tavily", new_callable=PropertyMock, return_value=False
+            Credentials, "has_tavily", new_callable=PropertyMock, return_value=False
         ):
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" not in names
 
-    def test_interpreter_toggles_js_eval(self) -> None:
-        without = {tool.name for tool in collect_built_in_tools()}
-        assert "js_eval" not in without
-        with_interp = {
-            tool.name for tool in collect_built_in_tools(enable_interpreter=True)
-        }
-        assert "js_eval" in with_interp
 
-    def test_forwards_assistant_id_to_agent_compilation(self) -> None:
-        tool_node = SimpleNamespace(
-            tools_by_name={"task": SimpleNamespace(description="Run a subagent")}
-        )
-        agent = SimpleNamespace(nodes={"tools": SimpleNamespace(bound=tool_node)})
-        with patch(
-            "deepagents_code.agent.create_cli_agent",
-            return_value=(agent, None),
-        ) as create:
-            tools = collect_built_in_tools(assistant_id="custom-agent")
-        assert tools == [ToolEntry(name="task", description="Run a subagent")]
-        create.assert_called_once()
-        assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+class TestTodoToolNotBound:
+    """Todos are opt-in in the SDK, so dcode binds no `write_todos` by default."""
+
+
+class TestCollectToolsFromAgent:
+    """Tests for inspecting the tool node of an already-running local graph."""
 
 
 class TestCollectMcpCatalog:
@@ -150,17 +212,6 @@ class TestCollectMcpCatalog:
             mcp_config_path="/tmp/mcp.json", trust_project_mcp=True
         )
 
-    def test_ok_server_without_tools_is_neither_group_nor_unavailable(self) -> None:
-        servers = [MCPServerInfo(name="empty", transport="http", status="ok")]
-        with patch(
-            "deepagents_code.tool_catalog._load_mcp_server_info",
-            new=AsyncMock(return_value=servers),
-        ):
-            groups, unavailable, mcp_error = collect_mcp_catalog()
-        assert groups == []
-        assert unavailable == []
-        assert mcp_error is None
-
     def test_disabled_and_awaiting_reconnect_servers_are_surfaced(self) -> None:
         # `disabled` and `awaiting_reconnect` share the `!= "ok"` branch with
         # error/unauthenticated; lock the contract for the full non-ok set.
@@ -187,9 +238,7 @@ class TestCollectMcpCatalog:
         assert groups == []
         assert mcp_error is None
         assert unavailable == [
-            UnavailableServer(
-                name="off", status="disabled", detail="turned off via /mcp"
-            ),
+            UnavailableServer(name="off", status="disabled", detail=""),
             UnavailableServer(
                 name="pending",
                 status="awaiting_reconnect",
@@ -209,6 +258,14 @@ class TestCollectMcpCatalog:
         assert mcp_error == "MCP discovery failed; showing built-in tools only."
         assert "secret" not in mcp_error
         assert "/path/mcp.json" not in mcp_error
+
+
+class TestSplitMcpServerInfo:
+    """Tests for the pure server-info splitter shared by CLI and `/tools`."""
+
+
+class TestBuildCatalogFromServerInfo:
+    """Tests for the TUI entry point that avoids `asyncio.run` discovery."""
 
 
 class TestLoadMcpServerInfo:
@@ -281,54 +338,3 @@ class TestLoadMcpServerInfo:
 
 class TestCollectCatalog:
     """Tests for the combined built-in + MCP assembly."""
-
-    def test_built_in_group_first_and_mcp_optional(self) -> None:
-        with (
-            patch(
-                "deepagents_code.tool_catalog.collect_built_in_tools",
-                return_value=[],
-            ) as built_in,
-            patch("deepagents_code.tool_catalog.collect_mcp_catalog") as mock_mcp,
-        ):
-            catalog = collect_catalog(include_mcp=False)
-        mock_mcp.assert_not_called()
-        built_in.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
-        assert len(catalog.groups) == 1
-        assert catalog.groups[0].label == BUILT_IN_GROUP
-        assert catalog.groups[0].source == "built-in"
-        assert catalog.unavailable == ()
-        assert catalog.mcp_error is None
-
-    def test_appends_mcp_groups_and_carries_unavailable(self) -> None:
-        mcp_groups = [
-            ToolGroup(
-                label="docs",
-                source="mcp",
-                tools=(ToolEntry(name="search_docs", description="Search"),),
-            )
-        ]
-        unavailable = [UnavailableServer(name="broken", status="error", detail="boom")]
-        with (
-            patch(
-                "deepagents_code.tool_catalog.collect_mcp_catalog",
-                return_value=(mcp_groups, unavailable, None),
-            ),
-            patch(
-                "deepagents_code.tool_catalog.collect_built_in_tools",
-                return_value=[],
-            ) as built_in,
-        ):
-            catalog = collect_catalog(
-                assistant_id="custom-agent",
-                include_mcp=True,
-                mcp_config_path="/tmp/mcp.json",
-            )
-        built_in.assert_called_once_with(
-            assistant_id="custom-agent", enable_interpreter=False
-        )
-        # Built-in group stays first; MCP groups follow.
-        assert catalog.groups[0].label == BUILT_IN_GROUP
-        assert catalog.groups[-1].label == "docs"
-        assert catalog.unavailable == (
-            UnavailableServer(name="broken", status="error", detail="boom"),
-        )

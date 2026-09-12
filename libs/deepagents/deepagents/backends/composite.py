@@ -18,12 +18,15 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GlobResult,
+    GlobTruncationReason,
     GrepMatch,
     GrepResult,
     LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _apply_grep_max_count,
+    _method_accepts_max_count,
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
@@ -42,26 +45,65 @@ def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
     )
 
 
+def _remaining_grep_budget(max_count: int | None, collected: int) -> int | None:
+    """Return the match budget left for the next routed grep.
+
+    `None` means "no cap" (propagate `max_count=None` downstream). An int is the
+    number of matches still allowed before the global cap is hit; `0` signals
+    the caller to short-circuit the remaining routes.
+    """
+    if max_count is None:
+        return None
+    return max(max_count - collected, 0)
+
+
 def _strip_route_from_pattern(pattern: str, route_prefix: str) -> str:
     """Strip a route prefix from a glob pattern when the pattern targets that route.
 
     If the pattern (ignoring a leading `/`) starts with the route prefix
     (also ignoring its leading `/`), the overlapping prefix is removed so
-    the pattern is relative to the backend's internal root.
+    the pattern is relative to the backend's internal root. The stripped
+    remainder retains a leading `/` so a formerly slash-containing pattern
+    remains anchored instead of becoming a recursive basename pattern.
 
     Args:
         pattern: The glob pattern, possibly absolute (e.g. `/memories/**/*.md`).
         route_prefix: The route prefix (e.g. `/memories/`).
 
     Returns:
-        The pattern with the route prefix stripped, or the original pattern
+        The pattern with the route prefix replaced by a leading `/`
+            (e.g. `/memories/**/*.md` -> `/**/*.md`), or the original pattern
             if it doesn't match the route.
     """
     bare_pattern = pattern.lstrip("/")
     bare_prefix = route_prefix.strip("/") + "/"
     if bare_pattern.startswith(bare_prefix):
-        return bare_pattern[len(bare_prefix) :]
+        return f"/{bare_pattern[len(bare_prefix) :]}"
     return pattern
+
+
+def _route_glob_pattern(pattern: str, route_prefix: str) -> str | None:
+    """Adapt `pattern` for a routed backend, or `None` if the route cannot match.
+
+    A leading `/` anchors a pattern to the search root, so `/*.py` means
+    top-level files only. Every result from a routed backend is prefixed with
+    its route (`/memories/foo.py`), which is by construction deeper than the
+    anchor allows. Unless the pattern explicitly targets this route, an anchored
+    pattern therefore cannot legitimately match anything here -- forwarding it
+    anyway is what made the composite root violate the anchoring contract that
+    `BackendProtocol.glob` documents.
+
+    Args:
+        pattern: The glob pattern as supplied to the composite backend.
+        route_prefix: The route prefix (e.g. `/memories/`).
+
+    Returns:
+        The pattern to hand the routed backend, or `None` to skip the route.
+    """
+    rewritten = _strip_route_from_pattern(pattern, route_prefix)
+    if rewritten == pattern and pattern.startswith("/"):
+        return None
+    return rewritten
 
 
 def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
@@ -78,6 +120,25 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
 def _glob_truncated(result: GlobResult | list[FileInfo]) -> bool:
     """Read the `truncated` flag off a glob result, tolerating legacy list returns."""
     return result.truncated if isinstance(result, GlobResult) else False
+
+
+def _glob_truncation_reason(result: GlobResult | list[FileInfo]) -> GlobTruncationReason | None:
+    """Read `truncation_reason` off a glob result, tolerating legacy list returns."""
+    return result.truncation_reason if isinstance(result, GlobResult) else None
+
+
+def _merge_truncation_reason(
+    current: GlobTruncationReason | None,
+    incoming: GlobTruncationReason | None,
+) -> GlobTruncationReason | None:
+    """Combine truncation reasons across merged sources, most actionable first.
+
+    `unreadable` wins: it is the one cause the caller cannot fix by narrowing,
+    so it must not be masked by a co-occurring budget truncation.
+    """
+    if current == "unreadable" or incoming == "unreadable":
+        return "unreadable"
+    return current or incoming
 
 
 GlobBackendResult = GlobResult | list[FileInfo]
@@ -110,12 +171,14 @@ def _merge_glob_results(
     """
     results: list[FileInfo] = []
     truncated = False
+    reason: GlobTruncationReason | None = None
 
     if isinstance(default_result, GlobResult) and default_result.error:
         return default_result
     default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
     results.extend(default_matches or [])
     truncated = truncated or _glob_truncated(default_result)
+    reason = _merge_truncation_reason(reason, _glob_truncation_reason(default_result))
 
     for route_prefix, sub_result in routed_results:
         if isinstance(sub_result, GlobResult) and sub_result.error:
@@ -123,9 +186,10 @@ def _merge_glob_results(
         sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
         results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
         truncated = truncated or _glob_truncated(sub_result)
+        reason = _merge_truncation_reason(reason, _glob_truncation_reason(sub_result))
 
     results.sort(key=lambda x: x.get("path", ""))
-    return GlobResult(matches=results, truncated=truncated)
+    return GlobResult(matches=results, truncated=truncated, truncation_reason=reason)
 
 
 def _route_for_path(
@@ -177,7 +241,11 @@ class CompositeBackend(BackendProtocol):
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
+        ns = lambda _rt: ("filesystem",)  # noqa: E731
+        composite = CompositeBackend(
+            default=StateBackend(),
+            routes={"/memories/": StoreBackend(namespace=ns), "/cache/": StoreBackend(namespace=ns)},
+        )
 
         composite.write("/temp.txt", "data")
         composite.write("/memories/note.txt", "data")
@@ -263,6 +331,8 @@ class CompositeBackend(BackendProtocol):
         if path == "/":
             results: list[FileInfo] = []
             default_result = self._coerce_ls_result(self.default.ls(path))
+            if default_result.error:
+                return default_result
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -298,6 +368,8 @@ class CompositeBackend(BackendProtocol):
         if path == "/":
             results: list[FileInfo] = []
             default_result = self._coerce_ls_result(await self.default.als(path))
+            if default_result.error:
+                return default_result
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -354,11 +426,43 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
+    def _grep_backend(
+        self,
+        backend: BackendProtocol,
+        pattern: str,
+        path: str | None,
+        glob: str | None,
+        max_count: int | None,
+    ) -> GrepResult:
+        """Call `grep` while supporting backends with the previous signature."""
+        if _method_accepts_max_count(type(backend), "grep"):
+            raw = backend.grep(pattern, path, glob, max_count=max_count)
+        else:
+            raw = backend.grep(pattern, path, glob)
+        return _apply_grep_max_count(self._coerce_grep_result(raw), max_count)
+
+    async def _agrep_backend(
+        self,
+        backend: BackendProtocol,
+        pattern: str,
+        path: str | None,
+        glob: str | None,
+        max_count: int | None,
+    ) -> GrepResult:
+        """Call `agrep` while supporting backends with the previous signature."""
+        if _method_accepts_max_count(type(backend), "agrep"):
+            raw = await backend.agrep(pattern, path, glob, max_count=max_count)
+        else:
+            raw = await backend.agrep(pattern, path, glob)
+        return _apply_grep_max_count(self._coerce_grep_result(raw), max_count)
+
     def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search files for literal text pattern.
 
@@ -372,6 +476,17 @@ class CompositeBackend(BackendProtocol):
             glob: Glob pattern to filter files (e.g., `"*.py"`, `"**/*.txt"`).
 
                 Filters by filename, not content.
+            max_count: Optional total cap on returned matches across all routed
+                backends. `None` returns every match; an int enforces the cap
+                globally (not per backend), short-circuits remaining routes once
+                the cap is reached, and flags the result `truncated=True`.
+
+                Unlike a single backend, composite does not guarantee the
+                "exactly `max_count` matches means complete" boundary: when an
+                earlier route fills the budget exactly, the remaining routes are
+                short-circuited and the result is flagged `truncated=True` even
+                if those routes would have contributed nothing. The flag is thus
+                conservative — it may over-report truncation, never under-report.
 
         Returns:
             `GrepResult` with matches or error.
@@ -390,7 +505,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
+                grep_result = self._grep_backend(backend, pattern, backend_path, glob, max_count)
                 if grep_result.error:
                     return grep_result
                 return GrepResult(
@@ -403,28 +518,43 @@ class CompositeBackend(BackendProtocol):
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
             truncated = False
-            default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
+            default_result = self._grep_backend(self.default, pattern, path, glob, max_count)
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
             truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
+                remaining = _remaining_grep_budget(max_count, len(all_matches))
+                if remaining == 0:
+                    # Cap already met by earlier routes; skip the rest.
+                    truncated = True
+                    break
+                grep_result = self._grep_backend(backend, pattern, "/", glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
+            if max_count is not None and len(all_matches) > max_count:
+                all_matches = all_matches[:max_count]
+                truncated = True
             return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(self.default.grep(pattern, path, glob))
+        return self._grep_backend(self.default, pattern, path, glob, max_count)
 
     async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Async version of grep.
 
@@ -437,7 +567,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
+                grep_result = await self._agrep_backend(backend, pattern, backend_path, glob, max_count)
                 if grep_result.error:
                     return grep_result
                 return GrepResult(
@@ -450,22 +580,35 @@ class CompositeBackend(BackendProtocol):
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
             truncated = False
-            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+            default_result = await self._agrep_backend(self.default, pattern, path, glob, max_count)
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
             truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
+                remaining = _remaining_grep_budget(max_count, len(all_matches))
+                if remaining == 0:
+                    # Cap already met by earlier routes; skip the rest.
+                    truncated = True
+                    break
+                grep_result = await self._agrep_backend(backend, pattern, "/", glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
+            if max_count is not None and len(all_matches) > max_count:
+                all_matches = all_matches[:max_count]
+                truncated = True
             return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+        return await self._agrep_backend(self.default, pattern, path, glob, max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix.
@@ -473,6 +616,13 @@ class CompositeBackend(BackendProtocol):
         Routes to backends based on path: a routed path searches that route,
         `"/"` or `None` searches every backend, and a non-route path searches
         only the default backend.
+
+        When merging across routes, a pattern that targets a route is rewritten
+        relative to that route's internal root (see `_strip_route_from_pattern`);
+        a bare pattern is forwarded unchanged and matches recursively within
+        every route; and a root-anchored pattern that targets no route skips the
+        routed backends entirely, since their results are always deeper than the
+        anchor permits (see `_route_glob_pattern`).
         """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
@@ -488,6 +638,7 @@ class CompositeBackend(BackendProtocol):
                 return GlobResult(
                     matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
                     truncated=_glob_truncated(glob_result),
+                    truncation_reason=_glob_truncation_reason(glob_result),
                 )
 
         # If path is None or "/", search default and all routed backends and merge.
@@ -499,7 +650,10 @@ class CompositeBackend(BackendProtocol):
 
             routed_results: list[tuple[str, GlobBackendResult]] = []
             for route_prefix, backend in self.routes.items():
-                sub_result = backend.glob(_strip_route_from_pattern(pattern, route_prefix), "/")
+                routed_pattern = _route_glob_pattern(pattern, route_prefix)
+                if routed_pattern is None:
+                    continue
+                sub_result = backend.glob(routed_pattern, "/")
                 routed_results.append((route_prefix, sub_result))
                 if isinstance(sub_result, GlobResult) and sub_result.error:
                     return _merge_glob_results(default_result, routed_results)
@@ -527,6 +681,7 @@ class CompositeBackend(BackendProtocol):
                 return GlobResult(
                     matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
                     truncated=_glob_truncated(glob_result),
+                    truncation_reason=_glob_truncation_reason(glob_result),
                 )
 
         # If path is None or "/", search default and all routed backends and merge.
@@ -538,7 +693,10 @@ class CompositeBackend(BackendProtocol):
 
             routed_results: list[tuple[str, GlobBackendResult]] = []
             for route_prefix, backend in self.routes.items():
-                sub_result = await backend.aglob(_strip_route_from_pattern(pattern, route_prefix), "/")
+                routed_pattern = _route_glob_pattern(pattern, route_prefix)
+                if routed_pattern is None:
+                    continue
+                sub_result = await backend.aglob(routed_pattern, "/")
                 routed_results.append((route_prefix, sub_result))
                 if isinstance(sub_result, GlobResult) and sub_result.error:
                     return _merge_glob_results(default_result, routed_results)

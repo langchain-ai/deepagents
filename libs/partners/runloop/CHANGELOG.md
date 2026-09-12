@@ -2,6 +2,12 @@
 
 # Changelog
 
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.6...langchain-runloop==0.0.7) (2026-07-29)
+
+### Bug Fixes
+
+* Require deepagents 0.7.x ([#5149](https://github.com/langchain-ai/deepagents/issues/5149)) ([ea09982](https://github.com/langchain-ai/deepagents/commit/ea099822621cc92e4e10e6dc254f474f607213db))
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.5...langchain-runloop==0.0.6) (2026-06-03)
 
 ### Features

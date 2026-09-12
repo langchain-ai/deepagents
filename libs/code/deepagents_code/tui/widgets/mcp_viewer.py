@@ -170,6 +170,21 @@ def _sort_servers_for_display(
     return sorted(server_info, key=lambda s: priority.get(s.status, 2))
 
 
+def _can_start_login(server: MCPServerInfo) -> bool:
+    """Return whether activating `server` should start OAuth login.
+
+    A healthy server qualifies only when OAuth actually backs its connection
+    (`uses_oauth`). Offering re-authentication for a server authenticated by a
+    static `Authorization` header would be a lie — that header takes precedence
+    over stored OAuth tokens — and a public server has no flow to run.
+    """
+    return server.needs_attention() or (
+        server.status == "ok"
+        and server.transport in {"http", "sse"}
+        and server.uses_oauth
+    )
+
+
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
@@ -461,13 +476,11 @@ def _render_server_header(
             (summary, dim_style),
         )
     if server.status == "unauthenticated":
-        login_hint = " — Enter to log in"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
-            (login_hint, dim_style),
         )
     if server.status == "awaiting_reconnect":
         return Content.assemble(
@@ -483,7 +496,6 @@ def _render_server_header(
             (server.name, "bold"),
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
-            (" — Enter for details", dim_style),
         )
     if server.status == "disabled":
         error_text = sanitize_control_chars(
@@ -539,8 +551,13 @@ class MCPServerErrorScreen(ModalScreen[None]):
         color: $text;
     }
 
+    /* Same treatment as `.mcp-viewer-help`: `height: auto` so the hints
+    wrap instead of truncating on a narrow window, `dock: bottom` so the
+    rows they wrap onto are reserved before `.mcp-error-body` claims the
+    rest — otherwise wrapping pushes the footer past the modal's edge. */
     MCPServerErrorScreen .mcp-error-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -621,8 +638,8 @@ class MCPServerHeaderItem(Static):
 
     Cursor-selectable so users can navigate to every server — even those
     in `unauthenticated` or `error` states which have no tool rows by the
-    `MCPServerInfo` invariant — and read the full status / error text on
-    the line. Not expandable: `Enter` and `Ctrl+E` are no-ops here.
+    `MCPServerInfo` invariant — and activate login, re-authentication, or
+    error details. Server headers are not expandable.
     """
 
     def __init__(
@@ -734,12 +751,12 @@ class MCPServerHeaderItem(Static):
         )
 
     def on_click(self, event: Click) -> None:
-        """Handle click — select the header, or start login on unauth re-click.
+        """Handle click — select the header or activate its primary action.
 
         Headers are not expandable. Clicking once moves the cursor;
-        clicking the already-selected header either starts login for
-        an `unauthenticated` server or opens details for an `error`
-        server.
+        clicking the already-selected header starts login for an
+        unauthenticated or OAuth-backed remote server (see
+        `_can_start_login`), or opens details for an `error` server.
 
         Args:
             event: The click event.
@@ -748,7 +765,7 @@ class MCPServerHeaderItem(Static):
         screen = self.screen
         if not isinstance(screen, MCPViewerScreen):
             return
-        if self._selected and self._server.needs_attention():
+        if self._selected and _can_start_login(self._server):
             screen.dismiss(self._server.name)
             return
         if self._selected and self._server.status == "error":
@@ -762,16 +779,15 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
     Displays servers grouped by name with transport type and tool count.
     Navigate with arrow keys, Enter to expand/collapse tool descriptions,
-    start in-app OAuth login for an unauthenticated server, or inspect a
-    failed server. Ctrl+R requests a reconnect, F2 on a server header
-    toggles its disabled state, and Escape closes the modal.
+    start in-app OAuth login or re-authentication, or inspect a failed server.
+    Ctrl+R requests a reconnect, F2 on a server header toggles its disabled
+    state, and Escape closes the modal.
 
     Dismisses with `None` when closed without action, the server name to
-    drive an in-TUI OAuth login when the user activates an
-    `unauthenticated` server header, or `MCP_VIEWER_RECONNECT_REQUEST`
-    for a reconnect. The disable/enable toggle (`F2`) is handled in-place
-    via the `on_toggle_disable` callback so the screen never tears down
-    — see the constructor.
+    drive in-TUI OAuth when the user activates a login-capable server header,
+    or `MCP_VIEWER_RECONNECT_REQUEST` for a reconnect. The disable/enable
+    toggle (`F2`) is handled in-place via the `on_toggle_disable` callback so
+    the screen never tears down — see the constructor.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -886,8 +902,14 @@ class MCPViewerScreen(ModalScreen[str | None]):
         margin-top: 2;
     }
 
+    /* `height: auto` lets the hints wrap instead of truncating on a narrow
+    window. `dock: bottom` then reserves those rows before `.mcp-list` takes
+    the remainder — without it the list's `min-height` wins the fight for
+    space and shoves the whole footer past the modal's bottom edge, hiding
+    `Esc close` entirely on terminals under ~24 rows. */
     MCPViewerScreen .mcp-viewer-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -902,6 +924,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         connecting: bool = False,
         pending_reconnect: bool = False,
         on_toggle_disable: Callable[[str], Awaitable[None]] | None = None,
+        on_close: Callable[[], bool] | None = None,
     ) -> None:
         """Initialize the MCP viewer screen.
 
@@ -921,12 +944,17 @@ class MCPViewerScreen(ModalScreen[str | None]):
                 expected to call `refresh_server_info` on this screen so
                 the user sees the updated status without a screen swap.
                 When `None`, `F2` is a no-op.
+            on_close: Callback invoked before Escape dismisses the viewer.
+                Return `True` when the callback replaced the viewer with a
+                follow-up screen and dismissal should be skipped. `None`
+                keeps the normal close behavior.
         """
         super().__init__()
         self._server_info = server_info
         self._connecting = connecting
         self._pending_reconnect = pending_reconnect
         self._on_toggle_disable = on_toggle_disable
+        self._on_close = on_close
         # All cursor-navigable rows in render order: server headers + tool
         # items intermixed. `_selected_index` indexes into this list.
         self._row_widgets: list[MCPToolItem | MCPServerHeaderItem] = []
@@ -1123,12 +1151,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if self._selected_index >= len(self._row_widgets):
             self._selected_index = max(0, len(self._row_widgets) - 1)
 
-        # `_build_help_text` is cheap and reads `_pending_reconnect`,
-        # so re-render the footer whenever the caller supplied a new
-        # value — saves comparing against the prior state.
-        if pending_reconnect is not None:
-            help_static = self.query_one(".mcp-viewer-help", Static)
-            help_static.update(self._build_help_text(glyphs))
+        self._update_help_text()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Rebuild the visible tool list whenever the filter input changes.
@@ -1147,6 +1170,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self._selected_index = min(
             self._selected_index, max(0, len(self._row_widgets) - 1)
         )
+        self._update_help_text()
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual requires an instance method
         """Compose the screen layout.
@@ -1234,27 +1258,64 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
         self.call_after_refresh(_focus)
 
-    def _build_help_text(self, glyphs: Glyphs) -> str:
-        """Compose the help-footer string from the current `_pending_reconnect`.
+    def _selected_enter_hint(self) -> str | None:
+        """Return the Enter hint for the currently selected row.
 
-        Single source of truth so `_mount_body` (initial) and
-        `apply_server_disable_toggle` (incremental) stay in sync — F2
-        flips the reconnect-pending state, and the footer must update
-        without a full re-mount.
+        Mirrors `action_toggle_expand`'s dispatch, in the same order — keep
+        the two in step or the footer will advertise an action Enter does not
+        take.
+
+        Returns:
+            The hint to show, or `None` when Enter does nothing on this row
+            (a healthy non-OAuth server, or one awaiting reconnect/disabled)
+            so the caller can omit it from the footer.
+        """
+        if not self._row_widgets:
+            return None
+        if not 0 <= self._selected_index < len(self._row_widgets):
+            return None
+        row = self._row_widgets[self._selected_index]
+        if isinstance(row, MCPToolItem):
+            return "Enter expand/collapse"
+        server = row.server
+        if server.status == "unauthenticated":
+            return "Enter log in"
+        if _can_start_login(server):
+            return "Enter re-auth"
+        if server.status == "error":
+            return "Enter details"
+        return None
+
+    def _build_help_text(self, glyphs: Glyphs) -> str:
+        """Compose help text for the selected row and reconnect state.
 
         Returns:
             The rendered help line for the modal footer.
         """
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Enter expand/login/details",
-            "F2 disable/enable",
-            "Ctrl+E expand all",
+            "Tab/Shift+Tab servers",
         ]
+        enter_hint = self._selected_enter_hint()
+        if enter_hint is not None:
+            help_parts.append(enter_hint)
+        if (
+            self._row_widgets
+            and 0 <= self._selected_index < len(self._row_widgets)
+            and isinstance(self._row_widgets[self._selected_index], MCPServerHeaderItem)
+        ):
+            help_parts.append("F2 disable/enable")
+        help_parts.append("Ctrl+E expand all")
         if self._pending_reconnect:
             help_parts.append(f"{MCP_RECONNECT_KEY_LABEL} reconnect")
         help_parts.extend(["type to filter", "Esc close"])
         return f" {glyphs.bullet} ".join(help_parts)
+
+    def _update_help_text(self) -> None:
+        """Refresh the footer after the selected row or its state changes."""
+        help_static = next(iter(self.query(".mcp-viewer-help")), None)
+        if isinstance(help_static, Static):
+            help_static.update(self._build_help_text(get_glyphs()))
 
     def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
         """Mount filtered server headers + tool items into `scroll`.
@@ -1340,15 +1401,16 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if old != index:
             self._row_widgets[old].set_selected(False)
             self._row_widgets[index].set_selected(True)
+            self._update_help_text()
             # Caller (action) is responsible for any viewport pin — different
             # navigation directions want different anchors (top for down,
             # bottom for up).
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta row positions, clamped at the list ends.
+        """Move selection by delta row positions within the list bounds.
 
-        No wrap-around — pressing `Down` past the last row stays put rather
-        than jumping to the first. Walks every row (headers + tools).
+        Walks every row (headers + tools). Navigation actions handle wrapping
+        before calling this helper at a list boundary.
 
         Args:
             delta: Number of row positions to move.
@@ -1359,22 +1421,22 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if 0 <= target < len(self._row_widgets):
             self._move_to(target)
 
-    def _next_tool_row(self, start: int, step: int) -> int | None:
-        """Return the index of the next `MCPToolItem` row in `step` direction.
-
-        Used by `Tab` / `Shift+Tab` to skip server-header rows during
-        cross-tool navigation. Returns `None` when there is no tool row in
-        the requested direction.
+    def _next_server_header(self, start: int, step: int) -> int | None:
+        """Return the next server-header index in the requested direction.
 
         Args:
             start: Index to start searching from (exclusive).
             step: `+1` (forward) or `-1` (backward).
+
+        Returns:
+            The index of the nearest `MCPServerHeaderItem` in that direction,
+            or `None` when no server header exists there.
         """
-        idx = start + step
-        while 0 <= idx < len(self._row_widgets):
-            if isinstance(self._row_widgets[idx], MCPToolItem):
-                return idx
-            idx += step
+        index = start + step
+        while 0 <= index < len(self._row_widgets):
+            if isinstance(self._row_widgets[index], MCPServerHeaderItem):
+                return index
+            index += step
         return None
 
     def _scroll_widget_bottom_to_view(
@@ -1426,11 +1488,11 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart up: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's top edge is already inside the viewport, jump
-        to the previous row (header or tool). For rows taller than the
-        viewport, pin the new selection's **bottom** to the viewport so the
-        next `Up` resumes line-stepping through that row; otherwise just
-        ensure the row is visible. `Tab` / `Shift+Tab` skip the smart check
-        AND skip header rows (see `action_jump_up`).
+        to the previous row (header or tool), wrapping to the final row from
+        the first. For rows taller than the viewport, pin the new selection's
+        **bottom** to the viewport so the next `Up` resumes line-stepping
+        through that row; otherwise just ensure the row is visible. `Tab` /
+        `Shift+Tab` jump between server headers (see `action_jump_up`).
         """
         if not self._row_widgets:
             return
@@ -1438,7 +1500,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         selected = self._row_widgets[self._selected_index]
         if selected.region.y >= scroll.region.y:
             old = self._selected_index
-            self._move_selection(-1)
+            if old == 0:
+                self._move_to(len(self._row_widgets) - 1)
+            else:
+                self._move_selection(-1)
             if self._selected_index != old:
                 self._reveal_selection(
                     self._row_widgets[self._selected_index], direction=-1
@@ -1450,10 +1515,11 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart down: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's bottom edge is already inside the viewport,
-        jump to the next row (header or tool). For rows taller than the
-        viewport, pin the new selection's top to the viewport; otherwise
-        just ensure the row is visible. `Tab` / `Shift+Tab` skip the smart
-        check AND skip header rows (see `action_jump_down`).
+        jump to the next row (header or tool), wrapping to the first row from
+        the final one. For rows taller than the viewport, pin the new
+        selection's top to the viewport; otherwise just ensure the row is
+        visible. `Tab` / `Shift+Tab` jump between server headers (see
+        `action_jump_down`).
         """
         if not self._row_widgets:
             return
@@ -1463,7 +1529,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         viewport_bottom = scroll.region.y + scroll.region.height
         if selected_bottom <= viewport_bottom:
             old = self._selected_index
-            self._move_selection(1)
+            if old == len(self._row_widgets) - 1:
+                self._move_to(0)
+            else:
+                self._move_selection(1)
             if self._selected_index != old:
                 self._reveal_selection(
                     self._row_widgets[self._selected_index], direction=1
@@ -1472,17 +1541,26 @@ class MCPViewerScreen(ModalScreen[str | None]):
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Jump to the previous tool (Shift+Tab); skips headers."""
-        target = self._next_tool_row(self._selected_index, -1)
+        """Jump backward to the nearest server header (Shift+Tab), wrapping.
+
+        From a tool row this lands on the current server's own header; from a
+        header it moves to the previous server. Wraps to the final header from
+        the top.
+        """
+        target = self._next_server_header(self._selected_index, -1)
         if target is None:
+            target = self._next_server_header(len(self._row_widgets), -1)
+        if target is None or target == self._selected_index:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=-1)
 
     def action_jump_down(self) -> None:
-        """Jump to the next tool (Tab); skips headers."""
-        target = self._next_tool_row(self._selected_index, +1)
+        """Jump to the next server (Tab), wrapping at the end."""
+        target = self._next_server_header(self._selected_index, +1)
         if target is None:
+            target = self._next_server_header(-1, +1)
+        if target is None or target == self._selected_index:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=1)
@@ -1496,13 +1574,13 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self.app.push_screen(MCPServerErrorScreen(server))
 
     def action_toggle_expand(self) -> None:
-        """Toggle expand on a tool row, log in, or show error details.
+        """Toggle a tool, start server login, or show server error details.
 
-        Tool rows expand/collapse as before; activating a header row for
-        a server in `unauthenticated` state dismisses the viewer with the
-        server name so the app can drive in-TUI OAuth login. Activating an
-        `error` header opens a read-only detail modal. Headers for other
-        states (ok, awaiting reconnect, disabled) remain no-ops.
+        Tool rows expand or collapse. Activating an unauthenticated server
+        starts login, while activating a healthy OAuth-backed remote server
+        starts re-authentication (see `_can_start_login`). Error headers open
+        a read-only detail modal. `awaiting_reconnect`, `disabled`, healthy
+        non-remote, and healthy non-OAuth headers remain no-ops.
         """
         if not self._row_widgets:
             return
@@ -1515,7 +1593,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             self.call_after_refresh(row.scroll_visible)
             return
         server = row.server
-        if server.needs_attention():
+        if _can_start_login(server):
             self.dismiss(server.name)
             return
         if server.status == "error":
@@ -1587,6 +1665,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Close the viewer without selecting a server to log into."""
+        if self._on_close is not None and self._on_close():
+            return
         self.dismiss(None)
 
     def action_reconnect(self) -> None:

@@ -230,6 +230,18 @@ extra-paths = [
     "../partners/vercel",
 ]
 
+[[tool.ty.overrides]]
+# `winreg` ships only on Windows and `ty` resolves the standard library against
+# the platform it is checking on, so every member access in the Windows-only
+# URL-scheme backend is unresolvable when CI checks on Linux or macOS. This is
+# categorical for the whole module rather than a hidden per-line exception:
+# `url_scheme.registration` reaches it only under `sys.platform == "win32"`, and
+# every `winreg` use is a call-time import inside a function for that reason.
+include = ["deepagents_code/url_scheme/_windows.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
 division-by-zero = "error"

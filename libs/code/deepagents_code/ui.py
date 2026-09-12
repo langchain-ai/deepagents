@@ -146,6 +146,9 @@ def show_help() -> None:
     console.print(
         "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
+    console.print(
+        "  dcode url <install|uninstall|status>      Manage the dcode:// URL scheme"
+    )
     console.print("  dcode install NAME                        Install optional extras")
     console.print(
         "  dcode uninstall NAME                      Remove an optional extra"
@@ -706,6 +709,152 @@ def show_tools_install_help() -> None:
         style=theme.MUTED,
         highlight=False,
     )
+    console.print()
+
+
+def show_url_help() -> None:
+    """Show help information for the `url` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url <command> [options]")
+    console.print()
+    console.print(
+        "Let pages offer to open a project in dcode. With the handler",
+    )
+    console.print(
+        "registered, a dcode:// link asks your browser to hand it to dcode,",
+    )
+    console.print(
+        "and dcode shows the request and waits for your approval.",
+    )
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  install           Register dcode as the dcode:// handler")
+    console.print("  uninstall         Remove dcode's dcode:// handler")
+    console.print("  status            Show what the system does with dcode:// links")
+    console.print("  open URL          Open a link (what the system handler runs)")
+    console.print()
+    console.print("[bold]Links:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode://open?dir=/path/to/project")
+    console.print("  dcode://open?dir=~/proj&agent=research")
+    console.print("  dcode://open?dir=~/proj&thread=<thread-id>")
+    console.print("  dcode://open?dir=~/proj&prompt=review%20the%20diff")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url install")
+    console.print("  dcode url status --json")
+    console.print("  dcode url uninstall")
+    console.print()
+
+
+def show_url_install_help() -> None:
+    """Show help information for the `url install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url install [options]")
+    console.print()
+    console.print(
+        "Register dcode as this user's handler for dcode:// links. Needs no",
+    )
+    console.print(
+        "sudo: it writes an app bundle in ~/Applications on macOS, a desktop",
+    )
+    console.print(
+        "entry on Linux, or a per-user registry key on Windows. Re-run it to",
+    )
+    console.print(
+        "update an existing registration, after moving your dcode install.",
+    )
+    console.print()
+    _print_option_section(
+        "  --terminal CHOICE       macOS: auto (default), terminal, or iterm",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url install")
+    console.print("  dcode url install --terminal iterm")
+    console.print()
+
+
+def show_url_uninstall_help() -> None:
+    """Show help information for the `url uninstall` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url uninstall [options]")
+    console.print()
+    console.print(
+        "Remove dcode's dcode:// handler. Only artifacts dcode created are",
+    )
+    console.print(
+        "removed, and removing a handler that is not installed succeeds.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url uninstall")
+    console.print("  dcode url uninstall --json")
+    console.print()
+
+
+def show_url_status_help() -> None:
+    """Show help information for the `url status` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url status [options]")
+    console.print()
+    console.print(
+        "Report whether dcode's dcode:// handler is installed, which dcode it",
+    )
+    console.print(
+        "runs, and — where the platform can answer — what the desktop opens",
+    )
+    console.print(
+        "the scheme with. Always exits 0; read `installed` from --json.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url status")
+    console.print("  dcode url status --json")
+    console.print()
+
+
+def show_url_open_help() -> None:
+    """Show help information for the `url open` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url open URL")
+    console.print()
+    console.print(
+        "Open a dcode:// link. This is what a registered handler runs; you can",
+    )
+    console.print(
+        "also run it yourself to see what a link would do.",
+    )
+    console.print()
+    console.print(
+        "The request is shown in full — directory, agent, thread, and the",
+    )
+    console.print(
+        "prompt text — and nothing starts until you approve it. There is no",
+    )
+    console.print(
+        "flag that skips the confirmation, and a link cannot change the",
+    )
+    console.print(
+        "session's approval mode, model, or sandbox.",
+    )
+    console.print()
+    # No --json: this verb's output is a confirmation prompt, not a report.
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print(_HELP_OPTION_LINE)
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode url open 'dcode://open?dir=~/proj'")
     console.print()
 
 

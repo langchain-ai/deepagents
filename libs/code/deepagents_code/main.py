@@ -2083,6 +2083,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
+    "url": ("url_command", "show_url_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -2150,6 +2151,7 @@ def parse_args() -> argparse.Namespace:
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
+    from deepagents_code.client.commands.url import setup_url_parser
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -2294,6 +2296,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     setup_auth_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
+
+    setup_url_parser(
         subparsers,
         make_help_action=_make_help_action,
     )
@@ -5283,6 +5290,11 @@ def cli_main() -> None:
             from deepagents_code.client.commands.tools import run_tools_command
 
             sys.exit(run_tools_command(args))
+
+        if command == "url":
+            from deepagents_code.client.commands.url import run_url_command
+
+            sys.exit(run_url_command(args))
 
         if command == "install":
             from deepagents_code.client.commands.extras import run_install_command

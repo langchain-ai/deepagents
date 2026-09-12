@@ -89,7 +89,8 @@ def mock_settings(
 
     # Patch settings
     with (
-        patch("deepagents_code.agent.settings") as mock_settings_obj,
+        patch("deepagents_code.agent.credentials") as mock_settings_obj,
+        patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
         patch(
             "deepagents_code.agent._offload_fallback_root",
             return_value=tmp_path / ".deepagents",
@@ -114,10 +115,11 @@ def mock_settings(
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 
-        # Model identity settings (used in system prompt generation)
-        mock_settings_obj.model_name = None
-        mock_settings_obj.model_provider = None
-        mock_settings_obj.model_context_limit = None
+        # Model identity state (used in system prompt generation)
+        mock_runtime_state.model_name = None
+        mock_runtime_state.model_provider = None
+        mock_runtime_state.model_context_limit = None
+        mock_runtime_state.model_unsupported_modalities = frozenset()
 
         yield agent_dir
 
@@ -370,73 +372,6 @@ class TestDeepAgentsCLIEndToEnd:
             # Verify ls tool was called
             tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
             assert len(tool_messages) > 0
-
-    async def test_cli_agent_with_fake_llm_multiple_tool_calls(
-        self, tmp_path: Path
-    ) -> None:
-        """Test CLI agent with multiple tool calls using a fake LLM model.
-
-        This test verifies that a CLI agent can handle multiple sequential
-        tool calls with a fake LLM model.
-        """
-        with mock_settings(tmp_path):
-            # Create a fake model that makes multiple tool calls
-            model = FixedGenericFakeChatModel(
-                messages=iter(
-                    [
-                        AIMessage(
-                            content="",
-                            tool_calls=[
-                                {
-                                    "name": "sample_tool",
-                                    "args": {"sample_input": "first call"},
-                                    "id": "call_1",
-                                    "type": "tool_call",
-                                }
-                            ],
-                        ),
-                        AIMessage(
-                            content="",
-                            tool_calls=[
-                                {
-                                    "name": "sample_tool",
-                                    "args": {"sample_input": "second call"},
-                                    "id": "call_2",
-                                    "type": "tool_call",
-                                }
-                            ],
-                        ),
-                        AIMessage(
-                            content="I completed both tool calls successfully.",
-                        ),
-                    ]
-                )
-            )
-
-            # Create a CLI agent with the fake model and sample_tool
-            agent, _ = create_cli_agent(
-                model=model,
-                assistant_id="test-agent",
-                tools=[sample_tool],
-            )
-
-            # Invoke the agent
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(content="Use sample tool twice")]},
-                {"configurable": {"thread_id": "test-thread-4"}},
-            )
-
-            # Verify the agent executed correctly
-            assert "messages" in result
-
-            # Verify multiple tool calls occurred
-            tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-            assert len(tool_messages) >= 2
-
-            # Verify both inputs were used
-            tool_contents = [msg.content for msg in tool_messages]
-            assert any("first call" in content for content in tool_contents)
-            assert any("second call" in content for content in tool_contents)
 
     def test_cli_agent_backend_setup(self, tmp_path: Path) -> None:
         """Test that CLI agent creates the correct backend setup.

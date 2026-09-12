@@ -24,10 +24,14 @@ import threading
 import unicodedata
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
+from deepagents_code._paths import PATHS, project_paths
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -49,6 +53,11 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+_MCP_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_MCP_TOOL_NAME_MAX_LENGTH = 64
+_MCP_TOOL_NAME_HASH_LENGTH = 12
+_MCP_ORIGINAL_TOOL_NAME_KEY = "_deepagents_code_mcp_tool"
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -1273,26 +1282,6 @@ def _resolve_project_config_base(project_context: ProjectContext | None) -> Path
     return find_project_root() or Path.cwd()
 
 
-def project_root_for_mcp_config_path(
-    path: Path, *, fallback: Path | None = None
-) -> Path:
-    """Infer the project root that owns a project-level MCP config path.
-
-    Args:
-        path: Project-level `.mcp.json` path.
-        fallback: Root to use as the base for relative config paths.
-
-    Returns:
-        The owning project root.
-    """
-    parent = path.parent
-    if fallback is not None and not path.is_absolute():
-        parent = fallback if str(parent) == "." else fallback / parent
-    if parent.name == ".deepagents":
-        return parent.parent
-    return parent
-
-
 def filter_trusted_project_servers(
     servers: Mapping[str, Any],
     trust_lists: McpServerTrustLists,
@@ -1332,7 +1321,7 @@ def filter_trusted_project_servers(
 
 
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
-    ("~/.deepagents/.mcp.json", "user-level"),
+    (PATHS.display(PATHS.profile.mcp_config_file), "user-level"),
     ("<project-root>/.deepagents/.mcp.json", "project subdir"),
     ("<project-root>/.mcp.json", "project root"),
 )
@@ -1340,68 +1329,253 @@ MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
 
 Ordered from lowest to highest precedence. Each entry is `(path, label)`
 suitable for rendering in help screens and error messages. The runtime
-discovery in `discover_mcp_configs` builds the same paths from
-`Path.home()` and `_resolve_project_config_base()`.
+discovery in `discover_mcp_config_sources` builds the same paths from the
+immutable profile snapshot and `_resolve_project_config_base()`.
+
+The two kinds of entry are not interchangeable. The user-level path is already
+resolved and abbreviated for display, evaluated once at import. The two project
+entries are templates that still carry a `<project-root>` placeholder, because
+the project root is not known until a command runs. A renderer must not
+substitute into the first or assume the other two are real paths.
 """
 
 
-def discover_mcp_configs(
+class MCPConfigScope(StrEnum):
+    """Trust provenance assigned when an MCP config candidate is discovered."""
+
+    USER = "user"
+    """The exact `.mcp.json` selected by the immutable user profile root."""
+
+    PROJECT = "project"
+    """A repository-controlled `.mcp.json` that requires project trust."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredMCPConfig:
+    """An MCP config path together with its discovery trust provenance."""
+
+    path: Path
+    scope: MCPConfigScope
+    project_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Tie `project_root` to the scope that requires it.
+
+        `project_root` is the key that project-trust approvals are recorded
+        against, so a `PROJECT` config without one would be checked against a
+        re-derived fallback root instead of failing. Rejecting the combination
+        here keeps that from degrading into "trusted against the wrong root".
+
+        Raises:
+            ValueError: If the scope and `project_root` disagree.
+        """
+        if (self.scope is MCPConfigScope.PROJECT) != (self.project_root is not None):
+            need = (
+                "requires" if self.scope is MCPConfigScope.PROJECT else "must not carry"
+            )
+            msg = f"{self.scope} MCP config {need} a project root: {self.path}"
+            raise ValueError(msg)
+
+
+class MCPConfigIdentity(StrEnum):
+    """Whether two discovered config paths are the same underlying file."""
+
+    SAME = "same"
+    """The paths are lexically equal or resolve to one file."""
+
+    DIFFERENT = "different"
+    """The paths resolve to distinct files."""
+
+    UNKNOWN = "unknown"
+    """Resolution failed, so identity could not be determined."""
+
+
+def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
+    """Return whether two discovered paths identify the same config.
+
+    Lexically identical paths match without filesystem access. `samefile`
+    compares filesystem identity, collapsing symlink and case aliases that
+    path resolution can preserve on case-insensitive filesystems. `UNKNOWN`
+    preserves an indeterminate identity error so the caller can fail closed
+    when scopes differ rather than retaining a possibly aliased user-trusted
+    path.
+
+    Returns:
+        The identity relationship between the two paths.
+    """
+    if first == second:
+        return MCPConfigIdentity.SAME
+    try:
+        identity_match = first.samefile(second)
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not determine whether %s and %s are the same MCP config; "
+            "the pair cannot be told apart",
+            first,
+            second,
+            exc_info=True,
+        )
+        return MCPConfigIdentity.UNKNOWN
+    return MCPConfigIdentity.SAME if identity_match else MCPConfigIdentity.DIFFERENT
+
+
+def _append_discovered_config(
+    found: list[DiscoveredMCPConfig], candidate: DiscoveredMCPConfig
+) -> None:
+    """Append a candidate, resolving collisions toward project provenance.
+
+    A collision never grants user trust and never drops a config: the same file
+    discovered twice keeps one record at project scope, and two files that
+    cannot be told apart both load at project scope.
+
+    Only project candidates can collide, because `discover_mcp_config_sources`
+    probes the single user candidate first and `found` is therefore empty when
+    it arrives. The collision branch below has no user-scope arm. A user candidate that
+    reached it would fall through and be dropped, so reject that ordering
+    instead.
+
+    Raises:
+        AssertionError: If a user candidate arrives after another entry, which
+            would mean the candidate ordering changed.
+    """
+    if candidate.scope is not MCPConfigScope.PROJECT:
+        if found:
+            msg = (
+                "The user MCP config must be discovered first; collision "
+                "handling has no user-scope branch."
+            )
+            raise AssertionError(msg)
+        found.append(candidate)
+        return
+    for index, existing in enumerate(found):
+        identity = _same_config_location(existing.path, candidate.path)
+        if identity is MCPConfigIdentity.DIFFERENT:
+            continue
+        if identity is MCPConfigIdentity.UNKNOWN and existing.scope is candidate.scope:
+            # Identity is unknown and the trust scope is the same either way,
+            # so keeping both entries changes nothing.
+            continue
+        # A configured home can equal a project root or its `.deepagents`
+        # directory. The standard project discovery provenance wins that
+        # collision so relocating the profile never self-trusts the repo's own
+        # MCP file.
+        if identity is MCPConfigIdentity.SAME:
+            # One file: move it to this discovery position so a profile
+            # collision cannot give an earlier path higher precedence.
+            if existing.scope is not candidate.scope:
+                # The user config and a project config are one file, so its
+                # servers stop being user-trusted and start asking for project
+                # approval. The user did not change anything to cause that, so
+                # say which collision did.
+                logger.warning(
+                    "MCP config %s is both the user profile config and a "
+                    "project config, so it now loads at project scope. Its "
+                    "servers require project trust approval. Set "
+                    "DEEPAGENTS_HOME to a directory outside %s to keep them "
+                    "user-trusted.",
+                    existing.path,
+                    candidate.project_root,
+                )
+            found.pop(index)
+            found.append(candidate)
+            return
+        # Identity is unknown, so these may be two distinct files. Demote the
+        # existing entry to project scope instead of dropping it: the user's
+        # servers must still load, just without user-level trust.
+        logger.warning(
+            "Demoting MCP config %s to project scope because it could not "
+            "be distinguished from %s",
+            existing.path,
+            candidate.path,
+        )
+        found[index] = DiscoveredMCPConfig(
+            existing.path,
+            MCPConfigScope.PROJECT,
+            candidate.project_root,
+        )
+        found.append(candidate)
+        return
+    found.append(candidate)
+
+
+def discover_mcp_config_sources(
     *,
     project_context: ProjectContext | None = None,
-) -> list[Path]:
-    """Find MCP config files from standard locations.
-
-    Checks the paths listed in `MCP_CONFIG_DISCOVERY_PATHS`, lowest to
-    highest precedence.
+) -> list[DiscoveredMCPConfig]:
+    """Discover MCP configs while preserving their trust scope.
 
     Args:
         project_context: Explicit project path context, if available.
 
     Returns:
-        Existing config file paths, ordered from lowest to highest precedence.
+        Existing configs in precedence order with immutable provenance.
     """
-    user_dir = Path.home() / ".deepagents"
     project_root = _resolve_project_config_base(project_context)
+    project = project_paths(project_root)
+    candidates = (
+        DiscoveredMCPConfig(PATHS.profile.mcp_config_file, MCPConfigScope.USER),
+        DiscoveredMCPConfig(
+            project.config_mcp_config_file,
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+        DiscoveredMCPConfig(
+            project.root_mcp_config_file,
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+    )
 
-    candidates = [
-        user_dir / ".mcp.json",
-        project_root / ".deepagents" / ".mcp.json",
-        project_root / ".mcp.json",
-    ]
-
-    found: list[Path] = []
-    for path in candidates:
+    found: list[DiscoveredMCPConfig] = []
+    for candidate in candidates:
         try:
-            if path.is_file():
-                found.append(path)
+            if candidate.path.is_file():
+                _append_discovered_config(found, candidate)
         except OSError:
-            logger.warning("Could not check MCP config %s", path, exc_info=True)
+            logger.warning(
+                "Could not check MCP config %s", candidate.path, exc_info=True
+            )
     return found
 
 
-def classify_discovered_configs(
-    config_paths: list[Path],
-) -> tuple[list[Path], list[Path]]:
-    """Split discovered config paths into user-level and project-level configs.
+@dataclass(frozen=True, slots=True)
+class MCPConfigSources:
+    """Discovered MCP configs partitioned by trust scope.
 
-    Args:
-        config_paths: Candidate config paths from discovery.
-
-    Returns:
-        Tuple of `(user_configs, project_configs)`.
+    Consumers take the views they need. Centralizing the split keeps
+    provenance from being re-derived from path shape at each call site, which
+    is how trust used to be inferred.
     """
-    user_dir = Path.home() / ".deepagents"
-    user: list[Path] = []
-    project: list[Path] = []
-    for path in config_paths:
-        try:
-            if path.resolve().is_relative_to(user_dir.resolve()):
-                user.append(path)
-            else:
-                project.append(path)
-        except (OSError, ValueError):
-            project.append(path)
-    return user, project
+
+    user_paths: tuple[Path, ...]
+    project_paths: tuple[Path, ...]
+    project_roots: Mapping[Path, Path]
+    """Trust root for each project path. Total over `project_paths`.
+
+    Read it with `[]`, never `.get(..., fallback)`. This mapping is the key
+    that project trust approvals are recorded and checked against, so a
+    re-derived fallback root would check trust against something the approval
+    was never granted for. A miss is a broken invariant and must be loud.
+    """
+
+    @classmethod
+    def from_sources(cls, found: Sequence[DiscoveredMCPConfig]) -> MCPConfigSources:
+        """Partition discovered configs by scope.
+
+        Returns:
+            The partitioned view of `found`.
+        """
+        project = [s for s in found if s.scope is MCPConfigScope.PROJECT]
+        return cls(
+            user_paths=tuple(s.path for s in found if s.scope is MCPConfigScope.USER),
+            project_paths=tuple(s.path for s in project),
+            # `DiscoveredMCPConfig` guarantees a project-scoped entry carries a
+            # root, so this mapping is total over `project_paths`. Wrapped so
+            # the frozen dataclass does not hand out a mutable dict.
+            project_roots=MappingProxyType(
+                {s.path: s.project_root for s in project if s.project_root is not None}
+            ),
+        )
 
 
 def extract_stdio_server_commands(
@@ -1840,6 +2014,28 @@ def _normalize_mcp_arguments(
     return cleaned
 
 
+def _mcp_tool_name(server_name: str, tool_name: str) -> str:
+    """Compose a provider-safe MCP tool name.
+
+    Returns:
+        A deterministic name no longer than the strictest provider limit.
+    """
+    raw_name = f"{server_name}_{tool_name}"
+    sanitized = _MCP_TOOL_NAME_RE.sub("_", raw_name).strip("_") or "unnamed"
+    if sanitized == raw_name and len(sanitized) <= _MCP_TOOL_NAME_MAX_LENGTH:
+        return sanitized
+    digest = sha256(f"{server_name}\0{tool_name}".encode()).hexdigest()[
+        :_MCP_TOOL_NAME_HASH_LENGTH
+    ]
+    server = _MCP_TOOL_NAME_RE.sub("_", server_name).strip("_") or "unnamed"
+    tool = _MCP_TOOL_NAME_RE.sub("_", tool_name).strip("_") or "unnamed"
+    available = _MCP_TOOL_NAME_MAX_LENGTH - len(digest) - 2
+    tool_length = min(len(tool), available // 2)
+    server_length = min(len(server), available - tool_length)
+    tool_length = min(len(tool), available - server_length)
+    return f"{server[:server_length]}_{tool[:tool_length]}_{digest}"
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1867,7 +2063,7 @@ def _build_cached_mcp_tool(
 
     original_tool_name = mcp_tool.name
     lc_tool_name = (
-        f"{server_name}_{original_tool_name}"
+        _mcp_tool_name(server_name, original_tool_name)
         if tool_name_prefix and server_name
         else original_tool_name
     )
@@ -1882,6 +2078,7 @@ def _build_cached_mcp_tool(
         **wrapped_meta,
         "_deepagents_code_mcp": True,
         "_deepagents_code_mcp_server": server_name,
+        _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
     }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
@@ -2004,32 +2201,18 @@ def _build_cached_mcp_tool(
 _GLOB_METACHARS = frozenset("*?[")
 
 
-def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
-    """Return True if a single filter entry matches a tool name.
-
-    An entry containing `*`, `?`, or `[` is treated as an `fnmatch`-style glob;
-    otherwise it is matched literally. Each entry is tried against both the
-    bare MCP tool name and the server-prefixed form (`f"{prefix}{tool}"`), so
-    users can write either `read_*` or `fs_read_*`.
-
-    Args:
-        entry: Filter list entry from `allowedTools` / `disabledTools`.
-        tool_name: Adapter-supplied tool name (already server-prefixed).
-        prefix: Server prefix (`f"{server_name}_"`).
-
-    Returns:
-        True if the entry matches this tool under either match mode.
-    """
-    is_glob = any(ch in _GLOB_METACHARS for ch in entry)
-    if is_glob:
-        if fnmatch.fnmatchcase(tool_name, entry):
-            return True
-        if tool_name.startswith(prefix):
-            return fnmatch.fnmatchcase(tool_name[len(prefix) :], entry)
-        return False
-    if tool_name == entry:
-        return True
-    return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
+def _entry_matches_tool(
+    entry: str, tool_name: str, prefix: str, original_name: str | None = None
+) -> bool:
+    """Return True if a single filter entry matches a tool name."""
+    candidates = [tool_name]
+    if original_name is not None:
+        candidates.extend((original_name, f"{prefix}{original_name}"))
+    elif tool_name.startswith(prefix):
+        candidates.append(tool_name[len(prefix) :])
+    if any(ch in _GLOB_METACHARS for ch in entry):
+        return any(fnmatch.fnmatchcase(candidate, entry) for candidate in candidates)
+    return entry in candidates
 
 
 @overload
@@ -2082,14 +2265,15 @@ def _apply_tool_filter(
     prefix = f"{server_name}_"
     field_name = "allowedTools" if allowed is not None else "disabledTools"
 
-    def _any_entry_matches(tool_name: str, entry_list: list[str]) -> bool:
-        return any(_entry_matches_tool(e, tool_name, prefix) for e in entry_list)
+    def _original_name(tool: BaseTool) -> str | None:
+        metadata = tool.metadata or {}
+        value = metadata.get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+        return value if isinstance(value, str) else None
 
-    missing = [
-        e
-        for e in entries
-        if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
-    ]
+    def _matches(entry: str, tool: BaseTool) -> bool:
+        return _entry_matches_tool(entry, tool.name, prefix, _original_name(tool))
+
+    missing = [e for e in entries if not any(_matches(e, tool) for tool in tools)]
     if missing:
         logger.warning(
             "MCP server '%s' %s entries matched no tools: %s",
@@ -2099,8 +2283,12 @@ def _apply_tool_filter(
         )
 
     if allowed is not None:
-        return [t for t in tools if _any_entry_matches(t.name, entries)]
-    return [t for t in tools if not _any_entry_matches(t.name, entries)]
+        return [
+            tool for tool in tools if any(_matches(entry, tool) for entry in entries)
+        ]
+    return [
+        tool for tool in tools if not any(_matches(entry, tool) for entry in entries)
+    ]
 
 
 _MCP_LOAD_CONCURRENCY = 8
@@ -2567,16 +2755,22 @@ async def _load_tools_from_config(
         # shutdown signals still propagate so the bounded runner can tear down.
         try:
             if runtime_manager is None:
-                server_tools: list[BaseTool] = [
-                    convert_mcp_tool_to_langchain_tool(
+                server_tools: list[BaseTool] = []
+                for mcp_tool in mcp_tools:
+                    tool = convert_mcp_tool_to_langchain_tool(
                         None,
                         mcp_tool,
                         connection=connections[server_name],
                         server_name=server_name,
-                        tool_name_prefix=True,
                     )
-                    for mcp_tool in mcp_tools
-                ]
+                    tool.name = _mcp_tool_name(server_name, mcp_tool.name)
+                    tool.metadata = {
+                        **(tool.metadata or {}),
+                        "_deepagents_code_mcp": True,
+                        "_deepagents_code_mcp_server": server_name,
+                        _MCP_ORIGINAL_TOOL_NAME_KEY: mcp_tool.name,
+                    }
+                    server_tools.append(tool)
             else:
                 server_tools = [
                     _build_cached_mcp_tool(
@@ -2614,7 +2808,7 @@ async def _load_tools_from_config(
                         exc,
                     )
                     schema_copy = None
-                lc_name = f"{server_name}_{tool_name}"
+                lc_name = _mcp_tool_name(server_name, tool_name)
                 schemas[lc_name] = schema_copy
 
             tool_infos: list[MCPToolInfo] = []
@@ -2920,13 +3114,16 @@ async def resolve_and_load_mcp_tools(
     config_load_errors: list[tuple[Path, str]] = []
 
     try:
-        config_paths = discover_mcp_configs(project_context=project_context)
+        config_sources = discover_mcp_config_sources(project_context=project_context)
     except (OSError, RuntimeError) as exc:
         logger.warning("MCP config auto-discovery failed", exc_info=True)
-        config_paths = []
+        config_sources = []
         config_load_errors.append((Path("<discovery>"), str(exc)))
 
-    user_configs, project_configs = classify_discovered_configs(config_paths)
+    sources = MCPConfigSources.from_sources(config_sources)
+    user_configs = sources.user_paths
+    project_configs = sources.project_paths
+    project_roots = sources.project_roots
     configs: list[dict[str, Any]] = []
 
     for path in user_configs:
@@ -3037,13 +3234,11 @@ async def resolve_and_load_mcp_tools(
         # `configs` without a trust decision (defense in depth against a future
         # validator that accepts a shape `extract_project_server_summaries`
         # currently skips).
-        project_base = _resolve_project_config_base(project_context)
         kept: dict[str, Any] = {}
         for name, server in project_config["mcpServers"].items():
             source = server_sources[name]
-            project_root = project_root_for_mcp_config_path(
-                source, fallback=project_base
-            )
+            # Indexed, not `.get`: see `MCPConfigSources.project_roots`.
+            project_root = project_roots[source]
             kept.update(
                 filter_trusted_project_servers(
                     {name: server},

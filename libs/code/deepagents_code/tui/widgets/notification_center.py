@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from deepagents_code.notifications import PendingNotification
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.notifications import ActionId, UpdateAvailablePayload
 from deepagents_code.tui.key_hints import modal_navigation_hint
@@ -887,7 +888,8 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
                     event.checkbox.value = not enabled
                 self.app.notify(
                     "Could not save notification preference. "
-                    "Check file permissions for ~/.deepagents/config.toml.",
+                    "Check file permissions for "
+                    f"{PATHS.display(PATHS.profile.config_file)}.",
                     severity="warning",
                     timeout=6,
                     markup=False,

@@ -9,16 +9,21 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from itertools import accumulate, groupby, pairwise
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
-from textual.content import Content
+from rich.cells import get_character_cell_size
+from rich.segment import Segment
+from rich.style import Style as RichStyle
+from textual.content import Content, divide_line
+from textual.expand_tabs import get_tab_widths
 from textual.geometry import Offset
 from textual.highlight import highlight
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -32,7 +37,12 @@ from deepagents_code.diff_utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from textual.app import ComposeResult
+    from textual.css.styles import RulesMap
+    from textual.style import Style
+    from textual.visual import RenderOptions
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
@@ -57,6 +67,16 @@ _MAX_EMPHASIS_LEN = 400
 `SequenceMatcher` is quadratic in token count, and `_TOKEN_RE` degenerates to
 one token per character on punctuation-dense lines — so minified JS or
 single-line JSON would stall the compose path. Longer lines render unemphasised.
+"""
+
+_TAB_SIZE = 8
+
+_MAX_WRAPPED_OFFSET_CHARS = 20_000
+"""Largest expanded row body eligible for the custom wrapping path.
+
+That path retains one Python integer per rendered character and slices the list
+during layout and rendering. Beyond this bound, normal Textual wrapping avoids
+unbounded synchronous allocation at the cost of no repeated continuation gutter.
 """
 
 MAX_HIGHLIGHT_CHARS = 100_000
@@ -187,6 +207,403 @@ class _Row(NamedTuple):
     number: int | None
 
 
+# `_DiffRowContent` below re-implements the slice of Textual's own text
+# wrapping that `Content.render_strips` performs, so that a wrapped diff row
+# can repeat its line-number gutter on every visual line. That makes it a
+# dependency on Textual internals, in the same spirit as `_textual_patches.py`
+# and covered by the same `textual>=8.2.8,<9.0.0` pin in `pyproject.toml`:
+#
+#   - `textual.content.divide_line` is not in `textual.content.__all__`;
+#     Textual re-exports it from Rich's private `rich._wrap`.
+#   - The offset metadata written here has to match what
+#     `Compositor.get_widget_and_offset_at` expects, which is a per-segment
+#     base offset plus the character index *within* that segment.
+#   - `Content._wrap_and_format` also honours the `text_align`,
+#     `text_overflow`, `text_wrap` and `line_pad` CSS rules. Nothing in
+#     `app.tcss` or any `DEFAULT_CSS` sets those on `.diff-line-*`, so the
+#     override ignores them — but setting one on a diff row later would
+#     silently do nothing. Its `\n` splitting is unreachable for a different
+#     reason: a `_Row.text` is one diff line and never contains a newline.
+#   - It also rstrips every wrapped line but the last, and that one *is*
+#     reachable. The override deliberately keeps those trailing spaces: they
+#     are real source text, and rstripping turns the cells they occupy into
+#     padding, which carries no selection style — so a drag across a wrap
+#     point would show an unhighlighted gap at every fold.
+#
+# Remove all of this if Textual grows a first-class "repeat a gutter on
+# wrapped lines" hook.
+
+
+def _expand_tabs(content: Content, tab_size: int = _TAB_SIZE) -> Content:
+    """Expand tabs using terminal-cell positions, even without style spans.
+
+    Args:
+        content: Text to expand.
+        tab_size: Number of terminal cells between tab stops.
+
+    Returns:
+        Content with tabs replaced by the cell-aware number of spaces.
+    """
+    if "\t" not in content.plain:
+        return content
+    if content.spans:
+        return content.expand_tabs(tab_size)
+    plain = "".join(
+        part + " " * expansion
+        for part, expansion in get_tab_widths(content.plain, tab_size)
+    )
+    return Content(plain)
+
+
+def _expanded_offsets(plain: str, base: int, tab_size: int = _TAB_SIZE) -> list[int]:
+    """Map each tab-expanded character position back to a logical offset.
+
+    Selections are extracted from a widget's *raw* content (`Content.plain`,
+    tabs intact) but rendering expands tabs first, so the two coordinate
+    spaces diverge by `tab_size - 1` cells per tab. Rendering against the
+    expanded text while reporting expanded indexes as selection offsets makes
+    a wrapped tab-indented row copy the wrong characters, and run off the end
+    of the string entirely on its last lines.
+
+    Only the custom wrapping path uses this. A row that falls back to Textual
+    (see `_DiffRowContent._wraps`) still reports Textual's own expanded
+    offsets, so a tab-indented `show_numbers=False` row keeps that bug.
+
+    Args:
+        plain: The raw (unexpanded) text.
+        base: Logical offset of `plain`'s first character in the whole row.
+        tab_size: Cell width of a tab, matching `Content.render_strips`.
+
+    Returns:
+        One logical offset per character of the tab-expanded `plain`. Every
+        space a tab expanded into maps back onto that single tab.
+    """
+    offsets: list[int] = []
+    raw = base
+    for part, expansion in get_tab_widths(plain, tab_size):
+        offsets.extend(range(raw, raw + len(part)))
+        raw += len(part)
+        if expansion:
+            offsets.extend([raw] * expansion)
+            raw += 1
+    return offsets
+
+
+def _rebase(strip: Strip, offsets: Sequence[int]) -> Strip:
+    """Return `strip` with `offsets` as its per-character selection metadata.
+
+    `Strip.apply_offsets` cannot be used here for two reasons, both of which
+    come from `Compositor.get_widget_and_offset_at` resolving a click as the
+    segment's offset *plus the character index within that segment*:
+
+    - It advances one offset per character, so it cannot express the tab
+      expansions and synthetic gutters that map several rendered cells back
+      onto a single logical character.
+    - It stamps a whole segment at once, so a run of repeated offsets has to
+      be split into one segment per character to survive that inner walk.
+
+    Args:
+        strip: The rendered strip to annotate.
+        offsets: Logical offset for each character of `strip`'s text. Shorter
+            than the strip only for trailing padding, which continues from the
+            last known offset.
+
+    Returns:
+        An equivalent strip whose segments are cut at every discontinuity in
+        `offsets`, so each segment's characters really are consecutive.
+    """
+    limit = len(offsets)
+    last = offsets[-1] if limit else 0
+
+    def offset_at(index: int) -> int:
+        return offsets[index] if index < limit else last + 1 + index - limit
+
+    segments: list[Segment] = []
+    index = 0
+    for segment in strip:
+        text = segment.text
+        position = 0
+        while position < len(text):
+            offset = offset_at(index + position)
+            run = 1
+            while (
+                position + run < len(text)
+                and offset_at(index + position + run) == offset + run
+            ):
+                run += 1
+            offset_style = RichStyle.from_meta({"offset": (offset, 0)})
+            segments.append(
+                Segment(
+                    text[position : position + run],
+                    segment.style + offset_style if segment.style else offset_style,
+                    segment.control,
+                )
+            )
+            position += run
+        index += len(text)
+    return Strip(segments, strip.cell_count)
+
+
+class _WrappedLine(NamedTuple):
+    """One visual line of a wrapped row's source text.
+
+    Attributes:
+        content: The line's tab-expanded text.
+        offsets: Logical offset of each character of `content` in the row's
+            raw content, as produced by `_expanded_offsets`. Never empty, so
+            `offsets[0]` always names somewhere in the row for a synthetic
+            gutter to point at — see `_DiffRowContent._wrapped`.
+    """
+
+    content: Content
+    offsets: list[int]
+
+
+class _DiffRowContent(Content):
+    """Diff content whose wrapped lines repeat a decorative gutter.
+
+    A row that outgrows its width wraps to a second visual line that would
+    otherwise start at column 0, leaving the line-number column ragged and the
+    continuation indistinguishable from a new row. This repeats a dimmed
+    ellipsis in that column instead. The gutter is synthetic: it is absent
+    from the logical content, so it never reaches a copy — the same contract
+    `_DiffRowStatic` maintains for the real gutter.
+    """
+
+    def __init__(
+        self, content: Content, prefix_len: int, continuation: Content | None
+    ) -> None:
+        """Initialize the row content.
+
+        Args:
+            content: The row's full content, gutter included.
+            prefix_len: Cell width of the leading gutter. Continuation lines
+                re-pad to this width, so it is also the width of
+                `continuation`.
+            continuation: The synthetic gutter to repeat on wrapped lines, or
+                `None` to leave wrapping entirely to Textual. Unnumbered rows
+                pass `None`: they have no line-number column to preserve.
+        """
+        super().__init__(content.plain, list(content.spans), content.cell_length)
+        self.prefix_len = prefix_len
+        self.continuation = continuation
+
+    # Base `Content` methods always construct a literal `Content`, never
+    # `type(self)`, so none of the slicing below re-enters this constructor.
+
+    @cached_property
+    def _body(self) -> Content:
+        """The row's source text, gutter stripped and tabs expanded.
+
+        Tab stops are measured from the body's first cell, not the row's, so a
+        tab-indented line indents the same however wide the gutter is.
+        Textual's own path expands the whole row and shifts the indent with the
+        line-number width instead, so the two disagree on tab-indented rows —
+        including within one diff, whose narrow rows take the fallback.
+        """
+        return _expand_tabs(self[self.prefix_len :])
+
+    @cached_property
+    def _body_offsets(self) -> list[int]:
+        """Logical offset of each character of `_body`."""
+        return _expanded_offsets(self[self.prefix_len :].plain, self.prefix_len)
+
+    @cached_property
+    def _widest_body_cell(self) -> int:
+        """Cell width of the body's widest individual character."""
+        return max(map(get_character_cell_size, self._body.plain), default=1)
+
+    def _wraps(self, width: int) -> bool:
+        """Whether this row should render through the gutter-repeating path.
+
+        Args:
+            width: Cell width to render at.
+
+        Returns:
+            `False` when the row must fall back to Textual's own rendering.
+        """
+        if self.continuation is None or width <= self.prefix_len:
+            return False
+        body_chars = len(self) - self.prefix_len
+        tabs = self.plain.count("\t", self.prefix_len)
+        if body_chars + (_TAB_SIZE - 1) * tabs > _MAX_WRAPPED_OFFSET_CHARS:
+            return False
+        # A body column narrower than the widest character cannot fit a single
+        # cell of it, and `divide_line` would hand back chunks wider than the
+        # target that render as blank. Let Textual's own folding handle that.
+        return width - self.prefix_len >= self._widest_body_cell
+
+    def _wrapped(self, width: int) -> list[_WrappedLine]:
+        """Divide the row's source text into visual lines.
+
+        Args:
+            width: Total cell width available to the row, gutter included.
+
+        Returns:
+            One `_WrappedLine` per visual line, always at least one, each with
+            a non-empty `offsets`.
+        """
+        body = self._body
+        body_width = width - self.prefix_len
+        cuts = (
+            divide_line(body.plain, body_width) if body.cell_length > body_width else []
+        )
+        offsets = self._body_offsets
+
+        def line_offsets(start: int, length: int) -> list[int]:
+            """Offsets for the `length` characters of `body` from `start`.
+
+            An empty body — a bare `+`, `-` or blank context row — is the one
+            line that hits the fallback, and it renders no cells, so the
+            offset goes unread. A zero-length *continuation* would read it,
+            but needs `divide_line` to cut at the end of its input, which it
+            does not.
+
+            Args:
+                start: Index into `body` of the line's first character.
+                length: Number of characters on the line.
+
+            Returns:
+                One offset per character, and never empty: `render_strips`
+                reads `offsets[0]` to place a continuation's synthetic gutter,
+                and skipping offsetless lines there rather than here would
+                leave `get_height` one line ahead of the strips it must match.
+            """
+            return offsets[start : start + length] or [
+                offsets[start] if start < len(offsets) else len(self)
+            ]
+
+        return [
+            _WrappedLine(line, line_offsets(start, len(line)))
+            for line, start in zip(body.divide(cuts), [0, *cuts], strict=True)
+        ]
+
+    def _line_strip(
+        self,
+        line: _WrappedLine,
+        gutter: Content,
+        gutter_offsets: Sequence[int],
+        width: int,
+        style: Style,
+        options: RenderOptions,
+    ) -> Strip:
+        """Render one visual line as its gutter followed by its source text.
+
+        Textual's own selection handling is bypassed: it measures a span
+        against the content it is given, and here the gutter and the source
+        are two separate `Content`s rendered at different widths, so its spans
+        would land in the wrong coordinate space. The selection style is
+        applied by hand against `line.offsets` instead. Do not "simplify" this
+        back into `options`.
+
+        Args:
+            line: The source text for this visual line.
+            gutter: The content to render in the leading `prefix_len` cells.
+            gutter_offsets: Logical offset for each cell of `gutter`.
+            width: Total cell width available to the row.
+            style: Base style to render on top of.
+            options: Render options for the whole row.
+
+        Returns:
+            The visual line as a single strip.
+        """
+        content = line.content
+        selection = options.selection
+        if selection is not None and options.selection_style is not None:
+            span = selection.get_span(0)
+            if span is not None:
+                start, end = span
+                end = len(self) if end == -1 else end
+                local_start = _local_index(line.offsets, start)
+                local_end = _local_index(line.offsets, end)
+                if local_start < local_end:
+                    content = content.stylize(
+                        options.selection_style, local_start, local_end
+                    )
+        plain_options = replace(options, selection=None)
+        body_strip = _rebase(
+            content.render_strips(width - self.prefix_len, 1, style, plain_options)[0],
+            line.offsets,
+        )
+        gutter_strip = _rebase(
+            gutter.render_strips(self.prefix_len, 1, style, plain_options)[0],
+            gutter_offsets,
+        )
+        return Strip.join([gutter_strip, body_strip])
+
+    def render_strips(
+        self, width: int, height: int | None, style: Style, options: RenderOptions
+    ) -> list[Strip]:
+        """Render wrapped lines with a synthetic continuation gutter.
+
+        Args:
+            width: Cell width to render at.
+            height: Maximum number of visual lines, or `None` for all of them.
+            style: Base style to render on top of.
+            options: Render options for the whole row.
+
+        Returns:
+            One strip per visual line, truncated to `height` when given.
+            Rows that opt out of the gutter-repeating path (see `_wraps`) fall
+            back to Textual's own rendering.
+        """
+        continuation = self.continuation
+        if continuation is None or not self._wraps(width):
+            return super().render_strips(width, height, style, options)
+        lines = self._wrapped(width)
+        prefix = self[: self.prefix_len]
+        strips = [
+            self._line_strip(
+                lines[0], prefix, range(self.prefix_len), width, style, options
+            ),
+            *(
+                self._line_strip(
+                    line,
+                    continuation,
+                    [line.offsets[0]] * self.prefix_len,
+                    width,
+                    style,
+                    options,
+                )
+                for line in lines[1:]
+            ),
+        ]
+        return strips if height is None else strips[:height]
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Return the number of visual lines this row occupies.
+
+        Args:
+            rules: The widget's resolved CSS rules. Only consulted on the
+                fallback path; see `_wraps`.
+            width: Cell width to measure at.
+
+        Returns:
+            The line count, which must match `render_strips`: `Static` is
+            `height: auto`, so under-reporting silently clips the last lines.
+        """
+        if not self._wraps(width):
+            return super().get_height(rules, width)
+        return len(self._wrapped(width))
+
+
+def _local_index(offsets: Sequence[int], target: int) -> int:
+    """Return where a logical `target` offset falls within `offsets`.
+
+    Args:
+        offsets: Logical offsets of one visual line's characters, ascending.
+        target: A logical offset in the whole row.
+
+    Returns:
+        The index of the first character at or past `target`, or the line's
+        length when `target` is past its end.
+    """
+    return next(
+        (index for index, offset in enumerate(offsets) if offset >= target),
+        len(offsets),
+    )
+
+
 class _DiffRowStatic(Static):
     """A numbered diff row whose gutter is excluded from text selections.
 
@@ -231,13 +648,11 @@ def clamp_selection(widget: Widget, selection: Selection) -> Selection | None:
       inside the gutter forward to its end; a range that then collapses
       (wholly gutter) is `None`.
 
-    An endpoint counts as "inside the gutter" only on the row's first visual
-    line (`y == 0`). A row wrapped by Textual continues at column 0 of each
-    following visual line, where the gutter no longer exists — an `x` there
-    already indexes source text, so a continuation coordinate must pass through
-    untouched or a drag starting on a continuation would skip its first
-    gutter-width characters, and one ending within them would drop source the
-    user visibly selected.
+    Endpoints arrive as offsets into the row's logical content, not as visual
+    screen coordinates, because every strip carries its own offset metadata.
+    A wrapped row's continuations therefore need no rule of their own: their
+    offsets — including the ones their synthetic gutter maps to — all land at
+    or past `prefix_len`, so the gutter tests below cannot fire on them.
 
     Args:
         widget: The row the selection applies to. Anything that is not a
@@ -445,8 +860,15 @@ def _compose_diff_content(
         # The selectable prefix is everything before the source text: the
         # padded number and a space, plus the marker and a space.
         prefix_len = (width + 1 if numbered else 0) + 2
+        content = Content.assemble(*parts)
+        continuation = None
+        if numbered:
+            continuation = Content.assemble(
+                (f"{glyphs.line_continuation:>{width}}", style.gutter),
+                " " * 3,
+            )
         yield _DiffRowStatic(
-            Content.assemble(*parts),
+            _DiffRowContent(content, prefix_len, continuation),
             prefix_len,
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
         )

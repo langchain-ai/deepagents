@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from deepagents_code.extras_info import ExtraDependencyStatus
 
 from deepagents_code import theme
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
@@ -164,9 +165,11 @@ class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
             options.highlighted = 0
             yield options
             yield Static(
-                "You can change this at any time in ~/.deepagents/config.toml "
+                "You can change this at any time in "
+                f"{PATHS.display(PATHS.profile.config_file)} "
                 "or with DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA.",
                 classes="launch-init-note",
+                markup=False,
             )
             yield Static(
                 f"{modal_navigation_hint(glyphs)}"

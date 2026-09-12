@@ -46,7 +46,6 @@ from typing import NamedTuple
 # the convenience path for local runs that only supply --package.
 PACKAGE_MAP = {
     "deepagents": "libs/deepagents",
-    "deepagents-cli": "libs/cli",
     "deepagents-acp": "libs/acp",
     "deepagents-code": "libs/code",
     "deepagents-talon": "libs/talon",

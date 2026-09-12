@@ -76,18 +76,42 @@ CACHE_IDENTITY_PARAM_KEYS = frozenset(
 )
 """Invocation params that select or invalidate a provider cache entry.
 
-The identity check compares only these. Comparing whole `model_params` maps
-instead would report a model change for every unrelated knob -- `/effort`
-rewrites `reasoning_effort` wholesale, and `temperature` or `max_tokens` are
-just as inert for caching -- and the modal would then assert that "the previous
-cached prefix cannot be reused" when nothing about the prefix moved. A modal
-that fires on a false premise trains users into the permanent suppression.
+The identity check compares only these, plus the provider's reasoning-effort
+settings where a change is documented to move the cached prefix (see
+`_EFFORT_CACHE_IDENTITY_PROVIDERS`). Comparing whole `model_params` maps
+instead would report a model change for every unrelated knob -- `temperature`
+or `max_tokens`, for example -- and the modal would then assert that "the
+previous cached prefix cannot be reused" when nothing about the prefix moved.
+A modal that fires on a false premise trains users into the permanent
+suppression.
 
 `cache_control` is deliberately absent: `AnthropicPromptCachingMiddleware`
 overwrites `model_settings["cache_control"]` with its own TTL on every
 Anthropic request (see `_ANTHROPIC_MIDDLEWARE_TTL_SECONDS`), so a
 user-supplied value never reaches the wire. Comparing it would report an
 identity change for a setting the effective requests never differed on.
+"""
+
+_EFFORT_CACHE_IDENTITY_PROVIDERS = frozenset({"openai", "openai_codex", "anthropic"})
+"""Providers whose reasoning-effort settings participate in cache identity.
+
+OpenAI documents `reasoning.effort` as a setting that "can change model-side
+reasoning instructions" for its models generally -- the GPT-6 Astra
+`configuration_update` escape hatch exists precisely because the top-level
+knob rewrites the hidden prefix -- and pre-GPT-5.6 minimum cacheable lengths
+vary with request settings including reasoning effort:
+https://developers.openai.com/api/docs/guides/prompt-caching
+
+Anthropic is stricter: the thinking/effort configuration is rendered into the
+prompt, so changing it always invalidates message blocks:
+https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+
+Other providers (`google_genai`, `fireworks`, `xai`, ...) document no link
+between effort and cache identity, so their effort settings stay out of the
+projection: including them would fire the modal on a false premise.
+`openai_codex` resolves no cache policy today (`resolve_prompt_cache_policy`
+gates on the `openai` provider), so its entries matter only for checkpointed
+storage until that changes.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
@@ -521,17 +545,17 @@ the cross-format suppression notice all key into this one set. A burst of one
 kind can therefore evict the memory of another, which only ever costs a
 duplicate log line.
 
-`load_trusted_cache_endpoints` re-reads `config.toml` on every turn so a live
-edit takes effect without a restart. Without this, one malformed entry would
-warn once per turn, crowding out the other warnings in the bounded debug-log
-buffer (which partitions retention per level, so the damage is confined to
-that level -- see `_debug_buffer.InMemoryLogBuffer`).
+`load_trusted_cache_endpoints` resolves the option on every turn, from the
+shared process generation -- so a hand edit needs `/reload`. Without this set,
+one malformed entry would warn once per turn, crowding out the other warnings
+in the bounded debug-log buffer (which partitions retention per level, so the
+damage is confined to that level -- see `_debug_buffer.InMemoryLogBuffer`).
 
 Bounded, because the key embeds the rejected entry: a config edited repeatedly
 into new bad states would otherwise accumulate one string per distinct typo
 for the life of the process. On overflow the whole set is dropped rather than
 evicted one by one -- re-warning about a still-broken entry is the harmless
-direction, and it keeps a live-edit session from going permanently quiet.
+direction, and it keeps a long session from going permanently quiet.
 
 Mutated from worker threads (`app` and `configurable_model` both reach it via
 `asyncio.to_thread`). The check-then-clear-then-add below is not atomic, so a
@@ -587,24 +611,27 @@ def load_trusted_cache_endpoints(
     value by type. Each distinct rejection is logged once per process.
 
     Args:
-        config: Parsed user `config.toml` mapping. When omitted, the user
-            configuration is loaded from disk and resolved with managed
-            configuration, which takes precedence.
+        config: Parsed user `config.toml` table. When omitted, the option is
+            resolved through the shared process generation, with managed
+            configuration taking precedence -- no disk read, so a hand edit
+            needs `/reload` to take effect.
 
     Returns:
         Lowercase hostnames of configured trusted endpoints (possibly empty).
     """
     if config is None:
         from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
             get_option,
-            load_config_toml,
-            resolve_scalar,
         )
+        from deepagents_code.configuration.resolver import get_config_resolver
 
         option = get_option("warnings.trusted_cache_endpoints")
         if option is None:
             return frozenset()
-        entries, _ = resolve_scalar(option, toml_data=load_config_toml())
+        resolved = get_config_resolver().get(option)
+        _emit_ranked_diagnostics(option, resolved)
+        entries = resolved.value
         # The manifest has no default for this optional structured setting.
         # Preserve the absent-setting behavior without changing diagnostics
         # for malformed configured values.
@@ -862,23 +889,24 @@ def resolve_prompt_cache_policy(
     if provider != "openai" or not endpoint_ok("api.openai.com"):
         return None
 
-    # Write pricing follows the model version, independent of retention: only
-    # GPT-5.6+ bills a miss as a cache write.
-    write_bucket: CacheWriteBucket = (
-        "generic_write" if _openai_uses_thirty_minute_cache(model_name) else "generic"
-    )
+    # GPT-5.6+ uses `prompt_cache_options.ttl = "30m"`; the legacy
+    # `prompt_cache_retention` knob does not extend that family to one or 24
+    # hours. OpenAI documents 30 minutes as a guaranteed minimum, so the prefix
+    # may still be warm after this window.
+    # https://developers.openai.com/api/docs/guides/prompt-caching
+    if _openai_uses_thirty_minute_cache(model_name):
+        return PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=1800,
+            confidence="may_be_cold",
+            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
+            write_bucket="generic_write",
+        )
 
     # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
     # maximum, not a guarantee"): entries may be evicted earlier, so a warning
     # is only defensible once the maximum has passed -- at which point the
     # entry is gone rather than merely doubtful.
-    #
-    # Checked before the GPT-5.6+ minimum because the two knobs are
-    # independent: `prompt_cache_retention` states a maximum lifetime while the
-    # 5.6+ guarantee states a minimum one, and an explicitly configured
-    # retention is the later, firmer bound. Warning a user who asked for `24h`
-    # at the 30-minute mark would contradict their own configuration.
-    # https://platform.openai.com/docs/guides/prompt-caching
     retention = params.get("prompt_cache_retention")
     retention_windows = {"in_memory": 3600, "24h": 86400}
     window = retention_windows.get(retention) if isinstance(retention, str) else None
@@ -888,41 +916,79 @@ def resolve_prompt_cache_policy(
             window_seconds=window,
             confidence="expired",
             minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket=write_bucket,
-        )
-
-    if write_bucket == "generic_write":
-        # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+ with
-        # no explicit retention configured, but OpenAI may retain the prefix
-        # longer, so past the window it can only be treated as possibly cold.
-        # https://platform.openai.com/docs/guides/prompt-caching
-        return PromptCachePolicy(
-            provider_name="OpenAI",
-            window_seconds=1800,
-            confidence="may_be_cold",
-            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket=write_bucket,
+            write_bucket="generic",
         )
     return None
 
 
-def cache_identity_params(model_params: Mapping[str, Any] | None) -> dict[str, Any]:
+_EFFORT_IDENTITY_KEY = "reasoning_effort"
+"""Checkpoint key the effective effort value is projected under.
+
+Canonical rather than request-shaped: the identity question is whether the
+effort value changed, not which request shape carried it. Storing the native
+shape would report an identity change for a flat-to-nested representation
+swap that leaves the prefix untouched.
+"""
+
+
+def _effort_identity_entries(
+    model_params: Mapping[str, Any], provider: str
+) -> dict[str, Any]:
+    """Project the provider's effective reasoning effort from `model_params`.
+
+    Uses the same path resolution and precedence as `/effort`
+    (`reasoning_effort._effort_paths`), so native request shapes -- OpenAI's
+    nested `reasoning: {"effort": ...}`, Anthropic's `output_config.effort`
+    -- participate alongside the canonical flat `reasoning_effort`. Sibling
+    keys in nested containers (`reasoning.summary`, say) stay out: they are
+    not documented to move the prefix, and including them would fire the
+    modal on a false premise.
+
+    Args:
+        model_params: Full invocation params.
+        provider: Lowercase provider name from the model spec.
+
+    Returns:
+        `{_EFFORT_IDENTITY_KEY: value}` when an effort setting is present and
+            non-`None`, or `{}` when the provider has none configured.
+    """
+    from deepagents_code.reasoning_effort import _effort_paths
+
+    for path in _effort_paths(provider):
+        if len(path) == 1:
+            if path[0] in model_params and model_params[path[0]] is not None:
+                return {_EFFORT_IDENTITY_KEY: model_params[path[0]]}
+        else:
+            nested = model_params.get(path[0])
+            if isinstance(nested, dict) and nested.get(path[1]) is not None:
+                return {_EFFORT_IDENTITY_KEY: nested[path[1]]}
+    return {}
+
+
+def cache_identity_params(
+    model_params: Mapping[str, Any] | None,
+    *,
+    model_spec: str | None = None,
+) -> dict[str, Any]:
     """Project the params that participate in prompt-cache identity.
 
     Args:
         model_params: Full invocation params, or `None`.
+        model_spec: Optional `provider:model` spec used for model-specific keys.
 
     Returns:
-        Only the `CACHE_IDENTITY_PARAM_KEYS` entries present, so two calls can
-            be compared without unrelated knobs reading as a cache change.
+        Cache-identity entries, excluding unrelated invocation knobs.
     """
     if not model_params:
         return {}
-    return {
-        key: value
-        for key, value in model_params.items()
-        if key in CACHE_IDENTITY_PARAM_KEYS
-    }
+    keys = CACHE_IDENTITY_PARAM_KEYS
+    if model_spec:
+        provider = model_spec.partition(":")[0].strip().lower()
+        if provider in _EFFORT_CACHE_IDENTITY_PROVIDERS:
+            result = {key: value for key, value in model_params.items() if key in keys}
+            result.update(_effort_identity_entries(model_params, provider))
+            return result
+    return {key: value for key, value in model_params.items() if key in keys}
 
 
 def estimate_rewarm_cost(

@@ -1299,7 +1299,13 @@ class MCPViewerScreen(ModalScreen[str | None]):
         enter_hint = self._selected_enter_hint()
         if enter_hint is not None:
             help_parts.append(enter_hint)
-        help_parts.extend(["F2 disable/enable", "Ctrl+E expand all"])
+        if (
+            self._row_widgets
+            and 0 <= self._selected_index < len(self._row_widgets)
+            and isinstance(self._row_widgets[self._selected_index], MCPServerHeaderItem)
+        ):
+            help_parts.append("F2 disable/enable")
+        help_parts.append("Ctrl+E expand all")
         if self._pending_reconnect:
             help_parts.append(f"{MCP_RECONNECT_KEY_LABEL} reconnect")
         help_parts.extend(["type to filter", "Esc close"])

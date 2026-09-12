@@ -9,13 +9,19 @@ numeric ranks.
 
 from __future__ import annotations
 
+import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
+    from pathlib import Path
+
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.provider import ConfigProvider
+    from deepagents_code.configuration.types import TomlSnapshot
 
 from deepagents_code.configuration.types import (
     Found,
@@ -27,7 +33,10 @@ MANAGED_RANK = 200
 """Managed policy rank; lower numeric ranks have stronger precedence."""
 
 CLI_RANK = 300
-"""Reserved seam for a future CLI provider; no CLI provider ships today."""
+"""Parsed command-line argument rank."""
+
+RELOAD_RANK = 350
+"""Retained runtime-reload value rank."""
 
 ENVIRONMENT_RANK = 400
 """Process-environment rank."""
@@ -53,7 +62,16 @@ class RankedProviderValue[T]:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedValue[T]:
-    """Resolved value with rank-keyed provenance and provider health."""
+    """Resolved value with rank-keyed provenance and provider health.
+
+    Six of the seven fields are parallel rank-keyed collections whose mutual
+    consistency is the entire meaning of the type, and consumers index straight
+    into them: `config_manifest._ranked_source` reads
+    `provider_status[rank] for rank in ranks` to render the source column, so
+    an inconsistent instance is a `KeyError` in user-facing output. The
+    invariants are checked at construction rather than documented, following
+    `TomlSnapshot` in the same package.
+    """
 
     value: T
     provenance: Mapping[int, frozenset[tuple[str, ...]]]
@@ -65,10 +83,650 @@ class ResolvedValue[T]:
         default_factory=lambda: MappingProxyType({})
     )
 
+    def __post_init__(self) -> None:
+        """Reject a value whose rank-keyed halves disagree.
+
+        Also copies each mapping behind a `MappingProxyType`. `frozen=True`
+        protects the field bindings, not the contents: without the copy a
+        caller keeps a live reference to a dict this type presents as a
+        read-only snapshot.
+
+        Raises:
+            ValueError: If a contributing rank is missing provider status, or
+                is also reported as masked.
+        """
+        for name in (
+            "provenance",
+            "tier_health",
+            "provider_status",
+            "tier_diagnostics",
+        ):
+            frozen = MappingProxyType(dict(getattr(self, name)))
+            object.__setattr__(self, name, frozen)
+        # Both halves of `ranks`, not just `selected_ranks`: it falls back to
+        # `provenance` when no rank was selected, and `_ranked_source` indexes
+        # `provider_status` by whichever half it gets. Validating one branch
+        # left the documented failure mode reachable through the other.
+        contributing = set(self.selected_ranks) | set(self.provenance)
+        missing = contributing - self.provider_status.keys()
+        if missing:
+            msg = (
+                f"contributing ranks {sorted(missing)} have no provider "
+                "status; rendering provenance would raise KeyError"
+            )
+            raise ValueError(msg)
+        both = self.masked_ranks & set(self.selected_ranks)
+        if both:
+            msg = f"ranks {sorted(both)} cannot be both selected and masked"
+            raise ValueError(msg)
+
     @property
     def ranks(self) -> tuple[int, ...]:
         """Contributing ranks in precedence order."""
         return self.selected_ranks or tuple(sorted(self.provenance))
+
+
+type ConfigKey = str
+"""Canonical dotted manifest key."""
+
+
+class ConfigResolver:
+    """Resolve manifest options through an ordered provider chain."""
+
+    def __init__(self, providers: Sequence[ConfigProvider]) -> None:
+        """Build a resolver with providers sorted by precedence.
+
+        Args:
+            providers: Configuration providers with unique numeric ranks.
+
+        Raises:
+            ValueError: If two providers declare the same rank.
+        """
+        ordered = tuple(sorted(providers, key=lambda provider: provider.rank))
+        ranks = tuple(provider.rank for provider in ordered)
+        if len(set(ranks)) != len(ranks):
+            msg = "config providers must have unique ranks"
+            raise ValueError(msg)
+        self._providers = ordered
+        self._lock = threading.RLock()
+
+    def get[T](self, option: ConfigOption[T]) -> ResolvedValue[T]:
+        """Resolve one option through every provider.
+
+        Args:
+            option: Manifest option to resolve.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+        """
+        with self._lock:
+            return self._resolve(option, self._providers)
+
+    def get_without_ranks[T](
+        self, option: ConfigOption[T], ranks: Collection[int]
+    ) -> ResolvedValue[T]:
+        """Resolve one option after excluding selected provider ranks.
+
+        Args:
+            option: Manifest option to resolve.
+            ranks: Provider ranks to omit from this read.
+
+        Returns:
+            Resolved value from the remaining providers.
+        """
+        with self._lock:
+            providers = tuple(
+                provider for provider in self._providers if provider.rank not in ranks
+            )
+            return self._resolve(option, providers)
+
+    @staticmethod
+    def _resolve[T](
+        option: ConfigOption[T],
+        providers: Sequence[ConfigProvider],
+    ) -> ResolvedValue[T]:
+        """Resolve one option against a lock-held provider generation.
+
+        Args:
+            option: Manifest option to resolve.
+            providers: Providers frozen to one generation.
+
+        Returns:
+            Resolved value with rank-keyed provenance and health.
+
+        Raises:
+            RuntimeError: If no provider returns a value.
+        """
+        values = tuple(provider.get(option) for provider in providers)
+        strategy = option.merge_strategy.value
+        effective_values = (
+            tuple(value for value in values if value.rank != DEFAULT_RANK)
+            if strategy in {"union", "deep_merge"}
+            else values
+        )
+        resolved = resolve_ranked(effective_values, strategy=strategy)
+        if resolved is None:
+            from deepagents_code.configuration.providers import DefaultProvider
+
+            fallback = DefaultProvider().get(option)
+            without_default = tuple(
+                value for value in values if value.rank != DEFAULT_RANK
+            )
+            resolved = resolve_ranked(
+                (*without_default, fallback),
+                strategy=strategy,
+            )
+        if resolved is None:
+            msg = f"fallback provider was unset for {option.key}"
+            raise RuntimeError(msg)
+        return resolved
+
+    def resolve_options(
+        self,
+        options: Sequence[ConfigOption[object]],
+    ) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve selected options against one provider generation.
+
+        Resolving an option is not uniformly cheap: `THEME_DELEGATE` reaches
+        the theme registry, which imports Textual (~470ms). Callers on the
+        startup hot path ask for the options they need rather than the whole
+        manifest, and keep the single-generation guarantee either way.
+
+        Args:
+            options: Manifest options to resolve together.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        with self._lock:
+            resolved = {
+                option.key: self._resolve(option, self._providers) for option in options
+            }
+        return MappingProxyType(resolved)
+
+    def resolve_all(self) -> Mapping[ConfigKey, ResolvedValue[object]]:
+        """Resolve the full manifest against one provider generation.
+
+        Returns:
+            Immutable mapping from canonical option key to resolved value.
+        """
+        from deepagents_code.config_manifest import get_config_options
+
+        return self.resolve_options(get_config_options())
+
+    def reload(self) -> None:
+        """Propagate a source refresh to every provider.
+
+        Advances the generation, so this also re-arms the source-level
+        diagnostics -- see `reload_with_replacements`, which does the work.
+
+        Reloads every provider *under this resolver's lock*, and a managed
+        provider's loader can fetch over the network for the whole remote
+        timeout. Every concurrent `get` and `resolve_options` blocks for that
+        duration, which on the Textual event loop stalls the UI. Callers that
+        may run against a remote descriptor should fetch first and hand the
+        snapshot over -- `get_config_resolver(refresh_managed=True)` does
+        exactly that -- rather than calling this.
+        """
+        self.reload_with_replacements({})
+
+    def reload_with_replacements(
+        self,
+        replacements: Mapping[int, ConfigProvider],
+    ) -> None:
+        """Refresh providers after installing already-refreshed replacements.
+
+        Non-replaced providers are reloaded under this resolver's lock, so the
+        caveat on `reload` about a managed loader's network I/O applies to any
+        call that leaves the managed rank unreplaced.
+
+        Args:
+            replacements: Providers already bound to the desired generation,
+                keyed by the rank they replace. Replacements are installed but
+                not reloaded, so each must already hold a usable snapshot.
+
+        Raises:
+            ValueError: If a replacement rank is not in this resolver, or a
+                replacement is not serving a usable snapshot.
+        """
+        with self._lock:
+            ranks = {provider.rank for provider in self._providers}
+            unknown = replacements.keys() - ranks
+            if unknown:
+                msg = f"cannot replace unknown provider ranks: {sorted(unknown)}"
+                raise ValueError(msg)
+            unusable = sorted(
+                rank
+                for rank, provider in replacements.items()
+                if not _serves_usable_policy(provider)
+            )
+            if unusable:
+                msg = (
+                    f"replacement providers at ranks {unusable} are unusable; "
+                    "installing one would drop the source's restrictions"
+                )
+                raise ValueError(msg)
+            self._providers = tuple(
+                replacements.get(provider.rank, provider)
+                for provider in self._providers
+            )
+            for provider in self._providers:
+                if provider.rank not in replacements:
+                    provider.reload()
+
+        # The source-level diagnostics (`shadowed`, `unusable`, `retained`) are
+        # deduplicated so one `dcode config` sweep over ~200 options does not
+        # print the same rejection 200 times. Scoping that to the process made
+        # the second `/reload` of a still-broken file silent -- the reason
+        # string is identical, so the user gets no message during exactly the
+        # edit-and-retry loop where they need one. A generation advance ends
+        # the sweep the dedup exists for, so it is the right scope.
+        from deepagents_code.config_manifest import reset_source_diagnostics
+
+        reset_source_diagnostics()
+
+    def provider_statuses(self) -> Mapping[int, ProviderStatus]:
+        """Return immutable provider health keyed by precedence rank."""
+        with self._lock:
+            statuses = {
+                provider.rank: provider.status() for provider in self._providers
+            }
+        return MappingProxyType(statuses)
+
+    def install_provider(self, provider: ConfigProvider) -> None:
+        """Insert a provider into the live chain, keeping rank order.
+
+        Used for the CLI tier, which exists only after `argparse` runs — long
+        after this resolver may have been built and cached. Unlike
+        `reload_with_replacements`, this advances no generation and touches no
+        files: the CLI provider is in-memory, so there is nothing to reload,
+        and re-arming source diagnostics for an install that invalidates no
+        snapshot would only risk a duplicate warning on the next resolution.
+
+        Args:
+            provider: Provider to insert. Its rank must not already be present.
+
+        Raises:
+            ValueError: If a provider already serves the new provider's rank.
+        """
+        with self._lock:
+            ranks = {existing.rank for existing in self._providers}
+            if provider.rank in ranks:
+                msg = f"a provider already serves rank {provider.rank}"
+                raise ValueError(msg)
+            self._providers = tuple(
+                sorted((*self._providers, provider), key=lambda p: p.rank)
+            )
+
+    def toml_snapshot(self, rank: int) -> TomlSnapshot | None:
+        """Return the cached TOML snapshot at `rank`, if that provider is one.
+
+        Lets a caller build a one-off resolver against the same file
+        generation this resolver is serving -- for example, re-resolving an
+        option with the managed tier masked while keeping the shared user
+        snapshot instead of re-parsing `config.toml` off disk.
+
+        Propagates the `RuntimeError` `current_snapshot` raises when the
+        provider at `rank` produced no snapshot.
+
+        Args:
+            rank: Precedence rank whose snapshot to return.
+
+        Returns:
+            The provider's current snapshot, or `None` when no TOML provider
+            sits at `rank` (environment and default providers carry none).
+        """
+        from deepagents_code.configuration.providers import TomlFileProvider
+
+        with self._lock:
+            for provider in self._providers:
+                if provider.rank == rank and isinstance(provider, TomlFileProvider):
+                    return provider.current_snapshot()
+        return None
+
+
+def resolver_from_snapshots(
+    *,
+    managed: TomlSnapshot,
+    user: TomlSnapshot,
+    managed_loader: Callable[[], TomlSnapshot] | None = None,
+    user_loader: Callable[[], TomlSnapshot] | None = None,
+    cli_provider: ConfigProvider | None = None,
+) -> ConfigResolver:
+    """Build the standard provider chain from one file-snapshot generation.
+
+    Keyword-only by design. The two snapshots share a type, so a positional
+    transposition would load the user's writable `config.toml` at
+    `MANAGED_RANK` -- user data acquiring managed precedence, which is the one
+    escalation this trust boundary exists to prevent. Nothing downstream
+    rejects it: this function never inspects `managed.status.name`, and
+    `TomlFileProvider` accepts whatever rank it is handed.
+
+    Args:
+        managed: Managed TOML snapshot.
+        user: User TOML snapshot.
+        managed_loader: Optional managed reload operation.
+        user_loader: Optional user reload operation.
+        cli_provider: Optional parsed-argument provider for this process.
+
+    Returns:
+        Resolver containing managed, environment, user, and default providers,
+            plus the CLI provider when one is supplied.
+    """
+    from deepagents_code.configuration.providers import (
+        DefaultProvider,
+        EnvProvider,
+        TomlFileProvider,
+    )
+
+    # Snapshots built in-memory carry no path. Pass that through rather than
+    # inventing a relative filename: `TomlFileProvider.load` would resolve it
+    # against the process working directory, so a later `reload()` on a
+    # diagnostic resolver would read whatever `./managed_config.toml` happens
+    # to sit in the repo the agent is running in and treat it as policy.
+    managed_path = managed.status.path
+    user_path = user.status.path
+    providers: tuple[ConfigProvider, ...] = (
+        TomlFileProvider(
+            name=managed.status.name,
+            path=managed_path,
+            rank=MANAGED_RANK,
+            durable=True,
+            snapshot=managed,
+            loader=managed_loader,
+        ),
+        *((cli_provider,) if cli_provider is not None else ()),
+        EnvProvider(),
+        TomlFileProvider(
+            name=user.status.name,
+            path=user_path,
+            rank=USER_RANK,
+            durable=True,
+            snapshot=user,
+            loader=user_loader,
+        ),
+        DefaultProvider(),
+    )
+    return ConfigResolver(providers)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolverKey:
+    """The pair of file paths a shared resolver is built for.
+
+    Named rather than a bare `tuple[object, ...]`: a key built with different
+    arity or field order compares unequal, silently rebuilds the resolver, and
+    loses the single-generation guarantee with no error anywhere.
+    """
+
+    user_path: Path
+    managed_path: Path | None
+
+
+@dataclass(slots=True)
+class _ResolverCache:
+    """Mutable process resolver cache guarded by one lifecycle lock.
+
+    One field, not a key and a resolver side by side: those admit a populated
+    key with no resolver, and a lookup that trusts either half alone would then
+    read a stale generation or rebuild one that already exists.
+    """
+
+    entry: tuple[_ResolverKey, ConfigResolver] | None = None
+    cli_provider: ConfigProvider | None = None
+
+
+_resolver_cache_lock = threading.RLock()
+_resolver_cache = _ResolverCache()
+
+
+def installed_cli_provider() -> ConfigProvider | None:
+    """Return the parsed-argument provider installed for this process.
+
+    Ad-hoc resolvers built from caller-supplied snapshots do not go through the
+    process cache, so they have no CLI tier unless they ask for this one. A
+    reader that omits it reports the wrong source for any option a flag in the
+    current argv is setting.
+
+    Returns:
+        The installed provider, or `None` before `install_cli_provider` runs.
+    """
+    with _resolver_cache_lock:
+        return _resolver_cache.cli_provider
+
+
+def _reload_enforceable_managed_snapshot() -> TomlSnapshot:
+    """Return a refreshed managed snapshot only when policy can enforce it."""
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_policy_violations,
+    )
+
+    candidate = get_managed_snapshot(refresh=True)
+    if candidate.status.usable and managed_policy_violations(
+        candidate.data,
+        status=candidate.status,
+    ):
+        return get_managed_snapshot()
+    return candidate
+
+
+def get_config_resolver(
+    *,
+    refresh_managed: bool = False,
+    managed_snapshot: TomlSnapshot | None = None,
+    cli_provider: ConfigProvider | None = None,
+) -> ConfigResolver:
+    """Return the shared process resolver for the active config paths.
+
+    Args:
+        refresh_managed: Refresh the user and environment tiers on an existing
+            matching resolver. The managed tier is not re-read: it is replaced
+            with the snapshot the caller already validated, so one reload
+            observes one managed-file generation.
+        managed_snapshot: Already refreshed and validated managed snapshot.
+            Supplies the cache key, and builds the resolver when the cache
+            misses. On a cache hit it is installed only when `refresh_managed`
+            is set -- without it the resolver keeps the generation it is
+            already serving, so the snapshot must be that same generation.
+        cli_provider: Parsed-argument provider to install for this process.
+
+    Returns:
+        Resolver shared by consumers of the active managed and user paths.
+
+    Raises:
+        ValueError: If `managed_snapshot` is a different generation than the
+            one already installed and `refresh_managed` is not set. The
+            snapshot would otherwise be discarded in silence. Also if
+            `cli_provider` differs from the one already installed for this
+            process: one argv yields one CLI tier, and silently keeping either
+            provider would misreport every flag the other one carries.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if managed_snapshot is not None:
+        managed = managed_snapshot
+    elif refresh_managed:
+        managed = _reload_enforceable_managed_snapshot()
+    else:
+        managed = get_managed_snapshot()
+    key = _ResolverKey(DEFAULT_CONFIG_PATH, managed.status.path)
+    with _resolver_cache_lock:
+        installed_cli = _resolver_cache.cli_provider
+        if cli_provider is not None:
+            if installed_cli is not None and installed_cli != cli_provider:
+                msg = "a different CLI provider is already installed for this process"
+                raise ValueError(msg)
+            _resolver_cache.cli_provider = cli_provider
+            installed_cli = cli_provider
+        entry = _resolver_cache.entry
+        if (
+            entry is None
+            or entry[0] != key
+            or (
+                cli_provider is not None
+                and CLI_RANK not in entry[1].provider_statuses()
+            )
+        ):
+            user_provider = TomlFileProvider(
+                name="config.toml", path=DEFAULT_CONFIG_PATH
+            )
+            user = user_provider.load()
+            resolver = resolver_from_snapshots(
+                managed=managed,
+                user=user,
+                managed_loader=_reload_enforceable_managed_snapshot,
+                user_loader=user_provider.load,
+                cli_provider=installed_cli,
+            )
+            _resolver_cache.entry = (key, resolver)
+            # A rebuild is a generation advance too: the key changes when
+            # managed policy is installed or removed, and the dedup set would
+            # otherwise carry rejections from the generation just replaced.
+            from deepagents_code.config_manifest import reset_source_diagnostics
+
+            reset_source_diagnostics()
+            return resolver
+        resolver = entry[1]
+        if not refresh_managed:
+            # A caller that hands over a snapshot and does not ask for a
+            # refresh is telling the resolver to keep serving what it has, so
+            # the two must already agree. They do today -- the preview path
+            # takes its snapshot with `refresh=False`, which returns the
+            # cached one -- but nothing in the signature says so, and the
+            # alternative is discarding a validated generation in silence.
+            if managed_snapshot is not None:
+                installed = resolver.toml_snapshot(MANAGED_RANK)
+                if installed is not None and installed != managed_snapshot:
+                    msg = (
+                        "managed_snapshot is a different generation than the "
+                        "one in force; pass refresh_managed=True to install it"
+                    )
+                    raise ValueError(msg)
+            return resolver
+        resolver.reload_with_replacements(
+            {
+                MANAGED_RANK: _managed_replacement_provider(
+                    resolver,
+                    managed,
+                )
+            }
+        )
+        return resolver
+
+
+def _serves_usable_policy(provider: ConfigProvider) -> bool:
+    """Whether a replacement is serving a snapshot resolution can trust.
+
+    A replacement bypasses `reload`, so it needs a usable generation behind it.
+    Its latest status may still be unusable while it safely retains the
+    previous snapshot; rejecting that state would erase the failed-refresh
+    diagnostic. A provider whose *served* snapshot is unusable would resolve as
+    "this source declares nothing" and silently let lower ranks win.
+
+    Args:
+        provider: Replacement about to be installed.
+
+    Returns:
+        Whether the generation this provider resolves from is usable.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+
+    if provider.status().usable:
+        return True
+    return (
+        isinstance(provider, TomlFileProvider)
+        and provider.current_snapshot().status.usable
+    )
+
+
+def _managed_replacement_provider(
+    resolver: ConfigResolver,
+    candidate: TomlSnapshot,
+) -> ConfigProvider:
+    """Build a current managed replacement that retains failed refreshes safely.
+
+    Args:
+        resolver: Resolver currently serving the previous generation.
+        candidate: Snapshot fetched before taking the resolver lock. A newer
+            enforceable generation may have published while this caller waited.
+
+    Returns:
+        Replacement carrying the current enforceable generation or the
+        candidate's failed-refresh status.
+
+    Raises:
+        RuntimeError: If the shared resolver has no managed TOML provider.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    installed = resolver.toml_snapshot(MANAGED_RANK)
+    if installed is None:
+        msg = "shared config resolver has no managed TOML provider"
+        raise RuntimeError(msg)
+    if candidate.status.usable:
+        candidate = get_managed_snapshot()
+    replacement = TomlFileProvider(
+        name=candidate.status.name,
+        path=candidate.status.path,
+        rank=MANAGED_RANK,
+        durable=True,
+        snapshot=installed,
+        loader=_reload_enforceable_managed_snapshot,
+    )
+    replacement.reload_from_snapshot(candidate)
+    return replacement
+
+
+def install_cli_provider(cli_provider: ConfigProvider) -> None:
+    """Install the process CLI provider without touching config files.
+
+    Unlike `get_config_resolver(cli_provider=...)`, this never imports
+    `deepagents_code.model_config` and never reads a TOML snapshot: it either
+    attaches the provider to the already-cached resolver or stashes it for the
+    first real `get_config_resolver` call to pick up. The startup fast paths
+    (`--help`, bare command groups) parse arguments and return before any
+    config resolution happens, so paying the settings-bootstrap import cost
+    here would break the startup-perf contract those paths are tested
+    against.
+
+    Args:
+        cli_provider: Parsed-argument provider to install for this process.
+
+    Raises:
+        ValueError: If a different CLI provider is already installed.
+    """
+    with _resolver_cache_lock:
+        installed = _resolver_cache.cli_provider
+        if installed is not None and installed != cli_provider:
+            msg = "a different CLI provider is already installed for this process"
+            raise ValueError(msg)
+        _resolver_cache.cli_provider = cli_provider
+        entry = _resolver_cache.entry
+        if entry is not None and CLI_RANK not in entry[1].provider_statuses():
+            entry[1].install_provider(cli_provider)
+
+
+def reset_config_resolver() -> None:
+    """Drop the cached process resolver.
+
+    Test-only, and paired with `service.invalidate_config_sources`: the two
+    caches are keyed differently, so clearing only the managed snapshot leaves
+    this one serving the previous test's generation. Tests escaped that today
+    only by incidentally monkeypatching `DEFAULT_CONFIG_PATH`, which changes
+    the key; one that exercises the resolver at an unchanged path would inherit
+    stale state.
+    """
+    # No `reset_source_diagnostics` here: dropping the entry makes the next
+    # `get_config_resolver` take the cache-miss branch, which re-arms them as
+    # part of building the new generation. Importing the manifest from this
+    # teardown path also breaks the test that stubs it out of `sys.modules`.
+    with _resolver_cache_lock:
+        _resolver_cache.entry = None
+        _resolver_cache.cli_provider = None
 
 
 def resolve_ranked[T](

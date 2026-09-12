@@ -47,10 +47,11 @@ def _make_executable(path: Path) -> None:
 def _clean_environ() -> dict[str, str]:
     """Return `os.environ` without vars that redirect the installer's writes.
 
-    A developer with `ZDOTDIR` or `XDG_CONFIG_HOME` set in their own shell would
-    otherwise have the PATH entry written into their real dotfiles instead of
-    the fake HOME, so profile assertions fail locally but pass in CI. Tests that
-    exercise those variables set them explicitly.
+    A developer with `ZDOTDIR`, `XDG_CONFIG_HOME`, or `XDG_DATA_HOME` set in
+    their own shell would otherwise redirect writes away from the fake HOME.
+    The data directory also selects the fallback installer-lock root when
+    `uv tool dir` is unavailable. Tests that exercise those variables set them
+    explicitly.
 
     `SHELL` is dropped for the same reason: it selects the candidate profile
     set, so a contributor whose login shell is fish would otherwise exercise a
@@ -61,9 +62,26 @@ def _clean_environ() -> dict[str, str]:
     return {
         key: value
         for key, value in os.environ.items()
-        if key not in {"ZDOTDIR", "XDG_CONFIG_HOME", "SHELL"}
+        if key
+        not in {
+            "DEEPAGENTS_HOME",
+            "SHELL",
+            "UV_TOOL_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "ZDOTDIR",
+        }
         and not key.startswith("DEEPAGENTS_CODE_")
     }
+
+
+def test_clean_environ_drops_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host data-directory settings cannot redirect installer test locks."""
+    monkeypatch.setenv("XDG_DATA_HOME", "/host-specific/data")
+
+    assert "XDG_DATA_HOME" not in _clean_environ()
 
 
 def _host_path_without_dcode() -> str:
@@ -234,6 +252,10 @@ if [ "${{1:-}}" = "-v" ]; then
 fi
 if [ "${{1:-}}" = "tools" ]; then
   printf '%s\\n' "$*" >> {str(tools_log)!r}
+  if [ -n "${{FAKE_MANAGED_BIN_DIR:-}}" ]; then
+    mkdir -p "$FAKE_MANAGED_BIN_DIR"
+    : >"$FAKE_MANAGED_BIN_DIR/rg"
+  fi
   printf 'Using ripgrep already on PATH at /tmp/fake-rg\\n'
   exit "${{FAKE_DCODE_TOOLS_RC:-0}}"
 fi
@@ -505,132 +527,6 @@ def _run_prompt_yn_on_tty(
     return b"".join(chunks).decode(errors="replace")
 
 
-def _run_install_script(
-    tmp_path: Path,
-    extra_env: dict[str, str],
-    *,
-    installed_version: str | None = "0.0.1",
-    latest_version: str | None = None,
-    curl_fails: bool = False,
-) -> list[str]:
-    """Run the script expecting success and return the argv passed to uv."""
-    proc, args_path = _invoke(
-        tmp_path,
-        extra_env,
-        installed_version=installed_version,
-        latest_version=latest_version,
-        curl_fails=curl_fails,
-    )
-    if proc.returncode != 0:
-        msg = f"install.sh exited {proc.returncode}\nstderr:\n{proc.stderr}"
-        raise AssertionError(msg)
-    return args_path.read_text().splitlines()
-
-
-def test_install_script_default_invocation_installs_plain_package(
-    tmp_path: Path,
-) -> None:
-    """A fresh machine installs the bare package with no prompt.
-
-    Guards the most common `curl ... | bash` path against accidentally
-    appending a version pin or extras, while allowing stable releases that pin
-    pre-release dependencies to resolve.
-    """
-    args = _run_install_script(tmp_path, {}, installed_version=None)
-
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-3:] == ["--prerelease", "allow", "deepagents-code"]
-
-
-def test_install_script_supports_exact_version_with_extras(tmp_path: Path) -> None:
-    """`DEEPAGENTS_CODE_VERSION` pins the requirement, after the extras."""
-    args = _run_install_script(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_VERSION": "0.1.0rc1",
-            "DEEPAGENTS_CODE_EXTRAS": "nvidia,ollama",
-        },
-    )
-
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code[nvidia,ollama]==0.1.0rc1"
-    assert "--prerelease" not in args
-
-
-def test_install_script_accepts_pep_508_extra_name_characters(tmp_path: Path) -> None:
-    """Extras with underscores and dots can be reused from a uv receipt."""
-    args = _run_install_script(
-        tmp_path,
-        {"DEEPAGENTS_CODE_EXTRAS": "provider_name.provider"},
-    )
-
-    assert args[-1] == "deepagents-code[provider_name.provider]"
-
-
-def test_install_script_supports_exact_version_without_extras(tmp_path: Path) -> None:
-    """The version spec appends directly to the package name when no extras."""
-    args = _run_install_script(tmp_path, {"DEEPAGENTS_CODE_VERSION": "0.1.0rc1"})
-
-    assert args[-1] == "deepagents-code==0.1.0rc1"
-
-
-@pytest.mark.parametrize("strategy", PRERELEASE_STRATEGIES)
-def test_install_script_forwards_each_prerelease_strategy(
-    tmp_path: Path, strategy: str
-) -> None:
-    """`DEEPAGENTS_CODE_PRERELEASE` forwards each valid strategy verbatim to uv."""
-    args = _run_install_script(tmp_path, {"DEEPAGENTS_CODE_PRERELEASE": strategy})
-
-    # The flag is forwarded immediately before the (unpinned) package name.
-    assert args[-3:] == ["--prerelease", strategy, "deepagents-code"]
-
-
-@pytest.mark.parametrize(
-    "bad_version",
-    [
-        "0.1.0; rm -rf /",  # shell metacharacters
-        "1.0 --force",  # whitespace + smuggled flag
-        ">=1.0",  # range operator, not an exact pin
-        "-U",  # leading dash reads as an option
-    ],
-)
-def test_install_script_rejects_invalid_version(
-    tmp_path: Path, bad_version: str
-) -> None:
-    """An invalid version fails before uv runs, so nothing is installed."""
-    proc, args_path = _invoke(tmp_path, {"DEEPAGENTS_CODE_VERSION": bad_version})
-
-    assert proc.returncode != 0
-    assert not args_path.exists()  # uv tool install was never invoked
-    assert "DEEPAGENTS_CODE_VERSION" in proc.stderr
-
-
-def test_install_script_rejects_invalid_prerelease(tmp_path: Path) -> None:
-    """An unknown pre-release strategy fails before uv runs."""
-    proc, args_path = _invoke(tmp_path, {"DEEPAGENTS_CODE_PRERELEASE": "maybe"})
-
-    assert proc.returncode != 0
-    assert not args_path.exists()
-    assert "DEEPAGENTS_CODE_PRERELEASE" in proc.stderr
-
-
-def test_install_script_rejects_version_and_prerelease_together(
-    tmp_path: Path,
-) -> None:
-    """Pinning a version and a pre-release strategy at once is rejected."""
-    proc, args_path = _invoke(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_VERSION": "0.1.0rc1",
-            "DEEPAGENTS_CODE_PRERELEASE": "allow",
-        },
-    )
-
-    assert proc.returncode != 0
-    assert not args_path.exists()
-    assert "mutually exclusive" in proc.stderr
-
-
 def _run_with_args(
     tmp_path: Path,
     args: tuple[str, ...],
@@ -657,30 +553,41 @@ def _run_with_args(
     )
 
 
-def test_install_script_positional_version_installs_exact_version(
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        "0.1.0; rm -rf /",  # shell metacharacters
+        "1.0 --force",  # whitespace + smuggled flag
+        ">=1.0",  # range operator, not an exact pin
+        "-U",  # leading dash reads as an option
+    ],
+)
+def test_install_script_rejects_invalid_version(
+    tmp_path: Path, bad_version: str
+) -> None:
+    """An invalid version fails before uv runs, so nothing is installed."""
+    proc, args_path = _invoke(tmp_path, {"DEEPAGENTS_CODE_VERSION": bad_version})
+
+    assert proc.returncode != 0
+    assert not args_path.exists()  # uv tool install was never invoked
+    assert "DEEPAGENTS_CODE_VERSION" in proc.stderr
+
+
+def test_install_script_rejects_version_and_prerelease_together(
     tmp_path: Path,
 ) -> None:
-    """A positional VERSION pins that exact version, mirroring the env var."""
-    proc = _run_with_args(tmp_path, ("0.1.0rc1",), installed_version="0.0.1")
-
-    assert proc.returncode == 0, proc.stderr
-    args = (tmp_path / "uv-args.txt").read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code==0.1.0rc1"
-
-
-def test_install_script_positional_version_with_extras(tmp_path: Path) -> None:
-    """A positional VERSION feeds the same spec builder as the env var path."""
-    proc = _run_with_args(
+    """Pinning a version and a pre-release strategy at once is rejected."""
+    proc, args_path = _invoke(
         tmp_path,
-        ("0.1.0rc1",),
-        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
-        installed_version="0.0.1",
+        {
+            "DEEPAGENTS_CODE_VERSION": "0.1.0rc1",
+            "DEEPAGENTS_CODE_PRERELEASE": "allow",
+        },
     )
 
-    assert proc.returncode == 0, proc.stderr
-    args = (tmp_path / "uv-args.txt").read_text().splitlines()
-    assert args[-1] == "deepagents-code[ollama]==0.1.0rc1"
+    assert proc.returncode != 0
+    assert not args_path.exists()
+    assert "mutually exclusive" in proc.stderr
 
 
 @pytest.mark.parametrize(
@@ -707,38 +614,6 @@ def test_install_script_rejects_invalid_positional_version(
     assert not (tmp_path / "uv-args.txt").exists()
 
 
-def test_install_script_rejects_single_dash_typo_as_flag(tmp_path: Path) -> None:
-    """A single-dash typo is reported as an unknown flag, not an invalid version."""
-    proc = _run_with_args(tmp_path, ("-V",))
-
-    assert proc.returncode == 2
-    assert "Unrecognized argument" in proc.stderr
-    assert "Invalid version target" not in proc.stderr
-    assert not (tmp_path / "uv-args.txt").exists()
-
-
-def test_install_script_rejects_multiple_positional_targets(tmp_path: Path) -> None:
-    """Two positional targets fail before uv runs."""
-    proc = _run_with_args(tmp_path, ("0.1.0", "0.2.0"))
-
-    assert proc.returncode == 2
-    assert "Only one target is allowed" in proc.stderr
-    assert not (tmp_path / "uv-args.txt").exists()
-
-
-def test_install_script_rejects_positional_version_with_env_version(
-    tmp_path: Path,
-) -> None:
-    """Combining a positional version with DEEPAGENTS_CODE_VERSION is rejected."""
-    proc = _run_with_args(
-        tmp_path, ("0.2.0rc1",), {"DEEPAGENTS_CODE_VERSION": "0.1.0rc1"}
-    )
-
-    assert proc.returncode == 1
-    assert "Do not combine a positional version" in proc.stderr
-    assert not (tmp_path / "uv-args.txt").exists()
-
-
 def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     """When installed matches PyPI's latest, uv is skipped and no lock is taken.
 
@@ -758,155 +633,6 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     assert "Already up to date!" in proc.stdout
     assert not (tmp_path / "home/.deepagents").exists()
     assert not (tmp_path / "home/.cache").exists()
-
-
-def test_install_script_already_up_to_date_preserves_prior_log(tmp_path: Path) -> None:
-    """A no-op version check leaves the previous install diagnostics intact."""
-    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
-    log_path.parent.mkdir(parents=True)
-    log_path.write_text("previous install failure\n")
-
-    proc, args_path = _invoke(
-        tmp_path, {}, installed_version="0.1.0", latest_version="0.1.0"
-    )
-
-    assert proc.returncode == 0
-    assert not args_path.exists()
-    assert log_path.read_text() == "previous install failure\n"
-
-
-def test_install_script_latest_version_with_extras_installs_requested_extra(
-    tmp_path: Path,
-) -> None:
-    """An extras request still runs uv when the base package is up to date."""
-    args = _run_install_script(
-        tmp_path,
-        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
-        installed_version="0.1.0",
-        latest_version="0.1.0",
-    )
-
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code[ollama]"
-
-
-def test_install_script_latest_version_with_extras_skips_prompt(
-    tmp_path: Path,
-) -> None:
-    """An up-to-date extras request is not gated behind the update prompt."""
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
-        answer="n",
-        installed_version="0.1.0",
-        latest_version="0.1.0",
-    )
-
-    assert code == 0
-    assert "0.1.0 → 0.1.0" not in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code[ollama]"
-
-
-def test_install_script_out_of_date_with_extras_skips_prompt(
-    tmp_path: Path,
-) -> None:
-    """An extras request is explicit intent to reinstall, even across updates."""
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
-        answer="n",
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert code == 0
-    assert "Keeping deepagents-code 0.1.0" not in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code[ollama]"
-
-
-def test_install_script_latest_version_with_python_rebuilds_tool_env(
-    tmp_path: Path,
-) -> None:
-    """An explicit Python request rebuilds even when the package is current."""
-    args = _run_install_script(
-        tmp_path,
-        {"DEEPAGENTS_CODE_PYTHON": "3.12"},
-        installed_version="0.1.0",
-        latest_version="0.1.0",
-    )
-
-    assert args[:5] == ["tool", "install", "-U", "--python", "3.12"]
-    assert args[-1] == "deepagents-code"
-
-
-def test_install_script_out_of_date_auto_updates_without_tty(tmp_path: Path) -> None:
-    """Out of date with no TTY to prompt: upgrade automatically (legacy path)."""
-    proc, args_path = _invoke(
-        tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0"
-    )
-
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
-    # This path can't prompt, so the headline is the only notice the user gets
-    # that a version move is about to happen — it must still lead with the
-    # verdict rather than only explaining why no prompt appeared.
-    assert (
-        "Update available: deepagents-code 0.1.0 → 0.2.0 — updating (no TTY to prompt)."
-        in proc.stdout
-    )
-
-
-def test_install_script_assume_yes_updates_without_prompt(tmp_path: Path) -> None:
-    """`DEEPAGENTS_CODE_YES=1` upgrades an out-of-date install without asking."""
-    proc, args_path = _invoke(
-        tmp_path,
-        {"DEEPAGENTS_CODE_YES": "1"},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
-    # Unattended runs get the same verdict-first headline and changelog link as
-    # the interactive path; only the prompt is skipped.
-    output = proc.stdout + proc.stderr
-    assert "Update available: deepagents-code 0.1.0 → 0.2.0" in output
-    assert (
-        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
-        "deepagents-code%3D%3D0.2.0" in output
-    )
-
-
-@pytest.mark.parametrize("assume_yes", ["true", "TRUE", "yes", " YES "])
-def test_install_script_assume_yes_accepts_codex_style_truthy_values(
-    tmp_path: Path, assume_yes: str
-) -> None:
-    """`DEEPAGENTS_CODE_YES` accepts common non-interactive truthy values."""
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {"DEEPAGENTS_CODE_YES": assume_yes},
-        answer="n",
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert code == 0
-    assert "Keeping deepagents-code" not in output
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
-
-
-def test_install_script_unreachable_pypi_falls_back_to_upgrade(tmp_path: Path) -> None:
-    """If the latest version can't be fetched, uv still attempts an upgrade."""
-    args = _run_install_script(tmp_path, {}, installed_version="0.1.0", curl_fails=True)
-
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
 
 
 def test_install_script_retries_transient_pypi_failure(tmp_path: Path) -> None:
@@ -969,55 +695,6 @@ def test_install_script_live_log_is_not_world_readable(tmp_path: Path) -> None:
     assert stat.S_IMODE(log_path.stat().st_mode) & 0o077 == 0
 
 
-def test_install_script_live_log_replaces_prior_run_contents(tmp_path: Path) -> None:
-    """A second install must still log live, not silently fall back.
-
-    `setup_live_install_log` renames this run's log over any prior one. If it
-    instead let noclobber refuse over the surviving file, the run would fall
-    back to mktemp and *every install after the user's first* would lose live
-    logging and the `tail -f` hint — while the log still gets published, so
-    content-only assertions would not notice.
-    """
-    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
-    log_path.parent.mkdir(parents=True)
-    log_path.write_text("stale output from a previous run\n")
-
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": "this run's output"},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert log_path.read_text() == "this run's output\n"
-    assert "Update log: tail -f" in proc.stdout
-
-
-def test_install_script_fresh_install_omits_update_log_hint(tmp_path: Path) -> None:
-    """A first-time install is not an update — don't offer an "update log"."""
-    env = _env(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _FRESH_INSTALL_DIFF},
-        installed_version=None,
-    )
-    env["PATH"] = (
-        f"{env['PATH'].split(os.pathsep)[0]}{os.pathsep}{_path_without_dcode()}"
-    )
-    proc = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    assert proc.returncode == 0
-    assert "Update log:" not in proc.stdout
-
-
 def test_install_script_symlinked_log_warns_and_offers_no_pointer(
     tmp_path: Path,
 ) -> None:
@@ -1067,163 +744,6 @@ def test_install_script_warns_when_live_log_ends_up_empty(tmp_path: Path) -> Non
     assert "Full log:" not in proc.stdout
 
 
-@pytest.mark.parametrize(
-    ("display", "expected"),
-    [
-        (
-            "~/.cache/deepagents-code/install.log",
-            "~/.cache/deepagents-code/install.log",
-        ),
-        ("~/my cache/install.log", "~/'my cache/install.log'"),
-        ("~/it's/install.log", "~/'it'\\''s/install.log'"),
-        ("/var/log/dcode.log", "/var/log/dcode.log"),
-        ("/var/my logs/dcode.log", "'/var/my logs/dcode.log'"),
-    ],
-)
-def test_install_script_tail_hint_quotes_only_when_needed(
-    display: str, expected: str
-) -> None:
-    """The hint is pasted into a shell, so it must survive word splitting.
-
-    Quoting only when needed keeps the common path spelled identically to the
-    `Full log:` pointer; a path with spaces or a quote still round-trips.
-    """
-    func = _extract_shell_function("tail_hint_quote")
-    hint = _extract_shell_function("log_update_tail_hint")
-    script = (
-        "log_info() { printf '%s\\n' \"$*\"; }\n"
-        f"{func}\n{hint}\n"
-        'UV_LIVE_LOG=true PRE_VERSION=0.1.0 INSTALL_LOG_DISPLAY="$1" '
-        "log_update_tail_hint\n"
-    )
-    proc = subprocess.run(
-        ["bash", "-c", script, "bash", display],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == f"Update log: tail -f {expected}"
-
-
-def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> None:
-    """Answering 'n' to the update prompt keeps the current version (no uv)."""
-    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
-    log_path.parent.mkdir(parents=True)
-    log_path.write_text("previous install failure\n")
-    code, output, args_path = _invoke_interactive(
-        tmp_path, {}, answer="n", installed_version="0.1.0", latest_version="0.2.0"
-    )
-
-    assert code == 0
-    assert not args_path.exists()
-    # The headline must lead with the verdict, not the changelog link. Assert
-    # presence before ordering: `.index` raises ValueError rather than failing
-    # as an assertion when a string is missing entirely.
-    assert "Update available: deepagents-code 0.1.0 → 0.2.0" in output
-    assert "What's new:" in output
-    assert output.index(
-        "Update available: deepagents-code 0.1.0 → 0.2.0"
-    ) < output.index("What's new:")
-    assert (
-        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
-        "deepagents-code%3D%3D0.2.0" in output
-    )
-    assert "Keeping deepagents-code 0.1.0" in output
-    assert log_path.read_text() == "previous install failure\n"
-
-
-def test_install_script_prompt_read_failure_continues_update(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A prompt that becomes unreadable after probing must not decline the update."""
-    script = tmp_path / "install.sh"
-    source = SCRIPT.read_text(encoding="utf-8")
-    source = source.replace(
-        _extract_shell_function("can_prompt"),
-        "can_prompt() {\n  return 0\n}",
-    ).replace(
-        _extract_shell_function("prompt_yn"),
-        "prompt_yn() {\n  return 2\n}",
-    )
-    script.write_text(source, encoding="utf-8")
-    _make_executable(script)
-    monkeypatch.setitem(globals(), "SCRIPT", script)
-
-    proc, args_path = _invoke(
-        tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0"
-    )
-
-    assert proc.returncode == 0
-    assert "Could not ask — continuing with the update." in proc.stderr
-    assert "Keeping deepagents-code 0.1.0" not in proc.stdout
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
-
-
-def _invoke_with_unaskable_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Run the script with a terminal that probes open but cannot be asked.
-
-    `can_prompt` succeeds and `prompt_yn` returns 2 — the detached-session
-    shape, where the branches under test must complete the install rather than
-    read the silence as a refusal. Stubbing is the only way in: a genuinely
-    unaskable terminal cannot be produced from inside a whole-script run, and
-    `prompt_yn`'s own 1-vs-2 contract is pinned separately by the harness
-    tests above.
-    """
-    script = tmp_path / "install.sh"
-    source = (
-        SCRIPT.read_text(encoding="utf-8")
-        .replace(_extract_shell_function("can_prompt"), "can_prompt() {\n  return 0\n}")
-        .replace(_extract_shell_function("prompt_yn"), "prompt_yn() {\n  return 2\n}")
-    )
-    script.write_text(source, encoding="utf-8")
-    _make_executable(script)
-    monkeypatch.setitem(globals(), "SCRIPT", script)
-    return _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")
-
-
-def test_install_script_unaskable_prompt_continues_past_known_extras(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An unanswerable extras prompt completes the install and says extras will go.
-
-    Collapsing this into the abort arm would turn a broken terminal into a
-    silent `exit 0` that looks exactly like success, leaving the user on the
-    old version with no idea why.
-    """
-    _write_uv_receipt(tmp_path / "tools", ["anthropic"])
-
-    proc, args_path = _invoke_with_unaskable_prompt(tmp_path, monkeypatch)
-
-    assert proc.returncode == 0
-    assert (
-        "Could not ask — continuing; the extras above will be removed." in proc.stderr
-    )
-    assert "Aborted." not in proc.stdout
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
-
-
-def test_install_script_unaskable_prompt_continues_past_unreadable_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The same holds when the receipt could not be read at all."""
-    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
-    receipt.write_text("[tool]\nnot-a-requirements-array\n")
-
-    proc, args_path = _invoke_with_unaskable_prompt(tmp_path, monkeypatch)
-
-    assert proc.returncode == 0
-    assert (
-        "Could not ask — continuing; any extras this install has will be removed."
-        in proc.stderr
-    )
-    assert "Aborted." not in proc.stdout
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
-
-
 @pytest.mark.parametrize("stdin_is_tty", [True, False])
 def test_prompt_yn_eof_on_an_open_terminal_declines(
     tmp_path: Path, *, stdin_is_tty: bool
@@ -1260,44 +780,6 @@ def test_prompt_yn_keeps_an_answer_submitted_without_a_newline(
     assert "declining prompt" not in output
 
 
-def test_prompt_yn_without_a_terminal_reports_unaskable(tmp_path: Path) -> None:
-    """No controlling terminal is 2 — "nobody could answer", not "the user said no".
-
-    The complement of the EOF tests above: here `/dev/tty` cannot be opened at
-    all (detached session, cron, systemd), so there is genuinely no human, and
-    callers are meant to complete the install rather than treat the silence as
-    a refusal.
-    """
-    script = _write_prompt_yn_harness(tmp_path)
-    proc = subprocess.run(
-        ["bash", str(script)],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        start_new_session=True,
-    )
-
-    assert "[rc=2]" in proc.stderr
-    assert "Could not open /dev/tty" in proc.stderr
-
-
-def test_install_script_attached_tty_eof_declines_update(tmp_path: Path) -> None:
-    """A real Ctrl-D at the update prompt keeps the installed version."""
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {},
-        answer=_CTRL_D,
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert code == 0
-    assert "No answer — declining prompt." in output
-    assert "Keeping deepagents-code 0.1.0" in output
-    assert not args_path.exists()
-
-
 def test_install_script_attached_tty_eof_preserves_extras(tmp_path: Path) -> None:
     """A real Ctrl-D at the extras prompt aborts before uv rebuilds the environment.
 
@@ -1321,64 +803,6 @@ def test_install_script_attached_tty_eof_preserves_extras(tmp_path: Path) -> Non
     assert not args_path.exists()
 
 
-def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
-    """Answering 'y' to the update prompt runs `uv tool install -U`."""
-    code, output, args_path = _invoke_interactive(
-        tmp_path, {}, answer="y", installed_version="0.1.0", latest_version="0.2.0"
-    )
-
-    assert code == 0
-    # The accept-path uv argv is identical to the auto-update and assume-yes
-    # paths, so assert the "Updating ..." line to prove the prompt was shown and
-    # answered yes rather than bypassed.
-    assert "Updating deepagents-code 0.1.0 → 0.2.0" in output
-    assert "Update available: deepagents-code 0.1.0 → 0.2.0\n" in output
-    assert (
-        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
-        "deepagents-code%3D%3D0.2.0" in output
-    )
-    assert "Install update?" in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
-
-
-def test_install_script_pinned_version_skips_prompt_over_existing_install(
-    tmp_path: Path,
-) -> None:
-    """A pinned `DEEPAGENTS_CODE_VERSION` installs directly, never prompting.
-
-    Guards the dispatch gate (`[ -z "$VERSION" ]`) that routes an explicit pin
-    past the update prompt: answering 'n' must not stop the install, and neither
-    the prompt arrow nor the "Keeping" decline message should appear.
-    """
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {"DEEPAGENTS_CODE_VERSION": "0.2.0"},
-        answer="n",
-        installed_version="0.1.0",
-        latest_version="0.3.0",
-    )
-
-    assert code == 0
-    assert "→" not in output
-    assert "What's new:" not in output
-    assert "Keeping deepagents-code" not in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code==0.2.0"
-
-
-def test_can_prompt_false_when_not_interactive(tmp_path: Path) -> None:
-    """`can_prompt` short-circuits to false when `IS_INTERACTIVE` is false."""
-    assert _eval_can_prompt(tmp_path, is_interactive=False, stdin_is_tty=True) is False
-
-
-def test_can_prompt_true_when_stdin_is_a_tty(tmp_path: Path) -> None:
-    """A real tty on stdin satisfies the `[ -t 0 ]` fast path."""
-    assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=True) is True
-
-
 def test_can_prompt_false_without_usable_tty(tmp_path: Path) -> None:
     """No openable `/dev/tty` yields false even when `IS_INTERACTIVE` is true.
 
@@ -1388,69 +812,6 @@ def test_can_prompt_false_without_usable_tty(tmp_path: Path) -> None:
     wrongly report the unanswerable cron/systemd/CI case as promptable.
     """
     assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=False) is False
-
-
-def _eval_prompt_yn(tmp_path: Path, *, is_interactive: bool, answer: str | None) -> int:
-    """Run the real `prompt_yn` and report its raw exit code.
-
-    `answer=None` detaches the controlling terminal (stdin from `/dev/null`,
-    `start_new_session`), so there is no terminal to prompt on — the rc=2
-    path. Otherwise stdin is a real pty with the answer written in, so the
-    `[ -t 0 ]` branch reads it and rc distinguishes yes (0) from no (1).
-    """
-    script = tmp_path / "prompt_yn_harness.sh"
-    script.write_text(
-        f"{_extract_shell_function('prompt_yn')}\n"
-        f"IS_INTERACTIVE={'true' if is_interactive else 'false'}\n"
-        "prompt_yn 'Proceed?'\n",
-        encoding="utf-8",
-    )
-    if answer is None:
-        proc = subprocess.run(
-            ["bash", str(script)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            start_new_session=True,
-        )
-        return proc.returncode
-    primary, secondary = pty.openpty()
-    try:
-        # Write the answer before the child reads, so `read` sees it on the
-        # pty's input queue rather than blocking.
-        os.write(primary, (answer + "\n").encode())
-        proc = subprocess.run(
-            ["bash", str(script)],
-            stdin=secondary,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    finally:
-        os.close(secondary)
-        os.close(primary)
-    return proc.returncode
-
-
-def test_prompt_yn_yes_returns_zero(tmp_path: Path) -> None:
-    """An affirmative answer is rc=0."""
-    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer="y") == 0
-
-
-def test_prompt_yn_no_returns_one(tmp_path: Path) -> None:
-    """A declined answer is rc=1, distinct from the no-terminal case."""
-    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer="n") == 1
-
-
-def test_prompt_yn_no_terminal_returns_two(tmp_path: Path) -> None:
-    """No usable terminal is rc=2, so callers can default instead of decline."""
-    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer=None) == 2
-
-
-def test_prompt_yn_non_interactive_returns_two(tmp_path: Path) -> None:
-    """`IS_INTERACTIVE=false` is rc=2 — unaskable, not a "no"."""
-    assert _eval_prompt_yn(tmp_path, is_interactive=False, answer="y") == 2
 
 
 def _eval_version_at_least(tmp_path: Path, have: str, want: str) -> bool:
@@ -1531,86 +892,6 @@ _UV_PROGRESS_STDERR = (
 )
 
 
-def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
-    """A fresh install hides every dependency touched by uv."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _FRESH_INSTALL_DIFF},
-        installed_version=None,
-    )
-
-    assert proc.returncode == 0
-    assert "Installed 3 packages" not in proc.stderr
-    assert "Installed packages:" not in proc.stderr
-    assert "agent-client-protocol" not in proc.stderr
-
-
-def test_install_script_verbose_lists_every_package(tmp_path: Path) -> None:
-    """`DEEPAGENTS_CODE_VERBOSE=1` opts back in to the full dependency list."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _FRESH_INSTALL_DIFF, "DEEPAGENTS_CODE_VERBOSE": "1"},
-        installed_version=None,
-    )
-
-    assert proc.returncode == 0
-    assert "agent-client-protocol==0.10.1" in proc.stderr
-    assert "zstandard==0.25.0" in proc.stderr
-    assert "Installed 3 packages" not in proc.stderr
-
-
-def test_install_script_hides_uv_download_and_build_progress(tmp_path: Path) -> None:
-    """Non-verbose installs hide uv's download and build progress lines."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR},
-        installed_version=None,
-    )
-
-    assert proc.returncode == 0
-    assert "Downloading uvloop" not in proc.stderr
-    assert "Downloaded uvloop" not in proc.stderr
-    assert "Building forbiddenfruit" not in proc.stderr
-    assert "Built forbiddenfruit" not in proc.stderr
-
-
-def test_install_script_verbose_shows_uv_download_and_build_progress(
-    tmp_path: Path,
-) -> None:
-    """Verbose installs preserve uv's raw download and build progress lines."""
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR,
-            "DEEPAGENTS_CODE_VERBOSE": "1",
-        },
-        installed_version=None,
-    )
-
-    assert proc.returncode == 0
-    assert "Downloading uvloop" in proc.stderr
-    assert "Downloaded uvloop" in proc.stderr
-    assert "Building forbiddenfruit" in proc.stderr
-    assert "Built forbiddenfruit" in proc.stderr
-
-
-def test_install_script_upgrade_still_shows_diff(tmp_path: Path) -> None:
-    """An upgrade keeps its compact changed-package diff."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF},
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "Updated packages:" in proc.stderr
-    assert "0.1.18 \u2192 0.1.19" in proc.stderr
-    assert "brand-new-dep" in proc.stderr
-    assert "(new)" in proc.stderr
-    assert "Installed 3 packages" not in proc.stderr
-
-
 def test_install_script_same_version_with_dependency_updates_says_dependencies_updated(
     tmp_path: Path,
 ) -> None:
@@ -1640,140 +921,6 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
     )
     assert "✔ Dependencies updated. Run: dcode" in proc.stdout
     assert "✔ Already installed. Run: dcode" not in proc.stdout
-
-
-def _make_editable(tmp_path: Path, *, version: str = "0.1.0") -> Path:
-    """Mark the staged uv tool install as an editable one.
-
-    Mirrors what `uv tool install -e <path>` leaves behind: a `direct_url.json`
-    in the dist-info recording `"editable": true` plus the source it points at.
-    The script globs for exactly this file, so nothing else needs to change.
-
-    Returns the source directory named in the marker.
-    """
-    src = tmp_path / "src" / "deepagents"
-    src.mkdir(parents=True, exist_ok=True)
-    dist_info = (
-        tmp_path
-        / "tools"
-        / "deepagents-code"
-        / "lib"
-        / "python3.13"
-        / "site-packages"
-        / f"deepagents_code-{version}.dist-info"
-    )
-    dist_info.mkdir(parents=True, exist_ok=True)
-    (dist_info / "direct_url.json").write_text(
-        f'{{"url": "file://{src}", "dir_info": {{"editable": true}}}}\n'
-    )
-    return src
-
-
-def test_install_script_editable_install_skips_the_extras_check(
-    tmp_path: Path,
-) -> None:
-    """An editable install never gets the extras-loss warning.
-
-    Its receipt can carry extras like any other, but an editable reinstall is
-    a developer rebuilding from local source on purpose. Warning here — and
-    offering to abort — would fire on every dev re-run.
-    """
-    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
-    _make_editable(tmp_path)
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "editable install" in proc.stdout
-    assert "extras that a bare re-run will remove" not in proc.stderr
-    assert "which extras this install was built with" not in proc.stderr
-
-
-def test_install_script_editable_install_keeps_the_neutral_footer(
-    tmp_path: Path,
-) -> None:
-    """An editable rebuild falls through to `Setup complete.` even when deps moved.
-
-    The same-version-plus-dependency-diff shape would otherwise report
-    `Dependencies updated.`; the editable guard on that branch is what keeps a
-    rebuild from local source out of the wording reserved for a PyPI install
-    whose dependencies actually moved.
-    """
-    _make_editable(tmp_path, version="0.1.8")
-
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF},
-        installed_version="0.1.8",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert "editable install" in proc.stdout
-    assert "✔ Setup complete. Run: dcode" in proc.stdout
-    assert "Dependencies updated." not in proc.stdout
-    assert "Already installed." not in proc.stdout
-
-
-def test_install_script_same_version_no_dependency_changes_says_up_to_date(
-    tmp_path: Path,
-) -> None:
-    """Unchanged app version + no uv package diff keeps the flat no-op message.
-
-    The negative mirror of the dependency-update test: when uv runs but moves
-    nothing (only timing/summary noise), the flag must stay false so the plain
-    "already up to date" message is emitted. Guards against the flag defaulting
-    on, the conditional inverting, or the grep matching uv's noise lines. The
-    log is still written (the no-op stderr), so the shared `Full log:` pointer
-    still fires — only the dependency-change wording is suppressed.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _NO_PACKAGE_CHANGE_STDERR},
-        installed_version="0.1.8",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert "deepagents-code 0.1.8 already up to date." in proc.stdout
-    assert "dependencies were updated" not in proc.stdout
-    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
-    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
-        f"{_NO_PACKAGE_CHANGE_STDERR}\n"
-    )
-    assert "✔ Already installed. Run: dcode" in proc.stdout
-
-
-def test_install_script_same_version_with_new_dependency_says_dependencies_updated(
-    tmp_path: Path,
-) -> None:
-    """A pure-addition diff also counts as a dependency change.
-
-    A new transitive dep (a `+ pkg==` line with no matching `-`) trips the flag
-    just like an upgrade does, so the same-version branch reports the change
-    rather than a flat no-op. Pins this `+`-only semantics deliberately, and
-    verifies the addition-only diff is persisted to the install log.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_ADDITION_DIFF},
-        installed_version="0.1.8",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
-    ) in proc.stdout
-    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
-    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
-        f"{_DEPENDENCY_ADDITION_DIFF}\n"
-    )
 
 
 def test_install_script_dependency_update_without_writable_log_omits_log_pointer(
@@ -1806,44 +953,6 @@ def test_install_script_dependency_update_without_writable_log_omits_log_pointer
     )
     assert "Full log:" not in proc.stdout
     assert not (blocker / "cache").exists()
-
-
-def test_install_script_dependency_update_with_failed_log_copy_omits_log_pointer(
-    tmp_path: Path,
-) -> None:
-    """When log creation succeeds but copying fails, no `Full log:` pointer."""
-    if _RUNNING_AS_ROOT:
-        pytest.skip("root can write through directory permissions")
-
-    cache = tmp_path / "cache"
-    install_log_dir = cache / "deepagents-code"
-    install_log_dir.mkdir(parents=True)
-    install_log_dir.chmod(0o500)
-
-    try:
-        proc, _ = _invoke(
-            tmp_path,
-            {
-                "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
-                "XDG_CACHE_HOME": str(cache),
-            },
-            installed_version="0.1.8",
-            latest_version="0.1.20",
-        )
-    finally:
-        install_log_dir.chmod(0o700)
-
-    assert proc.returncode == 0
-    assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
-        in proc.stdout
-    )
-    assert "Full log:" not in proc.stdout
-    assert not (install_log_dir / "install.log").exists()
-    # An unreadable log dir also fails the live create, so the run falls back
-    # to staged capture. The hint must not advertise a file to follow that no
-    # live path is writing.
-    assert "Update log:" not in proc.stdout
 
 
 def test_install_script_live_log_create_failure_keeps_prior_log(
@@ -2005,232 +1114,6 @@ def _write_uv_receipt(
     return receipt
 
 
-def test_install_script_upgrade_footer_says_upgraded(tmp_path: Path) -> None:
-    """A deliberate move to the PyPI latest claims the upgrade in the footer.
-
-    The script fetched the latest version, confirmed it differed from the
-    installed one, and proceeded — the one path where the move's direction is
-    known, so the footer can say "Upgraded." instead of the neutral "changed."
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
-            # Post-install `dcode -v` must report the new version, otherwise
-            # PRE_VERSION == NEW_VERSION and the same-version branch fires.
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
-        },
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Upgraded. Run: dcode" in proc.stdout
-    assert "Version changed" not in proc.stdout
-    assert "Setup complete" not in proc.stdout
-
-
-def test_install_script_upgrade_footer_says_upgraded_with_assume_yes(
-    tmp_path: Path,
-) -> None:
-    """`DEEPAGENTS_CODE_YES` takes a different branch to the same conclusion.
-
-    `_invoke` is always detached from a TTY, so the plain upgrade test only
-    reaches the "no TTY to prompt" branch. Each branch sets `UPGRADE_INTENDED`
-    separately, so without this the assume-yes assignment could be deleted
-    with the suite still green.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_YES": "1",
-            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
-        },
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Upgraded. Run: dcode" in proc.stdout
-    assert "Version changed" not in proc.stdout
-
-
-def test_install_script_upgrade_footer_says_upgraded_when_accepted(
-    tmp_path: Path,
-) -> None:
-    """The interactive accept — the most common human path — claims the upgrade.
-
-    This is also the only live-log run with a prompt, so it exercises fd 9 and
-    `prompt_yn`'s fd 3 open at once: the hint and the log must both survive.
-    """
-    code, output, _ = _invoke_interactive(
-        tmp_path,
-        {
-            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
-        },
-        answer="y",
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert code == 0
-    assert "✔ Upgraded. Run: dcode" in output
-    assert "Version changed" not in output
-    assert "Update log: tail -f" in output
-    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
-    assert _UPGRADE_DIFF in log_path.read_text()
-
-
-def test_install_script_prerelease_upgrade_footer_is_neutral(tmp_path: Path) -> None:
-    """A PEP 440 prerelease move avoids the numeric-only footer comparator."""
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.0",
-        },
-        installed_version="0.1.0rc1",
-        latest_version="0.1.0",
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Version changed. Run: dcode" in proc.stdout
-    assert "Upgraded." not in proc.stdout
-    assert "integer expression expected" not in proc.stderr
-
-
-def test_install_script_custom_index_downgrade_footer_is_neutral(
-    tmp_path: Path,
-) -> None:
-    """A custom index that resolves older than the PyPI latest is not an upgrade.
-
-    The script targeted the PyPI latest (0.1.20) and intended an upgrade, but
-    uv honored UV_INDEX_URL and installed an older version (0.1.18) than was
-    already present (0.1.19). Because the footer keys on the *installed*
-    version matching the probed latest — not on intent — this concretely
-    downward move gets the neutral "Version changed." rather than "Upgraded."
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "UV_INDEX_URL": "https://packages.example.invalid/simple",
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.18",
-        },
-        installed_version="0.1.19",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Version changed. Run: dcode" in proc.stdout
-    assert "Upgraded." not in proc.stdout
-
-
-def test_install_script_pypi_downgrade_footer_is_neutral(tmp_path: Path) -> None:
-    """A PyPI version below the installed version is not an upgrade.
-
-    The unpinned path targets PyPI's latest and does install that exact version,
-    but a previously installed pinned or custom build can still be newer.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.20",
-        },
-        installed_version="0.2.0",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Version changed. Run: dcode" in proc.stdout
-    assert "Upgraded." not in proc.stdout
-
-
-def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -> None:
-    """Pinning an older version must not claim an upgrade.
-
-    `bash -s -- 0.1.0` over an installed 0.1.19 moves the version but downwards.
-    The pinned path retains the general setup footer rather than the neutral
-    unpinned-version-change footer.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_VERSION": "0.1.0",
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.0",
-        },
-        installed_version="0.1.19",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "Upgraded." not in proc.stdout
-    assert "✔ Setup complete. Run: dcode" in proc.stdout
-
-
-def test_install_script_prerelease_downgrade_footer_is_not_upgrade(
-    tmp_path: Path,
-) -> None:
-    """An explicit prerelease strategy must not claim an upgrade either.
-
-    The version pin is not the only way an unpinned-looking run moves backwards.
-    `DEEPAGENTS_CODE_PRERELEASE=disallow` over an installed `0.2.0rc1` resolves
-    to the latest *stable*, which can be older than what is there — so the
-    footer's "resolution always picks the newest candidate" assumption only
-    holds when no prerelease strategy was requested.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_PRERELEASE": "disallow",
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.1.9",
-        },
-        installed_version="0.2.0rc1",
-        latest_version="0.1.9",
-    )
-
-    assert proc.returncode == 0
-    assert "Upgraded." not in proc.stdout
-    assert "✔ Setup complete. Run: dcode" in proc.stdout
-
-
-def test_install_script_fresh_install_footer_says_setup_complete(
-    tmp_path: Path,
-) -> None:
-    """A fresh install keeps the `Setup complete.` footer.
-
-    The host `PATH` must be scrubbed of the test venv's real `dcode` —
-    otherwise the pre-install probe finds it and the run becomes a same-version
-    no-op instead of a fresh install. No post-install `dcode` is staged either,
-    so `PRE_VERSION`/`NEW_VERSION` stay empty and the footer holds the
-    fresh-install branch.
-    """
-    env = _env(tmp_path, {}, installed_version=None)
-    env["PATH"] = (
-        f"{env['PATH'].split(os.pathsep)[0]}{os.pathsep}{_path_without_dcode()}"
-    )
-    proc = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    assert proc.returncode == 0
-    assert "✔ Setup complete. Run: dcode" in proc.stdout
-
-
 def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
     """A successful upgrade surfaces the persistent uv log, not just failures."""
     proc, _ = _invoke(
@@ -2245,107 +1128,26 @@ def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
     assert "Update log: tail -f ~/.cache/deepagents-code/install.log" in proc.stdout
 
 
-def test_install_script_dependency_bump_defers_log_pointer_to_footer(
+def test_install_script_receipt_extras_with_metacharacters_warns(
     tmp_path: Path,
 ) -> None:
-    """The dep-bump success line defers to `Full log:` instead of repeating it."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF},
-        installed_version="0.1.8",
-        latest_version="0.1.20",
-    )
+    """Shell metacharacters in receipt extras must not reach the printed hint.
 
-    assert proc.returncode == 0
-    assert "dependencies were updated." in proc.stdout
-    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
-    # The success line used to carry its own `Details:` copy of the same path,
-    # printing it twice on consecutive lines.
-    assert "Details:" not in proc.stdout
-    # The path appears twice, spelled identically both times: the pre-install
-    # `Update log: tail -f ...` hint (live output) and the post-install
-    # `Full log:` pointer. A metacharacter-free path is never quoted, so one
-    # spelling covers both sites.
-    assert "Update log: tail -f ~/.cache/deepagents-code/install.log" in proc.stdout
-    assert proc.stdout.count("~/.cache/deepagents-code/install.log") == 2
-
-
-def test_install_script_omits_log_pointer_when_uv_wrote_nothing(
-    tmp_path: Path,
-) -> None:
-    """An empty log is a dead end — don't send the user to a zero-byte file.
-
-    uv writes nothing to stderr on a clean reinstall, so the log file exists but
-    holds nothing. The pointer is guarded on the file's size rather than on the
-    display name being set.
+    The extras value is echoed inside a double-quoted `DEEPAGENTS_CODE_EXTRAS`
+    suggestion the user may paste; a tampered receipt could otherwise smuggle
+    `$(...)` into that paste. Anything outside `[A-Za-z0-9_,.-]` is treated as
+    an unparseable receipt — the run warns and omits the paste-ready hint.
     """
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "Full log:" not in proc.stdout
-
-
-def test_install_script_warns_when_upgrade_drops_receipt_extras(tmp_path: Path) -> None:
-    """A bare re-run warns when the existing install was built with extras.
-
-    Without `DEEPAGENTS_CODE_EXTRAS`, `uv tool install -U deepagents-code`
-    rebuilds the environment against the bare package and silently removes the
-    extras' packages. The script must read the extras off uv's receipt and warn
-    (with the re-run hint) before that rebuild happens.
-    """
-    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert (
-        "This install has extras that a bare re-run will remove: anthropic,openai"
-        in proc.stderr
-    )
-    assert (
-        'To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS="anthropic,openai"'
-        in proc.stderr
-    )
-
-
-def test_install_script_no_extras_warning_when_receipt_has_none(tmp_path: Path) -> None:
-    """An empty extras list in the receipt stays silent."""
-    _write_uv_receipt(tmp_path / "tools", [])
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "extras that a bare re-run will remove" not in proc.stderr
-
-
-def test_install_script_extras_ignores_supplemental_with_packages(
-    tmp_path: Path,
-) -> None:
-    """A `--with rich[jupyter]` entry is not reported as a deepagents-code extra.
-
-    uv records `--with` requirements in the same `requirements` array as the
-    tool. Suggesting `DEEPAGENTS_CODE_EXTRAS="jupyter"` would resolve to
-    `deepagents-code[jupyter]` — an extra that does not exist — while still
-    dropping the supplemental package, so the parse must be scoped to the
-    `deepagents-code` entry.
-    """
-    _write_uv_receipt(
-        tmp_path / "tools", ["anthropic"], with_packages={"rich": ["jupyter"]}
+    # Sentinel under tmp_path, not a fixed system path: a shared target would
+    # make this test fail (or pass) for reasons that have nothing to do with
+    # the script, and it would leave litter behind.
+    sentinel = tmp_path / "pwned"
+    payload = f"$(touch {sentinel})"
+    receipt = _write_uv_receipt(tmp_path / "tools", [payload])
+    # Keep the file plausible TOML but with the payload as the extra name.
+    receipt.write_text(
+        '[tool]\nrequirements = [{ name = "deepagents-code",'
+        f' extras = ["{payload}"], specifier = "==0.1.0" }}]\n'
     )
 
     proc, _ = _invoke(
@@ -2356,29 +1158,10 @@ def test_install_script_extras_ignores_supplemental_with_packages(
     )
 
     assert proc.returncode == 0
-    assert (
-        "This install has extras that a bare re-run will remove: anthropic"
-        in proc.stderr
-    )
-    assert "jupyter" not in proc.stderr
-
-
-def test_install_script_no_extras_warning_when_only_with_package_has_extras(
-    tmp_path: Path,
-) -> None:
-    """A supplemental package's extras alone must not trigger the warning."""
-    _write_uv_receipt(tmp_path / "tools", [], with_packages={"rich": ["jupyter"]})
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "extras that a bare re-run will remove" not in proc.stderr
-    assert "Could not read" not in proc.stderr
+    assert "Could not read" in proc.stderr
+    assert "DEEPAGENTS_CODE_EXTRAS=" not in proc.stderr
+    assert "$(touch" not in proc.stderr
+    assert not sentinel.exists()
 
 
 def test_install_script_warns_when_receipt_is_unparseable(tmp_path: Path) -> None:
@@ -2420,27 +1203,15 @@ def test_install_script_warns_when_receipt_is_unparseable(tmp_path: Path) -> Non
     assert "re-run with the same value" in proc.stderr
 
 
-def test_install_script_receipt_extras_with_metacharacters_warns(
-    tmp_path: Path,
-) -> None:
-    """Shell metacharacters in receipt extras must not reach the printed hint.
+def test_install_script_warns_when_upgrade_drops_receipt_extras(tmp_path: Path) -> None:
+    """A bare re-run warns when the existing install was built with extras.
 
-    The extras value is echoed inside a double-quoted `DEEPAGENTS_CODE_EXTRAS`
-    suggestion the user may paste; a tampered receipt could otherwise smuggle
-    `$(...)` into that paste. Anything outside `[A-Za-z0-9_,.-]` is treated as
-    an unparseable receipt — the run warns and omits the paste-ready hint.
+    Without `DEEPAGENTS_CODE_EXTRAS`, `uv tool install -U deepagents-code`
+    rebuilds the environment against the bare package and silently removes the
+    extras' packages. The script must read the extras off uv's receipt and warn
+    (with the re-run hint) before that rebuild happens.
     """
-    # Sentinel under tmp_path, not a fixed system path: a shared target would
-    # make this test fail (or pass) for reasons that have nothing to do with
-    # the script, and it would leave litter behind.
-    sentinel = tmp_path / "pwned"
-    payload = f"$(touch {sentinel})"
-    receipt = _write_uv_receipt(tmp_path / "tools", [payload])
-    # Keep the file plausible TOML but with the payload as the extra name.
-    receipt.write_text(
-        '[tool]\nrequirements = [{ name = "deepagents-code",'
-        f' extras = ["{payload}"], specifier = "==0.1.0" }}]\n'
-    )
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
 
     proc, _ = _invoke(
         tmp_path,
@@ -2450,56 +1221,14 @@ def test_install_script_receipt_extras_with_metacharacters_warns(
     )
 
     assert proc.returncode == 0
-    assert "Could not read" in proc.stderr
-    assert "DEEPAGENTS_CODE_EXTRAS=" not in proc.stderr
-    assert "$(touch" not in proc.stderr
-    assert not sentinel.exists()
-
-
-def test_install_script_no_extras_warning_when_receipt_omits_extras_key(
-    tmp_path: Path,
-) -> None:
-    """The receipt shape uv writes for a plain install stays silent.
-
-    uv omits the `extras` key entirely rather than writing `extras = []`, so
-    this — not the explicit-empty form — is the receipt every ordinary user
-    has. A parser that only recognises the explicit form would fall through to
-    the unreadable branch and warn on every single re-run.
-    """
-    _write_uv_receipt(tmp_path / "tools", None)
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
+    assert (
+        "This install has extras that a bare re-run will remove: anthropic,openai"
+        in proc.stderr
     )
-
-    assert proc.returncode == 0
-    assert "extras that a bare re-run will remove" not in proc.stderr
-    assert "Could not read" not in proc.stderr
-
-
-def test_install_script_warns_when_receipt_is_absent(tmp_path: Path) -> None:
-    """An install with no receipt at all is "couldn't tell", not "no extras".
-
-    uv predating `uv-receipt.toml`, a future relocation of the file, or a
-    partially-deleted tool dir all leave the install present but unexplained.
-    Treating that as extras-free drops the packages silently — the exact
-    outcome the warning exists to prevent.
-    """
-    (tmp_path / "tools" / "deepagents-code").mkdir(parents=True, exist_ok=True)
-
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
+    assert (
+        'To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS="anthropic,openai"'
+        in proc.stderr
     )
-
-    assert proc.returncode == 0
-    assert "Could not read" in proc.stderr
-    assert "re-run with the same value" in proc.stderr
 
 
 def test_install_script_warns_when_receipt_read_races(tmp_path: Path) -> None:
@@ -2593,25 +1322,6 @@ def test_install_script_extras_without_tty_proceeds_with_install(
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
-def test_install_script_unreadable_receipt_without_tty_proceeds_with_install(
-    tmp_path: Path,
-) -> None:
-    """The unreadable-receipt branch must also proceed when it cannot ask."""
-    (tmp_path / "tools" / "deepagents-code").mkdir(parents=True, exist_ok=True)
-
-    proc, args_path = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "Could not read" in proc.stderr
-    assert "Aborted." not in proc.stdout
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
-
-
 def test_install_script_warns_when_receipt_is_symlinked(tmp_path: Path) -> None:
     """A symlinked receipt is refused, but the refusal is announced.
 
@@ -2656,148 +1366,6 @@ def test_install_script_warns_when_receipt_is_unreadable(tmp_path: Path) -> None
     assert "Could not read" in proc.stderr
 
 
-def test_install_script_warns_when_the_tool_dir_has_no_package_dir(
-    tmp_path: Path,
-) -> None:
-    """A uv-managed install with nothing under `uv tool dir` is "couldn't tell".
-
-    The tool dir resolves and is searchable but holds no `deepagents-code`
-    directory — what a moved tool dir looks like (`UV_TOOL_DIR`, a changed
-    `tool-dir` in uv.toml, a relocated `XDG_DATA_HOME`). The old install is
-    still on `PATH`, so the rebuild really will drop whatever extras it has,
-    and its receipt is simply somewhere this run cannot see. Reporting "no
-    extras" here would silently delete the packages this check exists to
-    protect.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-        stage_uv_receipt=False,
-    )
-
-    assert proc.returncode == 0
-    assert "Could not read" in proc.stderr
-    assert "which extras this install was built with" in proc.stderr
-    # "Couldn't tell", never a positive claim about which extras exist.
-    assert "extras that a bare re-run will remove" not in proc.stderr
-
-
-def test_install_script_warns_when_uv_tool_dir_fails_over_an_install(
-    tmp_path: Path,
-) -> None:
-    """`uv tool dir` failing over an existing install is "couldn't tell".
-
-    A uv too old for the subcommand or a broken config leaves no way to reach
-    the receipt, and the rebuild would still drop whatever extras the install
-    has.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_TOOL_DIR_UNSUPPORTED": "1"},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "which extras this install was built with" in proc.stderr
-
-
-def test_install_script_silent_when_uv_tool_dir_fails_on_a_fresh_machine(
-    tmp_path: Path,
-) -> None:
-    """The same failure stays silent when nothing is installed yet.
-
-    Only a machine that already has an install can lose extras. Losing this
-    guard would print "could not read the uv tool receipt" on every fresh
-    install anywhere `uv tool dir` does not work.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_TOOL_DIR_UNSUPPORTED": "1"},
-        installed_version=None,
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "which extras this install was built with" not in proc.stderr
-
-
-def test_install_script_warns_about_extras_on_a_same_version_repair(
-    tmp_path: Path,
-) -> None:
-    """The extras check also guards the same-version repair path.
-
-    An install that is current but is not the one selected on PATH gets
-    reinstalled, and that reinstall drops extras exactly as an upgrade
-    would. Every other extras test moves the version, which would leave the
-    "covers the same-version repair paths" claim unverified. (The plain
-    same-version no-op exits before this point and reinstalls nothing, so it
-    needs no warning.)
-    """
-    tool_bin = tmp_path / "tool-bin"
-    tool_bin.mkdir()
-    dcode = tool_bin / "dcode"
-    dcode.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.2.0\\n"; exit 0; fi\n'
-        "exit 0\n"
-    )
-    _make_executable(dcode)
-    _write_uv_receipt(tmp_path / "tools", ["anthropic", "daytona"])
-
-    proc, args_path = _invoke(
-        tmp_path,
-        {"FAKE_UV_TOOL_BIN_DIR": str(tool_bin)},
-        installed_version="0.2.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "is current but is not selected on PATH" in proc.stdout
-    assert "extras that a bare re-run will remove: anthropic,daytona" in proc.stderr
-    assert 'DEEPAGENTS_CODE_EXTRAS="anthropic,daytona"' in proc.stderr
-    assert args_path.exists()
-
-
-def test_install_script_no_extras_warning_for_a_non_uv_install(tmp_path: Path) -> None:
-    """An install that did not come from uv has no receipt to miss.
-
-    `dcode` resolves on `PATH` but not from uv's tool bin dir (pipx, a manual
-    venv, a distro package), so uv never wrote a receipt for it and its absence
-    says nothing. Warning here would fire on every run for those users, which
-    is why the branch above is gated on the install being uv-managed rather
-    than on merely having a version.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_TOOL_BIN_DIR": str(tmp_path / "empty-tool-bin")},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-        stage_uv_receipt=False,
-    )
-
-    assert proc.returncode == 0
-    assert "which extras this install was built with" not in proc.stderr
-    assert "extras that a bare re-run will remove" not in proc.stderr
-
-
-def test_install_script_no_extras_warning_when_extras_explicit(tmp_path: Path) -> None:
-    """Passing `DEEPAGENTS_CODE_EXTRAS` is explicit intent — no warning."""
-    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
-
-    proc, _ = _invoke(
-        tmp_path,
-        {"DEEPAGENTS_CODE_EXTRAS": "anthropic,openai"},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "extras that a bare re-run will remove" not in proc.stderr
-
-
 def test_install_script_extras_interrupt_decline_aborts_before_uv(
     tmp_path: Path,
 ) -> None:
@@ -2821,25 +1389,6 @@ def test_install_script_extras_interrupt_decline_aborts_before_uv(
     assert "Continue anyway and remove them?" in output
     assert "Aborted. deepagents-code was left unchanged." in output
     assert not args_path.exists()
-
-
-def test_install_script_extras_interrupt_accept_proceeds(tmp_path: Path) -> None:
-    """Answering 'y' to the extras prompt continues the upgrade."""
-    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
-
-    code, output, args_path = _invoke_interactive(
-        tmp_path,
-        {},
-        answer=["y", "y"],
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert code == 0
-    assert "Continue anyway and remove them?" in output
-    assert "Aborted. deepagents-code was left unchanged." not in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
 
 
 def test_install_script_extras_assume_yes_skips_interrupt_with_tty(
@@ -2916,31 +1465,6 @@ def test_install_script_unreadable_receipt_interrupt_decline_aborts_before_uv(
     assert "Continue anyway?" in output
     assert "Aborted. deepagents-code was left unchanged." in output
     assert not args_path.exists()
-
-
-def test_install_script_unreadable_receipt_interrupt_accept_proceeds(
-    tmp_path: Path,
-) -> None:
-    """Answering 'y' to the unreadable-receipt prompt continues the upgrade."""
-    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
-    receipt.chmod(0o000)
-
-    try:
-        code, output, args_path = _invoke_interactive(
-            tmp_path,
-            {},
-            answer=["y", "y"],
-            installed_version="0.1.0",
-            latest_version="0.2.0",
-        )
-    finally:
-        receipt.chmod(0o644)
-
-    assert code == 0
-    assert "Continue anyway?" in output
-    assert "Aborted. deepagents-code was left unchanged." not in output
-    args = args_path.read_text().splitlines()
-    assert args[:3] == ["tool", "install", "-U"]
 
 
 @pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses file permissions")
@@ -3069,31 +1593,6 @@ def _run_copy_install_log(
     return int(match.group(1)), install_log_dir, install_log_dir / "install.log"
 
 
-def test_copy_install_log_publishes_captured_stderr(tmp_path: Path) -> None:
-    """The happy path publishes the content and leaves no staged file behind."""
-    rc, _log_dir, published = _run_copy_install_log(tmp_path)
-
-    assert rc == 0
-    assert published.read_text() == "captured uv stderr\n"
-
-
-def test_copy_install_log_live_accepts_the_log_uv_wrote(tmp_path: Path) -> None:
-    """A live run has nothing to stage — it only vouches for the path.
-
-    The content must survive untouched: uv already wrote it through the
-    inherited descriptor, and any copying here would be a second write to a
-    file the user may already be tailing.
-    """
-    log_dir = tmp_path / "home/cache"
-    log_dir.mkdir(parents=True)
-    (log_dir / "install.log").write_text("live uv output\n")
-
-    rc, _log_dir, published = _run_copy_install_log(tmp_path, live=True)
-
-    assert rc == 0
-    assert published.read_text() == "live uv output\n"
-
-
 def test_copy_install_log_live_rejects_symlink_planted_after_uv(
     tmp_path: Path,
 ) -> None:
@@ -3116,94 +1615,6 @@ def test_copy_install_log_live_rejects_symlink_planted_after_uv(
 
     assert rc == 2
     assert target.read_text() == "attacker content\n"
-
-
-def test_copy_install_log_live_reports_a_vanished_log(tmp_path: Path) -> None:
-    """A log removed after uv wrote it is loss, not a quiet rejected path."""
-    rc, _log_dir, published = _run_copy_install_log(tmp_path, live=True)
-
-    assert rc == 2
-    assert not published.exists()
-
-
-def _run_setup_live_install_log(
-    tmp_path: Path, *, uid: int, install_log: Path | None
-) -> tuple[str, str]:
-    """Run the real `setup_live_install_log` under a chosen effective uid.
-
-    Root must never take the live path: `copy_install_log` refuses to resolve
-    a user-writable parent as root, and streaming straight to `INSTALL_LOG`
-    would follow a symlink planted there. The whole-script suite skips
-    root-sensitive cases, so the guard is only reachable by overriding `id`.
-
-    Returns `UV_LIVE_LOG` and `uv_stderr` as the function left them.
-    """
-    harness = tmp_path / "setup_live_install_log_harness.sh"
-    log = "" if install_log is None else str(install_log)
-    harness.write_text(
-        "set -uo pipefail\n"
-        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        f"id() {{ printf '%s\\n' {uid}; }}\n"
-        f"{_extract_shell_function('setup_live_install_log')}\n"
-        "UV_LIVE_LOG=false\n"
-        "UV_LIVE_LOG_FD=9\n"
-        "uv_stderr=\n"
-        f"INSTALL_LOG={log!r}\n"
-        'INSTALL_LOG_DISPLAY="$INSTALL_LOG"\n'
-        f"install_log_dir={str(tmp_path)!r}\n"
-        "setup_live_install_log\n"
-        'printf "live=%s\\nstderr=%s\\n" "$UV_LIVE_LOG" "$uv_stderr"\n',
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(harness)],
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    assert proc.returncode == 0, proc.stderr
-    live = re.search(r"live=(\S*)", proc.stdout)
-    stderr_path = re.search(r"stderr=(\S*)", proc.stdout)
-    assert live is not None, proc.stdout
-    return live.group(1), stderr_path.group(1) if stderr_path else ""
-
-
-def test_setup_live_install_log_skips_the_live_path_as_root(tmp_path: Path) -> None:
-    """Root keeps the staged publish and never creates the log itself."""
-    log_path = tmp_path / "install.log"
-
-    live, uv_stderr = _run_setup_live_install_log(tmp_path, uid=0, install_log=log_path)
-
-    assert live == "false"
-    assert uv_stderr == ""
-    assert not log_path.exists()
-
-
-def test_setup_live_install_log_streams_live_when_unprivileged(
-    tmp_path: Path,
-) -> None:
-    """An ordinary user gets the live log, pointed at the real path."""
-    log_path = tmp_path / "install.log"
-
-    live, uv_stderr = _run_setup_live_install_log(
-        tmp_path, uid=1000, install_log=log_path
-    )
-
-    assert live == "true"
-    assert uv_stderr == str(log_path)
-    assert log_path.exists()
-    assert stat.S_IMODE(log_path.stat().st_mode) & 0o077 == 0
-    # The pending file is renamed into place, never left beside the log.
-    assert not (tmp_path / "install.log.new").exists()
-
-
-def test_setup_live_install_log_no_op_without_a_log_path(tmp_path: Path) -> None:
-    """A disabled log (empty `INSTALL_LOG`) must not reach the create."""
-    live, uv_stderr = _run_setup_live_install_log(tmp_path, uid=1000, install_log=None)
-
-    assert live == "false"
-    assert uv_stderr == ""
 
 
 def test_copy_install_log_stages_outside_user_writable_log_dir(
@@ -3328,18 +1739,6 @@ def test_copy_install_log_pins_parent_during_privileged_publication(
     )
 
 
-def test_copy_install_log_refuses_directory_target(tmp_path: Path) -> None:
-    """A directory at the publication path is not treated as a successful move."""
-    log_dir = tmp_path / "home" / "cache"
-    log_dir.mkdir(parents=True)
-    (log_dir / "install.log").mkdir()
-
-    rc, _log_dir, published = _run_copy_install_log(tmp_path, log_dir=log_dir)
-
-    assert rc == 1
-    assert published.is_dir()
-
-
 def test_copy_install_log_rejects_directory_created_during_publication(
     tmp_path: Path,
 ) -> None:
@@ -3444,68 +1843,6 @@ def test_copy_install_log_reports_operational_failure_distinctly(
     assert rc_rejected == 1
 
 
-def test_install_script_warns_when_the_install_log_cannot_be_written(
-    tmp_path: Path,
-) -> None:
-    """An unwritable cache dir is reported, not silently dropped.
-
-    `prepare_install_log_dir` only checks that the path is a real directory, so
-    one left root-owned by an earlier sudo run passes and the failure surfaces
-    later at staging. Without a warning the user cannot tell a run that logged
-    nothing from one whose logging broke.
-    """
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    log_dir = cache / "deepagents-code"
-    log_dir.mkdir()
-    log_dir.chmod(0o500)
-    try:
-        proc, _ = _invoke(
-            tmp_path,
-            {
-                "XDG_CACHE_HOME": str(cache),
-                "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
-            },
-            installed_version="0.1.0",
-            latest_version="0.2.0",
-        )
-    finally:
-        log_dir.chmod(0o755)
-
-    assert proc.returncode == 0
-    assert "Could not write the install log" in proc.stderr
-    assert "Full log:" not in proc.stdout
-
-
-def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
-    tmp_path: Path,
-) -> None:
-    """An empty `XDG_CACHE_HOME` falls back to `~/.cache` for the log path.
-
-    `_env` always sets `XDG_CACHE_HOME`, which would otherwise mask the
-    fallback branch — the primary path on machines (e.g. macOS) that don't
-    export it. Overriding it to empty exercises that branch directly.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
-            "XDG_CACHE_HOME": "",
-        },
-        installed_version="0.1.8",
-        latest_version="0.1.20",
-    )
-
-    assert proc.returncode == 0
-    assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
-    ) in proc.stdout
-    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
-    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
-        f"{_DEPENDENCY_UPDATE_DIFF}\n"
-    )
-
-
 def test_install_script_log_path_outside_home_stays_absolute(tmp_path: Path) -> None:
     """A log path outside `$HOME` is shown verbatim, not tilde-collapsed.
 
@@ -3554,124 +1891,6 @@ def test_install_script_failed_install_points_to_log(tmp_path: Path) -> None:
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_DEPENDENCY_UPDATE_DIFF}\n"
     )
-
-
-def test_install_script_propagates_uv_exit_code(tmp_path: Path) -> None:
-    """A failed install propagates uv's real exit code, not a flat `1`.
-
-    137 is the SIGKILL/OOM code the signal hint keys off. Asserting the exact
-    code catches a revert to `exit 1` (which the != 0 check above would miss)
-    and confirms the killed-before-finishing hint fires on a ≥128 exit.
-    """
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_RC": "137"},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 137
-    assert "Failed to install" in proc.stderr
-    # Portable across macOS/Linux: both the generic and the Linux-OOM hint begin
-    # with this phrase, so the assertion holds regardless of the test host's OS.
-    assert "killed before it could finish" in proc.stderr
-    # No FAKE_UV_INSTALL_STDERR here, so uv was killed before writing anything
-    # and the log is zero bytes. Sending a user whose install just failed to an
-    # empty file is a dead end, so the pointer must be withheld.
-    assert "Full log:" not in proc.stderr
-
-
-def _run_signal_failure_hint(
-    tmp_path: Path,
-    *,
-    exit_code: int,
-    os_name: str,
-    uname: str,
-    already_shown: bool = False,
-) -> str:
-    """Run the real `log_signal_failure_hint` in isolation and return its stderr.
-
-    A fake `uname` is placed on `PATH` so `is_linux_os` is fully determined by
-    (`os_name`, `uname`) rather than the test host's kernel — the OOM message is
-    gated on Linux, and this makes that gate deterministic on any CI runner.
-    """
-    bin_dir = tmp_path / "hintbin"
-    bin_dir.mkdir(exist_ok=True)
-    fake_uname = bin_dir / "uname"
-    fake_uname.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" {uname!r}\n')
-    _make_executable(fake_uname)
-
-    script = tmp_path / "signal_hint_harness.sh"
-    shown = "true" if already_shown else "false"
-    script.write_text(
-        'log_error() { printf "%s\\n" "$*" >&2; }\n'
-        f"OS={os_name!r}\n"
-        f"SIGNAL_FAILURE_HINT_SHOWN={shown}\n"
-        f"{_extract_shell_function('is_linux_os')}\n"
-        f"{_extract_shell_function('log_signal_failure_hint')}\n"
-        f"log_signal_failure_hint {exit_code}\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.stderr
-
-
-def test_signal_hint_reports_oom_on_linux(tmp_path: Path) -> None:
-    """Exit 137 on Linux surfaces the out-of-memory explanation."""
-    stderr = _run_signal_failure_hint(
-        tmp_path, exit_code=137, os_name="linux", uname="Linux"
-    )
-
-    assert "ran out of memory" in stderr
-
-
-def test_signal_hint_omits_oom_off_linux(tmp_path: Path) -> None:
-    """Exit 137 off Linux gives the generic hint, not the OOM explanation."""
-    stderr = _run_signal_failure_hint(
-        tmp_path, exit_code=137, os_name="macos", uname="Darwin"
-    )
-
-    assert "killed before it could finish (exit code 137)" in stderr
-    assert "ran out of memory" not in stderr
-
-
-def test_signal_hint_generic_for_other_signal_exit(tmp_path: Path) -> None:
-    """A non-137 signal exit (e.g. 143/SIGTERM) uses the generic hint only."""
-    stderr = _run_signal_failure_hint(
-        tmp_path, exit_code=143, os_name="linux", uname="Linux"
-    )
-
-    assert "killed before it could finish (exit code 143)" in stderr
-    assert "ran out of memory" not in stderr
-
-
-def test_signal_hint_silent_below_128(tmp_path: Path) -> None:
-    """An ordinary failure (exit < 128) emits no signal hint."""
-    stderr = _run_signal_failure_hint(
-        tmp_path, exit_code=1, os_name="linux", uname="Linux"
-    )
-
-    assert stderr.strip() == ""
-
-
-def test_signal_hint_deduped_when_already_shown(tmp_path: Path) -> None:
-    """The hint is printed once: a prior SIGNAL_FAILURE_HINT_SHOWN suppresses it."""
-    stderr = _run_signal_failure_hint(
-        tmp_path,
-        exit_code=137,
-        os_name="linux",
-        uname="Linux",
-        already_shown=True,
-    )
-
-    assert stderr.strip() == ""
 
 
 # A PID above every platform's pid_max, so `kill -0` always reports it dead.
@@ -3753,18 +1972,43 @@ def test_install_lock_fresh_lock_without_metadata_is_not_stale(
     assert not _eval_install_lock_is_stale(tmp_path, pid=None, started_at=None)
 
 
-def test_install_lock_without_metadata_ages_out_via_mtime(tmp_path: Path) -> None:
-    """With no metadata, staleness falls back to the lock dir's mtime."""
-    assert _eval_install_lock_is_stale(
-        tmp_path, pid=None, started_at=None, stale_after=0
-    )
-
-
 def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
     """No lock directory means nothing to reclaim."""
     assert not _eval_install_lock_is_stale(
         tmp_path, pid=None, started_at=None, make_dir=False
     )
+
+
+def test_install_script_lock_is_independent_of_deepagents_home(tmp_path: Path) -> None:
+    """Installer serialization follows the uv tool environment, not a profile."""
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    configured = tmp_path / "custom-home"
+    env = {
+        **_clean_environ(),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_HOME": str(configured),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not configured.exists()
+    assert not (home / ".deepagents").exists()
+    assert (tmp_path / "tools/.deepagents-code.deepagents-code-locks").is_dir()
 
 
 def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> None:
@@ -3828,6 +2072,123 @@ def test_install_script_does_not_redirect_to_legacy_lock_file() -> None:
     assert '>"$HOME/.deepagents/install.lock"' not in script
 
 
+class TestInstallLockRootGuessWarning:
+    """The guess warning must be reachable.
+
+    `resolve_installation_root` is substituted by its caller, so a flag it
+    assigns to a global dies in the subshell and the warning can never print.
+    Concurrent installs then fail to serialize with no diagnostic at all.
+    """
+
+    def _run(self, tmp_path: Path, *, uv_bin: str) -> subprocess.CompletedProcess[str]:
+        script = tmp_path / "lock_guess_harness.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            f"HOME={str(tmp_path)!r}\n"
+            # `resolve_installation_root` falls back to XDG_DATA_HOME. Pin it
+            # inside tmp_path: inheriting the real one would create — and hold
+            # — a lock in the developer's actual uv tool directory, blocking
+            # every later test that acquires the install lock.
+            f"XDG_DATA_HOME={str(tmp_path / 'xdg')!r}\n"
+            f"UV_BIN={uv_bin!r}\n"
+            "UV_TOOL_DIR_ENV=''\n"
+            "INSTALL_LOCK_KIND=''\n"
+            "INSTALL_LOCK_DIR=''\n"
+            "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+            "fix_file_owner() { return 0; }\n"
+            "wait_for_install_lock_reclaim_guard() { return 0; }\n"
+            "log_warn() { printf 'WARN %s\\n' \"$*\"; }\n"
+            "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+            f"{_extract_shell_function('normalize_absolute_path')}\n"
+            f"{_extract_shell_function('resolve_installation_root')}\n"
+            f"{_extract_shell_function('install_lock_identity')}\n"
+            f"{_extract_shell_function('install_lock_is_stale')}\n"
+            f"{_extract_shell_function('acquire_install_lock')}\n"
+            "acquire_install_lock\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["bash", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_warns_when_the_lock_root_is_a_guess(self, tmp_path: Path) -> None:
+        """With uv unavailable the root is a guess and the user is told."""
+        result = self._run(tmp_path, uv_bin="")
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" in result.stdout
+        assert "may not serialize" in result.stdout
+
+    def test_stays_quiet_when_uv_answers(self, tmp_path: Path) -> None:
+        """An authoritative `uv tool dir` answer must not warn."""
+        uv_bin = tmp_path / "uv"
+        uv_bin.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s" {str(tmp_path / "tools")!r}\n',
+            encoding="utf-8",
+        )
+        uv_bin.chmod(0o755)
+
+        result = self._run(tmp_path, uv_bin=str(uv_bin))
+
+        assert result.returncode == 0, result.stderr
+        assert "guessing the installer lock root" not in result.stdout
+
+
+def test_install_lock_fails_when_lock_root_cannot_create_child(
+    tmp_path: Path,
+) -> None:
+    """An unwritable existing lock root fails instead of waiting forever."""
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / "tools" / ".deepagents-code.deepagents-code-locks"
+    lock_root.mkdir(parents=True)
+    script = tmp_path / "unwritable_lock_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        "mkdir() {\n"
+        '  if [ "$1" = "$INSTALL_LOCK_DIR" ]; then\n'
+        "    return 1\n"
+        "  fi\n"
+        '  command mkdir "$@"\n'
+        "}\n"
+        "sleep() { return 97; }\n"
+        "acquire_install_lock\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=10,
+    )
+
+    assert proc.returncode == 1
+    assert "Cannot create installer lock" in proc.stderr
+    assert "writable" in proc.stderr
+
+
 def test_install_script_reclaim_skips_new_lock_after_stale_check(
     tmp_path: Path,
 ) -> None:
@@ -3843,7 +2204,8 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
     called. A filesystem marker sequences the two calls: each runs in a `$(...)`
     subshell, so a shell-variable counter would not carry across them.
     """
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -3858,7 +2220,8 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -3908,7 +2271,8 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
     tmp_path: Path,
 ) -> None:
     """Stale reclaim renames the canonical lock only while peers are guarded."""
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -3922,7 +2286,8 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -3982,7 +2347,7 @@ def test_install_script_release_removes_lock_only_when_token_matches(
     owner now holds. The reclaim guard is left untouched here
     (INSTALL_LOCK_RECLAIM_TOKEN empty), so only the canonical lock is exercised.
     """
-    lock_root = tmp_path / ".deepagents"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "token").write_text(f"{on_disk_token}\n")
@@ -4023,7 +2388,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
     release) or the `exit` (install proceeds tokenless, so release never matches
     and the lock leaks permanently).
     """
-    lock_root = tmp_path / ".deepagents"
+    installation_root = tmp_path / "deepagents-code"
+    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
     lock_root.mkdir(parents=True)
     script = tmp_path / "token_write_harness.sh"
     script.write_text(
@@ -4033,7 +2399,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
         "INSTALL_LOCK_RECLAIM_DIR=''\n"
         "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
-        "fix_owner() { return 0; }\n"
+        "fix_file_owner() { return 0; }\n"
+        f"resolve_installation_root() {{ printf '%s' {str(installation_root)!r}; }}\n"
         "log_warn() { return 0; }\n"
         "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
@@ -4086,7 +2453,8 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    lock_dir = home / ".deepagents" / "install.lock.d"
+    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
     (lock_dir / "started_at").write_text("1\n")  # 1970 => well past the window
@@ -4114,10 +2482,9 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     # The install ran (lock acquired) rather than aborting on the stale lock.
     assert (tmp_path / "uv-args.txt").is_file()
     # The lock is released on exit, leaving no lock dir and no reclaim leftovers.
-    deepagents = home / ".deepagents"
-    assert not (deepagents / "install.lock.d").exists()
-    assert not list(deepagents.glob("install.lock.d.reclaim.*"))
-    assert not (deepagents / "install.lock.reclaim.d").exists()
+    assert not (lock_root / "install.lock.d").exists()
+    assert not list(lock_root.glob("install.lock.d.reclaim.*"))
+    assert not (lock_root / "install.lock.reclaim.d").exists()
 
 
 @pytest.mark.skipif(
@@ -4136,14 +2503,14 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    deepagents = home / ".deepagents"
-    lock_dir = deepagents / "install.lock.d"
+    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
     (lock_dir / "started_at").write_text("1\n")
     # Read+execute only: entries inside cannot be renamed or unlinked, so both
     # the `mv` and the fallback `rm -rf` fail with EACCES.
-    deepagents.chmod(0o555)
+    lock_root.chmod(0o555)
     env = {
         **_clean_environ(),
         "HOME": str(home),
@@ -4165,41 +2532,10 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
         )
     finally:
         # Restore write access so tmp_path teardown can remove the tree.
-        deepagents.chmod(0o755)
+        lock_root.chmod(0o755)
 
     assert proc.returncode == 1, proc.stderr
     assert "Cannot reclaim stale installer lock" in proc.stderr
-
-
-def test_install_script_upgrade_marks_removed_packages(tmp_path: Path) -> None:
-    """An upgrade that drops a transitive dependency labels it `(removed)`."""
-    proc, _ = _invoke(
-        tmp_path,
-        {"FAKE_UV_INSTALL_STDERR": _REMOVAL_DIFF},
-        installed_version="0.1.18",
-        latest_version="0.1.19",
-    )
-
-    assert proc.returncode == 0
-    assert "Updated packages:" in proc.stderr
-    assert "0.1.18 → 0.1.19" in proc.stderr
-    assert "dropped-dep" in proc.stderr
-    assert "(removed)" in proc.stderr
-
-
-def test_install_script_interactive_empty_answer_keeps_current(tmp_path: Path) -> None:
-    """An empty answer at the prompt declines rather than defaulting to upgrade.
-
-    Guards `prompt_yn`'s default: pressing Enter (or any reply that is not
-    `^[Yy]$`) must not be mistaken for consent, so uv is never invoked.
-    """
-    code, output, args_path = _invoke_interactive(
-        tmp_path, {}, answer="", installed_version="0.1.0", latest_version="0.2.0"
-    )
-
-    assert code == 0
-    assert not args_path.exists()
-    assert "Keeping deepagents-code 0.1.0" in output
 
 
 def _path_without_dcode() -> str:
@@ -4455,6 +2791,18 @@ def test_install_uv_hides_installer_output_by_default(tmp_path: Path) -> None:
     assert "UV_INSTALLER_NOISE" not in proc.stderr
 
 
+def test_uv_cache_snapshot_precedes_install_lock() -> None:
+    """Lock creation cannot hide a newly created uv data tree from ownership repair."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    bootstrap = source.split("if ! resolve_uv_bin; then", maxsplit=1)[1].split(
+        "resolve_tool_bin_dir()", maxsplit=1
+    )[0]
+
+    assert bootstrap.index("snapshot_missing_uv_cache_paths") < bootstrap.index(
+        "acquire_install_lock"
+    )
+
+
 def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:
     """`DEEPAGENTS_CODE_VERBOSE=1` opts back in to the uv installer's output."""
     proc = _run_install_uv(tmp_path, verbose=True)
@@ -4484,84 +2832,6 @@ def test_install_uv_requires_secure_temp_file(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "mktemp is required to create a secure temp file" in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stderr
-
-
-def test_install_uv_rejects_non_shell_response(tmp_path: Path) -> None:
-    """A download that doesn't start with a shell shebang is rejected before exec.
-
-    Simulates a transparent proxy or captive portal returning 200 with HTML
-    instead of the uv installer. The shebang check must catch it and exit with
-    an actionable error, rather than piping the HTML into ``sh``.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False, no_shebang=True)
-
-    assert proc.returncode != 0
-    assert "does not start with a shell shebang" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
-
-
-def test_install_uv_rejects_truncated_download(tmp_path: Path) -> None:
-    """A download cut mid-statement is rejected by the parse check before exec.
-
-    The shebang is intact, so the shebang check passes: only reading the whole
-    file without running it catches the unbalanced `if`. The payload must never
-    execute.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False, truncated=True)
-
-    assert proc.returncode != 0
-    assert "failed a shell syntax check" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
-
-
-def test_install_uv_verifies_and_runs(tmp_path: Path) -> None:
-    """A well-formed installer passes the shebang and parse checks, then runs.
-
-    Upstream does not publish a checksum for ``uv-installer.sh``, so there is
-    no digest comparison to wire up here — this test simply proves the payload
-    executes once the structural checks pass.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False)
-
-    assert proc.returncode == 0
-
-
-def test_install_uv_curl_pins_https_for_request_and_redirects(
-    tmp_path: Path,
-) -> None:
-    """Scheme pinning and a bounded redirect chain are passed to curl.
-
-    `--proto-redir` is the only thing stopping a 3xx from downgrading the
-    fetch to plaintext, and nothing else in the suite would notice if the
-    flags were dropped.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False)
-
-    assert proc.returncode == 0
-    argv = (tmp_path / "downloader-argv.txt").read_text()
-    assert "--proto =https" in argv
-    assert "--proto-redir =https" in argv
-    assert "--max-redirs 3" in argv
-
-
-def test_install_uv_wget_passes_hardening_flags_when_supported(
-    tmp_path: Path,
-) -> None:
-    """A GNU-shaped wget receives the redirect controls it advertises.
-
-    The BusyBox test proves the flags are *withheld* when unsupported; this is
-    the mirror that proves they are sent when they are supported, so the
-    capability probe can't silently start answering "no" to everything.
-    """
-    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True)
-
-    assert proc.returncode == 0
-    argv = (tmp_path / "downloader-argv.txt").read_text()
-    assert "--max-redirect=3" in argv
-    assert "--https-only" in argv
-    assert "-S" in argv
 
 
 def _eval_wget_supports_option(
@@ -4594,28 +2864,6 @@ def _eval_wget_supports_option(
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip() == "YES"
-
-
-def test_wget_supports_option_ignores_help_exit_status(tmp_path: Path) -> None:
-    """An advertised option is detected even when `--help` exits non-zero.
-
-    BusyBox prints its usage and returns EXIT_FAILURE. Piping `wget --help`
-    straight into `grep` under `set -o pipefail` makes that exit status the
-    pipeline's, so every option reports as unsupported — which silently drops
-    `-S` and disables the redirect-downgrade audit on exactly the minimal
-    systems the capability probe exists to support. Failing *open* like that is
-    invisible without this test.
-    """
-    assert _eval_wget_supports_option(
-        tmp_path, option="-S", help_text="-S --max-redirect --https-only", help_rc=1
-    )
-
-
-def test_wget_supports_option_reports_absent_option(tmp_path: Path) -> None:
-    """An option the help text doesn't mention is still reported unsupported."""
-    assert not _eval_wget_supports_option(
-        tmp_path, option="-S", help_text="BusyBox v1.36.0 wget", help_rc=1
-    )
 
 
 def _run_wget_download(
@@ -4677,6 +2925,72 @@ def _run_wget_download(
     )
 
 
+def test_install_uv_curl_pins_https_for_request_and_redirects(
+    tmp_path: Path,
+) -> None:
+    """Scheme pinning and a bounded redirect chain are passed to curl.
+
+    `--proto-redir` is the only thing stopping a 3xx from downgrading the
+    fetch to plaintext, and nothing else in the suite would notice if the
+    flags were dropped.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False)
+
+    assert proc.returncode == 0
+    argv = (tmp_path / "downloader-argv.txt").read_text()
+    assert "--proto =https" in argv
+    assert "--proto-redir =https" in argv
+    assert "--max-redirs 3" in argv
+
+
+def test_install_uv_rejects_non_shell_response(tmp_path: Path) -> None:
+    """A download that doesn't start with a shell shebang is rejected before exec.
+
+    Simulates a transparent proxy or captive portal returning 200 with HTML
+    instead of the uv installer. The shebang check must catch it and exit with
+    an actionable error, rather than piping the HTML into ``sh``.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, no_shebang=True)
+
+    assert proc.returncode != 0
+    assert "does not start with a shell shebang" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_rejects_truncated_download(tmp_path: Path) -> None:
+    """A download cut mid-statement is rejected by the parse check before exec.
+
+    The shebang is intact, so the shebang check passes: only reading the whole
+    file without running it catches the unbalanced `if`. The payload must never
+    execute.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, truncated=True)
+
+    assert proc.returncode != 0
+    assert "failed a shell syntax check" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_wget_passes_hardening_flags_when_supported(
+    tmp_path: Path,
+) -> None:
+    """A GNU-shaped wget receives the redirect controls it advertises.
+
+    The BusyBox test proves the flags are *withheld* when unsupported; this is
+    the mirror that proves they are sent when they are supported, so the
+    capability probe can't silently start answering "no" to everything.
+    """
+    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True)
+
+    assert proc.returncode == 0
+    argv = (tmp_path / "downloader-argv.txt").read_text()
+    assert "--max-redirect=3" in argv
+    assert "--https-only" in argv
+    assert "-S" in argv
+
+
 def test_wget_download_refuses_non_https_url(tmp_path: Path) -> None:
     """Plaintext request URLs are refused, since wget has no `--proto`.
 
@@ -4707,34 +3021,19 @@ def test_wget_download_refuses_plaintext_redirect(tmp_path: Path) -> None:
     assert "Refusing a plaintext HTTP redirect" in proc.stderr
 
 
-def test_wget_download_allows_https_redirect(tmp_path: Path) -> None:
-    """The audit keys on the scheme, not on the presence of a redirect."""
-    proc = _run_wget_download(
-        tmp_path,
-        url="https://ok.example/uv.sh",
-        response_headers="  HTTP/1.1 302 Found\n  Location: https://cdn.example/uv.sh\n",
-    )
+def test_wget_supports_option_ignores_help_exit_status(tmp_path: Path) -> None:
+    """An advertised option is detected even when `--help` exits non-zero.
 
-    assert "RC=0" in proc.stdout
-    assert "Refusing" not in proc.stderr
-
-
-def test_install_uv_surfaces_download_failure(tmp_path: Path) -> None:
-    """A failed download exits non-zero and surfaces the downloader's own error.
-
-    Exercises the download-failure branch (`uv_install_rc -ne 0`): the fake curl
-    exits non-zero and writes its error to stderr without creating the installer
-    file. `install_uv` must relay that captured error — not just a generic
-    message — include the downloader's exit code, and never execute a payload.
+    BusyBox prints its usage and returns EXIT_FAILURE. Piping `wget --help`
+    straight into `grep` under `set -o pipefail` makes that exit status the
+    pipeline's, so every option reports as unsupported — which silently drops
+    `-S` and disables the redirect-downgrade audit on exactly the minimal
+    systems the capability probe exists to support. Failing *open* like that is
+    invisible without this test.
     """
-    proc = _run_install_uv(tmp_path, verbose=False, download_fails=True)
-
-    assert proc.returncode != 0
-    assert "Failed to download uv installer" in proc.stderr
-    # The downloader's captured stderr is surfaced, not discarded to /dev/null.
-    assert "DOWNLOADER_ERROR: could not resolve host" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
+    assert _eval_wget_supports_option(
+        tmp_path, option="-S", help_text="-S --max-redirect --https-only", help_rc=1
+    )
 
 
 @pytest.mark.parametrize("use_wget", [False, True])
@@ -4751,27 +3050,6 @@ def test_install_uv_retries_transient_download_failure(
 
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "uv-download-attempts.txt").read_text().strip() == "3"
-
-
-def test_install_uv_downloads_via_wget(tmp_path: Path) -> None:
-    """The wget branch downloads to `-O <file>` and the script then runs it.
-
-    curl is reported as a snap so `install_uv` falls through to the wget branch.
-    Verbose mode surfaces the installer's output, proving wget wrote a valid
-    shebang file that passed verification and executed.
-    """
-    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True)
-
-    assert proc.returncode == 0, proc.stderr
-    assert "UV_INSTALLER_NOISE" in proc.stderr
-
-
-def test_install_uv_downloads_via_busybox_wget(tmp_path: Path) -> None:
-    """BusyBox wget works even though it lacks GNU-only hardening options."""
-    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True, busybox_wget=True)
-
-    assert proc.returncode == 0, proc.stderr
-    assert "UV_INSTALLER_NOISE" in proc.stderr
 
 
 def _run_signal_traps(
@@ -5133,25 +3411,6 @@ def test_install_script_honors_uv_tool_bin_dir(tmp_path: Path) -> None:
     assert "command not found in PATH" not in proc.stderr
 
 
-def test_install_script_no_modify_path_prints_custom_tool_bin(tmp_path: Path) -> None:
-    """The no-modify hint exposes the directory where uv installed `dcode`."""
-    tool_bin = tmp_path / "home" / "custom-bin"
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "UV_TOOL_BIN_DIR": str(tool_bin),
-            "FAKE_UV_TOOL_BIN_DIR": str(tool_bin),
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "DEEPAGENTS_CODE_NO_MODIFY_PATH": "1",
-        },
-        installed_version=None,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert f'export PATH="{tool_bin}:$PATH"' in proc.stdout
-    assert "$HOME/.local/bin:$PATH" not in proc.stdout
-
-
 def test_install_script_old_uv_ignores_unsupported_tool_bin_override(
     tmp_path: Path,
 ) -> None:
@@ -5388,6 +3647,196 @@ def _invoke_with_local_dcode_not_on_path(
     )
 
 
+def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
+    tmp_path: Path,
+) -> None:
+    """Root optional setup never recursively takes ownership of broad roots."""
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    # A profile cannot *be* the home directory, so point it at a subdirectory.
+    # `home` itself must still never be a chown target.
+    profile = home / ".deepagents"
+    # `dcode tools install` falls back to the profile bin dir when the shared
+    # installation one is unwritable. It sits inside the target user's home, so
+    # a root install must hand it back or the user's next non-root run fails on
+    # root-owned files.
+    fallback_bin = profile / "bin"
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    invocations = chown_log.read_text().splitlines()
+    assert invocations
+    # `-R` stays banned: ownership repair walks only trees this run created,
+    # via `find -xdev -exec chown -h`, never a recursive chown of a broad root.
+    assert all("-R" not in invocation.split() for invocation in invocations)
+    # `find -exec ... +` batches several paths into one invocation, so collect
+    # every argument rather than just the last token.
+    targets = {
+        arg
+        for invocation in invocations
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert str(fallback_bin) in targets
+    assert str(home) not in targets
+    assert str(home / ".local") not in targets
+    assert "/" not in targets
+    assert (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_root_install_skips_a_managed_bin_dir_outside_home(tmp_path: Path) -> None:
+    """A tool dir outside $HOME is never handed to the target user.
+
+    `uv tool dir` is user-configurable (`UV_TOOL_DIR`, `uv.toml`, `--tool-dir`)
+    and can name a system path such as `/opt/uv-tools`. Chowning that to a
+    non-root user would be a privilege handover, so `fix_tree_owner`'s
+    `path_is_under_home` gate must apply here too.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    outside_bin = tmp_path / "opt/uv-tools/deepagents-code/share/deepagents-code/bin"
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(outside_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert not any(target.startswith(str(tmp_path / "opt")) for target in targets)
+
+
+def test_root_upgrade_still_chowns_a_preexisting_managed_bin_dir(
+    tmp_path: Path,
+) -> None:
+    """The `sudo` upgrade path is the common one, and it must not be skipped.
+
+    `dcode tools install` writes into these trees as root on every run. Gating
+    the repair on "did this run create the directory?" skipped it whenever the
+    directory already existed — i.e. on every upgrade — leaving the freshly
+    written `rg` root-owned inside the target user's home.
+    """
+    env = _env(
+        tmp_path,
+        {"SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    profile = home / ".deepagents"
+    fallback_bin = profile / "bin"
+    # The upgrade case: both managed bin directories are already on disk with a
+    # binary in them before the installer runs.
+    fallback_bin.mkdir(parents=True)
+    (fallback_bin / "rg").write_text("stale binary\n")
+    chown_log = tmp_path / "chown-invocations.txt"
+    for name, body in {
+        "id": "printf '0\n'\n",
+        "uname": "printf 'Linux\n'\n",
+        "chown": 'printf \'%s\\n\' "$*" >>"$CHOWN_LOG"\n',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+    env.update(
+        {
+            "CHOWN_LOG": str(chown_log),
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_HOME": str(profile),
+            "FAKE_MANAGED_BIN_DIR": str(fallback_bin),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    targets = {
+        arg
+        for invocation in chown_log.read_text().splitlines()
+        for arg in invocation.split()
+        if arg.startswith("/")
+    }
+    assert str(fallback_bin) in targets
+    # The repair still walks only the managed tree, never the home or profile.
+    assert str(home) not in targets
+    assert str(profile) not in targets
+
+
 def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
     tmp_path: Path,
 ) -> None:
@@ -5416,62 +3865,6 @@ def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
     assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
     assert "# <<< deepagents-code installer <<<" in zshrc
     assert "source ~/.local/bin/env" not in combined
-
-
-def test_install_script_never_writes_fish_syntax_to_posix_profiles(
-    tmp_path: Path,
-) -> None:
-    """A fish user's ~/.zshrc gets POSIX syntax, not `fish_add_path`.
-
-    The export line is a property of the file being written, not of the shell
-    the user happens to run. Keying it off the current shell would put
-    `fish_add_path ...` into every non-fish candidate, so each new zsh session
-    would fail with `command not found: fish_add_path` and never get
-    ~/.local/bin.
-    """
-
-    def seed(home: Path) -> None:
-        (home / ".zshrc").write_text("# pre-existing zsh config\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path, shell="/usr/local/bin/fish", seed_home=seed
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    zshrc = (home / ".zshrc").read_text()
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
-    assert "fish_add_path" not in zshrc
-
-    # Asserted unconditionally: with SHELL=fish the conf.d file is always a
-    # candidate, so guarding on existence would let "the fish file stopped
-    # being written at all" pass silently.
-    fish_conf = home / ".config/fish/conf.d/deepagents-code.fish"
-    assert fish_conf.exists()
-    # The fish file is the one place fish syntax belongs.
-    assert "set -gx PATH" in fish_conf.read_text()
-
-
-def test_install_script_emits_reload_hint_after_writing_a_profile(
-    tmp_path: Path,
-) -> None:
-    """Writing a startup file still leaves the *running* shell without PATH.
-
-    `ensure_path_setup` used to return 0 after a successful write, which the
-    caller reads as "PATH is fixed for the current shell" and so suppressed the
-    reload hint — the user was told setup was complete and then got
-    `command not found: dcode`.
-    """
-    proc = _invoke_with_local_dcode_not_on_path(tmp_path)
-
-    assert proc.returncode == 0, proc.stderr
-    combined = proc.stdout + proc.stderr
-    assert "Added ~/.local/bin to PATH" in combined
-    # The profile write succeeded, so the hint is a next step, not a warning:
-    # the running shell is stale but new terminals already work.
-    assert "To use dcode in this shell, run:" in combined
-    assert "Restart your shell, or run:" not in combined
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
 
 
 def test_install_script_tilde_display_has_no_literal_backslash(
@@ -5625,32 +4018,6 @@ def test_install_script_follows_symlink_chain_to_final_target(tmp_path: Path) ->
     assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
 
 
-@pytest.mark.parametrize("value", ["true", "yes", "TRUE", " 1 ", "banana"])
-def test_install_script_no_modify_path_accepts_truthy_spellings(
-    tmp_path: Path, value: str
-) -> None:
-    """The opt-out honors the same spellings as DEEPAGENTS_CODE_YES.
-
-    An unrecognized value ("banana") must also leave startup files alone: this
-    variable exists to protect version-managed dotfiles, so an unparsed value
-    has to fail toward *not* editing them.
-    """
-
-    def seed(home: Path) -> None:
-        (home / ".zshrc").write_text("# pre-existing zsh config\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path,
-        extra_env={"DEEPAGENTS_CODE_NO_MODIFY_PATH": value},
-        seed_home=seed,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "Skipping PATH setup" in proc.stdout + proc.stderr
-    zshrc = (tmp_path / "home/.zshrc").read_text()
-    assert "deepagents-code installer" not in zshrc
-
-
 def test_install_script_uses_zdotdir_pointing_at_missing_dir(
     tmp_path: Path,
 ) -> None:
@@ -5673,125 +4040,6 @@ def test_install_script_uses_zdotdir_pointing_at_missing_dir(
     assert zshrc.exists()
     assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc.read_text()
     assert not (home / ".zshrc").exists()
-
-
-def test_install_script_macos_does_not_create_missing_bashrc(
-    tmp_path: Path,
-) -> None:
-    """On macOS no ~/.bashrc is created: Terminal's login shell won't read it.
-
-    A deliberate divergence from the upstream installer this borrows from, and
-    a user-visible difference: creating the file there would leave a dotfile
-    the default Terminal session ignores.
-    """
-
-    def seed(home: Path) -> None:
-        (home / ".bash_profile").write_text("# bash login\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path, shell="/bin/bash", uname_os="Darwin", seed_home=seed
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    assert not (home / ".bashrc").exists()
-    assert (
-        'export PATH="$HOME/.local/bin:$PATH"' in (home / ".bash_profile").read_text()
-    )
-
-
-def test_install_script_linux_creates_missing_bashrc(tmp_path: Path) -> None:
-    """The same setup on Linux does create ~/.bashrc, where it is read."""
-
-    def seed(home: Path) -> None:
-        (home / ".bash_profile").write_text("# bash login\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path, shell="/bin/bash", uname_os="Linux", seed_home=seed
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".bashrc").read_text()
-
-
-def test_install_script_does_not_create_both_bash_profile_and_profile(
-    tmp_path: Path,
-) -> None:
-    """On macOS, bash with no dotfiles gets one login file, not two.
-
-    There ~/.bash_profile is queued as the shell's primary file before it
-    exists. A fallback that only checks the filesystem would not see it, add
-    ~/.profile too, and create both — after which bash reads .bash_profile and
-    the .profile is dead weight. (On Linux the primary file is ~/.bashrc, so
-    ~/.profile genuinely is the login file to write.)
-    """
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path, shell="/bin/bash", uname_os="Darwin"
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    assert (home / ".bash_profile").exists()
-    assert not (home / ".profile").exists()
-
-
-def test_install_script_writes_profile_for_unknown_shell(tmp_path: Path) -> None:
-    """A shell that is neither zsh, bash nor fish falls back to ~/.profile."""
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path, shell="/usr/bin/ksh", uname_os="Linux"
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    profile = tmp_path / "home/.profile"
-    assert profile.exists()
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in profile.read_text()
-
-
-def test_install_script_prompt_names_every_file_it_will_edit(
-    tmp_path: Path,
-) -> None:
-    """One prompt lists every startup file the answer covers.
-
-    Consent for ~/.zshrc must not be read as consent to also edit
-    ~/.bash_profile, so the file list is part of the question.
-    """
-
-    def seed(home: Path) -> None:
-        (home / ".zshrc").write_text("# zsh\n")
-        (home / ".bash_profile").write_text("# bash\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed, answer="y")
-
-    assert proc.returncode == 0, proc.stdout
-    assert "~/.zshrc" in proc.stdout
-    assert "~/.bash_profile" in proc.stdout
-    assert (
-        'export PATH="$HOME/.local/bin:$PATH"' in (tmp_path / "home/.zshrc").read_text()
-    )
-
-
-def test_install_script_declining_prompt_writes_nothing_and_omits_reload_hint(
-    tmp_path: Path,
-) -> None:
-    """Declining leaves startup files untouched and skips the restart advice.
-
-    "Restart your shell" is only true when something was written. After a
-    decline a restart changes nothing, so the hint would send the user to do
-    something that cannot work; the manual export line is the only useful
-    guidance and is printed instead.
-    """
-
-    def seed(home: Path) -> None:
-        (home / ".zshrc").write_text("# zsh\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed, answer="n")
-
-    assert proc.returncode == 0, proc.stdout
-    assert "Skipped modifying shell startup files." in proc.stdout
-    assert "Restart your shell" not in proc.stdout
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in proc.stdout
-    assert "deepagents-code installer" not in (tmp_path / "home/.zshrc").read_text()
 
 
 def _eval_resolve_zdotdir(tmp_path: Path, zshenv: str | None) -> str:
@@ -5927,23 +4175,6 @@ def test_install_script_ignores_conditional_zdotdir_assignment(
     assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
 
 
-def test_install_script_ignores_one_line_guarded_zdotdir(tmp_path: Path) -> None:
-    """The `[ -d x ] && export ZDOTDIR=y` spelling is skipped too."""
-
-    def seed(home: Path) -> None:
-        (home / ".zshenv").write_text(
-            '[ -d "$HOME/.config/zsh" ] && export ZDOTDIR="$HOME/.config/zsh"\n'
-        )
-        (home / ".zshrc").write_text("# existing\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    assert not (home / ".config/zsh").exists()
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".zshrc").read_text()
-
-
 def test_install_script_honors_zdotdir_after_a_guarded_block(
     tmp_path: Path,
 ) -> None:
@@ -5971,32 +4202,6 @@ def test_install_script_honors_zdotdir_after_a_guarded_block(
         in (home / ".config/zsh/.zshrc").read_text()
     )
     assert not (home / "nope").exists()
-
-
-def test_install_script_updates_existing_zdotdir_zshrc_from_bash(
-    tmp_path: Path,
-) -> None:
-    """An existing relocated zshrc is updated even when bash runs the installer."""
-
-    def seed(home: Path) -> None:
-        zdot = home / ".config/zsh"
-        zdot.mkdir(parents=True)
-        (zdot / ".zshrc").write_text("# zdotdir config\n")
-
-    proc = _invoke_with_local_dcode_not_on_path(
-        tmp_path,
-        shell="/bin/bash",
-        extra_env={"ZDOTDIR": str(tmp_path / "home/.config/zsh")},
-        seed_home=seed,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    home = tmp_path / "home"
-    assert (
-        'export PATH="$HOME/.local/bin:$PATH"'
-        in (home / ".config/zsh/.zshrc").read_text()
-    )
-    assert not (home / ".zshrc").exists()
 
 
 def test_install_script_writes_both_zdotdir_and_legacy_zshrc(
@@ -6083,62 +4288,6 @@ def test_install_script_uses_uv_env_file_path_hint_when_available(
     assert not (tmp_path / "home/.bash_profile").exists()
 
 
-def test_install_script_stale_shell_with_profile_already_set_shows_reload_hint(
-    tmp_path: Path,
-) -> None:
-    """~/.local/bin already in the profile still warns when the shell is stale.
-
-    The profile already has the PATH export, so no file modification is needed.
-    But the current shell's PATH lacks ~/.local/bin (the binary resolved only
-    via the installer's absolute-path fallback), so the script must emit a
-    reload/source hint rather than silently returning success — otherwise the
-    user sees "Run: dcode" but dcode won't resolve until they restart.
-    """
-    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
-
-    local_bin = home / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    dcode = local_bin / "dcode"
-    dcode.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
-        "exit 0\n"
-    )
-    _make_executable(dcode)
-
-    # Pre-seed the shell profile so `local_bin_in_profile` returns true.
-    zshrc = home / ".zshrc"
-    zshrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n')
-
-    env = {
-        **_clean_environ(),
-        "HOME": str(home),
-        "XDG_CACHE_HOME": str(home / ".cache"),
-        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
-        "UV_BIN": str(uv),
-        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
-        "SHELL": "/bin/zsh",
-    }
-    proc = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    assert proc.returncode == 0
-    combined = proc.stdout + proc.stderr
-    # No duplicate PATH export was appended.
-    assert combined.count('export PATH="$HOME/.local/bin:$PATH"') == 1
-    # But the reload hint is shown because the current shell is stale — styled
-    # as a next step, not a warning, since no setup step failed.
-    assert "To use dcode in this shell, run:" in combined
-    assert "Restart your shell, or run:" not in combined
-
-
 def test_install_script_rewrites_existing_managed_path_block(tmp_path: Path) -> None:
     """An old installer-owned PATH block is rewritten in place."""
     bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
@@ -6188,27 +4337,6 @@ def test_install_script_rewrites_existing_managed_path_block(tmp_path: Path) -> 
     assert "$HOME/old-bin" not in profile
     assert profile.startswith("before\n")
     assert profile.endswith("after\n")
-
-
-def test_install_script_warns_when_original_path_shadows_uv_tool(
-    tmp_path: Path,
-) -> None:
-    """An older `dcode` earlier on PATH is reported instead of silently used."""
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "FAKE_UV_TOOL_BIN_DIR": str(tmp_path / "home/.local/bin"),
-            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
-            "FAKE_LOCAL_DCODE_VERSION": "0.2.0",
-        },
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-
-    assert proc.returncode == 0
-    assert "deepagents-code updated: 0.1.0 → 0.2.0" in proc.stdout
-    assert "Detected existing dcode" in proc.stderr
-    assert "PATH order may run that binary instead of the uv tool" in proc.stderr
 
 
 def test_install_script_current_shadow_does_not_skip_uv_install(tmp_path: Path) -> None:
@@ -6261,148 +4389,6 @@ def test_install_script_current_uv_tool_repairs_shadowed_path(tmp_path: Path) ->
     assert (tmp_path / "uv-args.txt").exists()
     assert "not selected on PATH" in proc.stdout
     assert "Detected existing dcode" in proc.stderr
-
-
-def _run_detect_shadowing_install(
-    tmp_path: Path,
-    *,
-    original_path: str,
-    stage_shadow: bool = False,
-) -> str:
-    """Run the real `detect_shadowing_install` in isolation; return its stderr.
-
-    `HOME/.local/bin/dcode` is always created as the freshly-installed uv tool.
-    The caller controls `ORIGINAL_PATH` (the user's pre-installer PATH) to decide
-    what `command -v dcode` resolves to. With `stage_shadow`, a genuinely
-    different `dcode` (distinct inode) is also placed under `HOME/shadow` so the
-    caller can put it earlier on `ORIGINAL_PATH` to exercise the warning path.
-    """
-    home = tmp_path / "home"
-    local_bin = home / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    dcode = local_bin / "dcode"
-    dcode.write_text("#!/usr/bin/env bash\nexit 0\n")
-    _make_executable(dcode)
-    # The intermediate `share` dir must exist for the kernel to resolve the
-    # `~/.local/share/../bin` alias; without it the path is ENOENT and
-    # `command -v` finds nothing, so the `-ef` branch would never be reached.
-    (home / ".local" / "share").mkdir()
-
-    if stage_shadow:
-        shadow_dir = home / "shadow"
-        shadow_dir.mkdir()
-        shadow = shadow_dir / "dcode"
-        shadow.write_text("#!/usr/bin/env bash\nexit 0\n")
-        _make_executable(shadow)
-
-    script = tmp_path / "shadowing_harness.sh"
-    script.write_text(
-        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        'OS="linux"\n'
-        f"HOME={str(home)!r}\n"
-        f"TOOL_BIN_DIR={str(local_bin)!r}\n"
-        f"ORIGINAL_PATH={original_path!r}\n"
-        f"{_extract_shell_function('classify_shadowing_command')}\n"
-        f"{_extract_shell_function('detect_shadowing_install')}\n"
-        "detect_shadowing_install\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**_clean_environ(), "HOME": str(home)},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.stderr
-
-
-def test_detect_shadowing_install_skips_same_file_alias(tmp_path: Path) -> None:
-    """A same-file PATH alias of ~/.local/bin does not warn (the fixed bug).
-
-    `~/.local/share/../bin` collapses to `~/.local/bin`, so `command -v` resolves
-    to the very uv tool the installer just created. The `-ef` inode check must
-    short-circuit here; a string-only compare (the pre-fix behavior) would see a
-    different spelling and emit a spurious "existing install" warning.
-    """
-    home = tmp_path / "home"
-    stderr = _run_detect_shadowing_install(
-        tmp_path,
-        original_path=f"{home}/.local/share/../bin",
-    )
-
-    assert stderr.strip() == ""
-
-
-def test_detect_shadowing_install_warns_on_distinct_binary(tmp_path: Path) -> None:
-    """A genuinely different binary earlier on PATH still warns.
-
-    Positive control for the alias test above: it proves the harness does emit
-    a warning when it should, so the empty-stderr assertion there reflects the
-    `-ef` skip rather than a silent harness. The shadow binary is a distinct
-    inode, so both the string and `-ef` checks fail and the warning fires.
-    """
-    home = tmp_path / "home"
-    stderr = _run_detect_shadowing_install(
-        tmp_path,
-        original_path=f"{home}/shadow{os.pathsep}{home}/.local/bin",
-        stage_shadow=True,
-    )
-
-    assert "Detected existing dcode" in stderr
-    assert "PATH order may run that binary instead of the uv tool" in stderr
-
-
-def _eval_local_bin_in_profile(tmp_path: Path, profile_body: str) -> bool:
-    """Run the real `local_bin_in_profile` against a profile file's contents.
-
-    Returns True when the function reports ~/.local/bin as already configured
-    (exit 0).
-    """
-    profile = tmp_path / "profile"
-    profile.write_text(profile_body, encoding="utf-8")
-    script = tmp_path / "profile_harness.sh"
-    script.write_text(
-        f"{_extract_shell_function('local_bin_in_profile')}\n"
-        f"local_bin_in_profile {str(profile)!r}\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**os.environ},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.returncode == 0
-
-
-@pytest.mark.parametrize(
-    ("profile_body", "expected"),
-    [
-        # Canonical spelling (regression guard for the pre-existing behavior).
-        ('export PATH="$HOME/.local/bin:$PATH"\n', True),
-        # Un-normalized alias in a PATH assignment (share/.. collapses to .local).
-        ('export PATH="$HOME/.local/share/../bin:$PATH"\n', True),
-        # Same alias via fish_add_path.
-        ('fish_add_path "$HOME/.local/share/../bin"\n', True),
-        # Commented-out lines must not count as configured.
-        ('# export PATH="$HOME/.local/share/../bin:$PATH"\n', False),
-        # An unrelated directory is not a match.
-        ('export PATH="$HOME/somewhere/else:$PATH"\n', False),
-    ],
-)
-def test_local_bin_in_profile_recognizes_alias_spelling(
-    tmp_path: Path, profile_body: str, expected: bool
-) -> None:
-    """`local_bin_in_profile` recognizes the ~/.local/share/../bin alias too.
-
-    Without this, a profile written with the alias spelling would be treated as
-    not configured and the installer would append a duplicate PATH entry.
-    """
-    assert _eval_local_bin_in_profile(tmp_path, profile_body) is expected
 
 
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:
@@ -6464,27 +4450,6 @@ def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> No
 
     assert proc.returncode == 0, proc.stderr
     assert not (tmp_path / "dcode-tools.txt").exists()
-
-
-def test_install_script_system_ripgrep_failed_version_probe_warns(
-    tmp_path: Path,
-) -> None:
-    """A broken system `rg` is optional and must not abort the installer."""
-    proc, _ = _invoke(
-        tmp_path,
-        {
-            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
-            "DEEPAGENTS_CODE_RIPGREP_INSTALLER": "system",
-        },
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-        rg_version_fails=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    combined = proc.stdout + proc.stderr
-    assert "Could not determine the version of ripgrep on PATH" in combined
-    assert "slower fallback" in combined
 
 
 def test_install_script_skip_optional_skips_tools_install(tmp_path: Path) -> None:
@@ -6561,35 +4526,6 @@ def test_install_script_skips_managed_install_when_verify_failed(
     assert not (tmp_path / "dcode-tools.txt").exists(), proc.stdout + proc.stderr
 
 
-@pytest.mark.parametrize("flag", ["--help", "-h"])
-def test_install_script_help_flag_prints_usage_and_exits(
-    tmp_path: Path, flag: str
-) -> None:
-    """`--help` / `-h` prints the env-var reference and exits 0 before any install.
-
-    Guards the early-returns in the CLI-flag loop: the script must not reach uv
-    or any network probe. The output must mention key environment variables so
-    the user can discover their options without reading source.
-    """
-    env = _env(tmp_path, {}, installed_version=None, latest_version="0.2.0")
-    proc = subprocess.run(
-        ["bash", str(SCRIPT), flag],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    assert proc.returncode == 0
-    assert "DEEPAGENTS_CODE_VERSION" in proc.stdout
-    assert "DEEPAGENTS_CODE_EXTRAS" in proc.stdout
-    assert "baseten" in proc.stdout
-    assert "basesten" not in proc.stdout
-    assert "DEEPAGENTS_CODE_PYTHON" in proc.stdout
-    assert not (tmp_path / "uv-args.txt").exists()
-
-
 @pytest.mark.parametrize("flag", ["--version", "-v"])
 def test_install_script_version_flag_prints_version_and_exits(
     tmp_path: Path, flag: str
@@ -6615,23 +4551,166 @@ def test_install_script_version_flag_prints_version_and_exits(
     assert not (tmp_path / "uv-args.txt").exists()
 
 
-def test_install_script_rejects_unknown_flag(tmp_path: Path) -> None:
-    """An unrecognized argument exits non-zero before any install work.
+_NORMALIZE_PARITY_CASES = [
+    "/a//b/",
+    "/a/./b",
+    "/a/b/..",
+    "/a/b/../../..",
+    "/..",
+    "/",
+    "/tmp/../..",
+    "/x/./../y",
+    # POSIX leaves a leading exactly-double slash implementation-defined and
+    # `os.path.normpath` preserves it. The installer must agree, or it exports
+    # one directory while every later launch resolves another.
+    "//",
+    "//.",
+    "//..",
+    "///a",
+    "//srv/profile",
+    "//a/../b",
+    "//a/b/../..",
+    "//a/b/../c",
+]
 
-    Guards the `*)` arm of the CLI-flag loop: a typo like `--verison` must
-    surface an error and skip the install, rather than being silently ignored
-    and proceeding to a full install.
+
+@pytest.mark.parametrize(
+    "tool_dir",
+    [
+        "/opt/uv/tools",
+        "/Users/someone/.local/share/uv/tools",
+        "/tmp/a b/tools",
+        "/var//lib/uv/tools",
+    ],
+)
+def test_shell_lock_root_matches_python_installation_paths(tool_dir: str) -> None:
+    """The installer and dcode must derive the same install/update lock root.
+
+    `install.sh` says it mirrors `_paths._installation_paths`, but the existing
+    checks compare against hardcoded strings, so the two could drift while the
+    claim still read as verified. If they drift, a `curl | bash` install and a
+    dcode self-upgrade stop sharing a lock and nothing fails.
     """
-    env = _env(tmp_path, {}, installed_version=None, latest_version="0.2.0")
+    from deepagents_code._paths import _normalize_absolute
+
+    installation_root = _normalize_absolute(Path(tool_dir) / "deepagents-code")
+    expected = (
+        installation_root.parent / f".{installation_root.name}.deepagents-code-locks"
+    )
+
+    # The three lines `acquire_install_lock` uses to build `lock_root`.
+    script = (
+        'installation_root="$1"\n'
+        'installation_parent="${installation_root%/*}"\n'
+        'installation_name="${installation_root##*/}"\n'
+        "printf '%s' "
+        '"${installation_parent}/.${installation_name}.deepagents-code-locks"\n'
+    )
     proc = subprocess.run(
-        ["bash", str(SCRIPT), "--verison"],
-        env=env,
+        ["bash", "-c", script, "bash", str(installation_root)],
         check=False,
         capture_output=True,
         text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
     )
-    assert proc.returncode == 2
-    assert "Unrecognized argument" in proc.stderr
-    assert not (tmp_path / "uv-args.txt").exists()
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == str(expected)
+
+
+def test_shell_lock_root_formula_is_the_one_the_installer_uses() -> None:
+    """Pin the formula above to the real `acquire_install_lock` source.
+
+    The test above reproduces three lines rather than running the function,
+    which needs uv. Fail if those lines change.
+    """
+    source = _extract_shell_function("acquire_install_lock")
+
+    assert 'installation_parent="${installation_root%/*}"' in source
+    assert 'installation_name="${installation_root##*/}"' in source
+    assert (
+        'lock_root="${installation_parent}/.${installation_name}'
+        '.deepagents-code-locks"' in source
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_message"),
+    [("home", "home directory itself"), ("root", "filesystem root")],
+)
+def test_install_script_rejects_symlinked_deepagents_home_alias(
+    tmp_path: Path, target: str, expected_message: str
+) -> None:
+    """Installer validation uses directory identity, matching app startup."""
+    home = tmp_path / "home"
+    link = tmp_path / "profile-link"
+    destination = home if target == "home" else Path("/")
+    link.symlink_to(destination, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert expected_message in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.parametrize("target", ["missing", "profile-link"])
+def test_install_script_rejects_unresolved_deepagents_home_symlink(
+    tmp_path: Path, target: str
+) -> None:
+    """Dangling links and symlink loops fail before installation starts."""
+    link = tmp_path / "profile-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(link)})
+
+    assert proc.returncode == 1
+    assert "symlink whose target is missing or cannot be resolved" in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_rejects_non_directory_deepagents_home(tmp_path: Path) -> None:
+    """An existing regular file cannot hold a profile."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+
+    proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(blocker)})
+
+    assert proc.returncode == 1
+    assert "not a directory" in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+@pytest.mark.parametrize("mode", [0o300, 0o400], ids=["unreadable", "unsearchable"])
+def test_install_script_rejects_unusable_deepagents_home(
+    tmp_path: Path, mode: int
+) -> None:
+    """The installer rejects a profile that app startup cannot traverse."""
+    profile = tmp_path / "profile"
+    profile.mkdir(mode=mode)
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        profile.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "cannot be read or searched" in proc.stderr
+    assert not uv_args.exists()
+
+
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+def test_install_script_rejects_profile_behind_unsearchable_ancestor(
+    tmp_path: Path,
+) -> None:
+    """An inaccessible parent must not make the profile look merely absent."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o600)
+    profile = blocked / "profile"
+    try:
+        proc, uv_args = _invoke(tmp_path, {"DEEPAGENTS_HOME": str(profile)})
+    finally:
+        blocked.chmod(0o700)
+
+    assert proc.returncode == 1
+    assert "parent directory cannot be searched" in proc.stderr
+    assert not uv_args.exists()

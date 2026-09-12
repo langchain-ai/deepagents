@@ -84,6 +84,21 @@ def _truncate_command(command: str) -> str:
     return command + ellipsis if truncated else command
 
 
+def _description_widget(description: str) -> Static:
+    """Build the dim widget that renders an approval description.
+
+    Args:
+        description: The description text to render.
+
+    Returns:
+        The styled description widget.
+    """
+    return Static(
+        Content.from_markup("[dim]$desc[/dim]", desc=description),
+        classes="approval-description",
+    )
+
+
 class ApprovalMenu(Container):
     """Approval menu using standard Textual patterns.
 
@@ -272,6 +287,29 @@ class ApprovalMenu(Container):
             ),
         )
 
+    def _get_minimal_description(self) -> Static | None:
+        """Get supplemental details for a minimal execute approval.
+
+        The command has its own widget, so drop the formatter's
+        `Execute Command:` line and keep the rest. Auto-mode fallbacks prefix
+        the description with a review notice ahead of that line, so match the
+        line itself rather than assuming it is first.
+
+        Returns:
+            Widget holding the supplemental details, or `None` when there are
+            none.
+        """
+        description = self._action_requests[0].get("description")
+        if not isinstance(description, str):
+            return None
+        lines = description.splitlines()
+        details = "\n".join(
+            line for line in lines if not line.startswith("Execute Command:")
+        ).strip()
+        if not details:
+            return None
+        return _description_widget(details)
+
     def compose(self) -> ComposeResult:
         """Compose the widget with Static children.
 
@@ -316,6 +354,9 @@ class ApprovalMenu(Container):
                 classes="approval-command",
             )
             yield self._command_widget
+            description_widget = self._get_minimal_description()
+            if description_widget is not None:
+                yield description_widget
 
         # Tool info - only for non-minimal tools (diffs, writes show actual content)
         if not self._is_minimal:
@@ -420,11 +461,7 @@ class ApprovalMenu(Container):
             # Show description if present
             description = action_request.get("description")
             if description:
-                desc_widget = Static(
-                    Content.from_markup("[dim]$desc[/dim]", desc=description),
-                    classes="approval-description",
-                )
-                await self._tool_info_container.mount(desc_widget)
+                await self._tool_info_container.mount(_description_widget(description))
 
             # Get the appropriate renderer for this tool
             renderer = get_renderer(tool_name)
@@ -602,12 +639,8 @@ class ApprovalMenu(Container):
         Moves the cursor to Reject first, so the highlighted option always
         matches the decision the input will submit; it can only ever produce a
         reject, never an approval. Reveals the inline `Input` composed (hidden)
-        by `compose()` and focuses it; its value is emitted verbatim on submit,
-        leaving any model-facing framing to the caller.
-
-        Note:
-            `_frame_reject_reason` in `deepagents_code.tui.textual_adapter`
-            prefixes the raw text before it becomes `RejectDecision.message`.
+        by `compose()` and focuses it; its value is emitted verbatim on submit as
+        the human-provided reason in `RejectDecision.message`.
         """
         if self._reason_input_active:
             # Tab is advertised unconditionally, so a second press must not wipe

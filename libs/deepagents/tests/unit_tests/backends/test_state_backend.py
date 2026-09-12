@@ -175,3 +175,17 @@ def test_state_backend_move_rewrites_nested_prefix(monkeypatch: pytest.MonkeyPat
     assert update["/moved/a.txt"]["content"] == "a"
     assert update["/moved/deep/b.txt"]["content"] == "b"
     assert "/keep.txt" not in update
+
+
+def test_state_backend_edit_empty_old_string_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {"/legacy.txt": {"content": ["hello", "world"]}}
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    assert updates == []

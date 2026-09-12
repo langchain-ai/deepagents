@@ -82,8 +82,30 @@ class PersistentCronScheduler:
             await self._run_due_job(job, current)
 
     async def _ticker(self) -> None:
+        """Scan for due jobs until stopped, surviving a failed scan.
+
+        A tick reads the store, consults the clock, and dispatches; an
+        unexpected raise from any of those would otherwise leave the task
+        completed-with-exception, and since nothing awaits it but `stop`, the
+        scheduler would go quiet for the life of the process with no more than
+        an "exception was never retrieved" warning at collection time. Logging
+        and continuing costs one missed scan instead: due jobs stay due, so the
+        next tick picks them up.
+
+        `Exception` rather than `BaseException` is deliberate --
+        `asyncio.CancelledError` derives from the latter, so cancellation still
+        propagates and `stop` keeps working.
+        """
         while not self._stopped.is_set():
-            await self.tick_once()
+            try:
+                await self.tick_once()
+            except Exception as exc:
+                logger.exception("Cron tick failed")
+                # `log_event` JSON-encodes and redacts its fields, so untrusted
+                # text off the store cannot forge a log line.
+                log_event(logger, "cron.tick_failure", error=str(exc))
+            # The wait happens even after a failure, so a persistently broken
+            # tick retries on the normal interval instead of spinning.
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=self.tick_seconds)
             except TimeoutError:
@@ -127,10 +149,10 @@ class PersistentCronScheduler:
             "cron.success",
             job_id=claimed.id,
             job_name=claimed.name,
-            silent=_is_silent(text),
-            has_delivery=bool(text and not _is_silent(text)),
+            silent=is_silent(text),
+            has_delivery=bool(text and not is_silent(text)),
         )
-        if _is_silent(text):
+        if is_silent(text):
             log_event(
                 logger,
                 "cron.delivery_suppressed",
@@ -166,5 +188,14 @@ class PersistentCronScheduler:
             )
 
 
-def _is_silent(text: str) -> bool:
-    return text.strip().startswith(SILENT_SENTINEL)
+def is_silent(text: str) -> bool:
+    """Whether a scheduled result asks to be withheld from the chat.
+
+    Args:
+        text: Agent output produced for a scheduled job.
+
+    Returns:
+        Whether the text carries the silent sentinel at either end.
+    """
+    stripped = text.strip()
+    return stripped.startswith(SILENT_SENTINEL) or stripped.endswith(SILENT_SENTINEL)

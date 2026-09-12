@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from langchain.agents.middleware.summarization import _DEFAULT_TRIM_TOKEN_LIMIT
 from langchain_core.messages import AIMessage, MessageLikeRepresentation
 
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -57,6 +58,25 @@ def test_factory_default_prompt_explains_media_references() -> None:
     assert '<image url="/conversation_history/media/{hash}.png" />' in rendered
     assert "preserve the media reference in your summary" in rendered
     assert "call `read_file` on the referenced path" in rendered
+
+
+@pytest.mark.parametrize("with_profile_limit", [None, 120_000])
+def test_factory_default_trim_tokens_to_summarize(with_profile_limit: int | None) -> None:
+    """Factory default must match the class default, not override it with None."""
+    middleware = create_summarization_middleware(_make_model(with_profile_limit=with_profile_limit), cast("Any", MagicMock()))
+    assert middleware._lc_helper.trim_tokens_to_summarize == _DEFAULT_TRIM_TOKEN_LIMIT
+
+
+def test_factory_allows_disabling_summary_trimming() -> None:
+    """Preserves `None` as an explicit opt-out from summary input trimming."""
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        trim_tokens_to_summarize=None,
+    )
+
+    assert middleware._lc_helper.trim_tokens_to_summarize is None
 
 
 def test_factory_surfaces_summarization_knobs() -> None:

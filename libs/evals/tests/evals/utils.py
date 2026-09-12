@@ -1333,7 +1333,25 @@ def _log_efficiency(
 
     expected_steps: int | None = None
     expected_tool_calls: int | None = None
-    for assertion in scorer._expectations:
+    for index, assertion in enumerate(scorer._expectations, start=1):
+        feedback_name = {
+            AgentSteps: "agent_steps",
+            ToolCallRequests: "tool_call_requests",
+            MaxToolCallRequests: "max_tool_call_requests",
+            ToolCall: "tool_call",
+        }.get(type(assertion), "assertion")
+        feedback_key = f"efficiency_{feedback_name}_{index}"
+        passed = assertion.check(trajectory)
+        if passed:
+            t.log_feedback(key=feedback_key, score=True, value=repr(assertion))
+        else:
+            t.log_feedback(
+                key=feedback_key,
+                score=False,
+                value=repr(assertion),
+                comment=assertion.describe_failure(trajectory),
+            )
+
         if isinstance(assertion, AgentSteps):
             expected_steps = assertion.n
         elif isinstance(assertion, ToolCallRequests):
@@ -1344,7 +1362,7 @@ def _log_efficiency(
     if expected_tool_calls is not None:
         t.log_feedback(key="expected_tool_call_requests", value=expected_tool_calls)
 
-    if expected_steps is None and expected_tool_calls is None:
+    if not scorer._expectations:
         return None
 
     return EfficiencyResult(

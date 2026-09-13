@@ -43,12 +43,20 @@ services:
       TALON_BROWSER_CONTROL_PORT: "8081"
       TALON_BROWSER_VIEWER_HOST: 172.30.13.3
       TALON_BROWSER_VIEWER_PORT: "8080"
+      TALON_BROWSER_LOCAL_VIEWER: ${TALON_BROWSER_LOCAL_VIEWER:-false}
+      TALON_BROWSER_VIEWER_TOKEN_FILE: ${TALON_BROWSER_VIEWER_TOKEN_FILE:-}
       TALON_BROWSER_STEEL_URL: http://172.30.14.2:3000
       TALON_BROWSER_TOKEN_FILE: /run/browser/service-token
     volumes:
       - type: bind
         source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/service-token
         target: /run/browser/service-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BROWSER_RUNTIME_DIR:?Use browser/deploy.py}/viewer-token
+        target: /run/browser/viewer-token
         read_only: true
         bind:
           create_host_path: false

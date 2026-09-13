@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
+from contextlib import ExitStack
 import json
 import os
 import secrets
@@ -144,17 +146,40 @@ def start_gated(service: str, compose: list[str], env: dict[str, str]) -> int:
 def runtime_files(runtime: Path) -> None:
     """Create a fresh credential and separate empty readiness mounts."""
     runtime.chmod(0o700)
-    token = runtime / "service-token"
-    descriptor = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-    with os.fdopen(descriptor, "w") as stream:
-        stream.write(secrets.token_urlsafe(32))
-        os.fchown(stream.fileno(), 1000, 1000)
+    for name in ("service-token", "viewer-token"):
+        descriptor = os.open(
+            runtime / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400
+        )
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(secrets.token_urlsafe(32))
+            os.fchown(stream.fileno(), 1000, 1000)
     for name in ("steel-network", "egress-network"):
         (runtime / name).mkdir(mode=0o755)
         (runtime / name).chmod(0o755)
 
 
-def deploy(home: Path, env_file: Path) -> None:
+def start_local_viewer(stack: ExitStack, runtime: Path) -> None:
+    """Reveal the separate login password only on the controlling terminal."""
+    tty = stack.enter_context(open("/dev/tty", "w"))
+    if not tty.isatty():
+        msg = "Local viewer requires a controlling terminal"
+        raise RuntimeError(msg)
+    spec = importlib.util.spec_from_file_location(
+        "talon_browser_local_relay", Path(__file__).with_name("local_relay.py")
+    )
+    if spec is None or spec.loader is None:
+        msg = "Local viewer relay is unavailable"
+        raise RuntimeError(msg)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    stack.enter_context(module.LocalRelay())
+    tty.write("Local browser: http://127.0.0.1:8765\nLaunch password: ")
+    tty.write((runtime / "viewer-token").read_text())
+    tty.write("\n")
+    tty.flush()
+
+
+def deploy(home: Path, env_file: Path, *, local_viewer: bool = False) -> None:
     """Own one complete create, gate, run, and teardown lifecycle."""
     env = {
         key: value
@@ -163,6 +188,10 @@ def deploy(home: Path, env_file: Path) -> None:
     }
     env["HOME"] = str(home)
     env["TALON_ENV_FILE"] = str(env_file)
+    env["TALON_BROWSER_LOCAL_VIEWER"] = "true" if local_viewer else "false"
+    env["TALON_BROWSER_VIEWER_TOKEN_FILE"] = (
+        "/run/browser/viewer-token" if local_viewer else ""
+    )
     preflight(env)
     with open("/run/talon-browser-deploy.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -183,8 +212,11 @@ def deploy(home: Path, env_file: Path) -> None:
                 "-f",
                 str(BASE / "browser/compose.yml"),
             ]
+            stack = ExitStack()
             try:
                 runtime_files(runtime)
+                if local_viewer:
+                    start_local_viewer(stack, runtime)
                 run([*compose, "down", "--timeout", "40"], env)
                 run([*compose, "up", "--no-start", "--build", "--force-recreate"], env)
                 steel = start_gated("steel", compose, env)
@@ -195,9 +227,12 @@ def deploy(home: Path, env_file: Path) -> None:
                     (runtime / name / "ready").touch(mode=0o444)
                 run([*compose, "up", "--no-recreate", "--abort-on-container-exit"], env)
             finally:
-                for name in ("steel-network", "egress-network"):
-                    (runtime / name / "ready").unlink(missing_ok=True)
-                run([*compose, "down", "--timeout", "40"], env)
+                try:
+                    stack.close()
+                finally:
+                    for name in ("steel-network", "egress-network"):
+                        (runtime / name / "ready").unlink(missing_ok=True)
+                    run([*compose, "down", "--timeout", "40"], env)
 
 
 def main() -> int:
@@ -205,6 +240,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--local-viewer", action="store_true")
     args = parser.parse_args()
     if not args.home.is_absolute() or not args.home.is_dir():
         parser.error("--home must be an existing absolute directory")
@@ -219,7 +255,7 @@ def main() -> int:
     for event in (signal.SIGINT, signal.SIGTERM):
         signal.signal(event, stop)
     try:
-        deploy(args.home, args.env_file)
+        deploy(args.home, args.env_file, local_viewer=args.local_viewer)
     except (OSError, RuntimeError, ValueError) as error:
         print(
             f"Browser deployment failed: {type(error).__name__}; check host prerequisites and container state",

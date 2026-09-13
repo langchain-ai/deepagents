@@ -1,6 +1,8 @@
 """Network-free deployment lifecycle and fail-closed policy checks."""
 
 import importlib.util
+import io
+from contextlib import ExitStack
 import json
 import os
 import signal
@@ -21,7 +23,9 @@ SPEC.loader.exec_module(deploy)
 class DeployTests(unittest.TestCase):
     """Exercise the real lifecycle through a fake subprocess boundary."""
 
-    def lifecycle(self, failure: str = "") -> tuple[list[list[str]], bytes]:
+    def lifecycle(
+        self, failure: str = "", *, local_viewer: bool = False
+    ) -> tuple[list[list[str]], bytes]:
         """Assert marker visibility and credential destruction on each exit path."""
         commands = []
         runtime = None
@@ -33,6 +37,13 @@ class DeployTests(unittest.TestCase):
             nonlocal runtime, credential
             commands.append(command)
             env = kwargs["env"]
+            self.assertEqual(
+                env["TALON_BROWSER_LOCAL_VIEWER"], str(local_viewer).lower()
+            )
+            self.assertEqual(
+                env["TALON_BROWSER_VIEWER_TOKEN_FILE"],
+                "/run/browser/viewer-token" if local_viewer else "",
+            )
             runtime = Path(env["BROWSER_RUNTIME_DIR"])
             token = runtime / "service-token"
             if token.exists():
@@ -74,6 +85,7 @@ class DeployTests(unittest.TestCase):
             real_temporary = tempfile.TemporaryDirectory
             with (
                 patch.object(deploy, "preflight"),
+                patch.object(deploy, "start_local_viewer") as viewer,
                 patch.object(deploy.subprocess, "run", side_effect=execute),
                 patch.object(
                     deploy,
@@ -91,9 +103,14 @@ class DeployTests(unittest.TestCase):
                     with self.assertRaises(
                         SystemExit if failure == "signal" else RuntimeError
                     ):
-                        deploy.deploy(Path(root), Path(root) / ".env")
+                        deploy.deploy(
+                            Path(root), Path(root) / ".env", local_viewer=local_viewer
+                        )
                 else:
-                    deploy.deploy(Path(root), Path(root) / ".env")
+                    deploy.deploy(
+                        Path(root), Path(root) / ".env", local_viewer=local_viewer
+                    )
+                self.assertEqual(viewer.call_count, int(local_viewer))
         self.assertIsNotNone(runtime)
         self.assertFalse(runtime.exists())
         self.assertIn("down", commands[-1])
@@ -169,6 +186,69 @@ class DeployTests(unittest.TestCase):
         dns = [command for command in commands if "--ctorigdstport" in command]
         self.assertEqual(len(dns), 2)
         self.assertTrue(all("127.0.0.11" in command for command in dns))
+
+    @unittest.skipUnless(os.geteuid() == 0, "credential ownership requires root")
+    def test_viewer_credentials_are_separate(self) -> None:
+        """Both files satisfy the reader contract without sharing credentials."""
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            deploy.runtime_files(runtime)
+            service = (runtime / "service-token").read_text()
+            viewer = runtime / "viewer-token"
+            self.assertRegex(viewer.read_text(), r"^[A-Za-z0-9_-]{43}$")
+            self.assertNotEqual(service, viewer.read_text())
+            self.assertEqual(viewer.stat().st_mode & 0o777, 0o400)
+            self.assertEqual(viewer.stat().st_uid, 1000)
+
+    @unittest.skipUnless(os.geteuid() == 0, "credential ownership requires root")
+    def test_opt_in_lifecycle(self) -> None:
+        """Only explicit opt-in activates local viewer deployment settings."""
+        self.lifecycle(local_viewer=True)
+        self.lifecycle("signal", local_viewer=True)
+
+    def test_password_is_written_only_to_tty(self) -> None:
+        """The password is not placed in the URL, stdout, or stderr."""
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            password = "v" * 43
+            (runtime / "viewer-token").write_text(password)
+            terminal = io.StringIO()
+            with (
+                ExitStack() as stack,
+                patch.object(deploy, "open", create=True, return_value=terminal),
+                patch.object(terminal, "isatty", return_value=True),
+                patch.object(deploy.importlib.util, "module_from_spec") as module,
+                patch.object(deploy.importlib.util, "spec_from_file_location"),
+                patch.object(deploy.sys, "stdout", new_callable=io.StringIO) as stdout,
+                patch.object(deploy.sys, "stderr", new_callable=io.StringIO) as stderr,
+            ):
+                deploy.start_local_viewer(stack, runtime)
+                self.assertEqual(
+                    terminal.getvalue(),
+                    f"Local browser: http://127.0.0.1:8765\nLaunch password: {password}\n",
+                )
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(stderr.getvalue(), "")
+                module.return_value.LocalRelay.return_value.__enter__.assert_called_once()
+
+    def test_viewer_requires_controlling_tty(self) -> None:
+        """Missing or redirected terminals fail before loading the relay."""
+        for terminal in (OSError("no tty"), io.StringIO()):
+            with (
+                ExitStack() as stack,
+                patch.object(deploy, "open", create=True) as opener,
+                patch.object(
+                    deploy.importlib.util, "spec_from_file_location"
+                ) as loader,
+            ):
+                if isinstance(terminal, OSError):
+                    opener.side_effect = terminal
+                else:
+                    opener.return_value = terminal
+                with self.assertRaises((OSError, RuntimeError)):
+                    deploy.start_local_viewer(stack, Path("/unused"))
+                loader.assert_not_called()
+                opener.assert_called_once_with("/dev/tty", "w")
 
     def test_command_errors_do_not_disclose_output(self) -> None:
         """Compose output may contain user credentials and must not reach errors."""

@@ -500,35 +500,21 @@ fi"""
 
 
 def _section_gh_stack() -> str:
-    """Best-effort local stack metadata from the optional `gh-stack` extension.
+    """Best-effort local state from the optional `gh-stack` extension.
 
     Returns:
         Bash snippet (standalone).
     """
     return r"""# --- Local GitHub stack ---
-if command -v gh >/dev/null 2>&1; then
-  _STACK_TMP="${_DCT:-}"
-  _STACK_CLEANUP=false
-  if [ -z "$_STACK_TMP" ]; then
-    _STACK_TMP="$(mktemp -d)" || exit 1
-    _STACK_CLEANUP=true
-  fi
-  gh stack view --json > "$_STACK_TMP/gh_stack" 2>/dev/null &
-  _STACK_PID=$!
-  for _STACK_TICK in {1..10}; do
-    kill -0 "$_STACK_PID" 2>/dev/null || break
-    sleep 0.1
-  done
-  kill "$_STACK_PID" 2>/dev/null
-  wait "$_STACK_PID"
-  _STACK_STATUS=$?
-  if [ "$_STACK_STATUS" -eq 0 ] && [ -s "$_STACK_TMP/gh_stack" ]; then
+if command -v git >/dev/null 2>&1; then
+  _STACK_GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
+  _STACK_FILE="${_STACK_GIT_DIR}/gh-stack"
+  if [ -n "$_STACK_GIT_DIR" ] && [ -s "$_STACK_FILE" ]; then
     echo "**GitHub Stack** (local tracking; may be stale):"
-    head -c 8192 "$_STACK_TMP/gh_stack"
+    head -c 8192 "$_STACK_FILE"
     echo ""
     echo ""
   fi
-  $_STACK_CLEANUP && rm -rf "$_STACK_TMP"
 fi"""
 
 

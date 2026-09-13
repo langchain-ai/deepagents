@@ -505,44 +505,31 @@ class TestSectionGhCli:
 class TestSectionGhStack:
     """Tests for `_section_gh_stack`."""
 
-    def test_surfaces_local_stack_json(self, tmp_path: Path) -> None:
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(
-            "#!/bin/sh\n"
-            'if [ "$1 $2 $3" = "stack view --json" ]; then\n'
-            '  printf \'%s\\n\' \'{"branches":[{"name":"feature"}]}\'\n'
-            "fi\n"
-        )
-        gh.chmod(0o755)
+    def test_surfaces_local_stack_state(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="feature")
+        stack_file = tmp_path / ".git" / "gh-stack"
+        stack_file.write_text('{"stacks":[{"branches":[{"branch":"feature"}]}]}')
 
         result = subprocess.run(
             ["/bin/bash", "-c", _section_gh_stack()],
             capture_output=True,
             text=True,
             cwd=tmp_path,
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
             check=False,
         )
 
         assert result.stderr == ""
         assert "**GitHub Stack** (local tracking; may be stale):" in result.stdout
-        assert '{"branches":[{"name":"feature"}]}' in result.stdout
+        assert stack_file.read_text() in result.stdout
 
-    def test_omits_failed_stack_lookup(self, tmp_path: Path) -> None:
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text("#!/bin/sh\nexit 1\n")
-        gh.chmod(0o755)
+    def test_omits_missing_stack_state(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="feature")
 
         result = subprocess.run(
             ["/bin/bash", "-c", _section_gh_stack()],
             capture_output=True,
             text=True,
             cwd=tmp_path,
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
             check=False,
         )
 

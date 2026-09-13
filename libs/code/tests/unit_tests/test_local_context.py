@@ -27,6 +27,7 @@ from deepagents_code.local_context import (
     _ExecutableBackend,
     _section_files,
     _section_gh_cli,
+    _section_gh_stack,
     _section_git,
     _section_header,
     _section_makefile,
@@ -499,6 +500,54 @@ class TestSectionGhCli:
             in result.stdout
         )
         assert "does not expose `mergedAt`" in result.stdout
+
+
+class TestSectionGhStack:
+    """Tests for `_section_gh_stack`."""
+
+    def test_surfaces_local_stack_json(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1 $2 $3" = "stack view --json" ]; then\n'
+            '  printf \'%s\\n\' \'{"branches":[{"name":"feature"}]}\'\n'
+            "fi\n"
+        )
+        gh.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_gh_stack()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**GitHub Stack** (local tracking; may be stale):" in result.stdout
+        assert '{"branches":[{"name":"feature"}]}' in result.stdout
+
+    def test_omits_failed_stack_lookup(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text("#!/bin/sh\nexit 1\n")
+        gh.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_gh_stack()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**GitHub Stack**" not in result.stdout
 
 
 class TestSectionTestCommand:

@@ -499,6 +499,39 @@ if command -v gh >/dev/null 2>&1; then
 fi"""
 
 
+def _section_gh_stack() -> str:
+    """Best-effort local stack metadata from the optional `gh-stack` extension.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Local GitHub stack ---
+if command -v gh >/dev/null 2>&1; then
+  _STACK_TMP="${_DCT:-}"
+  _STACK_CLEANUP=false
+  if [ -z "$_STACK_TMP" ]; then
+    _STACK_TMP="$(mktemp -d)" || exit 1
+    _STACK_CLEANUP=true
+  fi
+  gh stack view --json > "$_STACK_TMP/gh_stack" 2>/dev/null &
+  _STACK_PID=$!
+  for _STACK_TICK in {1..10}; do
+    kill -0 "$_STACK_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill "$_STACK_PID" 2>/dev/null
+  wait "$_STACK_PID"
+  _STACK_STATUS=$?
+  if [ "$_STACK_STATUS" -eq 0 ] && [ -s "$_STACK_TMP/gh_stack" ]; then
+    echo "**GitHub Stack** (local tracking; may be stale):"
+    head -c 8192 "$_STACK_TMP/gh_stack"
+    echo ""
+    echo ""
+  fi
+  $_STACK_CLEANUP && rm -rf "$_STACK_TMP"
+fi"""
+
+
 def _section_test_command() -> str:
     """Test command detection (make test / pytest / npm test).
 
@@ -645,10 +678,11 @@ def build_detect_script() -> str:
         ("03_runtimes", _section_runtimes()),
         ("04_git", _section_git()),
         ("05_gh_cli", _section_gh_cli()),
-        ("06_testcmd", _section_test_command()),
-        ("07_files", _section_files()),
-        ("08_tree", _section_tree()),
-        ("09_makefile", _section_makefile()),
+        ("06_gh_stack", _section_gh_stack()),
+        ("07_testcmd", _section_test_command()),
+        ("08_files", _section_files()),
+        ("09_tree", _section_tree()),
+        ("10_makefile", _section_makefile()),
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a

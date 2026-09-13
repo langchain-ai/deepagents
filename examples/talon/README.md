@@ -53,12 +53,21 @@ defaults, operator authorization, and next-invocation activation, and
 [MCP configuration guidance](../../libs/talon/README.md#mcp-tools) for credential
 restrictions. Out-of-workspace placement is not a same-UID shell isolation boundary.
 
-## Optional Persistent Browser Foundation
+## Optional Persistent Browser
 
-See [the browser deployment guide](browser/README.md) for the opt-in Linux Docker
-sidecar, profile persistence, isolated bridge listeners, and filtered egress.
-This is synthetic-only deployment scaffolding; browser tools, remote viewing, and
-human handoff are not yet available. The normal channel-only deployment is unchanged.
+See [the browser deployment guide](browser/README.md) for the opt-in Linux rootful
+Docker sidecar, persistent profile, private Node bridge and filtered egress. The
+overlay enables native raw `browser_cdp` and `browser_request_handoff` tools and
+requires explicit `TALON_BROWSER_OPERATOR_ID` plus single-quoted JSON
+`TALON_BROWSER_IDENTITIES` configuration. The host owns identity mapping; one global
+lease coordinates browser use. Handoff pauses automation but there is no viewer,
+tunnel or interactive takeover yet.
+
+This remains synthetic-only: public browsing is blocked in the current sandbox by
+shared-range DNS answers, and end-to-end acceptance is incomplete. Raw CDP uploads
+and downloads use browser-side paths/streams, not seamless local file transfer;
+Steel and the bridge have no Talon workspace mounts. The normal channel-only
+deployment is unchanged.
 
 ## Local Run Without Docker
 

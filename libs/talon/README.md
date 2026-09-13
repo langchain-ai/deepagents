@@ -622,3 +622,59 @@ make test
 
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
+
+## Native browser (opt-in)
+
+`TALON_BROWSER_ENABLED=true` enables native `browser_cdp` and
+`browser_request_handoff` tools independently of MCP refresh. The default is off.
+Configure `TALON_BROWSER_OPERATOR_ID`, `TALON_BROWSER_IDENTITIES` as a JSON
+`{"telegram":"explicit-sender-id"}` mapping, and `TALON_BROWSER_TOKEN_FILE`
+pointing to the bridge's 43-character runtime token file (regular file, mode `0400`,
+no symlink). Never put the token itself in configuration. Control is fixed at
+`http://172.30.12.3:8081`; redirects, proxy environment settings and mutation
+retries are disabled. Requests and observations are limited to 4 MiB, including
+error responses. Every HTTP request has a 35-second wall deadline, above the
+bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
+10-second deadline. Exact bridge codes `lease_busy`, `transport_busy`, and
+`pending_limit` become `browser_busy`; all other failures become
+`browser_unavailable`, without remote error details. The bridge owns concurrency
+and task quotas; the native client serializes CDP commands within each run.
+
+Host route identities, not message metadata, authorize each fresh UUID run.
+Scheduled jobs require an explicit operator-managed
+`TALON_BROWSER_SCHEDULED_OWNERS` JSON mapping from job ID to
+`{"provider":"telegram","sender_id":"explicit-sender-id"}`. Missing mappings deny
+browser access. Detached local tasks use separate background runs and release
+only their own leases; synchronous child browser access fails closed.
+Existing tool approval policies still apply.
+
+Use raw CDP for navigation (`Page.navigate`), DOM text and JavaScript
+(`Runtime.evaluate`), base64 screenshots (`Page.captureScreenshot`), tabs
+(`Target.*`), clicking/typing (`Input.*`), and browser-local upload/download
+operations (`DOM.setFileInputFiles`, `Browser.setDownloadBehavior`, `IO.read`).
+Optional `session_id` routes commands to attached targets. There is no convenient
+host file transfer tool and no automatic login screenshot capture. All CDP results
+are explicitly wrapped as untrusted JSON observations.
+
+Handoff returns only sanitized status/UUID and `PAUSED`: foreground
+`viewer_unavailable`, background `human_required`. No viewer/channel URL exists
+in this slice. Embedders may supply `host.browser_event_handler`, receiving
+the bound host identity and sanitized event outside model context. Actual channel
+delivery is deferred. `AgentRequest` also accepts optional keyword-only
+`browser_binding` and `browser_event_handler`; existing positional arguments are
+unchanged. The main entry point delegates client start/stop to the runtime lifecycle.
+The graph receives `BrowserContext` only when a browser client is configured;
+disabled-browser graph construction is unchanged. `BrowserError` now accepts an
+optional keyword-only `code` for sanitized bridge error mapping; tool signatures
+are unchanged. Navigation and evaluation remain raw CDP operations, not new tools.
+
+The cross-layer contract test launches the actual example Node bridge and
+coordinator on ephemeral loopback ports with a synthetic CDP transport. It exercises
+native HTTP, runtime tools, foreground/background handoff lease versions, release,
+competing owners, and the 256-command quota without internet access. It does not
+exercise Chromium, Docker routing, or real navigation timing. From `libs/talon`,
+with Node.js available, run:
+
+```bash
+uv run --group test pytest tests/integration_tests/test_browser_bridge.py --color=no
+```

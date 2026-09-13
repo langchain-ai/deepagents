@@ -15,6 +15,8 @@ from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.unit_tests.test_background_runtime import ToolModel
 
+pytestmark = pytest.mark.allow_hosts(["127.0.0.1"])
+
 _SOURCE = Path(__file__).resolve().parents[4] / "examples/talon/browser"
 _SERVER = """
 const { createBridge } = await import(process.argv[1]);

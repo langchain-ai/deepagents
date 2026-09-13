@@ -158,8 +158,8 @@ class _ConsoleBuffer:
     smaller.
     """
 
-    def __init__(self, max_chars: int) -> None:
-        self._max_chars = max(0, max_chars)
+    def __init__(self, max_chars: int | None) -> None:
+        self._max_chars = None if max_chars is None else max(0, max_chars)
         self._stdout = ""
         self._dropped_chars = 0
 
@@ -167,6 +167,9 @@ class _ConsoleBuffer:
         del level  # flattened; see class docstring
         line = " ".join(stringify(a) for a in args)
         chunk = line if not self._stdout else f"\n{line}"
+        if self._max_chars is None:
+            self._stdout += chunk
+            return
         remaining = self._max_chars - len(self._stdout)
         if remaining <= 0:
             self._dropped_chars += len(chunk)
@@ -349,7 +352,7 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
-        max_stdout_chars: int,
+        max_stdout_chars: int | None,
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
     ) -> None:
@@ -909,7 +912,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
-    max_stdout_chars: int
+    max_stdout_chars: int | None
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     _slots: dict[str, _Slot] = field(default_factory=dict)

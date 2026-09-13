@@ -177,12 +177,20 @@ def format_outcome(
     outcome: EvalOutcome,
     *,
     max_result_chars: int,
+    result_artifact_path: str | None = None,
+    stdout_artifact_path: str | None = None,
 ) -> str:
     """Render an EvalOutcome-like object as the tool's wire format."""
     parts: list[str] = []
     if outcome.stdout or outcome.stdout_truncated_chars > 0:
         stdout = outcome.stdout
-        if outcome.stdout_truncated_chars > 0:
+        if stdout_artifact_path is not None:
+            stdout = _offloaded_preview(
+                stdout,
+                max_result_chars,
+                stdout_artifact_path,
+            )
+        elif outcome.stdout_truncated_chars > 0:
             stdout = _truncate(
                 outcome.stdout,
                 max_result_chars,
@@ -201,7 +209,9 @@ def format_outcome(
     else:
         body = outcome.result if outcome.result is not None else "undefined"
         kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
-        body_xml = _xml_escape(_truncate(body, max_result_chars))
+        if result_artifact_path is not None:
+            body = _offloaded_preview(body, max_result_chars, result_artifact_path)
+        body_xml = _xml_escape(body)
         parts.append(f"<result{kind_attr}>{body_xml}</result>")
     return "\n".join(parts)
 
@@ -220,6 +230,15 @@ def _truncate(text: str, limit: int, *, dropped: int | None = None) -> str:
     keep = max(0, limit - len(_TRUNCATE_MARKER.format(n=0)))
     dropped = len(text) - keep
     return text[:keep] + _TRUNCATE_MARKER.format(n=dropped)
+
+
+def _offloaded_preview(text: str, limit: int, path: str) -> str:
+    remaining = len(text) - limit
+    marker = (
+        f"\n[Remaining {remaining} characters are at {path}. "
+        "Use read_file with offset and limit to retrieve them.]"
+    )
+    return text[:limit] + marker
 
 
 def _xml_escape(text: str) -> str:

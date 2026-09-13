@@ -29,7 +29,12 @@ from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
+from langchain_quickjs._repl import (
+    EvalOutcome,
+    _clear_exception_references,
+    _Registry,
+    _ThreadREPL,
+)
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
@@ -574,6 +579,62 @@ def test_large_result_is_truncated(repl: _ThreadREPL) -> None:
     assert "truncated" in formatted
     # Bound ourselves a bit: tags add overhead, but body should be close to the limit.
     assert len(formatted) < 300
+
+
+def test_console_output_is_preserved_before_middleware_truncation(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=None,
+    )
+    outcome = repl.eval_sync("console.log('x'.repeat(5000)); 1")
+    assert outcome.stdout == "x" * 5000
+    assert outcome.stdout_truncated_chars == 0
+
+
+def test_oversized_blocks_are_offloaded_with_readable_markers() -> None:
+    class _Backend:
+        artifacts_root = "/artifacts"
+
+        def __init__(self) -> None:
+            self.files: dict[str, str] = {}
+
+        def write(self, path: str, content: str) -> None:
+            self.files[path] = content
+
+    backend = _Backend()
+    middleware = CodeInterpreterMiddleware(
+        backend=backend,
+        artifacts_root=backend.artifacts_root,
+        max_result_chars=4,
+    )
+    result = "result-value"
+    stdout = "stdout-value"
+    result_path = middleware._offload_block(
+        result,
+        tool_call_id="call-1",
+        block_name="result",
+    )
+    stdout_path = middleware._offload_block(
+        stdout,
+        tool_call_id="call-1",
+        block_name="stdout",
+    )
+
+    assert result_path == "/artifacts/large_tool_results/call-1-result"
+    assert stdout_path == "/artifacts/large_tool_results/call-1-stdout"
+    assert backend.files[result_path] == result
+    assert backend.files[stdout_path] == stdout
+    assert "Remaining 8 characters" in format_outcome(
+        EvalOutcome(result=result, stdout=stdout),
+        max_result_chars=4,
+        result_artifact_path=result_path,
+        stdout_artifact_path=stdout_path,
+    )
 
 
 # ---------------------------------------------------------------------------

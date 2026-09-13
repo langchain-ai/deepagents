@@ -73,7 +73,7 @@ INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
-INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
+INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 16000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
@@ -2715,7 +2715,10 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="interpreter.max_result_chars",
         group="Interpreter",
-        summary="Cap (chars) on js_eval result and stdout before truncation.",
+        summary=(
+            "Cap (chars) on js_eval result and stdout; oversized content is "
+            "offloaded rather than dropped."
+        ),
         kind=OptionKind.INT,
         default=INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
         toml_keys=("interpreter", "max_result_chars"),

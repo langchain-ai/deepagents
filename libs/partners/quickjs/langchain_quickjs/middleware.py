@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -233,6 +234,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
+        backend: BackendProtocol | None = None,
+        artifacts_root: str = "/",
         capture_console: bool = True,
         subagents: bool = True,
         ptc: PTCOption | None = None,
@@ -253,6 +256,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._max_ptc_calls = max_ptc_calls
         self._tool_name = tool_name
         self._max_result_chars = max_result_chars
+        self._backend = backend
+        self._artifacts_root = artifacts_root.rstrip("/") or "/"
         self._capture_console = capture_console
         self._subagents = subagents
         self._ptc = ptc
@@ -269,7 +274,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
-            max_stdout_chars=max_result_chars,
+            max_stdout_chars=None,
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
         )
@@ -290,8 +295,23 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             outcome: Any,
             tool_call_id: str | None,
         ) -> ToolMessage:
+            result_artifact_path = middleware._offload_block(
+                outcome.result,
+                tool_call_id=tool_call_id,
+                block_name="result",
+            )
+            stdout_artifact_path = middleware._offload_block(
+                outcome.stdout,
+                tool_call_id=tool_call_id,
+                block_name="stdout",
+            )
             return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
+                content=format_outcome(
+                    outcome,
+                    max_result_chars=max_chars,
+                    result_artifact_path=result_artifact_path,
+                    stdout_artifact_path=stdout_artifact_path,
+                ),
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )
@@ -327,7 +347,26 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
-            return _make_tool_message(outcome, runtime.tool_call_id)
+            result_artifact_path = await middleware._aoffload_block(
+                outcome.result,
+                tool_call_id=runtime.tool_call_id,
+                block_name="result",
+            )
+            stdout_artifact_path = await middleware._aoffload_block(
+                outcome.stdout,
+                tool_call_id=runtime.tool_call_id,
+                block_name="stdout",
+            )
+            return ToolMessage(
+                content=format_outcome(
+                    outcome,
+                    max_result_chars=max_chars,
+                    result_artifact_path=result_artifact_path,
+                    stdout_artifact_path=stdout_artifact_path,
+                ),
+                tool_call_id=runtime.tool_call_id,
+                name=tool_name,
+            )
 
         return StructuredTool.from_function(
             name=tool_name,
@@ -338,6 +377,45 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             args_schema=EvalSchema,
             metadata={"ls_code_input_language": "javascript"},
         )
+
+    def _artifact_path(self, tool_call_id: str | None, block_name: str) -> str:
+        call_id = tool_call_id or uuid.uuid4().hex
+        root = self._artifacts_root.rstrip("/")
+        return f"{root}/large_tool_results/{call_id}-{block_name}"
+
+    def _offload_block(
+        self,
+        content: str | None,
+        *,
+        tool_call_id: str | None,
+        block_name: str,
+    ) -> str | None:
+        if (
+            self._backend is None
+            or content is None
+            or len(content) <= self._max_result_chars
+        ):
+            return None
+        path = self._artifact_path(tool_call_id, block_name)
+        self._backend.write(path, content)
+        return path
+
+    async def _aoffload_block(
+        self,
+        content: str | None,
+        *,
+        tool_call_id: str | None,
+        block_name: str,
+    ) -> str | None:
+        if (
+            self._backend is None
+            or content is None
+            or len(content) <= self._max_result_chars
+        ):
+            return None
+        path = self._artifact_path(tool_call_id, block_name)
+        await self._backend.awrite(path, content)
+        return path
 
     def _ptc_tool_names(self) -> set[str]:
         """Collect tool names from the PTC configuration."""

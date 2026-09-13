@@ -5684,6 +5684,11 @@ class TestDetectModePrefix:
 class TestInterpreterSettings:
     """Tests for `[interpreter]` config.toml loading and validation."""
 
+    def test_default_max_result_chars(self) -> None:
+        from deepagents_code.config_manifest import INTERPRETER_MAX_RESULT_CHARS_DEFAULT
+
+        assert INTERPRETER_MAX_RESULT_CHARS_DEFAULT == 16000
+
     @staticmethod
     def _resolve() -> tuple[bool, InterpreterConfig]:
         from deepagents_code.config_manifest import get_option

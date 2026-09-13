@@ -3011,45 +3011,6 @@ def create_cli_agent(
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 
-    if enable_interpreter:
-        if sandbox is not None:
-            msg = (
-                "enable_interpreter=True is not supported with a remote "
-                "sandbox in this release. Disable the sandbox or unset "
-                "enable_interpreter."
-            )
-            raise ValueError(msg)
-        # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
-        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
-            suppress_langchain_beta_warning,
-        )
-        from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
-
-        interpreter = interpreter_config or InterpreterConfig.from_resolver()
-        ptc_names = _resolve_ptc_option(
-            interpreter.ptc,
-            tools=tools,
-            acknowledge_unsafe=interpreter.ptc_acknowledge_unsafe,
-            auto_approve=auto_approve,
-        )
-        ptc_option: PTCOption | None = (
-            cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
-        )
-        # `CodeInterpreterMiddleware` is decorated `@beta()`, which emits a
-        # `LangChainBetaWarning` on every instantiation. We intentionally use it
-        # and the warning is not actionable for users, so suppress it.
-        with suppress_langchain_beta_warning():
-            agent_middleware.append(
-                CodeInterpreterMiddleware(
-                    tool_name="js_eval",
-                    timeout=interpreter.timeout_seconds,
-                    memory_limit=interpreter.memory_limit_mb * 1024 * 1024,
-                    max_ptc_calls=interpreter.max_ptc_calls,
-                    max_result_chars=interpreter.max_result_chars,
-                    ptc=ptc_option,
-                )
-            )
-
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
@@ -3161,6 +3122,42 @@ def create_cli_agent(
             routes={**extension_routes, **artifact_routes},
             artifacts_root=artifacts_root,
         )
+    if enable_interpreter:
+        if sandbox is not None:
+            msg = (
+                "enable_interpreter=True is not supported with a remote "
+                "sandbox in this release. Disable the sandbox or unset "
+                "enable_interpreter."
+            )
+            raise ValueError(msg)
+        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
+            suppress_langchain_beta_warning,
+        )
+        from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
+
+        interpreter = interpreter_config or InterpreterConfig.from_resolver()
+        ptc_names = _resolve_ptc_option(
+            interpreter.ptc,
+            tools=tools,
+            acknowledge_unsafe=interpreter.ptc_acknowledge_unsafe,
+            auto_approve=auto_approve,
+        )
+        ptc_option: PTCOption | None = (
+            cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
+        )
+        with suppress_langchain_beta_warning():
+            agent_middleware.append(
+                CodeInterpreterMiddleware(
+                    tool_name="js_eval",
+                    timeout=interpreter.timeout_seconds,
+                    memory_limit=interpreter.memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=interpreter.max_ptc_calls,
+                    max_result_chars=interpreter.max_result_chars,
+                    backend=composite_backend,
+                    artifacts_root=composite_backend.artifacts_root,
+                    ptc=ptc_option,
+                )
+            )
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,

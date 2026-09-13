@@ -3,7 +3,8 @@
 Linux **rootful Docker only**, synthetic data only. This overlay leaves
 `examples/talon/docker-compose.yml` unchanged. It enables native `browser_cdp` and
 `browser_request_handoff` tools through a private Node bridge and one globally
-coordinated browser lease. There is no authenticated viewer or runnable tunnel yet.
+coordinated browser lease. An opt-in loopback viewer supports local testing;
+there is no public tunnel or channel-delivered viewer yet.
 Do not use real credentials before the remaining end-to-end acceptance work.
 
 ## Start and stop
@@ -41,6 +42,58 @@ rules and a fresh readiness marker. SIGKILL, host failure, or Docker API failure
 prevent teardown; stop surviving containers before recovery. An interrupted Steel
 profile may fail closed; inspect it offline rather than deleting its dirty markers.
 The named `talon-browser_steel-profile` volume survives normal shutdown.
+
+## Local shared-browser testing
+
+Add `--local-viewer` to the launcher command above, on the machine where Docker
+runs. Visit **http://127.0.0.1:8765** on that same machine. The launcher writes a
+fresh login password and sign-in link directly to its controlling terminal, not
+stdout, logs, channel messages, or model context. A controlling terminal is required. The password
+rotates on restart; do not forward this port or expose it through a public proxy.
+Loopback on a remote sandbox is not loopback on your laptop.
+
+The sign-in link uses `http://127.0.0.1:8765/#token=...`. Opening it exchanges the
+fragment for a session cookie and removes it from the address bar immediately.
+The secret is not sent in HTTP request URLs; query-string tokens are rejected.
+Treat the link as a password. Manual password entry remains available. Internet
+exposure and remote sharing are deferred to follow-up work.
+
+Sign in, wait for the agent's run to finish, then choose **Take**. This opens Steel's
+original viewer onto the first page of the same persistent browser/profile used by
+Talon. Pointer, scroll and keyboard input are supported. **Release** closes viewer
+connections and waits for acknowledged input before allowing another agent run.
+The viewer never steals an active agent lease. Close/disconnect pauses local control;
+use Release to finish. Sign out or session expiry revokes access and drains before
+release. Failed input acknowledgement or uncertain closure requires a restart.
+
+This is exclusive local testing, not simultaneous agent/human control or the full
+remote handoff feature. No channel delivery, ngrok, localtunnel, mobile acceptance,
+URL editor, tab controls, clipboard export, or public viewing grants are included.
+Agent `browser_request_handoff` behavior remains unchanged. Navigate or create the
+page with the agent before taking local control.
+
+Only the host relay binds `127.0.0.1:8765`; Docker publishes no ports. Its destination
+is fixed to the private viewer interface, never control/CDP. Host/Origin validation,
+login limits, HttpOnly/SameSite cookies and CSRF protect local access. Cookies omit
+Secure solely for this HTTP loopback testing mode; this is not a TLS deployment.
+Sessions expire after 30 minutes absolutely or 10 minutes idle (open-page polling
+counts as activity). Input is limited to 16 KiB, 120 events/second with burst 240,
+and 32 pending acknowledged commands. Frames are limited to 2 MiB and forwarded at
+most 15 FPS. Overload pauses rather than silently dropping input.
+
+The Steel cast connection is redirected internally to its existing Chromium
+loopback endpoint; no new firewall permission to Steel management port 3000 is
+added. Remote favicon requests are blocked by the viewer CSP. Do not use real site
+credentials until live acceptance is complete.
+
+Verification for this slice: focused HTTP/protocol/relay tests and the pinned Steel
+image build succeeded. Live container probes hung in the development sandbox, so
+actual streaming, input, end-to-end namespace isolation and a live viewer screenshot
+remain **unverified**, not passing acceptance results.
+
+A separate synthetic Docker Desktop demo verified real streaming, mouse/keyboard
+input, Release, and graceful restart. It did not run the Linux namespace firewall
+or Talon agent, so it does not close the deployment acceptance gaps above.
 
 ## Operator configuration and tools
 
@@ -177,7 +230,8 @@ not a replacement for that application validation.
   URL parameters or model-visible output. The transport forwards CDP events and
   correlates responses; HTTP and external transports cannot share a lease.
   Release through actions before disconnecting, or unexpected disconnect fences
-  the lease. The viewer listener denies all upgrades and all routes except health.
+  the lease. Without `--local-viewer`, the viewer listener denies all upgrades and
+  all routes except health.
 - Profile initialization changes mode as the inode owner before transferring
   ownership; `FOWNER` is not required.
 - Read-only Steel rootfs has writable tmpfs `/tmp`, `/files`, `/app/api/logs` and
@@ -217,6 +271,23 @@ TALON_BROWSER_OPERATOR_ID=synthetic-operator \
 These checks require no external services; unit lifecycle tests use fake subprocesses.
 Credential-owner tests require root and otherwise skip. Compose configuration
 validation alone does not prove namespace firewall behavior or runtime readiness.
+
+The real Chromium login regression test uses the existing pinned Steel image's
+Chromium, `puppeteer-core`, and `ws`. It starts its own viewer with a synthetic
+password and needs neither a running deployment nor network access:
+
+```sh
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+  --mount "type=bind,source=$(pwd)/examples/talon/browser,target=/opt/browser,readonly" \
+  -e TALON_TEST_VIEWER_LOGIN=1 --entrypoint node \
+  ghcr.io/steel-dev/steel-browser-api@sha256:f9a4648883dc06c402f5ffbec1c906bf9a803b5b737a1347de4e0aa0ca8d944a \
+  --test /opt/browser/tests/integration_tests/local-viewer-login.test.mjs
+```
+
+This covers actual form submission, fragment sign-in, invalid links, URL cleanup,
+and logout. Form submission retains a same-origin referrer policy so Chromium
+sends the Origin header required by the login endpoint.
 
 Run the real isolated deployment probe with:
 

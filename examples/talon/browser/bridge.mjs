@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Coordinator, BridgeError, fail, object, text } from './coordinator.mjs';
+import { createLocalViewer } from './local-viewer.mjs';
 
 export const MAX_BYTES = 4 * 1024 * 1024;
 const STEEL = 'http://172.30.14.2:3000';
@@ -58,8 +59,8 @@ export async function discover() {
 }
 
 export class Transport {
-  constructor({ WebSocket, coordinator, lease, discoverURL = discover, events = () => {}, timer = setTimeout, clear = clearTimeout }) {
-    Object.assign(this, { WebSocket, coordinator, lease, discoverURL, events, timer, clear });
+  constructor({ WebSocket, coordinator, lease, discoverURL = discover, events = () => {}, timer = setTimeout, clear = clearTimeout, allowed = () => lease.mode === 'AGENT' }) {
+    Object.assign(this, { WebSocket, coordinator, lease, discoverURL, events, timer, clear, allowed });
     this.pending = new Map();
     this.nextId = 0;
     this.closed = false;
@@ -102,10 +103,10 @@ export class Transport {
   }
 
   async command(method, params, sessionId) {
-    if (this.closed || this.lease.mode !== 'AGENT') fail('lease_fenced');
+    if (this.closed || !this.allowed()) fail('lease_fenced');
     try { await this.connect(); }
     catch { this.break(); fail('upstream_unavailable'); }
-    if (this.closed || this.lease.mode !== 'AGENT') fail('lease_fenced');
+    if (this.closed || !this.allowed()) fail('lease_fenced');
     if (this.pending.size >= 32) fail('pending_limit');
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
@@ -184,7 +185,7 @@ function commandFields(envelope) {
       (envelope.session_id !== undefined && !text(envelope.session_id))) fail('invalid_request');
 }
 
-export function createBridge({ token, coordinator, WebSocket, WebSocketServer, discoverURL = discover,
+export function createBridge({ token, coordinator, WebSocket, WebSocketServer, discoverURL = discover, localViewer = null,
   healthy = async () => { await fixedJSON(`${STEEL}/v1/sessions`); return true; },
   controlHost = '172.30.12.3', controlPort = 8081, viewerHost = '172.30.13.3', viewerPort = 8080 }) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) fail('invalid_token_file');
@@ -210,6 +211,7 @@ export function createBridge({ token, coordinator, WebSocket, WebSocketServer, d
         const ready = await healthy().catch(() => false);
         return reply(response, ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
       }
+      if (!control && localViewer) return await localViewer.handler(request, response);
       const status = request.method === 'GET' && request.url === '/internal/browser/status';
       const action = request.method === 'POST' && request.url === '/internal/browser/actions';
       const invoke = request.method === 'POST' && request.url === '/internal/browser/command';
@@ -237,7 +239,11 @@ export function createBridge({ token, coordinator, WebSocket, WebSocketServer, d
       socket.setTimeout(10000, () => socket.destroy());
     });
   }
-  viewer.on('upgrade', (_, socket) => reject(socket, 404, 'not_found'));
+  viewer.on('upgrade', (request, socket, head) => {
+    if (!localViewer) return reject(socket, 404, 'not_found');
+    socket.setTimeout(0);
+    localViewer.upgrade(request, socket, head);
+  });
   control.on('upgrade', (request, socket, head) => {
     try {
       if (request.method !== 'GET' || request.url !== '/internal/browser/cdp') return reject(socket, 404, 'not_found');
@@ -290,6 +296,7 @@ export function createBridge({ token, coordinator, WebSocket, WebSocketServer, d
       catch (error) { control.close(); viewer.close(); throw error; }
     },
     async close() {
+      await localViewer?.close();
       if (coordinator.lease) { coordinator.clear(coordinator.lease.timer); coordinator.failed(coordinator.lease); }
       wss.close();
       await Promise.all([control, viewer].map((server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); })));
@@ -310,7 +317,15 @@ export async function main(env = process.env) {
   const coordinator = new Coordinator({ operator: env.TALON_BROWSER_OPERATOR_ID,
     identities: JSON.parse(env.TALON_BROWSER_IDENTITIES), ttl: Number(env.TALON_BROWSER_LEASE_TTL_SECONDS ?? 1800) * 1000 });
   const { WebSocket, WebSocketServer } = createRequire('/app/api/package.json')('ws');
-  const bridge = createBridge({ token: readToken(env.TALON_BROWSER_TOKEN_FILE), coordinator, WebSocket, WebSocketServer, ...addresses });
+  if (!['false', 'true'].includes(env.TALON_BROWSER_LOCAL_VIEWER ?? 'false')) fail('invalid_config');
+  const localViewer = env.TALON_BROWSER_LOCAL_VIEWER === 'true' ? createLocalViewer({
+    coordinator, WebSocket, WebSocketServer, origin: 'http://127.0.0.1:8765',
+    token: readToken(env.TALON_BROWSER_VIEWER_TOKEN_FILE),
+    createInput: (lease) => new Transport({ WebSocket, coordinator, lease,
+      allowed: () => coordinator.lease === lease && ['HUMAN', 'PAUSED'].includes(lease.mode) && !lease.expiring,
+    }),
+  }) : null;
+  const bridge = createBridge({ token: readToken(env.TALON_BROWSER_TOKEN_FILE), coordinator, WebSocket, WebSocketServer, localViewer, ...addresses });
   await bridge.start();
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void bridge.close(); });
   return bridge;

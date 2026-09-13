@@ -29,6 +29,14 @@ let stopping = false;
 let service;
 let launching;
 let closing;
+const connectBrowser = puppeteer.connect.bind(puppeteer);
+puppeteer.connect = (options) => {
+  if (options.browserWSEndpoint === 'ws://0.0.0.0:3000') {
+    if (!service?.wsEndpoint || !/^ws:\/\/127\.0\.0\.1:9222\/devtools\/browser\/[A-Za-z0-9-]+$/.test(service.wsEndpoint)) throw failure('cast_browser_unavailable');
+    return connectBrowser({ ...options, browserWSEndpoint: service.wsEndpoint });
+  }
+  return connectBrowser(options);
+};
 const launchBrowser = puppeteer.launch.bind(puppeteer);
 puppeteer.launch = async (options) => {
   if (stopping) throw failure("browser_stopping");

@@ -159,7 +159,7 @@ def runtime_files(runtime: Path) -> None:
 
 
 def start_local_viewer(stack: ExitStack, runtime: Path) -> None:
-    """Reveal the separate login password only on the controlling terminal."""
+    """Reveal the login password and fragment link only on the terminal."""
     tty = stack.enter_context(open("/dev/tty", "w"))
     if not tty.isatty():
         msg = "Local viewer requires a controlling terminal"
@@ -173,8 +173,11 @@ def start_local_viewer(stack: ExitStack, runtime: Path) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     stack.enter_context(module.LocalRelay())
+    password = (runtime / "viewer-token").read_text()
     tty.write("Local browser: http://127.0.0.1:8765\nLaunch password: ")
-    tty.write((runtime / "viewer-token").read_text())
+    tty.write(password)
+    tty.write("\nSign-in link: http://127.0.0.1:8765/#token=")
+    tty.write(password)
     tty.write("\n")
     tty.flush()
 

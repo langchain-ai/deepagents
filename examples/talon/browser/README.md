@@ -47,10 +47,16 @@ The named `talon-browser_steel-profile` volume survives normal shutdown.
 
 Add `--local-viewer` to the launcher command above, on the machine where Docker
 runs. Visit **http://127.0.0.1:8765** on that same machine. The launcher writes a
-fresh login password directly to its controlling terminal, not stdout, logs,
-channel messages, or model context. A controlling terminal is required. The password
+fresh login password and sign-in link directly to its controlling terminal, not
+stdout, logs, channel messages, or model context. A controlling terminal is required. The password
 rotates on restart; do not forward this port or expose it through a public proxy.
 Loopback on a remote sandbox is not loopback on your laptop.
+
+The sign-in link uses `http://127.0.0.1:8765/#token=...`. Opening it exchanges the
+fragment for a session cookie and removes it from the address bar immediately.
+The secret is not sent in HTTP request URLs; query-string tokens are rejected.
+Treat the link as a password. Manual password entry remains available. Internet
+exposure and remote sharing are deferred to follow-up work.
 
 Sign in, wait for the agent's run to finish, then choose **Take**. This opens Steel's
 original viewer onto the first page of the same persistent browser/profile used by
@@ -84,6 +90,10 @@ Verification for this slice: focused HTTP/protocol/relay tests and the pinned St
 image build succeeded. Live container probes hung in the development sandbox, so
 actual streaming, input, end-to-end namespace isolation and a live viewer screenshot
 remain **unverified**, not passing acceptance results.
+
+A separate synthetic Docker Desktop demo verified real streaming, mouse/keyboard
+input, Release, and graceful restart. It did not run the Linux namespace firewall
+or Talon agent, so it does not close the deployment acceptance gaps above.
 
 ## Operator configuration and tools
 
@@ -261,6 +271,23 @@ TALON_BROWSER_OPERATOR_ID=synthetic-operator \
 These checks require no external services; unit lifecycle tests use fake subprocesses.
 Credential-owner tests require root and otherwise skip. Compose configuration
 validation alone does not prove namespace firewall behavior or runtime readiness.
+
+The real Chromium login regression test uses the existing pinned Steel image's
+Chromium, `puppeteer-core`, and `ws`. It starts its own viewer with a synthetic
+password and needs neither a running deployment nor network access:
+
+```sh
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+  --mount "type=bind,source=$(pwd)/examples/talon/browser,target=/opt/browser,readonly" \
+  -e TALON_TEST_VIEWER_LOGIN=1 --entrypoint node \
+  ghcr.io/steel-dev/steel-browser-api@sha256:f9a4648883dc06c402f5ffbec1c906bf9a803b5b737a1347de4e0aa0ca8d944a \
+  --test /opt/browser/tests/integration_tests/local-viewer-login.test.mjs
+```
+
+This covers actual form submission, fragment sign-in, invalid links, URL cleanup,
+and logout. Form submission retains a same-origin referrer policy so Chromium
+sends the Origin header required by the login endpoint.
 
 Run the real isolated deployment probe with:
 

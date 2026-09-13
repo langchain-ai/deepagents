@@ -207,7 +207,7 @@ class DeployTests(unittest.TestCase):
         self.lifecycle("signal", local_viewer=True)
 
     def test_password_is_written_only_to_tty(self) -> None:
-        """The password is not placed in the URL, stdout, or stderr."""
+        """The password and fragment link reach only the controlling terminal."""
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory)
             password = "v" * 43
@@ -225,7 +225,9 @@ class DeployTests(unittest.TestCase):
                 deploy.start_local_viewer(stack, runtime)
                 self.assertEqual(
                     terminal.getvalue(),
-                    f"Local browser: http://127.0.0.1:8765\nLaunch password: {password}\n",
+                    "Local browser: http://127.0.0.1:8765\n"
+                    f"Launch password: {password}\n"
+                    f"Sign-in link: http://127.0.0.1:8765/#token={password}\n",
                 )
                 self.assertEqual(stdout.getvalue(), "")
                 self.assertEqual(stderr.getvalue(), "")

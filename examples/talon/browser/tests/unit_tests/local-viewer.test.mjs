@@ -92,9 +92,10 @@ test('login, exact HTTP allowlist, host/origin/CSRF and private state', async (t
   const f = await fixture(t);
   assert.match((await f.http('/')).body, /type="password"/);
   assert.equal((await f.http('/state')).status, 401);
-  for (const path of ['/json', '/v1/sessions/debug', '/viewer?url=http://evil', '/state?x=1', '//state', '/%73tate']) assert.equal((await f.http(path)).status, 404);
+  for (const path of ['/json', '/v1/sessions/debug', '/viewer?url=http://evil', '/state?x=1', '//state', '/%73tate', `/?token=${token}`]) assert.equal((await f.http(path)).status, 404);
   assert.equal((await f.http('/', { headers: { Host: 'evil.test' } })).status, 403);
   assert.equal((await f.http('/auth/login', { method: 'POST', body: `token=${token}` })).status, 403);
+  assert.equal((await f.http('/auth/login', { method: 'POST', headers: { Origin: 'null', 'Content-Type': 'application/x-www-form-urlencoded' }, body: `token=${token}` })).status, 403);
   const auth = await f.login();
   assert.match(auth.result.headers['set-cookie'][0], /HttpOnly; SameSite=Strict/);
   assert.equal(auth.result.headers['cache-control'], 'no-store');

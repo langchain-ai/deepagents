@@ -65,7 +65,7 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
   function send(response, status, body, type = 'text/plain; charset=utf-8', extra = {}) {
     response.writeHead(status, {
       'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN',
+      'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN',
       'Content-Security-Policy': `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src ${wsOrigin} ${origin}; frame-src 'self'; frame-ancestors 'self'; form-action 'self'; base-uri 'none'; object-src 'none'`,
       ...extra,
     });
@@ -214,8 +214,22 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
   }
 
   function shell(value) {
-    if (!value) return '<!doctype html><title>Local browser login</title><h1>Local browser</h1><form method="post" action="/auth/login"><label>Launch password <input type="password" name="token" required autocomplete="off" maxlength="43"></label><button>Sign in</button></form>';
-    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="take">Take</button> <button id="release">Release</button> <button id="logout">Sign out</button><p>Local exclusive control only; Take requires an idle browser.</p><p id="status" role="status"></p><iframe title="Steel browser viewer" hidden style="width:100%;height:80vh;border:0" sandbox="allow-scripts allow-same-origin"></iframe><script>
+    const linkLogin = `<script>
+async function loginFromLink(){
+if(!location.hash)return;
+const fragment=new URLSearchParams(location.hash.slice(1));
+history.replaceState(null,'','/');
+if(!document.querySelector('form'))return;
+const token=fragment.get('token')||'', message=document.querySelector('#login-message');
+if([...fragment.keys()].length!==1||!/^[A-Za-z0-9_-]{43}$/.test(token)){message.textContent='Invalid or expired sign-in link.';return;}
+try{const response=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token})});
+if(response.ok&&response.redirected){location.replace('/');return;}}catch{}
+message.textContent='Invalid or expired sign-in link.';
+}
+addEventListener('hashchange',loginFromLink);loginFromLink();
+</script>`;
+    if (!value) return '<!doctype html><title>Local browser login</title><h1>Local browser</h1><form method="post" action="/auth/login"><label>Launch password <input type="password" name="token" required autocomplete="off" maxlength="43"></label><button>Sign in</button></form><p id="login-message" role="status"></p>' + linkLogin;
+    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="take">Take</button> <button id="release">Release</button> <button id="logout">Sign out</button><p>Local exclusive control only; Take requires an idle browser.</p><p id="status" role="status"></p><iframe title="Steel browser viewer" hidden style="width:100%;height:80vh;border:0" sandbox="allow-scripts allow-same-origin"></iframe>${linkLogin}<script>
 const frame=document.querySelector('iframe'), status=document.querySelector('#status');
 async function refresh(){const response=await fetch('/state');if(response.status===401){location.reload();return;}const state=await response.json();document.querySelector('#take').disabled=!state.available;document.querySelector('#release').disabled=!state.owned;status.textContent=state.controlling?'You control this browser':state.owned?'Paused: release to finish':state.available?'Available':'Unavailable';if(state.controlling){if(!frame.hasAttribute('src'))frame.src='/viewer';frame.hidden=false;}else{frame.removeAttribute('src');frame.hidden=true;}}
 for(const action of ['take','release','logout'])document.querySelector('#'+action).onclick=async()=>{const response=await fetch(action==='logout'?'/auth/logout':'/'+action,{method:'POST',headers:{'X-CSRF-Token':'${value.csrf}'}});if(action==='logout'&&response.ok){location.reload();return;}if(!response.ok)status.textContent='Request failed; browser control is unavailable.';await refresh();};

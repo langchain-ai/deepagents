@@ -179,6 +179,52 @@ class TestRecordMessageUsage:
         assert stats.per_kind["assistant"].request_count == 1
         assert ledger["child-1"].finalized is True
 
+    def test_a_completion_stating_no_tokens_reports_the_loss(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Replacing a counted request with nothing must not be quiet.
+
+        A completion whose every token count is zero wipes the tokens the
+        chunks had counted. The completion is still authoritative, but the
+        loss has to be diagnosable.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.cost_tracking.estimate_cost",
+            lambda _usage, _model, _provider="": 0.1,
+        )
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        chunk = AIMessageChunk(
+            content="",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 900,
+                "output_tokens": 10,
+                "total_tokens": 910,
+            },
+        )
+        # Non-empty usage, but every token count in it is zero.
+        completion = AIMessage(
+            content="done",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+
+        record_message_usage(stats, chunk, recorded_requests=ledger)
+        with caplog.at_level(logging.WARNING, logger="deepagents_code._session_stats"):
+            record_message_usage(stats, completion, recorded_requests=ledger)
+
+        assert stats.input_tokens == 0
+        assert stats.output_tokens == 0
+        assert "states no token counts" in caplog.text
+        assert "900/10" in caplog.text
+
     def test_completion_naming_no_model_keeps_the_model_chunks_found(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

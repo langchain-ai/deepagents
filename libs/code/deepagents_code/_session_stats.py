@@ -848,6 +848,23 @@ def _finalize_from_completed(
     cost_usd = estimate_cost(usage, model_name, provider)
     cache_reads, cache_writes = cache_token_counts(usage)
 
+    if (
+        not input_count
+        and not output_count
+        and _carries_token_counts(previous.usage_metadata)
+    ):
+        # A completion that corrects its chunks downward is ordinary -- the
+        # provider revises an over-counted prompt. Reporting *no* token field
+        # at all is not: it normalizes to zero and wipes a request the chunks
+        # had counted. Replace the record regardless, since the completion is
+        # authoritative, but say so rather than losing the tokens quietly.
+        logger.warning(
+            "A completed message states no token counts, so it replaces its "
+            "chunks with zero. request_id=%r dropped=%d/%d",
+            request_id,
+            previous.input_tokens,
+            previous.output_tokens,
+        )
     stats.retract_request(previous)
     stats.record_request(
         model_name,

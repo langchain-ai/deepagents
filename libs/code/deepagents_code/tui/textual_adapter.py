@@ -1540,7 +1540,13 @@ def _apply_recorded_usage(
             is_correction=recorded_usage.is_correction,
         )
     except Exception:
-        logger.warning("on_provisional_cost callback failed", exc_info=True)
+        logger.warning(
+            "on_provisional_cost callback failed; the provisional cost display "
+            "may stall until the next backend total. request_id=%r delta_usd=%r",
+            recorded_usage.request_id,
+            recorded_usage.cost_usd,
+            exc_info=True,
+        )
 
 
 async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle

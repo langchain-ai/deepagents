@@ -8950,12 +8950,27 @@ class DeepAgentsApp(App):
             # contributed. Either way a retraction would claw back other
             # requests' spend, and a positive correction would re-inflate a
             # display the total just settled.
+            logger.debug(
+                "Dropping a stale provisional delta for a request the pool no "
+                "longer holds. request_id=%r delta_usd=%r is_correction=%r",
+                request_id,
+                delta_usd,
+                is_correction,
+            )
             return
         # Clamp a retraction to what this request still holds. A correction
         # larger than its own contribution -- a partial reset, or an estimate
         # that fell further than the pool it is drawn from -- would otherwise
         # subtract spend that other in-flight children put there.
         applied_usd = max(delta_usd, -held) if delta_usd < 0 else delta_usd
+        if applied_usd != delta_usd:
+            logger.debug(
+                "Clamping a provisional retraction to its own request's "
+                "holding. request_id=%r delta_usd=%r applied_usd=%r",
+                request_id,
+                delta_usd,
+                applied_usd,
+            )
         remaining = held + applied_usd
         if remaining > 0:
             self._provisional_cost_by_request[request_id] = remaining

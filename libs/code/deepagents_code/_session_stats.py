@@ -161,6 +161,20 @@ class RecordedUsage:
     as the ledger does. Treat it as a bucket key, not as a provider message ID.
     """
 
+    is_correction: bool = False
+    """Whether this delta only revises spend already reported for the request.
+
+    A correction re-states what an earlier delta already contributed: a
+    completion replacing its chunks, or a request re-priced under the model it
+    finally named. New spend is not a correction, even when it arrives on a
+    request that already has a record, because the tokens themselves are new.
+
+    Lets the consumer drop a correction whose subject is gone -- a backend
+    total has already absorbed that request -- whatever the correction's sign.
+    A stale *positive* correction would otherwise re-inflate a display the
+    total had just settled.
+    """
+
 
 UsageLedgerKey = str | tuple[Hashable, str]
 """Key of the recorded-request ledger: a message ID, optionally scoped.
@@ -868,6 +882,7 @@ def _finalize_from_completed(
         ),
         request_tokens=input_count + output_count,
         request_id=_provisional_bucket_key(request_id),
+        is_correction=True,
     )
 
 
@@ -1007,6 +1022,7 @@ def record_message_usage(
                     cost_usd=reprice_delta,
                     request_tokens=previous.input_tokens + previous.output_tokens,
                     request_id=_provisional_bucket_key(request_id),
+                    is_correction=True,
                 )
         return None
 

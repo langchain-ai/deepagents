@@ -4450,9 +4450,12 @@ class DeepAgentsApp(App):
         """
 
         self._provisional_cost_by_request: dict[str, float] = {}
-        """Which request each provisional dollar came from, so a correction to
-        one request cannot subtract spend the last server total already
-        replaced. Cleared with `_provisional_cost_usd` on every reset."""
+        """Provisional dollars still held, keyed by request.
+
+        A retraction is clamped to its own request's balance, so it cannot
+        subtract spend a concurrent request put in the pool. Cleared with
+        `_provisional_cost_usd` on every reset.
+        """
 
         self._server_pricing_ok: bool | None = None
         """Whether price data loaded in the process that does the pricing.
@@ -8894,10 +8897,12 @@ class DeepAgentsApp(App):
             self._thread_has_completed_turn = True
 
     def _apply_provisional_delta(self, delta_usd: float) -> None:
-        """Move the running provisional figure and refresh the display.
+        """Add a delta the caller has already reconciled, then refresh.
 
-        Clamps the running total, not the increment: dropping a negative delta
-        would strand the display at the estimate the correction supersedes.
+        Floors the running total at zero as a backstop against float drift and
+        the unkeyed path. Callers clamp their own retractions against what the
+        request in hand still holds, so go through `_add_provisional_cost`
+        rather than calling this directly with a keyed delta.
         """
         self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
         self._refresh_session_cost_display()
@@ -8906,7 +8911,9 @@ class DeepAgentsApp(App):
         self,
         cost_usd: float,
         /,
+        *,
         request_id: str | None = None,
+        is_correction: bool = False,
     ) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
 
@@ -8918,25 +8925,30 @@ class DeepAgentsApp(App):
         Args:
             cost_usd: Estimated cost this message contributed, in US dollars.
                 Negative when a later chunk re-prices its request downward.
-            request_id: Message ID of the request the delta belongs to, when
-                known. A correction to a request the last backend total already
-                covered must not subtract other requests' newer provisional
-                spend, so a keyed delta is only applied while its own
-                contribution is still held.
+            request_id: Key naming the request the delta belongs to, when
+                known. Retractions are clamped to what this request still
+                holds, so a stale correction cannot subtract another request's
+                spend.
+            is_correction: Whether the delta only revises spend already
+                reported for this request. A correction whose subject the pool
+                no longer holds is stale whatever its sign; new spend is
+                always applied, because the tokens behind it are real.
         """
         delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
         if delta_usd is None or delta_usd == 0:
             return
         if request_id is None:
-            # Legacy callers without request identity cannot be reconciled; the
-            # running total is all they can adjust.
+            # A message that carries no usable ID cannot be reconciled -- see
+            # `_provisional_bucket_key`. The running total is all it can adjust.
             self._apply_provisional_delta(delta_usd)
             return
         held = self._provisional_cost_by_request.get(request_id, 0.0)
-        if held <= 0 and delta_usd < 0:
-            # A backend total already folded this request's contribution into
-            # the durable figure and cleared the provisional pool; its
-            # correction is stale and must not claw back other spend.
+        if held <= 0 and (delta_usd < 0 or is_correction):
+            # The pool holds nothing for this request: a backend total folded
+            # its contribution into the durable figure, or it never
+            # contributed. Either way a retraction would claw back other
+            # requests' spend, and a positive correction would re-inflate a
+            # display the total just settled.
             return
         # Clamp a retraction to what this request still holds. A correction
         # larger than its own contribution -- a partial reset, or an estimate

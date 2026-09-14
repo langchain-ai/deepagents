@@ -30355,6 +30355,41 @@ class TestProvisionalCostReconciliation:
 
             assert app._displayed_cost_usd == pytest.approx(2.7)
 
+    async def test_a_stale_positive_correction_does_not_re_inflate(
+        self,
+    ) -> None:
+        """A settled request's upward correction must not spike the display.
+
+        A backend total absorbed the request, then its completion arrives
+        priced higher than the chunks were. Adding that on top would re-inflate
+        a figure the total had just settled.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._add_provisional_cost(0.5, request_id="child-1")
+            app._set_session_cost(2.0)
+
+            app._add_provisional_cost(0.3, request_id="child-1", is_correction=True)
+
+            assert app._displayed_cost_usd == pytest.approx(2.0)
+
+    async def test_new_spend_still_lands_after_a_backend_total(self) -> None:
+        """Only corrections go stale; real tokens are always shown.
+
+        A request that keeps streaming past a backend total is still spending,
+        so its deltas must reach the display even though the pool was cleared.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._add_provisional_cost(0.5, request_id="child-1")
+            app._set_session_cost(2.0)
+
+            app._add_provisional_cost(0.3, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(2.3)
+
     async def test_a_correction_applies_while_its_contribution_is_still_held(
         self,
     ) -> None:

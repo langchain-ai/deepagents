@@ -2090,7 +2090,9 @@ class TestSessionCostEvents:
         def _record_provisional(
             cost_usd: float,
             /,
+            *,
             request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+            is_correction: bool = False,  # noqa: ARG001  # Protocol conformance.
         ) -> None:
             updates.append(cost_usd)
 
@@ -2156,7 +2158,9 @@ class TestSessionCostEvents:
         def _record_provisional(
             cost_usd: float,
             /,
+            *,
             request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+            is_correction: bool = False,  # noqa: ARG001  # Protocol conformance.
         ) -> None:
             updates.append(cost_usd)
 
@@ -2225,15 +2229,17 @@ class TestSessionCostEvents:
             await asyncio.sleep(0)
             return True
 
-        updates: list[tuple[float, str | None]] = []
+        updates: list[tuple[float, str | None, bool]] = []
         adapter = TextualUIAdapter(
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
         adapter._on_usage_update = lambda: None
-        adapter._on_provisional_cost = lambda cost_usd, /, request_id=None: (
-            updates.append((cost_usd, request_id))
+        adapter._on_provisional_cost = (
+            lambda cost_usd, /, *, request_id, is_correction: updates.append(
+                (cost_usd, request_id, is_correction)
+            )
         )
         partial = {
             "input_tokens": 1_000,
@@ -2295,9 +2301,11 @@ class TestSessionCostEvents:
                 turn_stats=turn_stats,
             )
 
+        # The chunk is new spend; the completion only revises it, so the app
+        # can tell a stale correction from real tokens.
         assert updates == [
-            (pytest.approx(0.5), "child-1"),
-            (pytest.approx(-0.45), "child-1"),
+            (pytest.approx(0.5), "child-1", False),
+            (pytest.approx(-0.45), "child-1", True),
         ]
         assert turn_stats.request_count == 1
         assert turn_stats.total_cost_usd == pytest.approx(0.05)

@@ -1,0 +1,2 @@
+{"run_id":"trace-reject","trace_id":"trace-reject","name":"support-agent","run_type":"chain","parent_run_id":null,"inputs":{"question":"What is 12 * 7?"},"outputs":{"answer":"96"},"error":null}
+{"run_id":"tool-reject","trace_id":"trace-reject","name":"calculator","run_type":"tool","parent_run_id":"trace-reject","inputs":{"expression":"12 * 7"},"outputs":null,"error":"calculator unavailable"}

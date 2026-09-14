@@ -1,0 +1,2 @@
+{"run_id":"trace-keep","trace_id":"trace-keep","name":"support-agent","run_type":"chain","parent_run_id":null,"inputs":{"question":"What is 12 * 7?"},"outputs":{"answer":"84"},"error":null}
+{"run_id":"tool-keep","trace_id":"trace-keep","name":"calculator","run_type":"tool","parent_run_id":"trace-keep","inputs":{"expression":"12 * 7"},"outputs":{"result":84},"error":null}

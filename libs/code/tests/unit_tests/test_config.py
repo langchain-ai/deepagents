@@ -4442,9 +4442,37 @@ class TestCreateModelAnthropicThinkingBinding:
         kwargs = mock_init.call_args.kwargs
         assert kwargs["thinking"] == {
             "type": "adaptive",
+            "display": "summarized",
             "block_binding": {"prefix_mismatch_behavior": "drop_block"},
         }
         assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
+
+    @pytest.mark.parametrize("display", [None, "summarized", "omitted"])
+    def test_preserves_reasoning_display_in_anthropic_payload(
+        self, display: str | None
+    ) -> None:
+        """Binding controls retain visible reasoning and explicit display choices."""
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.messages import HumanMessage
+
+        params: dict[str, str | dict[str, str]] = {
+            "api_key": "test-key",
+            "reasoning_effort": "high",
+        }
+        if display is not None:
+            params["thinking"] = {"type": "adaptive", "display": display}
+        model = create_model("anthropic:claude-opus-5", extra_kwargs=params).model
+        assert isinstance(model, ChatAnthropic)
+
+        payload = model._get_request_payload([HumanMessage("Say hello")])
+
+        assert payload["thinking"] == {
+            "type": "adaptive",
+            "display": display or "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert payload["output_config"]["effort"] == "high"
+        assert "thinking-binding-controls-2026-08-01" in payload["betas"]
 
     @patch("langchain.chat_models.init_chat_model")
     def test_preserves_explicit_behavior_and_betas(self, mock_init: Mock) -> None:

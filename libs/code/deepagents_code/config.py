@@ -6127,7 +6127,8 @@ def _apply_anthropic_thinking_binding(
             or int(match.group(1)) < _ANTHROPIC_PRESERVED_THINKING_MIN_MAJOR
         ):
             return
-        thinking = {"type": "adaptive"}
+        # Explicit thinking bypasses the adapter's summarized-display default.
+        thinking = {"type": "adaptive", "display": "summarized"}
     if not isinstance(thinking, dict) or thinking.get("type") not in {
         "adaptive",
         "enabled",

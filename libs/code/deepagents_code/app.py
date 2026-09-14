@@ -4458,6 +4458,9 @@ class DeepAgentsApp(App):
         flight; it is cleared with `_provisional_cost_usd` on every reset.
         """
 
+        self._settled_provisional_request_ids: set[str] = set()
+        """Requests whose provisional spend was absorbed by a backend total."""
+
         self._server_pricing_ok: bool | None = None
         """Whether price data loaded in the process that does the pricing.
 
@@ -8838,6 +8841,7 @@ class DeepAgentsApp(App):
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
+        self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
         self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
@@ -8890,6 +8894,7 @@ class DeepAgentsApp(App):
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
         self._session_cost_warning_shown = False
+        self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _mark_thread_turn_completed(self) -> None:
@@ -8930,10 +8935,9 @@ class DeepAgentsApp(App):
                 known. Retractions are clamped to what this request still
                 holds, so a stale correction cannot subtract another request's
                 spend.
-            is_correction: Whether the delta only revises spend already
-                reported for this request. A correction whose subject the pool
-                no longer holds is stale whatever its sign; new spend is
-                always applied, because the tokens behind it are real.
+            is_correction: Whether the delta revises this request's prior spend.
+                A correction is stale when a backend total already absorbed that
+                spend; a first positive price is still applied.
         """
         delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
         if delta_usd is None or delta_usd == 0:
@@ -8944,12 +8948,11 @@ class DeepAgentsApp(App):
             self._apply_provisional_delta(delta_usd)
             return
         held = self._provisional_cost_by_request.get(request_id, 0.0)
-        if held <= 0 and (delta_usd < 0 or is_correction):
-            # The pool holds nothing for this request: a backend total folded
-            # its contribution into the durable figure, or it never
-            # contributed. Either way a retraction would claw back other
-            # requests' spend, and a positive correction would re-inflate a
-            # display the total just settled.
+        settled = request_id in self._settled_provisional_request_ids
+        if held <= 0 and (delta_usd < 0 or (is_correction and settled)):
+            # The pool holds nothing this delta can adjust. A retraction would
+            # claw back other requests' spend, while a positive correction is
+            # stale only when a backend total already absorbed this request.
             logger.debug(
                 "Dropping a stale provisional delta for a request the pool no "
                 "longer holds. request_id=%r delta_usd=%r is_correction=%r",

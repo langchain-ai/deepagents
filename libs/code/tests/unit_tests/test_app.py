@@ -30374,6 +30374,17 @@ class TestProvisionalCostReconciliation:
 
             assert app._displayed_cost_usd == pytest.approx(2.0)
 
+    async def test_first_priceable_completion_is_not_treated_as_stale(self) -> None:
+        """A request with no chunk estimate can become priceable at completion."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(2.0)
+
+            app._add_provisional_cost(0.3, request_id="child-1", is_correction=True)
+
+            assert app._displayed_cost_usd == pytest.approx(2.3)
+
     async def test_new_spend_still_lands_after_a_backend_total(self) -> None:
         """Only corrections go stale; real tokens are always shown.
 

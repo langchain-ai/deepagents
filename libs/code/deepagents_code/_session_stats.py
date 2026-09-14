@@ -150,11 +150,15 @@ class RecordedUsage:
     """Running token total for the request after applying this message."""
 
     request_id: str | None = None
-    """Bare message ID of the request this delta belongs to, when known.
+    """Opaque key naming the request this delta belongs to, when known.
 
-    Lets the provisional-cost accumulator key corrections to the request that
-    earned them, so a late revision cannot subtract spend a backend total has
-    already replaced with other requests' contributions.
+    Keys each correction to the request it applies to. A late revision then
+    cannot subtract spend that belongs to other requests. `None` when the
+    message carried no usable ID, which is also when the ledger refuses to key
+    the request at all.
+
+    Built by `_provisional_bucket_key`, so it separates retry attempts exactly
+    as the ledger does. Treat it as a bucket key, not as a provider message ID.
     """
 
 
@@ -468,12 +472,33 @@ def finalize_recorded_requests(
             recorded_requests[request_id[1]] = closed
 
 
-def _bare_request_id(request_id: UsageLedgerKey | None) -> str | None:
-    """Return a ledger key's bare message ID, dropping any attempt scope."""
+def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
+    """Return a string key naming the request a provisional delta belongs to.
+
+    The consumer keys a pool of provisional dollars by this value, so it must
+    separate exactly what the ledger separates. An attempt-scoped key therefore
+    keeps its scope: two attempts that reuse one provider message ID are
+    distinct requests, and collapsing them to the bare ID would let one
+    attempt's late retraction draw on the other attempt's deposit.
+
+    Scope cannot change under a request while it still reports deltas. A chunk
+    or completion whose record is already finalized is rejected before any
+    delta is built, and `finalize_recorded_requests` closes every entry at the
+    end of a stream round -- so one request's deltas all carry one scope, and
+    the key stays stable for as long as the pool holds its money.
+
+    Args:
+        request_id: Ledger key for the request, or `None` when the message
+            carried no usable ID.
+
+    Returns:
+        An opaque bucket key, or `None` when there is no ledger key to name.
+    """
     if request_id is None:
         return None
     if isinstance(request_id, tuple):
-        return request_id[1]
+        attempt_scope, message_id = request_id
+        return f"{attempt_scope!r}\x00{message_id}"
     return request_id
 
 
@@ -842,7 +867,7 @@ def _finalize_from_completed(
             previous_model_name=previous.model_name,
         ),
         request_tokens=input_count + output_count,
-        request_id=_bare_request_id(request_id),
+        request_id=_provisional_bucket_key(request_id),
     )
 
 
@@ -981,7 +1006,7 @@ def record_message_usage(
                     output_tokens=0,
                     cost_usd=reprice_delta,
                     request_tokens=previous.input_tokens + previous.output_tokens,
-                    request_id=_bare_request_id(request_id),
+                    request_id=_provisional_bucket_key(request_id),
                 )
         return None
 
@@ -1057,7 +1082,7 @@ def record_message_usage(
             previous_model_name=previous.model_name if previous else model_name,
         ),
         request_tokens=input_count + output_count,
-        request_id=_bare_request_id(request_id),
+        request_id=_provisional_bucket_key(request_id),
     )
 
 

@@ -409,8 +409,13 @@ class TestRecordMessageUsage:
         )
 
         assert finalized is not None
-        assert finalized.request_id == "run-1"
         assert retry is not None
+        # The provisional bucket key separates the attempts too. Were both
+        # keyed by the bare message ID, attempt 1's late retraction could draw
+        # on the dollars attempt 2 just deposited.
+        assert finalized.request_id != retry.request_id
+        assert finalized.request_id is not None
+        assert "run-1" in finalized.request_id
         assert stats.request_count == 2
         assert stats.input_tokens == 1_900
         assert stats.output_tokens == 30

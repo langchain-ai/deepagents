@@ -347,6 +347,7 @@ def _request(
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
     classifier_model: str | None = None,
+    turn_id: str = "turn-1",
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
     thread_id = "thread-1"
@@ -356,7 +357,7 @@ def _request(
     runtime = SimpleNamespace(
         context={
             "thread_id": thread_id,
-            "turn_id": "turn-1",
+            "turn_id": turn_id,
             "approval_mode_key": key,
             "approval_mode": "auto",
             "classifier_model": classifier_model,
@@ -369,7 +370,7 @@ def _request(
         content=expanded_text,
         additional_kwargs={
             USER_PROMPT_METADATA_KEY: user_prompt_metadata(
-                raw_user_text, [tmp_path / "mentioned.py"], turn_id="turn-1"
+                raw_user_text, [tmp_path / "mentioned.py"], turn_id=turn_id
             )
         },
     )
@@ -983,6 +984,7 @@ def _append_ask_user_exchange(
     receipt: object = _DEFAULT_RECEIPT,
     message_name: str = "ask_user",
     message_status: Literal["success", "error"] = "success",
+    receipt_turn_id: str = "turn-1",
 ) -> None:
     question_rows = questions or [
         {
@@ -999,7 +1001,7 @@ def _append_ask_user_exchange(
         receipt = {
             "version": 1,
             "thread_id": "thread-1",
-            "turn_id": "turn-1",
+            "turn_id": receipt_turn_id,
             "tool_call_id": ask_call_id,
             "answers": answer_values,
         }
@@ -3637,7 +3639,7 @@ async def test_current_ungated_call_cannot_reuse_receipt_call_id(
     assert plan["decisions"][0]["disposition"] == "policy_deny"
 
 
-async def test_only_latest_ask_user_exchange_is_classifier_evidence(
+async def test_all_valid_same_turn_ask_user_exchanges_are_classifier_evidence(
     tmp_path: Path,
 ) -> None:
     first_answer = "Delete build/old.log"
@@ -3669,15 +3671,19 @@ async def test_only_latest_ask_user_exchange_is_classifier_evidence(
     )
     assert payload["same_turn_user_answers"] == [
         {
+            "ask_user_tool_call_id": "ask-1",
+            "question": "How should I integrate the remote branch?",
+            "answer": first_answer,
+        },
+        {
             "ask_user_tool_call_id": "ask-2",
             "question": "How should I integrate the remote branch?",
             "answer": latest_answer,
-        }
+        },
     ]
-    assert first_answer not in json.dumps(payload["same_turn_user_answers"])
 
 
-async def test_latest_reused_ask_user_call_id_rejects_all_receipt_evidence(
+async def test_reused_ask_user_call_id_drops_only_the_ambiguous_exchanges(
     tmp_path: Path,
 ) -> None:
     ask_tool = _tool("ask_user")
@@ -3718,7 +3724,13 @@ async def test_latest_reused_ask_user_call_id_rejects_all_receipt_evidence(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    assert payload["same_turn_user_answers"] == []
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-2",
+            "question": "How should I integrate the remote branch?",
+            "answer": "Push feature to origin",
+        }
+    ]
 
 
 async def test_classifier_rejects_receipt_from_non_builtin_ask_user_tool(
@@ -3871,6 +3883,368 @@ async def test_receipt_reuse_for_unrelated_later_action_is_reclassified(
     )
     assert second_payload["same_turn_user_answers"][0]["answer"] == answer
     assert second_plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+def _append_trusted_user_prompt(
+    request: ModelRequest[Any], text: str, *, turn_id: str
+) -> None:
+    _append_history_message(
+        request,
+        HumanMessage(
+            content=text,
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    text, [], turn_id=turn_id
+                )
+            },
+        ),
+    )
+
+
+async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
+    tmp_path: Path,
+) -> None:
+    """A new user turn must not discard consent evidence from the previous one."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(
+        request, "sounds right — go ahead with that", turn_id="turn-2"
+    )
+    request.runtime.context["turn_id"] = "turn-2"
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    assert any(
+        row.get("literal_user_text") == "sounds right — go ahead with that"
+        for row in payload["authorization_evidence"]
+    )
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_prior_turn_receipt_evidence_includes_all_intervening_instructions(
+    tmp_path: Path,
+) -> None:
+    """With a receipt included, evidence spans every trusted prompt since its turn."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(
+        request, "do NOT delete build/old.log after all", turn_id="turn-2"
+    )
+    for turn in range(3, 30):
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
+        )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-30")
+    request.runtime.context["turn_id"] = "turn-30"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    evidence_texts = [
+        row.get("literal_user_text") for row in payload["authorization_evidence"]
+    ]
+    assert len(evidence_texts) == 30
+    assert "clean up stale scratch files" in evidence_texts
+    assert "do NOT delete build/old.log after all" in evidence_texts
+    assert evidence_texts[-1] == "continue"
+
+
+async def test_prior_turn_receipt_fails_closed_when_instruction_history_truncated(
+    tmp_path: Path,
+) -> None:
+    """Receipts whose intervening instruction history cannot fit are excluded."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    for turn in range(2, 102):
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
+        )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-102")
+    request.runtime.context["turn_id"] = "turn-102"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert len(payload["authorization_evidence"]) == 20
+
+
+async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A prior-turn receipt must validate against its own turn, not the latest."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(request, receipt_turn_id="turn-1")
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    tool_message = next(
+        message
+        for message in request.messages
+        if isinstance(message, ToolMessage) and message.name == "ask_user"
+    )
+    receipt = cast(
+        "dict[str, Any]",
+        tool_message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY],
+    )
+    receipt["turn_id"] = "turn-2"
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
+    tmp_path: Path,
+) -> None:
+    """The ToolMessage answering an ask_user call must sit in the same turn."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    receipt = {
+        "version": 1,
+        "thread_id": "thread-1",
+        "turn_id": "turn-2",
+        "tool_call_id": "ask-1",
+        "answers": ["yes"],
+    }
+    _append_history_message(
+        request,
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_user",
+                    "args": {
+                        "questions": [
+                            {"question": "Delete build/old.log?", "type": "text"}
+                        ]
+                    },
+                    "id": "ask-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+    )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_history_message(
+        request,
+        ToolMessage(
+            content="Q: Delete build/old.log?\nA: yes",
+            name="ask_user",
+            tool_call_id="ask-1",
+            status="success",
+            additional_kwargs={ASK_USER_AUTHORIZATION_METADATA_KEY: receipt},
+        ),
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_prior_turn_receipt_without_matching_trusted_prompt_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A prior-turn receipt must anchor to a trusted client-stamped prompt."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(request, receipt_turn_id="turn-2")
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invalid(
+    tmp_path: Path,
+) -> None:
+    """An invalid prior-turn exchange must not suppress a valid current one."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="ask-1",
+        receipt=None,
+        message_status="error",
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(request, "try again", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="ask-2",
+        answer="Rebase onto origin/main",
+        receipt_turn_id="turn-2",
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-2",
+            "question": "How should I integrate the remote branch?",
+            "answer": "Rebase onto origin/main",
+        }
+    ]
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
 async def test_compacted_model_view_preserves_ask_user_authorization_evidence(

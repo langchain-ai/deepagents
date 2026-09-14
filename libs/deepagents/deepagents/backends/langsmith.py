@@ -185,7 +185,7 @@ class LangSmithSandbox(BaseSandbox):
         - Text content is normalized for universal newlines (`\r\n` and bare
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
-            with `TRUNCATION_MSG` appended on overflow.
+            with `TRUNCATION_MSG` returned separately on overflow.
         - A negative `offset` is clamped to the start of the file, and a
             non-positive `limit` returns empty content with no pagination
             metadata.
@@ -262,13 +262,12 @@ class LangSmithSandbox(BaseSandbox):
         content = "\n".join(page)
         returned_lines = len(page)
 
-        # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
-        # large pages don't reintroduce the transport-size symptom this
-        # override fixes.
+        # Cap rendered text at MAX_OUTPUT_BYTES, keeping the truncation notice
+        # separate so middleware can place it above the source header.
         encoded = content.encode("utf-8")
-        msg_bytes = TRUNCATION_MSG.encode("utf-8")
-        effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
-        if len(encoded) > effective_limit:
+        effective_limit = MAX_OUTPUT_BYTES - len(TRUNCATION_MSG.encode("utf-8"))
+        truncated_mid_line = len(encoded) > effective_limit
+        if truncated_mid_line:
             truncated = encoded[:effective_limit].decode("utf-8", errors="ignore")
             # The byte cap can drop whole lines from the page and cut the final
             # rendered line mid-way. Advance the resume offset only past lines
@@ -278,7 +277,7 @@ class LangSmithSandbox(BaseSandbox):
             # when even the first line overflows the cap, to guarantee forward
             # progress instead of re-reading the same truncated page.
             returned_lines = truncated.count("\n") or 1
-            content = truncated + TRUNCATION_MSG
+            content = truncated
 
         end_line = offset + returned_lines
         next_offset = end_line if end_line < total_lines else None
@@ -289,6 +288,8 @@ class LangSmithSandbox(BaseSandbox):
             start_line=offset + 1,
             end_line=end_line,
             next_offset=next_offset,
+            truncation_notice=TRUNCATION_MSG.strip() if truncated_mid_line else None,
+            truncated_mid_line=truncated_mid_line,
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

@@ -407,7 +407,9 @@ def test_read_truncates_at_max_output_bytes() -> None:
     assert result.error is None
     assert result.file_data is not None
     content = result.file_data["content"]
-    assert content.endswith(TRUNCATION_MSG)
+    assert not content.endswith(TRUNCATION_MSG)
+    assert result.truncation_notice == TRUNCATION_MSG.strip()
+    assert result.truncated_mid_line is True
     assert len(content.encode("utf-8")) <= MAX_OUTPUT_BYTES
 
 
@@ -455,7 +457,8 @@ def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
 
     assert result.error is None
     assert result.file_data is not None
-    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert not result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.truncation_notice == TRUNCATION_MSG.strip()
     assert result.total_lines == 8
     assert result.start_line == 1
     assert result.next_offset is not None
@@ -479,7 +482,8 @@ def test_read_oversized_first_line_advances_next_offset() -> None:
 
     assert result.error is None
     assert result.file_data is not None
-    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert not result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.truncation_notice == TRUNCATION_MSG.strip()
     assert result.total_lines == 3
     assert result.start_line == 1
     # The oversized line cannot be paginated within, so resume just past it.

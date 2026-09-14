@@ -479,7 +479,7 @@ implementation. Kept in lockstep with the `MAX_BINARY_BYTES` literal in
 MAX_OUTPUT_BYTES: Final = 500 * 1024
 """Maximum size of rendered text content returned by `read()`.
 
-Pages exceeding this cap are truncated and `TRUNCATION_MSG` is appended.
+Pages exceeding this cap are truncated and report `TRUNCATION_MSG` separately.
 Mirrors the `MAX_OUTPUT_BYTES` literal in `_READ_COMMAND_TEMPLATE`.
 """
 
@@ -488,7 +488,7 @@ TRUNCATION_MSG: Final = (
     "This paginated read result exceeded the sandbox stdout limit. "
     "Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
 )
-"""Sentinel appended to `read()` content when `MAX_OUTPUT_BYTES` is hit."""
+"""Notice returned separately when `read()` hits `MAX_OUTPUT_BYTES`."""
 
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys, os, stat as _stat, base64, json
@@ -785,8 +785,6 @@ try:
         total_lines = None
 
     text = ''.join(parts)
-    if truncated:
-        text += TRUNCATION_MSG
 
     # A byte cap can cut the final rendered line mid-way; that partial line is
     # deliberately not counted toward returned_lines (see the truncation
@@ -813,6 +811,8 @@ try:
         'start_line': offset + 1,
         'end_line': end_line,
         'next_offset': next_offset,
+        'truncation_notice': TRUNCATION_MSG.strip() if truncated else None,
+        'truncated_mid_line': truncated,
     }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
@@ -830,7 +830,8 @@ only safe because `_build_read_cmd` coerces both to `int` via
 literals, and must not be removed.
 
 Output: single-line JSON. On success (text): `{{"encoding", "content",
-"total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
+"total_lines", "start_line", "end_line", "next_offset", "truncation_notice",
+"truncated_mid_line"}}`, where `start_line`
 and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
 next unread line (`null` once the file is fully read). `total_lines` is `null`
 when the file is large enough that a full re-scan to count its lines would be
@@ -934,6 +935,8 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
             end_line=data.get("end_line"),
             next_offset=data.get("next_offset"),
             no_lines_requested=bool(data.get("no_lines_requested")),
+            truncation_notice=data.get("truncation_notice"),
+            truncated_mid_line=bool(data.get("truncated_mid_line")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")

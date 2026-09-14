@@ -520,6 +520,19 @@ class TestLocalSandboxOperations:
         content = result.file_data["content"]
         assert "Short line" in content
 
+    def test_read_truncation_notice_is_separate_from_content(self, sandbox: LocalSubprocessSandbox) -> None:
+        test_path = "/tmp/test_sandbox_ops/truncated.txt"
+        sandbox.write(test_path, "x" * 600_000)
+
+        result = sandbox.read(test_path)
+
+        assert result.error is None
+        assert result.file_data is not None
+        assert "Output was truncated" not in result.file_data["content"]
+        assert result.truncation_notice is not None
+        assert result.truncation_notice.startswith("[Output was truncated")
+        assert result.truncated_mid_line is True
+
     def test_read_with_zero_limit(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading with limit=0 returns nothing."""
         test_path = "/tmp/test_sandbox_ops/zero_limit.txt"

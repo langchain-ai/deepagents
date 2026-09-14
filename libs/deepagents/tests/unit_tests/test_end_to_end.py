@@ -42,6 +42,7 @@ from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMid
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
+from tests.unit_tests.test_local_sandbox_operations import LocalSubprocessSandbox
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
@@ -946,6 +947,34 @@ class TestDeepAgentEndToEnd:
             glob_result = glob_messages[-1].content
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
+
+    def test_deep_agent_sandbox_read_file_uses_header_without_gutter(self, tmp_path: Path) -> None:
+        sandbox = LocalSubprocessSandbox()
+        sandbox.set_real_root(str(tmp_path))
+        sandbox.write("/hello.txt", "hello\nworld")
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/hello.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        result = create_deep_agent(model=model, backend=sandbox).invoke({"messages": [HumanMessage(content="Read /hello.txt")]})
+
+        tool_message = next(message for message in result["messages"] if message.type == "tool")
+        assert tool_message.content == "@@ lines 1-2 of 2 @@\nhello\nworld"
 
     def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files and provides pagination guidance."""

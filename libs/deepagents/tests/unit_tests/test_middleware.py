@@ -2586,25 +2586,26 @@ class TestFilesystemMiddleware:
         expected_header = f"@@ lines 2-{end_line} of {end_line + 1} | next offset {end_line} @@"
         assert result.content == f"{expected_header}\n{blank_rows}"
 
-    def test_read_file_keeps_backend_truncation_banner_past_window(self):
-        """Rows a backend appends beyond `end_line` survive padding."""
+    def test_read_file_places_backend_truncation_notice_before_header(self):
         backend, _ = _make_backend()
-        banner = "\n\n[Output was truncated due to size limits.]"
+        notice = "[Output was truncated due to size limits.]"
         read_result = ReadResult(
-            file_data=FileData(content="a\nb" + banner, encoding="utf-8"),
+            file_data=FileData(content="a\nb", encoding="utf-8"),
             total_lines=9,
             start_line=1,
             end_line=2,
             next_offset=2,
+            truncation_notice=notice,
+            truncated_mid_line=True,
         )
-        middleware = FilesystemMiddleware(backend=backend)
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=None)
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
 
         with patch.object(backend, "read", return_value=read_result):
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/big.txt"})
 
         assert isinstance(result, ToolMessage)
-        assert "[Output was truncated due to size limits.]" in result.content
+        assert result.content == (f"{notice}\n@@ lines 1-2 of 9 | next offset 2 | truncated mid-line @@\na\nb")
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

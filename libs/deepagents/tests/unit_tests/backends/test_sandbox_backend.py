@@ -31,6 +31,7 @@ from deepagents.backends.sandbox import (
     _GREP_PATH_GLOB_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
+    TRUNCATION_MSG,
     BaseSandbox,
     _build_grep_cmd,
     _build_read_cmd,
@@ -309,6 +310,27 @@ def test_parse_read_output_plumbs_pagination_fields() -> None:
     assert result.start_line == 1
     assert result.end_line == 2
     assert result.next_offset == 2
+
+
+def test_parse_read_output_keeps_truncation_notice_separate() -> None:
+    output = json.dumps(
+        {
+            "encoding": "utf-8",
+            "content": "partial",
+            "total_lines": 2,
+            "start_line": 1,
+            "end_line": 1,
+            "next_offset": 1,
+            "truncation_notice": TRUNCATION_MSG.strip(),
+            "truncated_mid_line": True,
+        }
+    )
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data == {"encoding": "utf-8", "content": "partial"}
+    assert result.truncation_notice == TRUNCATION_MSG.strip()
+    assert result.truncated_mid_line is True
 
 
 def test_parse_read_output_defaults_pagination_fields_to_none() -> None:
@@ -1597,7 +1619,9 @@ def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Pa
 
     assert result["total_lines"] == 8
     assert result["start_line"] == 1
-    assert "truncated" in result["content"].lower()
+    assert "truncated" not in result["content"].lower()
+    assert result["truncation_notice"] == TRUNCATION_MSG.strip()
+    assert result["truncated_mid_line"] is True
     assert result["next_offset"] is not None
     # Resume at the count of fully rendered lines, short of the 8-line window.
     assert result["end_line"] == result["next_offset"]
@@ -1613,6 +1637,8 @@ def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path
 
     assert result["total_lines"] == 3
     assert result["start_line"] == 2
+    assert result["truncation_notice"] == TRUNCATION_MSG.strip()
+    assert result["truncated_mid_line"] is True
     # The oversized line cannot be paginated within, so resume past it.
     assert result["end_line"] == 2
     assert result["next_offset"] == 2

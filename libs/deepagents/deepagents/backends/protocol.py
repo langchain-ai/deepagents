@@ -231,6 +231,12 @@ class ReadResult:
     content with no pagination metadata.
     """
 
+    truncation_notice: str | None = None
+    """Backend truncation notice kept separate from raw source content."""
+
+    truncated_mid_line: bool = False
+    """Whether backend truncation cut the final returned source line."""
+
     def __post_init__(self) -> None:
         """Reject malformed pagination-field combinations at construction.
 
@@ -252,6 +258,9 @@ class ReadResult:
             self.error is not None or self.start_line is not None or self.next_offset is not None or self.total_lines is not None
         ):
             msg = "ReadResult.no_lines_requested describes an uninspected window; it cannot be combined with error or pagination fields"
+            raise ValueError(msg)
+        if self.truncated_mid_line and self.truncation_notice is None:
+            msg = "ReadResult.truncated_mid_line requires a truncation_notice"
             raise ValueError(msg)
         if self.next_offset is not None and self.start_line is None:
             msg = "ReadResult.next_offset requires start_line and end_line to be set"
@@ -465,10 +474,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `deepagents.backends.utils.normalize_read_bounds` clamps both bounds for
         implementations that slice in Python.
 
-        Implementations must also set `start_line` whenever they return
-        line-numberable text. The middleware falls back to deriving the gutter
-        from `offset` when `start_line` is unset, which only yields a valid
-        1-indexed gutter for windows the backend actually sliced.
+        Implementations must also set `start_line` whenever they return text
+        from a known source range. The middleware falls back to deriving the
+        range from `offset` when `start_line` is unset, which is only valid for
+        windows the backend actually sliced.
 
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
@@ -479,11 +488,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             `ReadResult` with raw (unformatted) content for the requested window,
                 or an error if the file doesn't exist or can't be read.
 
-                Line-number formatting is applied downstream by the filesystem
-                middleware (`format_content_with_line_numbers`), not by backends:
-                it adds the gutter, starts numbering at `offset + 1`, and splits
-                lines longer than 5000 characters into continuation rows
-                (e.g., `5.1`, `5.2`).
+                The filesystem middleware wraps text in a status header such as
+                `@@ lines 1-2 of 5 | next offset 2 @@`; backends must leave
+                `file_data.content` unformatted and set structured pagination and
+                truncation fields instead of appending notices to source content.
         """
         raise NotImplementedError
 

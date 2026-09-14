@@ -827,6 +827,8 @@ def _window_fields(read_result: ReadResult) -> list[str]:
     next_offset = read_result.next_offset
     if next_offset is not None and (total_lines is None or end_line < total_lines):
         fields.append(f"next offset {next_offset}")
+    if read_result.truncation_notice is not None:
+        fields.append("truncated mid-line" if read_result.truncated_mid_line else "truncated due to size")
     return fields
 
 
@@ -2063,14 +2065,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # re-truncate by row count here, or real source lines would be
             # pushed off the end of the page (#2453).
             # The clamp notice sits above the header so truncation cannot cut it.
-            clamp_notice = _clamped_offset_notice(offset).strip()
+            notices = [notice for notice in (_clamped_offset_notice(offset).strip(), read_result.truncation_notice) if notice]
             return ToolMessage(
                 content=_truncate_paginated_read(
                     body,
                     validated_path,
                     read_result,
                     token_limit,
-                    notices=[clamp_notice] if clamp_notice else [],
+                    notices=notices,
                 ),
                 name="read_file",
                 tool_call_id=tool_call_id,

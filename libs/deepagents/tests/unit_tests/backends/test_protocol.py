@@ -323,6 +323,22 @@ class TestReadResultPaginationInvariants:
         with pytest.raises(ValueError, match="ReadResult"):
             ReadResult(**kwargs)
 
+    def test_truncation_metadata_is_valid(self) -> None:
+        result = ReadResult(
+            file_data={"content": "partial", "encoding": "utf-8"},
+            truncation_notice="[Output was truncated.]",
+            truncated_mid_line=True,
+        )
+        assert result.truncated_mid_line is True
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [pytest.param({"truncated_mid_line": True}, id="mid_line_without_notice")],
+    )
+    def test_malformed_truncation_metadata_raises(self, kwargs: dict) -> None:
+        with pytest.raises(ValueError, match="ReadResult"):
+            ReadResult(**kwargs)
+
     def test_no_lines_requested_valid_window(self) -> None:
         """The zero-line flag is valid on its own with empty file data."""
         result = ReadResult(file_data={"content": "", "encoding": "utf-8"}, no_lines_requested=True)

@@ -644,8 +644,11 @@ async def test_openai_classifier_continues_one_provider_conversation(
     state = cast("dict[str, Any]", request.state)
     assert state["_auto_classifier_conversation"]["response_id"] == "resp_2"
     assert model.use_responses_api is True
-    assert model.use_previous_response_id is True
     assert model.store is True
+    # Continuation must come from the explicit `previous_response_id` above.
+    # `use_previous_response_id` would make langchain truncate the payload to
+    # the messages after the last `AIMessage`, dropping the policy prompt.
+    assert model.use_previous_response_id is None
 
 
 @pytest.mark.parametrize("legacy_checkpoint", [False, True])

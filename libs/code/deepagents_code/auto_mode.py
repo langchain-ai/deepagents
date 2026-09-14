@@ -2947,10 +2947,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         identity = sha256(
             json.dumps(identity_payload, sort_keys=True).encode()
         ).hexdigest()
+        # `use_previous_response_id` is deliberately left alone. It makes
+        # langchain derive the id from the last `AIMessage` in the payload, and
+        # a classifier request carries only a system and a human message, so it
+        # never fires. Continuation comes from the explicit `previous_response_id`
+        # in `model_kwargs`. Enabling it would also be actively unsafe: if an
+        # `AIMessage` ever entered the payload, langchain would truncate to the
+        # messages after it and drop the policy `SystemMessage`.
         return model.model_copy(
             update={
                 "use_responses_api": True,
-                "use_previous_response_id": True,
                 "store": True,
             }
         ), identity

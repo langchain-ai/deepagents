@@ -391,7 +391,7 @@ class CwdLabel(Widget):
 
     def watch_path(self, path: str) -> None:
         """Expose the untruncated path as the widget's tooltip."""
-        self.tooltip = path or None
+        self.tooltip = Content(path) if path else None
 
     def render(self) -> RenderResult:
         """Render the path condensed to the available width.

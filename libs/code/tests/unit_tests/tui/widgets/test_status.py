@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Static
 
@@ -71,17 +72,17 @@ class TestCwdDisplay:
 
     LONG_CWD = "/home/user/projects/deepagents/libs/code/deepagents_code/tui/widgets"
 
-    async def test_tooltip_is_full_path(self) -> None:
-        """The widget's tooltip always carries the untruncated path."""
+    async def test_tooltip_is_full_plain_path(self) -> None:
+        """The tooltip preserves the untruncated path as plain content."""
         async with StatusBarApp().run_test(size=(90, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.cwd = self.LONG_CWD
             await pilot.pause()
             display = pilot.app.query_one("#cwd-display", CwdLabel)
-            assert display.tooltip == self.LONG_CWD
-            bar.cwd = "/short/dir"
+            assert display.tooltip == Content(self.LONG_CWD)
+            bar.cwd = "/short/[bold]/dir"
             await pilot.pause()
-            assert display.tooltip == "/short/dir"
+            assert display.tooltip == Content("/short/[bold]/dir")
 
     async def test_condensed_render_keeps_the_tail(
         self, monkeypatch: pytest.MonkeyPatch

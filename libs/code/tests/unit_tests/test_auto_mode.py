@@ -68,6 +68,7 @@ from deepagents_code.auto_mode import (
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
     _ClassifierModelUnavailableError,
+    _credential_fingerprint,
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_classifier_conversation,
@@ -925,6 +926,43 @@ async def test_real_openai_client_project_changes_reset_checkpoint(
         None,
         "resp_3",
     ]
+
+
+def test_classifier_identity_covers_credential_and_extra_headers() -> None:
+    from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+
+    def identity_for(api_key: str, settings: dict[str, Any]) -> str:
+        model = ChatOpenAI(model="gpt-test", api_key=SecretStr(api_key))
+        support = AutoModeHITLMiddleware._openai_classifier_identity(model, settings)
+        assert support is not None
+        return support[1]
+
+    baseline = identity_for("key-a", {})
+
+    # A rotated key and an account-redirecting header both point at a place the
+    # captured response id may not exist, so each must start a new conversation.
+    assert identity_for("key-b", {}) != baseline
+    assert (
+        identity_for("key-a", {"extra_headers": {"OpenAI-Project": "proj-b"}})
+        != baseline
+    )
+    assert identity_for("key-a", {}) == baseline
+
+
+def test_credential_fingerprint_never_returns_the_secret() -> None:
+    from pydantic import SecretStr
+
+    assert _credential_fingerprint(None) is None
+    assert _credential_fingerprint("") is None
+    assert _credential_fingerprint(lambda: "rotating") == "callable"
+
+    secret = "sk-not-a-real-key-000000000000000000"
+    for value in (secret, SecretStr(secret)):
+        fingerprint = _credential_fingerprint(value)
+        assert fingerprint is not None
+        assert secret not in fingerprint
+        assert fingerprint == _credential_fingerprint(secret)
 
 
 def test_classifier_schema_failure_names_non_exception_detail(tmp_path: Path) -> None:

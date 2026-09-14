@@ -356,6 +356,25 @@ def _validate_classifier_conversation(
     }
 
 
+def _credential_fingerprint(api_key: object) -> str | None:
+    """Derive a stable, non-reversible tag for one resolved credential.
+
+    Returns:
+        A short digest, or `None` when no credential value is available.
+    """
+    if callable(api_key):
+        # A callable key is resolved per request, so its value cannot be read
+        # here without invoking it. Treat every callable as its own identity so
+        # a rotating key never continues an earlier conversation.
+        return "callable"
+    value = getattr(api_key, "get_secret_value", None)
+    if callable(value):
+        api_key = value()
+    if not isinstance(api_key, str) or not api_key:
+        return None
+    return sha256(api_key.encode()).hexdigest()[:16]
+
+
 def _classifier_response_unavailable(error: Exception) -> bool:
     """Recognize missing continuation state without retrying unrelated failures.
 
@@ -2920,15 +2939,24 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         model_name = str(getattr(model, "model_name", ""))
         if not model_name:
             return None
+        # `extra_headers` belongs here with the other per-request overrides:
+        # `configurable_model` writes it, `--model-params` can fill it freely, and
+        # an `OpenAI-Organization` or `OpenAI-Project` header sends the request to
+        # an account where the captured response id does not exist.
         endpoint_overrides = {
             key: value
             for key, value in settings.items()
-            if key in {"extra_body", "extra_query"}
+            if key in {"extra_body", "extra_query", "extra_headers"}
         }
         organization = settings.get(
             "organization", getattr(model, "openai_organization", None)
         )
         identity_payload = {
+            # Two keys in different projects hash alike once organization and
+            # project are both unset, so a rotation mid-thread would continue a
+            # conversation the new credential cannot read. Fingerprint the
+            # resolved key rather than carrying its value into the identity.
+            "credential": _credential_fingerprint(getattr(client, "api_key", None)),
             "endpoint": endpoint,
             "endpoint_overrides": endpoint_overrides,
             "organization": organization,

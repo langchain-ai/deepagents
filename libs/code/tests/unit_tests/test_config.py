@@ -382,7 +382,7 @@ class TestDotenvProvenance:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Text output names the global file without printing its value."""
+        """Text output names the global file without echoing the raw dotenv line."""
         from deepagents_code.client.commands.config import _run_get
 
         name = "DEEPAGENTS_CODE_LANGSMITH_REDACT"

@@ -8,7 +8,7 @@ This document explains the *decisions* behind that battery: which benchmarks we 
 
 Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
 
-- **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
+- **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-5,openai:gpt-6-astra`). The set of models compared in one run; everything else is applied identically across them.
 - **`categories`** *(default `autonomous,conversation,research`)* — which capability axes to run, replacing the default set rather than adding to it; `context` is available but not in the default set. `research` pins its own runner, sandbox, and concurrency (see below), so it needs no other input changed. The radar chart is produced whenever at least three axes run.
 - **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous**, **context**, and **research** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
 - **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
@@ -27,7 +27,7 @@ You don't have to use the Actions UI — dispatch the same workflow from the CLI
 
 ```bash
 gh workflow run unified_evals.yml \
-  -f models="anthropic:claude-opus-4-8,openai:gpt-5.2" \
+  -f models="anthropic:claude-opus-5,openai:gpt-6-astra" \
   -f categories="autonomous,conversation,research" \
   -f agent_impls="bare" \
   -f rollouts="3"
@@ -41,7 +41,7 @@ To run **just one task** (a quick smoke test), pass its exact name via `include_
 
 ```bash
 gh workflow run unified_evals.yml \
-  -f models="anthropic:claude-opus-4-8" \
+  -f models="anthropic:claude-opus-5" \
   -f categories="autonomous" \
   -f include_tasks="hello-world"
 ```
@@ -78,7 +78,7 @@ uv run harbor run \
   --verifier-env 'JUDGE_REPEATS=1' \
   --verifier-env 'JUDGE_CONCURRENCY=1' \
   --dataset harbor-index/harbor-index \
-  --model anthropic:claude-opus-4-8 \
+  --model anthropic:claude-opus-5 \
   --include-task-name hello-world \
   -n 4 \
   --jobs-dir harbor-jobs/unified \
@@ -157,7 +157,7 @@ Four principles cut across all three categories and explain why the task sets lo
 - **`banking_knowledge` (24 tasks)** — the user asks a policy or eligibility question; the agent must retrieve the correct answer from the domain's knowledge base and state it. Measures grounded question-answering under a policy.
 - **`telecom` (6 tasks)** — multi-step service-issue troubleshooting (APN settings, SIM-card PIN, airplane mode, overdue-bill suspension); the agent must diagnose a broken-service scenario and drive it to resolution with tools, across a live back-and-forth. Measures procedural, multi-turn problem-solving.
 
-Within those domains the subset is a *difficulty probe* — a behavior spread across models — not leaderboard parity with full τ³-bench. Each task's tier is why it's included, and is the measured pass rate of `anthropic:claude-opus-4-8` over 3 rollouts at full agent timeout (easy = 3/3, medium = 1–2/3, hard = 0/3): floors any capable model should pass, an intermittent middle where models separate, and hard tasks for headroom. Opus finds most of this set hard — accepted, intentional headroom. The subset is a *living selection*: re-run and re-tier (updating each task's `justification`) as the reference model or task set changes.
+Within those domains the subset is a *difficulty probe* — a behavior spread across models — not leaderboard parity with full τ³-bench. Each task's tier is why it's included, and is the measured pass rate of `anthropic:claude-opus-5` over 3 rollouts at full agent timeout (easy = 3/3, medium = 1–2/3, hard = 0/3): floors any capable model should pass, an intermittent middle where models separate, and hard tasks for headroom. Opus finds most of this set hard — accepted, intentional headroom. The subset is a *living selection*: re-run and re-tier (updating each task's `justification`) as the reference model or task set changes.
 
 ### Context — `context-retrieval-evals` (Context-Bench)
 

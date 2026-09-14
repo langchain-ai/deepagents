@@ -21,6 +21,7 @@ from deepagents_code.tui.widgets.debug_console import (
 
 if TYPE_CHECKING:
     import pytest
+    from textual.strip import Strip
 
 
 logger = logging.getLogger("deepagents_code._test_console")
@@ -199,6 +200,38 @@ class TestDebugConsoleScreen:
             "debug2",
             "debug3",
         ]
+
+    async def test_first_populated_frame_starts_at_bottom(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first frame containing logs renders at the newest records."""
+        states: list[tuple[int, int]] = []
+        records = [_log_record(f"marker-{index} {'x' * 100}") for index in range(100)]
+
+        class Buffer:
+            total_emitted = len(records)
+
+            @staticmethod
+            def snapshot_records_since(
+                _cursor: int,
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                return records, len(records)
+
+        class CapturingLogView(_DebugLogView):
+            def render_line(self, y: int) -> Strip:
+                if self.virtual_size.height > self.size.height:
+                    states.append((self.scroll_offset.y, self.max_scroll_y))
+                return super().render_line(y)
+
+        monkeypatch.setattr(debug_console_mod, "_DebugLogView", CapturingLogView)
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", Buffer)
+        app = _Harness()
+        async with app.run_test(size=(80, 30)) as pilot:
+            app.push_screen(DebugConsoleScreen(_snapshot()))
+            await pilot.pause()
+
+        assert states
+        assert all(offset == maximum for offset, maximum in states)
 
     async def test_notice_replaced_by_incoming_records(self) -> None:
         app = _Harness()

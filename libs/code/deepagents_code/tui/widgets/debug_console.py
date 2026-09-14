@@ -267,6 +267,7 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._wrap_prefix: list[int] = [0]
         self._total_visual = 0
         self._cached_width = 0
+        self._scroll_end_after_layout = False
         self._hover_index: int | None = None
         self._selected_index: int | None = None
         self._render_line_cache: LRUCache[
@@ -309,6 +310,7 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._contents.extend(_record_to_content(record) for record in records)
         width = self._cached_width or self.size.width
         if width <= 0:
+            self._scroll_end_after_layout = self._scroll_end_after_layout or at_bottom
             # Not yet sized (e.g. first poll before layout). Assume one visual
             # line per new content so `_wrap_counts` stays 1:1 with `_contents`;
             # the first `on_resize` reflow recomputes real counts. Skipping this
@@ -500,6 +502,9 @@ class _DebugLogView(ScrollView, can_focus=True):
         """Re-wrap log entries when the view width changes."""
         if event.size.width != self._cached_width:
             self._reflow()
+        if self._scroll_end_after_layout:
+            self._scroll_end_after_layout = False
+            self.scroll_end(animate=False, immediate=True, x_axis=False)
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Highlight the logical log record under the pointer."""

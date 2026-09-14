@@ -2,6 +2,30 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
+
+
+### Features
+
+* **code:** copy model slug with Ctrl+click ([#6243](https://github.com/langchain-ai/deepagents/issues/6243)) ([8a5c317](https://github.com/langchain-ai/deepagents/commit/8a5c317e45edb0df4ad42ae79c1c5a6f8cff407f))
+* **code:** list DeepSeek V4.1 Flash in picker ([#6254](https://github.com/langchain-ai/deepagents/issues/6254)) ([0a93587](https://github.com/langchain-ai/deepagents/commit/0a9358749d7654cc0bd9273a9e007be89abf316d))
+* **code:** show session length in Debug Console ([#6224](https://github.com/langchain-ai/deepagents/issues/6224)) ([05edbb1](https://github.com/langchain-ai/deepagents/commit/05edbb14d0855303ce74d42a4bf368804856c43a))
+* **code:** surface locally tracked GitHub stacks ([#6290](https://github.com/langchain-ai/deepagents/issues/6290)) ([c08cae6](https://github.com/langchain-ai/deepagents/commit/c08cae693e0036fcd45d979a7dfa3a7e306a0515))
+* **sdk,code:** update `read_file` output formatting ([#5648](https://github.com/langchain-ai/deepagents/issues/5648)) ([276beca](https://github.com/langchain-ai/deepagents/commit/276becae1bbaa38d6253aee90e99212e7bdf0606))
+
+
+### Bug Fixes
+
+* **code:** attribute dotenv config sources ([#6222](https://github.com/langchain-ai/deepagents/issues/6222)) ([6f1ac85](https://github.com/langchain-ai/deepagents/commit/6f1ac85c46604ef093a9d295fbcc52a8108aa8ed))
+* **code:** demote no-output hint suppression to debug ([#6245](https://github.com/langchain-ai/deepagents/issues/6245)) ([d93ab33](https://github.com/langchain-ai/deepagents/commit/d93ab3351bbf4c3687212f665094ccad100f2c08))
+* **code:** drop stale Anthropic thinking blocks ([#6300](https://github.com/langchain-ai/deepagents/issues/6300)) ([fe01fac](https://github.com/langchain-ai/deepagents/commit/fe01fac1fa3c4d30d9379a9e5f4273a622710049))
+* **code:** expose unknown reasoning effort ([#6241](https://github.com/langchain-ai/deepagents/issues/6241)) ([ed715ee](https://github.com/langchain-ai/deepagents/commit/ed715eeba608af47c9ed7943822c25d935a30b9e))
+* **code:** isolate user shell tracing credentials ([#6242](https://github.com/langchain-ai/deepagents/issues/6242)) ([35c21fa](https://github.com/langchain-ai/deepagents/commit/35c21faafe329f4f6932c0941d163306e1aa06e5))
+* **code:** open debug console at log bottom ([#6218](https://github.com/langchain-ai/deepagents/issues/6218)) ([34f1b6b](https://github.com/langchain-ai/deepagents/commit/34f1b6b037b24a1f2fe8b1d6112d9f8cdfe32bf2))
+* **code:** order debug console log filters ([#6217](https://github.com/langchain-ai/deepagents/issues/6217)) ([4bbad10](https://github.com/langchain-ai/deepagents/commit/4bbad10385b22cb76dc40aaa4709d4726f20db02))
+* **code:** price nested usage with its own model and honor completions ([#6251](https://github.com/langchain-ai/deepagents/issues/6251)) ([f413a40](https://github.com/langchain-ai/deepagents/commit/f413a40f7e74ada749b18491aa276ee1224c7368))
+* **code:** show the spinner during pre-stream turn setup ([#6253](https://github.com/langchain-ai/deepagents/issues/6253)) ([fa609c2](https://github.com/langchain-ai/deepagents/commit/fa609c23ba883557d015529d431ae266847e388c))
+
 ## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
 
 ### Features

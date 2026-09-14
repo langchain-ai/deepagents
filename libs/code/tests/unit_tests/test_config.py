@@ -4475,7 +4475,13 @@ class TestCreateModelAnthropicThinkingBinding:
 
     @pytest.mark.parametrize(
         ("model_name", "thinking"),
-        [("claude-opus-4-7", None), ("claude-opus-5", {"type": "disabled"})],
+        [
+            ("claude-opus-4-7", None),
+            ("claude-3-5-haiku-20241022", None),
+            ("claude-3-5-sonnet-20241022", None),
+            ("claude-3-7-sonnet-20250219", None),
+            ("claude-opus-5", {"type": "disabled"}),
+        ],
     )
     @patch("langchain.chat_models.init_chat_model")
     def test_skips_unsupported_thinking(

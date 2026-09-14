@@ -6120,7 +6120,8 @@ def _apply_anthropic_thinking_binding(
         return
     thinking = kwargs.get("thinking")
     if thinking is None:
-        match = re.match(r"^claude-[^-]+-(\d+)", model_name.lower())
+        # Require family-first names so legacy 3-5/3-7 IDs stay excluded.
+        match = re.match(r"^claude-[a-z]+-(\d+)", model_name.lower())
         if (
             match is None
             or int(match.group(1)) < _ANTHROPIC_PRESERVED_THINKING_MIN_MAJOR

@@ -1,0 +1,22 @@
+[project]
+name = "ralph-mode-example"
+version = "0.1.0"
+description = "Ralph Mode deep agent example for local CLI and LangGraph Agent Server"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.7.14",
+    "langchain>=1.4.0,<2.0.0",
+    "langchain-anthropic>=1.7.2,<2.0.0",
+    "langchain-openai>=1.0.0,<2.0.0",
+    "langchain-google-genai>=4.0.0,<5.0.0",
+    "langgraph>=1.2.8",
+    "langgraph-cli[inmem]>=0.4.30",
+    "python-dotenv>=1.2.2",
+]
+
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["agent", "ralph_mode"]

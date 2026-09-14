@@ -24,15 +24,75 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv
 source .venv/bin/activate
 
-# Install the CLI
-uv pip install deepagents-cli
+# Install Deep Agents Code (provides the non-interactive runner)
+uv pip install deepagents-code
 
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
 curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
 
-# Run Ralph
+# Run Ralph (needs a provider API key in the environment)
 python ralph_mode.py "Build a Python programming course for beginners. Use git."
 ```
+
+## LangGraph / LangSmith Agent Server
+
+The local `ralph_mode.py` loop is for a laptop. To host the agent on a LangGraph
+server, this directory also ships a deployable graph:
+
+| File | Role |
+|------|------|
+| `langgraph.json` | Points Agent Server at the graph |
+| `agent.py` | Exports `agent` via `create_deep_agent` |
+| `pyproject.toml` | Dependencies for the image / `langgraph dev` |
+| `.env.example` | Copy to `.env` and fill in keys |
+
+```bash
+cd examples/ralph_mode
+cp .env.example .env   # set OPENAI_API_KEY and LANGSMITH_API_KEY
+
+# Local Agent Server + Studio
+uv sync
+uv run langgraph dev
+
+# Deploy to LangSmith (Docker required; uses LANGSMITH_API_KEY)
+uv run langgraph deploy --name ralph-mode
+```
+
+Each server invoke is **one Ralph iteration**. To keep the classic loop, call the
+deployment repeatedly with a **new `thread_id`** and the same task (filesystem /
+store is the memory across iterations). Example with the Python SDK:
+
+```python
+import uuid
+from langgraph_sdk import get_client
+
+client = get_client(url="<your-deployment-url>")
+task = "Build a Python programming course for beginners. Use git."
+
+for i in range(5):
+    thread = await client.threads.create()
+    await client.runs.wait(
+        thread["thread_id"],
+        "ralph",
+        input={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"## Ralph Iteration {i + 1}/5\n\n"
+                        "Your previous work is in the filesystem. "
+                        "Check what exists and keep building.\n\n"
+                        f"TASK:\n{task}\n\n"
+                        "Make progress. You'll be called again."
+                    ),
+                }
+            ]
+        },
+    )
+```
+
+In the LangSmith UI, create a deployment from this repo and set the config path
+to `examples/ralph_mode/langgraph.json`.
 
 ## Usage
 

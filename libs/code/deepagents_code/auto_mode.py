@@ -356,6 +356,26 @@ def _validate_classifier_conversation(
     }
 
 
+def _classifier_response_unavailable(error: Exception) -> bool:
+    """Recognize missing continuation state without retrying unrelated failures.
+
+    Returns:
+        Whether the provider definitively could not resolve the previous response.
+    """
+    from openai import APIStatusError
+
+    if not isinstance(error, APIStatusError) or error.status_code not in {400, 404}:
+        return False
+    if error.code == "previous_response_not_found":
+        return True
+    return error.param == "previous_response_id" and (
+        error.code in {"resource_not_found", "not_found"}
+        or "not found" in error.message.lower()
+        or "does not exist" in error.message.lower()
+        or "expired" in error.message.lower()
+    )
+
+
 class AutoModeCounters(TypedDict):
     """Server-owned denial and availability counters for one thread."""
 
@@ -2993,6 +3013,41 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return result
         return AutoDecisionBatch.model_validate(result)
 
+    async def _invoke_openai_classifier_response(
+        self,
+        model: BaseChatModel,
+        messages: list[SystemMessage | HumanMessage],
+        settings: dict[str, Any],
+        spec: str | None,
+        previous_response_id: str | None,
+    ) -> object:
+        model_kwargs = dict(getattr(model, "model_kwargs", None) or {})
+        model_kwargs.pop("previous_response_id", None)
+        if previous_response_id is not None:
+            model_kwargs["previous_response_id"] = previous_response_id
+        model = model.model_copy(update={"model_kwargs": model_kwargs})
+        structured = model.with_structured_output(AutoDecisionBatch, include_raw=True)
+        from deepagents_code.model_retry import aretry_model_call
+
+        return await aretry_model_call(
+            model,
+            max_total_delay=(
+                self._classifier_timeout_seconds * _CLASSIFIER_RETRY_DELAY_FRACTION
+            ),
+            call=lambda: structured.ainvoke(
+                messages,
+                config={
+                    "run_name": "dcode_auto_classifier",
+                    "tags": ["dcode:auto"],
+                    "metadata": {
+                        "lc_source": "auto_mode_classifier",
+                        "classifier_model": spec or "inherited",
+                    },
+                },
+                **settings,
+            ),
+        )
+
     async def _invoke_openai_classifier(
         self,
         request: ModelRequest,
@@ -3016,34 +3071,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             if turns >= _MAX_CLASSIFIER_CONVERSATION_TURNS:
                 turns = 0
-            model_kwargs = dict(getattr(model, "model_kwargs", None) or {})
-            model_kwargs.pop("previous_response_id", None)
-            if head is not None and turns:
-                model_kwargs["previous_response_id"] = head["response_id"]
-            model = model.model_copy(update={"model_kwargs": model_kwargs})
-            structured = model.with_structured_output(
-                AutoDecisionBatch, include_raw=True
-            )
-            from deepagents_code.model_retry import aretry_model_call
-
-            result = await aretry_model_call(
-                model,
-                max_total_delay=(
-                    self._classifier_timeout_seconds * _CLASSIFIER_RETRY_DELAY_FRACTION
-                ),
-                call=lambda: structured.ainvoke(
-                    messages,
-                    config={
-                        "run_name": "dcode_auto_classifier",
-                        "tags": ["dcode:auto"],
-                        "metadata": {
-                            "lc_source": "auto_mode_classifier",
-                            "classifier_model": spec or "inherited",
-                        },
-                    },
-                    **settings,
-                ),
-            )
+            previous_response_id = head["response_id"] if head and turns else None
+            try:
+                result = await self._invoke_openai_classifier_response(
+                    model, messages, settings, spec, previous_response_id
+                )
+            except Exception as exc:
+                if previous_response_id is None or not _classifier_response_unavailable(
+                    exc
+                ):
+                    raise
+                # Each payload contains the complete policy and current context,
+                # so an expired/deleted response can be replaced without history.
+                turns = 0
+                result = await self._invoke_openai_classifier_response(
+                    model, messages, settings, spec, None
+                )
             batch, response_id = self._parse_classifier_response(result)
             _validate_classifier_ids(batch, expected_ids)
             conversation = AutoClassifierConversation(

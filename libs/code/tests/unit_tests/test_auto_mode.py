@@ -913,6 +913,141 @@ async def test_openai_classifier_retries_from_verified_head(tmp_path: Path) -> N
     assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
 
 
+def _openai_status_error(
+    status: int, code: str | None, param: str | None, message: str
+) -> Exception:
+    import httpx
+    from openai import APIStatusError
+
+    return APIStatusError(
+        message,
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://api.openai.com/v1/responses")
+        ),
+        body={"code": code, "param": param, "message": message},
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "param", "message"),
+    [
+        (400, "previous_response_not_found", None, "Missing response"),
+        (
+            400,
+            None,
+            "previous_response_id",
+            "Previous response with id 'resp_1' not found.",
+        ),
+        (404, "resource_not_found", "previous_response_id", "Missing resource"),
+    ],
+)
+async def test_missing_openai_response_restarts_and_checkpoints(
+    tmp_path: Path, status: int, code: str | None, param: str | None, message: str
+) -> None:
+    model = _OpenAIConversationModel(
+        [
+            _allow_result(),
+            _openai_status_error(status, code, param, message),
+            _allow_result(),
+            _allow_result(),
+        ]
+    )
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    for index in range(3):
+        plan = await _plan(
+            _middleware(tmp_path),
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+        if index == 1:
+            state = cast("dict[str, Any]", request.state)
+            assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
+            assert state["_auto_classifier_conversation"]["revision"] == 2
+            assert state["_auto_classifier_conversation"]["turns"] == 1
+    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
+        None,
+        "resp_1",
+        None,
+        "resp_3",
+    ]
+    assert model.calls[1] == model.calls[2]
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "param", "message"),
+    [
+        (401, "invalid_api_key", None, "Authentication failed"),
+        (404, "model_not_found", "model", "Model not found"),
+        (400, "invalid_value", "previous_response_id", "Invalid response ID"),
+        (500, "server_error", "previous_response_id", "Response not found"),
+    ],
+)
+async def test_unrelated_openai_errors_do_not_restart_conversation(
+    tmp_path: Path, status: int, code: str | None, param: str | None, message: str
+) -> None:
+    model = _OpenAIConversationModel(
+        [
+            _allow_result(),
+            _openai_status_error(status, code, param, message),
+        ]
+    )
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    middleware = _middleware(tmp_path)
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-2",
+    )
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == 2
+    state = cast("dict[str, Any]", request.state)
+    assert state["_auto_classifier_conversation"]["response_id"] == "resp_1"
+
+
+@pytest.mark.parametrize("has_head", [False, True])
+async def test_missing_openai_response_recovery_is_bounded(
+    tmp_path: Path, has_head: bool
+) -> None:
+    missing = _openai_status_error(
+        400, "previous_response_not_found", None, "Missing response"
+    )
+    model = _OpenAIConversationModel(
+        [_allow_result(), missing, missing] if has_head else [missing]
+    )
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    middleware = _middleware(tmp_path)
+    if has_head:
+        await _plan(
+            middleware, request, tool_name="delete", args={"file_path": "old.py"}
+        )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-2",
+    )
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == (3 if has_head else 1)
+    state = cast("dict[str, Any]", request.state)
+    if has_head:
+        assert state["_auto_classifier_conversation"]["response_id"] == "resp_1"
+    else:
+        assert "_auto_classifier_conversation" not in state
+
+
 async def test_failed_openai_review_does_not_advance_continuation(
     tmp_path: Path,
 ) -> None:

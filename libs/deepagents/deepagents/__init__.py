@@ -8,6 +8,7 @@ from deepagents.graph import (
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.project_instructions import ProjectInstructionsMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
@@ -37,6 +38,7 @@ __all__ = [
     "HarnessProfile",
     "HarnessProfileConfig",
     "MemoryMiddleware",
+    "ProjectInstructionsMiddleware",
     "ProviderProfile",
     "RubricMiddleware",
     "SubAgent",

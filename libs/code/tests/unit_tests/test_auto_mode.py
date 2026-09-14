@@ -927,6 +927,32 @@ async def test_real_openai_client_project_changes_reset_checkpoint(
     ]
 
 
+def test_classifier_schema_failure_names_non_exception_detail(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+
+    with pytest.raises(ValueError, match="did not match its schema") as excinfo:
+        middleware._parse_classifier_response(
+            {"parsed": None, "parsing_error": {"refusal": "cannot comply"}, "raw": None}
+        )
+
+    # A non-exception `parsing_error` leaves no `__cause__`, so the detail has
+    # to survive in the message or schema drift becomes undiagnosable.
+    assert excinfo.value.__cause__ is None
+    assert "cannot comply" in str(excinfo.value)
+
+
+def test_classifier_missing_response_id_names_what_it_found(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+    raw = AIMessage(content="", response_metadata={"id": "chatcmpl-123"})
+
+    with pytest.raises(ValueError, match="did not include a Responses API ID") as info:
+        middleware._parse_classifier_response(
+            {"parsed": _allow_result(), "parsing_error": None, "raw": raw}
+        )
+
+    assert "chatcmpl-123" in str(info.value)
+
+
 @pytest.mark.parametrize("base_url_env", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
 def test_stored_custom_endpoint_stays_stateless(
     monkeypatch: pytest.MonkeyPatch, base_url_env: str

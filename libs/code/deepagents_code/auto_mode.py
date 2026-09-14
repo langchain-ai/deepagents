@@ -2961,8 +2961,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             }
         ), identity
 
-    @staticmethod
     def _parse_classifier_response(
+        self,
         result: object,
     ) -> tuple[AutoDecisionBatch, str]:
         if not isinstance(result, Mapping):
@@ -2970,7 +2970,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             raise TypeError(msg)
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
-            msg = "OpenAI classifier response did not match its schema"
+            # `include_raw` reports a non-exception `parsing_error` for a refusal
+            # or a provider-shaped error payload. Chaining alone would then leave
+            # `__cause__` None and reduce every schema failure to this one
+            # sentence, so name the detail in the message. It is redacted because
+            # it echoes model output back into logs and the denial reason.
+            detail = sanitize_auto_reason(
+                f"{type(parsing_error).__name__}: {parsing_error!r}",
+                known_secrets=self._known_secrets,
+            )
+            msg = f"OpenAI classifier response did not match its schema ({detail})"
             raise ValueError(msg) from (
                 parsing_error if isinstance(parsing_error, BaseException) else None
             )
@@ -2984,7 +2993,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         metadata = getattr(raw, "response_metadata", None)
         response_id = metadata.get("id") if isinstance(metadata, Mapping) else None
         if not isinstance(response_id, str) or not response_id.startswith("resp_"):
-            msg = "OpenAI classifier response did not include a Responses API ID"
+            found = sanitize_auto_reason(
+                repr(response_id), known_secrets=self._known_secrets
+            )
+            msg = (
+                "OpenAI classifier response did not include a Responses API ID "
+                f"(found {found})"
+            )
             raise ValueError(msg)
         return batch, response_id
 

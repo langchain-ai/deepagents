@@ -22,6 +22,7 @@ from deepagents_code.tui.widgets.debug_console import (
 
 if TYPE_CHECKING:
     import pytest
+    from textual.strip import Strip
 
 
 logger = logging.getLogger("deepagents_code._test_console")
@@ -216,6 +217,38 @@ class TestDebugConsoleScreen:
 
             assert log.line_count == 2
             assert "Z" in log.render_line(1).text
+
+    async def test_first_populated_frame_starts_at_bottom(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first frame containing logs renders at the newest records."""
+        states: list[tuple[int, int]] = []
+        records = [_log_record(f"marker-{index} {'x' * 100}") for index in range(100)]
+
+        class Buffer:
+            total_emitted = len(records)
+
+            @staticmethod
+            def snapshot_records_since(
+                _cursor: int,
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                return records, len(records)
+
+        class CapturingLogView(_DebugLogView):
+            def render_line(self, y: int) -> Strip:
+                if self.virtual_size.height > self.size.height:
+                    states.append((self.scroll_offset.y, self.max_scroll_y))
+                return super().render_line(y)
+
+        monkeypatch.setattr(debug_console_mod, "_DebugLogView", CapturingLogView)
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", Buffer)
+        app = _Harness()
+        async with app.run_test(size=(80, 30)) as pilot:
+            app.push_screen(DebugConsoleScreen(_snapshot()))
+            await pilot.pause()
+
+        assert states
+        assert all(offset == maximum for offset, maximum in states)
 
     async def test_notice_replaced_by_incoming_records(self) -> None:
         app = _Harness()
@@ -438,6 +471,18 @@ class TestDebugConsoleToggle:
             assert "Version" in snapshot
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
+
+    async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
+        import time
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "not started"
+
+            app._first_invocation_at = time.monotonic() - 72.3
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "1m 12s"
 
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch

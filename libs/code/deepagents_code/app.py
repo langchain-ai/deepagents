@@ -107,7 +107,7 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_terminal_mapping as _resolve_terminal_mapping,
     resolve_theme_name as _resolve_theme_name,
 )
-from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.formatting import format_duration, format_message_timestamp
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
@@ -2038,6 +2038,8 @@ _CLEAR_TOKENS: frozenset[str] = frozenset({"clear", "--clear", "reset"})
 Shared by every such command -- `/effort`, `/summarization-model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
+
+_UNKNOWN_EFFORT_LABEL = "effort"
 
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
@@ -4344,6 +4346,9 @@ class DeepAgentsApp(App):
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this process."""
+
+        self._first_invocation_at: float | None = None
+        """Monotonic timestamp when the first agent invocation began."""
 
         self._thread_stats: SessionStats = SessionStats()
         """Usage observed since the active thread was loaded or created."""
@@ -12694,11 +12699,16 @@ class DeepAgentsApp(App):
 
         refresh_started = False
         try:
+            from deepagents_code.config import restore_user_langsmith_env
+
+            shell_env = os.environ.copy()
+            restore_user_langsmith_env(shell_env, start_path=Path(self._cwd))
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
+                env=shell_env,
                 start_new_session=(sys.platform != "win32"),
             )
             self._shell_process = proc
@@ -18208,7 +18218,13 @@ class DeepAgentsApp(App):
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
                 or default_effort_for_model(spec, cli_override=self._profile_override)
-                or ""
+                or (
+                    _UNKNOWN_EFFORT_LABEL
+                    if supported_efforts_for_model(
+                        spec, cli_override=self._profile_override
+                    )
+                    else ""
+                )
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
@@ -18469,6 +18485,8 @@ class DeepAgentsApp(App):
         # this `False` and be mistaken for a worker that never ran. See
         # `_agent_turn_started`.
         self._agent_turn_started = True
+        if self._first_invocation_at is None:
+            self._first_invocation_at = time.monotonic()
 
         from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -19523,13 +19541,8 @@ class DeepAgentsApp(App):
             return False
 
         if not had_agent_output:
-            # `info`, not `debug`, for the same reason as the store-failure
-            # branch below: the always-on ring buffer behind the Debug Console
-            # captures INFO and above, and at `debug` a vanished hint leaves no
-            # trace. Deliberately does not report a store count — by the time
-            # `_resume_thread` reaches here the store holds the *incoming*
-            # thread's history, so any count would describe the wrong thread.
-            logger.info(
+            # A thread with no output is normal and not worth surfacing at INFO.
+            logger.debug(
                 "Suppressing previous-thread hint for %s: no server-backed "
                 "output was recorded in it",
                 previous_thread_id,
@@ -19547,10 +19560,7 @@ class DeepAgentsApp(App):
             resumable = await thread_exists(previous_thread_id)
             owner = await get_thread_agent(previous_thread_id) if resumable else None
         except (sqlite3.Error, OSError):
-            # `info`, not `debug`: the always-on ring buffer behind the Debug
-            # Console captures INFO and above, and a store failure here is
-            # suspicious — callers have usually just read the same store
-            # successfully. At `debug` a vanished hint leaves no trace.
+            # Keep store failures visible because they are not routine suppression.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
                 previous_thread_id,
@@ -25009,6 +25019,12 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _session_length() -> str:
+            started_at = self._first_invocation_at
+            if started_at is None:
+                return "not started"
+            return format_duration(max(0.0, time.monotonic() - started_at))
+
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks
             # whether a model is actually configured: the "(not configured)"
@@ -25089,6 +25105,7 @@ class DeepAgentsApp(App):
             _model_field(),
             _thread_field(),
             _safe("Messages", _messages),
+            _safe("Session length", _session_length),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(

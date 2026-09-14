@@ -238,7 +238,7 @@ async def _run_host_with_agent(
         host.scheduler = PersistentCronScheduler(
             store=cron_store,
             run_job=host.run_scheduled_job,
-            deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
+            deliver_result=lambda job, text: _deliver_cron_result(host, job, text),
         )
     if args.once:
         await _run_once(host)
@@ -254,7 +254,6 @@ async def _agent_runtime(
     from deepagents_talon.runtime import (  # noqa: PLC0415
         DeepAgentRuntime,
         EchoAgentRuntime,
-        interrupt_on_with_env_overlay,
     )
 
     env = _runtime_env(config)
@@ -274,9 +273,8 @@ async def _agent_runtime(
         refresh_tools=mcp_provider.refresh_if_needed,
         reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,
-        load_subagents=lambda: load_async_subagents(strict=True),
+        load_subagents=load_async_subagents,
         cron_store=cron_store,
-        interrupt_on=interrupt_on_with_env_overlay(None, env),
         checkpointer=checkpointer,
         env=env,
     )
@@ -353,16 +351,12 @@ def _runtime_env(config: TalonConfig) -> dict[str, str]:
     return values
 
 
-async def _deliver_cron_result(
-    host: TalonHost,
-    channels: Sequence[ChannelAdapter],
-    job: CronJob,
-    text: str,
-) -> None:
-    for channel in channels:
-        if job.origin.channel is None or (await channel.status()).provider == job.origin.channel:
-            await host.deliver_scheduled_result(channel, job, text)
-            return
+async def _deliver_cron_result(host: TalonHost, job: CronJob, text: str) -> None:
+    channel = await host.origin_channel(job.origin)
+    if channel is None:
+        logger.warning("No channel serves cron job %s; dropping its result", job.id)
+        return
+    await host.deliver_scheduled_result(channel, job, text)
 
 
 if __name__ == "__main__":

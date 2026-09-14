@@ -16,10 +16,10 @@ export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING=true       # Required: Enable LangSmith tracing
 
 # All evals
-make evals MODEL=claude-opus-4-7
+make evals MODEL=claude-opus-5
 
 # Specific model via raw pytest invocation
-LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals --model claude-sonnet-4-6-20250514
+LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals --model claude-sonnet-5
 
 # Single test file
 LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals/test_file_operations.py
@@ -275,13 +275,13 @@ They are kept separate because folding trials into `evals.yml` would produce a *
 ### Running locally
 
 ```bash
-make evals-trials MODEL=openai:gpt-5.5 TRIALS=5
+make evals-trials MODEL=openai:gpt-6-astra TRIALS=5
 ```
 
 Forward extra flags through `TRIAL_ARGS`:
 
 ```bash
-make evals-trials MODEL=openai:gpt-5.5 TRIALS=3 \
+make evals-trials MODEL=openai:gpt-6-astra TRIALS=3 \
     TRIAL_ARGS="--openai-reasoning-effort medium --eval-category memory"
 ```
 
@@ -298,7 +298,7 @@ Dispatch the **📊 Evals - N Trials** workflow (`evals_trials.yml`).
 
 | Input | Notes |
 |---|---|
-| `model` | Single spec, e.g. `openai:gpt-5.5`. No presets — trials are single-model only |
+| `model` | Single spec, e.g. `openai:gpt-6-astra`. No presets — trials are single-model only |
 | `trials` | 1–20 (the local CLI accepts up to 50; the workflow caps lower since a runaway runner pool is harder to recover than a stuck terminal) |
 | `parallel` | Off (default): trials run sequentially. On: all trials run concurrently |
 | `eval_categories`, `eval_tiers`, `openai_reasoning_effort`, `openrouter_provider`, `openrouter_allow_fallbacks` | Same semantics as `evals.yml` (the OpenRouter pin accepts a comma-separated allowlist; `openrouter_allow_fallbacks` toggles strict pin vs. soft preference) |
@@ -316,7 +316,7 @@ The `parallel` toggle exists to trade time for API burst pressure. Sequential mo
 ```jsonc
 {
   "n_trials": 5,
-  "model": "openai:gpt-5.5",
+  "model": "openai:gpt-6-astra",
   "sdk_version": "0.5.6",
   "metrics": {
     // One block per scalar metric

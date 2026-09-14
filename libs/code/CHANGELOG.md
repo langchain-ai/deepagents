@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
+
+### Features
+
+- Recommended GLM 5.3 models are now available in code workflows ([#6211](https://github.com/langchain-ai/deepagents/pull/6211)).
+
+### Bug Fixes
+
+- Added pricing support for Fireworks GLM-5.3 and GLM-5.3 Flash usage ([#6221](https://github.com/langchain-ai/deepagents/pull/6221), [#6223](https://github.com/langchain-ai/deepagents/pull/6223)).
+- Workspace switches now ask for confirmation before restarting the server ([#6178](https://github.com/langchain-ai/deepagents/pull/6178)).
+- Effort changes are now included in cache identity for OpenAI and Anthropic requests ([#6196](https://github.com/langchain-ai/deepagents/pull/6196)).
+- Standardized the recent-thread environment variable ([#6205](https://github.com/langchain-ai/deepagents/pull/6205)).
+- Silenced warnings when the themes config is absent ([#6220](https://github.com/langchain-ai/deepagents/pull/6220)).
+
 ## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
 
 ### Features

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -10,8 +11,10 @@ import pytest
 from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
+from deepagents_talon.background import HIDDEN_ASYNC_TOOLS
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -20,11 +23,10 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
-    INTERRUPT_ON_TOOLS_ENV_KEY,
     DeepAgentRuntime,
     _is_retryable,
-    interrupt_on_with_env_overlay,
 )
+from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -188,10 +190,10 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         )
     )
 
-    assert created == [
-        ["current_time", "custom_tool", "get_agent_tools"],
-        ["current_time", "refreshed_tool", "get_agent_tools"],
-    ]
+    assert "custom_tool" in created[0]
+    assert "refreshed_tool" not in created[0]
+    assert "refreshed_tool" in created[-1]
+    assert "custom_tool" not in created[-1]
     assert current_authorization_handler() is None
 
 
@@ -300,12 +302,13 @@ async def test_runtime_resolves_supplied_subagents() -> None:
         memory=(),
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == subagents
 
 
 async def test_runtime_requires_approval_for_async_subagent_tools(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -321,10 +324,13 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
 
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    snapshot = store.ensure()
+    store.update({"custom_tool": True, "start_async_task": False}, snapshot.revision)
     runtime = DeepAgentRuntime(
         model="test:model",
         subagents=cast("Any", [async_subagent]),
-        interrupt_on={"custom_tool": True, "start_async_task": False},
+        approval_store=store,
         include_web_tools=False,
         skills=(),
         memory=(),
@@ -334,11 +340,16 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
 
     assert captured["subagents"][0] == async_subagent
     assert captured["interrupt_on"] == {
-        "custom_tool": True,
-        "start_async_task": False,
-        "update_async_task": True,
-        "cancel_async_task": True,
+        name: {"allowed_decisions": ["approve", "reject"]}
+        for name in (
+            "custom_tool",
+            "update_tool_approvals",
+            "delete_conversations",
+            "update_mcp_server",
+        )
     }
+    # The other async task tools never reach the model, so gating them could not fire.
+    assert HIDDEN_ASYNC_TOOLS.isdisjoint(captured["interrupt_on"])
 
 
 async def test_runtime_merges_local_and_async_subagents(
@@ -366,7 +377,7 @@ async def test_runtime_merges_local_and_async_subagents(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -404,7 +415,7 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -442,7 +453,7 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
         env={},
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -473,7 +484,7 @@ async def test_runtime_uses_user_defined_general_purpose_subagent(
         memory=(),
     )
 
-    resolved = runtime._resolve_subagents(strict=True)
+    resolved = runtime._resolve_subagents()
 
     assert resolved == [
         {
@@ -545,80 +556,47 @@ async def test_runtime_passes_middleware_to_create_deep_agent(
     assert middleware in captured["middleware"]
 
 
-async def test_runtime_passes_interrupt_on_to_create_deep_agent(
+@pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
+async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    obsolete_value: str,
 ) -> None:
     captured: dict[str, Any] = {}
-    interrupt_on = {"custom_tool": True}
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    snapshot = store.ensure()
+    store.update({"sample_tool": True, "execute": False}, snapshot.revision)
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
         return RecordingGraph()
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
+    monkeypatch.setenv("DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS", obsolete_value)
+    monkeypatch.setenv("DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE", "true")
     runtime = DeepAgentRuntime(
         model="test:model",
         include_web_tools=False,
         skills=(),
         memory=(),
-        interrupt_on=interrupt_on,
-    )
-
-    await runtime.start()
-
-    assert captured["interrupt_on"] == interrupt_on
-
-
-def test_interrupt_on_with_env_overlay_preserves_empty_behavior() -> None:
-    interrupt_on = {"sample_tool": True}
-
-    assert interrupt_on_with_env_overlay(None, {}) is None
-    assert interrupt_on_with_env_overlay(None, {INTERRUPT_ON_TOOLS_ENV_KEY: " , "}) is None
-    assert interrupt_on_with_env_overlay(interrupt_on, {}) == interrupt_on
-
-
-def test_interrupt_on_with_env_overlay_parses_comma_whitespace() -> None:
-    interrupt_on = interrupt_on_with_env_overlay(
-        {"sample_tool": True},
-        {INTERRUPT_ON_TOOLS_ENV_KEY: " bash,execute, , github_create_pr ,custom/mcp "},
-    )
-
-    assert interrupt_on == {
-        "sample_tool": True,
-        "bash": True,
-        "execute": True,
-        "github_create_pr": True,
-        "custom/mcp": True,
-    }
-
-
-async def test_runtime_adds_env_interrupt_on_overlay_to_create_deep_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        interrupt_on={"sample_tool": True},
-        env={INTERRUPT_ON_TOOLS_ENV_KEY: "bash, execute"},
+        approval_store=store,
+        env={
+            "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS": obsolete_value,
+            "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE": "true",
+        },
     )
 
     await runtime.start()
 
     assert captured["interrupt_on"] == {
-        "sample_tool": True,
-        "bash": True,
-        "execute": True,
+        name: {"allowed_decisions": ["approve", "reject"]}
+        for name in (
+            "sample_tool",
+            "update_tool_approvals",
+            "delete_conversations",
+            "update_mcp_server",
+            "start_async_task",
+        )
     }
 
 
@@ -1105,6 +1083,7 @@ async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
         memory=(),
     )
     runtime._graph = graph
+    runtime._active_approvals = runtime.approval_store.ensure()
 
     async def approve(request: ToolApprovalRequest) -> ToolApprovalDecision:
         approvals.append(request)
@@ -1139,6 +1118,7 @@ async def test_runtime_keeps_graph_stable_while_waiting_for_approval(
         memory=(),
     )
     runtime._graph = graph
+    runtime._active_approvals = runtime.approval_store.ensure()
 
     async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
         approval_started.set()
@@ -1178,6 +1158,7 @@ async def test_runtime_logs_tool_approval_without_argument_values(
         memory=(),
     )
     runtime._graph = graph
+    runtime._active_approvals = runtime.approval_store.ensure()
 
     async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
         return "approve"
@@ -1216,6 +1197,7 @@ async def test_runtime_rejects_tool_interrupt_without_running_tool(
         memory=(),
     )
     runtime._graph = graph
+    runtime._active_approvals = runtime.approval_store.ensure()
 
     async def reject(_request: ToolApprovalRequest) -> ToolApprovalDecision:
         return "reject"
@@ -1255,6 +1237,7 @@ async def test_runtime_auto_rejects_cron_tool_interrupt() -> None:
         memory=(),
     )
     runtime._graph = graph
+    runtime._active_approvals = runtime.approval_store.ensure()
 
     result = await runtime.invoke(
         AgentRequest(
@@ -1349,4 +1332,108 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
 
     await runtime.start()
 
-    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time", "get_agent_tools"]
+    names = {_tool_name(tool) for tool in captured["tools"]}
+    assert "current_time" in names
+    assert not names.intersection({"web_search", "fetch_url", "create_cron_job"})
+
+
+async def test_stop_keeps_resources_open_while_a_worker_may_still_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[str] = []
+
+    class Checkpointer(InMemorySaver):
+        def close(self) -> None:
+            closed.append("closed")
+
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        checkpointer=Checkpointer(),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    async def refuse(_owner: str | None = None) -> bool:
+        return False
+
+    async def accept(_owner: str | None = None) -> bool:
+        return True
+
+    monkeypatch.setattr(runtime.background, "cancel", refuse)
+
+    with pytest.raises(RuntimeError, match="Background subagents did not stop"):
+        await runtime.stop()
+
+    # A worker outlived its wait, so it may still write: the saver stays open and
+    # the graph stays bound rather than being torn down underneath it.
+    assert closed == []
+    assert runtime._graph is not None
+
+    monkeypatch.setattr(runtime.background, "cancel", accept)
+    await runtime.stop()
+
+    assert closed == ["closed"]
+    assert runtime._graph is None
+
+
+async def test_missing_tool_node_is_reported_instead_of_silently_disabling_task_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.runtime"):
+        await runtime.start()
+
+    assert "exposes no tool node" in caplog.text
+    assert runtime._attachments[0] == {"name": "main", "mode": "conversation", "tools": None}
+
+
+async def test_agent_tools_inspection_does_not_block_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: RecordingGraph()
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+    ticks = 0
+
+    def slow_resolve() -> list[Any]:
+        time.sleep(0.2)
+        return []
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    monkeypatch.setattr(runtime, "_resolve_subagents", slow_resolve)
+    beat = asyncio.create_task(ticker())
+    try:
+        await runtime._attachment_tool([]).ainvoke({})
+    finally:
+        beat.cancel()
+        await asyncio.gather(beat, return_exceptions=True)
+        await runtime.stop()
+
+    assert ticks > 1

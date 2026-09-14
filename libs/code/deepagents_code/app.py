@@ -4454,6 +4454,18 @@ class DeepAgentsApp(App):
         reset whenever a server total arrives.
         """
 
+        self._provisional_cost_by_request: dict[str, float] = {}
+        """Provisional dollars still held, keyed by request.
+
+        A retraction is clamped to its own request's balance, so it cannot
+        subtract spend a concurrent request put in the pool. A request drops
+        out once its balance reaches zero, so the map holds only what is in
+        flight; it is cleared with `_provisional_cost_usd` on every reset.
+        """
+
+        self._settled_provisional_request_ids: set[str] = set()
+        """Requests whose provisional spend was absorbed by a backend total."""
+
         self._server_pricing_ok: bool | None = None
         """Whether price data loaded in the process that does the pricing.
 
@@ -8834,6 +8846,8 @@ class DeepAgentsApp(App):
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
+        self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
+        self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
         if (
@@ -8885,6 +8899,7 @@ class DeepAgentsApp(App):
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
         self._session_cost_warning_shown = False
+        self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _mark_thread_turn_completed(self) -> None:
@@ -8892,7 +8907,25 @@ class DeepAgentsApp(App):
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
-    def _add_provisional_cost(self, cost_usd: float, /) -> None:
+    def _apply_provisional_delta(self, delta_usd: float) -> None:
+        """Add a delta the caller has already reconciled, then refresh.
+
+        Floors the running total at zero as a backstop against float drift and
+        the unkeyed path. Callers clamp their own retractions against what the
+        request in hand still holds, so go through `_add_provisional_cost`
+        rather than calling this directly with a keyed delta.
+        """
+        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
+        self._refresh_session_cost_display()
+
+    def _add_provisional_cost(
+        self,
+        cost_usd: float,
+        /,
+        *,
+        request_id: str | None = None,
+        is_correction: bool = False,
+    ) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
 
         The graph checkpoints this same request and streams the total that
@@ -8903,14 +8936,58 @@ class DeepAgentsApp(App):
         Args:
             cost_usd: Estimated cost this message contributed, in US dollars.
                 Negative when a later chunk re-prices its request downward.
+            request_id: Key naming the request the delta belongs to, when
+                known. Retractions are clamped to what this request still
+                holds, so a stale correction cannot subtract another request's
+                spend.
+            is_correction: Whether the delta revises this request's prior spend.
+                A correction is stale when a backend total already absorbed that
+                spend; a first positive price is still applied.
         """
         delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
         if delta_usd is None or delta_usd == 0:
             return
-        # Clamp the running total, not the increment: dropping a negative delta
-        # would strand the display at the estimate the correction supersedes.
-        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
-        self._refresh_session_cost_display()
+        if request_id is None:
+            # A message that carries no usable ID cannot be reconciled -- see
+            # `_provisional_bucket_key`. The running total is all it can adjust.
+            self._apply_provisional_delta(delta_usd)
+            return
+        held = self._provisional_cost_by_request.get(request_id, 0.0)
+        settled = request_id in self._settled_provisional_request_ids
+        if held <= 0 and (delta_usd < 0 or (is_correction and settled)):
+            # The pool holds nothing this delta can adjust. A retraction would
+            # claw back other requests' spend, while a positive correction is
+            # stale only when a backend total already absorbed this request.
+            logger.debug(
+                "Dropping a stale provisional delta for a request the pool no "
+                "longer holds. request_id=%r delta_usd=%r is_correction=%r",
+                request_id,
+                delta_usd,
+                is_correction,
+            )
+            return
+        # Clamp a retraction to what this request still holds. A correction
+        # larger than its own contribution -- a partial reset, or an estimate
+        # that fell further than the pool it is drawn from -- would otherwise
+        # subtract spend that other in-flight children put there.
+        applied_usd = max(delta_usd, -held) if delta_usd < 0 else delta_usd
+        if applied_usd != delta_usd:
+            logger.debug(
+                "Clamping a provisional retraction to its own request's "
+                "holding. request_id=%r delta_usd=%r applied_usd=%r",
+                request_id,
+                delta_usd,
+                applied_usd,
+            )
+        remaining = held + applied_usd
+        if remaining > 0:
+            self._provisional_cost_by_request[request_id] = remaining
+        else:
+            # An absent row and a zero row mean the same thing to the guard
+            # above, so keep only the one representation and let the map track
+            # what is actually in flight.
+            self._provisional_cost_by_request.pop(request_id, None)
+        self._apply_provisional_delta(applied_usd)
 
     def _pricing_is_broken(self) -> bool:
         """Report whether price data failed to load where pricing happens.

@@ -76,10 +76,20 @@ if TYPE_CHECKING:
     class _ProvisionalCostCallback(Protocol):
         """Callback signature for `_on_provisional_cost`.
 
-        Positional-only for the same reason as `_SessionCostCallback`.
+        `cost_usd` is positional-only for the same reason as
+        `_SessionCostCallback`. The rest are keyword-only: an implementation
+        must handle them, so a silent regression to unreconciled deltas is a
+        type error rather than a display bug.
         """
 
-        def __call__(self, cost_usd: float, /) -> None: ...
+        def __call__(
+            self,
+            cost_usd: float,
+            /,
+            *,
+            request_id: str | None,
+            is_correction: bool,
+        ) -> None: ...
 
 
 from deepagents_code import _session_stats
@@ -916,6 +926,10 @@ class TextualUIAdapter:
         Keeps the status bar moving during work whose cost the graph has not
         checkpointed yet — a long subagent run, say — without making the client
         a second authority: every server total replaces what this accumulated.
+        `request_id` names the request the delta belongs to so a late
+        correction only retracts its own contribution, and `is_correction`
+        marks a delta that only revises spend already reported, so one whose
+        subject a backend total has settled is dropped whatever its sign.
         """
 
         self._on_usage_update: Callable[[], None] | None = None
@@ -1512,12 +1526,27 @@ def _apply_recorded_usage(
         adapter._on_usage_update()
     if recorded_usage.cost_usd is None or not adapter._on_provisional_cost:
         return
+    if recorded_usage.cost_usd == 0:
+        # A zero delta changes nothing, so do not forward it.
+        return
     # Display-only: the graph checkpoints the same spend and streams the
-    # authoritative total, which supersedes this estimate.
+    # authoritative total, which supersedes this estimate. The request ID lets
+    # the app reconcile a later correction with its own contribution rather
+    # than the whole running provisional total.
     try:
-        adapter._on_provisional_cost(recorded_usage.cost_usd)
+        adapter._on_provisional_cost(
+            recorded_usage.cost_usd,
+            request_id=recorded_usage.request_id,
+            is_correction=recorded_usage.is_correction,
+        )
     except Exception:
-        logger.warning("on_provisional_cost callback failed", exc_info=True)
+        logger.warning(
+            "on_provisional_cost callback failed; the provisional cost display "
+            "may stall until the next backend total. request_id=%r delta_usd=%r",
+            recorded_usage.request_id,
+            recorded_usage.cost_usd,
+            exc_info=True,
+        )
 
 
 async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle

@@ -250,9 +250,9 @@ class _OpenAIConversationModel(_StructuredModel):
         return self
 
     def with_structured_output(
-        self, schema: object, *, include_raw: bool = False
+        self, schema: object, *, include_raw: bool = False, **kwargs: object
     ) -> _OpenAIConversationModel:
-        self.schema = schema
+        super().with_structured_output(schema, include_raw=include_raw, **kwargs)
         self.include_raw.append(include_raw)
         return self
 

@@ -499,6 +499,25 @@ if command -v gh >/dev/null 2>&1; then
 fi"""
 
 
+def _section_gh_stack() -> str:
+    """Best-effort local state from the optional `gh-stack` extension.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Local GitHub stack ---
+if command -v git >/dev/null 2>&1; then
+  _STACK_GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
+  _STACK_FILE="${_STACK_GIT_DIR}/gh-stack"
+  if [ -n "$_STACK_GIT_DIR" ] && [ -s "$_STACK_FILE" ]; then
+    echo "**GitHub Stack** (local tracking; may be stale):"
+    head -c 8192 "$_STACK_FILE"
+    echo ""
+    echo ""
+  fi
+fi"""
+
+
 def _section_test_command() -> str:
     """Test command detection (make test / pytest / npm test).
 
@@ -645,10 +664,11 @@ def build_detect_script() -> str:
         ("03_runtimes", _section_runtimes()),
         ("04_git", _section_git()),
         ("05_gh_cli", _section_gh_cli()),
-        ("06_testcmd", _section_test_command()),
-        ("07_files", _section_files()),
-        ("08_tree", _section_tree()),
-        ("09_makefile", _section_makefile()),
+        ("06_gh_stack", _section_gh_stack()),
+        ("07_testcmd", _section_test_command()),
+        ("08_files", _section_files()),
+        ("09_tree", _section_tree()),
+        ("10_makefile", _section_makefile()),
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a

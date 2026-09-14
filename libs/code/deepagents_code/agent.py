@@ -18,6 +18,7 @@ from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
     FilesystemMiddleware,
     MemoryMiddleware,
+    ProjectInstructionsMiddleware,
     SkillsMiddleware,  # noqa: F401
 )
 
@@ -79,7 +80,6 @@ from deepagents_code._paths import (
     ensure_agent_dir,
     ensure_user_skills_dir,
     get_built_in_skills_dir,
-    get_project_agent_md_path,
     get_project_agent_skills_dir,
     get_project_agents_dir,
     get_project_claude_skills_dir,
@@ -2927,12 +2927,6 @@ def create_cli_agent(
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(get_user_agent_md_path(assistant_id))]
-        project_agent_md_paths = (
-            project_context.project_agent_md_paths()
-            if project_context is not None
-            else get_project_agent_md_path(runtime_credentials.project_root)
-        )
-        memory_sources.extend(str(p) for p in project_agent_md_paths)
 
         # Loading memory stays on either way; a read-only prompt drops the
         # "proactively persist learnings" guidance when auto-save is disabled.
@@ -3161,6 +3155,36 @@ def create_cli_agent(
             routes={**extension_routes, **artifact_routes},
             artifacts_root=artifacts_root,
         )
+
+    project_root = (
+        project_context.project_root
+        if project_context is not None
+        else runtime_credentials.project_root
+    )
+    if sandbox is None and project_root is not None:
+        instructions_root = str(project_root)
+        instructions_cwd = str(effective_cwd or project_root)
+        agent_middleware.append(
+            ProjectInstructionsMiddleware(
+                backend=FilesystemBackend(
+                    root_dir=project_root,
+                    virtual_mode=True,
+                ),
+                project_root=instructions_root,
+                cwd=instructions_cwd,
+                backend_root="/",
+            )
+        )
+    elif sandbox is not None and sandbox_type is not None:
+        instructions_root = get_default_working_dir(sandbox_type)
+        agent_middleware.append(
+            ProjectInstructionsMiddleware(
+                backend=composite_backend,
+                project_root=instructions_root,
+                cwd=instructions_root,
+            )
+        )
+
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,

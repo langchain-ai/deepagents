@@ -168,7 +168,6 @@ def _patch_agent_paths(
     user_claude_skills_dir: Path | None = None,
     project_claude_skills_dir: Path | None = None,
     expected_project_claude_root: Path | None = None,
-    project_agent_md_paths: tuple[Path, ...] = (),
     user_agents_dir: Path | None = None,
     project_agents_dir: Path | None = None,
 ) -> Iterator[None]:
@@ -207,10 +206,6 @@ def _patch_agent_paths(
         patch(
             "deepagents_code.agent.get_user_agent_md_path",
             return_value=agent_dir / "AGENTS.md",
-        ),
-        patch(
-            "deepagents_code.agent.get_project_agent_md_path",
-            return_value=list(project_agent_md_paths),
         ),
         patch(
             "deepagents_code.agent.get_user_agents_dir",
@@ -2184,10 +2179,10 @@ class TestCreateCliAgentSkillsSources:
 
 
 class TestCreateCliAgentMemorySources:
-    """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
+    """Test that project instructions remain separate from explicit memory."""
 
     def test_project_agent_md_paths_in_memory_sources(self, tmp_path: Path) -> None:
-        """Project AGENTS.md paths should be passed to MemoryMiddleware sources."""
+        """Project AGENTS.md paths should not be passed as memory sources."""
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -2231,7 +2226,6 @@ class TestCreateCliAgentMemorySources:
             _patch_agent_paths(
                 agent_dir=agent_dir,
                 skills_dir=skills_dir,
-                project_agent_md_paths=(project_inner, project_root),
                 user_agents_dir=tmp_path / "agents",
             ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
@@ -2255,12 +2249,7 @@ class TestCreateCliAgentMemorySources:
 
         assert len(captured) == 1
         sources = captured[0]
-        # User AGENTS.md is always first
-        assert sources[0] == str(agent_dir / "AGENTS.md")
-        # Both project paths follow
-        assert sources[1] == str(project_inner)
-        assert sources[2] == str(project_root)
-        assert len(sources) == 3
+        assert sources == [str(agent_dir / "AGENTS.md")]
 
     def test_empty_project_paths_no_extra_sources(self, tmp_path: Path) -> None:
         """Empty project path list should not add extra memory sources."""
@@ -2517,7 +2506,7 @@ class TestCreateCliAgentProjectContext:
     def test_project_context_drives_project_agents_md_paths(
         self, tmp_path: Path
     ) -> None:
-        """Memory sources should use project AGENTS from explicit context."""
+        """Explicit context should keep project AGENTS out of memory sources."""
         project_root = tmp_path / "project"
         project_root.mkdir()
         (project_root / ".git").mkdir()
@@ -2585,10 +2574,7 @@ class TestCreateCliAgentProjectContext:
                 project_context=project_context,
             )
 
-        assert len(captured_sources) == 1
-        sources = captured_sources[0]
-        assert sources[0] == str(agent_dir / "AGENTS.md")
-        assert sources[1:] == [str(deepagents_md), str(root_md)]
+        assert captured_sources == [[str(agent_dir / "AGENTS.md")]]
 
     @staticmethod
     def _build_shell_agent(

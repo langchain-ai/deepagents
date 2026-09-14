@@ -26,6 +26,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+from importlib import metadata
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -2301,6 +2302,21 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 """
 
 
+def mcp_dependency_error() -> str | None:
+    """Return installation guidance when the optional MCP stack is unavailable."""
+    try:
+        metadata.version("langchain-mcp-adapters")
+        if metadata.version("mcp").split(".", 1)[0] == "1":
+            return None
+    except metadata.PackageNotFoundError:
+        pass
+    return (
+        "dcode MCP requires the optional MCP v1 dependencies. "
+        "Install with uv tool install --upgrade 'deepagents-code[mcp]' "
+        "in a separate environment from MCP v2 applications."
+    )
+
+
 def _warm_mcp_adapter_imports() -> None:
     """Eagerly import MCP modules whose first import may block.
 
@@ -2423,6 +2439,21 @@ async def _load_tools_from_config(
     # Warm the adapter imports off the event loop *here* (rather than in the
     # caller) so a config with no active MCP servers — which returns before
     # ever reaching this function — never pays the adapter-import cost.
+    error = await asyncio.to_thread(mcp_dependency_error)
+    if error is not None:
+        return (
+            [],
+            session_manager,
+            [
+                MCPServerInfo(
+                    name=name,
+                    transport=_resolve_server_type(server),
+                    status="error",
+                    error=error,
+                )
+                for name, server in config["mcpServers"].items()
+            ],
+        )
     await asyncio.to_thread(_warm_mcp_adapter_imports)
     from langchain_mcp_adapters.sessions import (
         SSEConnection,

@@ -89,7 +89,6 @@ dependencies = [
     "tomli-w>=1.2.0,<2.0.0",
 
     # MCP
-    "langchain-mcp-adapters>=0.3.2,<1.0.0",
     # Cross-process lock serializing MCP OAuth token refreshes.
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
@@ -102,10 +101,11 @@ dependencies = [
 
     # ACP
     "deepagents-acp>=0.0.10,<1.0.0",
-    "mcp>=1.28.1,<2.0.0",
 ]
 
 [project.optional-dependencies]
+mcp = ["langchain-mcp-adapters>=0.3.2,<1.0.0", "mcp>=1.28.1,<2.0.0"]
+
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.2,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.4,<1.0.0"]
@@ -167,6 +167,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 
 [dependency-groups]
 test = [
+    "deepagents-code[mcp]",
     "textual-dev>=1.8.0,<2.0.0",
     "build>=1.5.0,<2.0.0",
     # Build backend; imported by tests that exercise the `hatch_build.py` hook.

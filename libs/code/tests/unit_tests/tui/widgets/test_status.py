@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Static
 
@@ -15,6 +16,7 @@ from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
     _PICKER_TARGET_META,
     BranchLabel,
+    CwdLabel,
     ModelLabel,
     StatusBar,
 )
@@ -67,6 +69,70 @@ class TestApprovalModeDisplay:
 
 class TestCwdDisplay:
     """Tests for the cwd display in the status bar."""
+
+    LONG_CWD = "/home/user/projects/deepagents/libs/code/deepagents_code/tui/widgets"
+
+    async def test_tooltip_is_full_plain_path(self) -> None:
+        """The tooltip preserves the untruncated path as plain content."""
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.cwd = self.LONG_CWD
+            await pilot.pause()
+            display = pilot.app.query_one("#cwd-display", CwdLabel)
+            assert display.tooltip == Content(self.LONG_CWD)
+            bar.cwd = "/short/[bold]/dir"
+            await pilot.pause()
+            assert display.tooltip == Content("/short/[bold]/dir")
+
+    async def test_condensed_render_keeps_the_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A long path renders condensed with the last component intact."""
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.cwd = self.LONG_CWD
+            await pilot.pause()
+            display = pilot.app.query_one("#cwd-display", CwdLabel)
+            rendered = str(display.render())
+            assert "…" in rendered
+            assert rendered.endswith("widgets")
+            assert rendered != self.LONG_CWD
+
+    async def test_short_path_renders_verbatim(self) -> None:
+        """A path that fits is not condensed and still gets a tooltip."""
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.cwd = "/short/dir"
+            await pilot.pause()
+            display = pilot.app.query_one("#cwd-display", CwdLabel)
+            assert str(display.render()) == "/short/dir"
+
+    async def test_resize_recomputes_condensation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Growing the terminal condenses less; hiding still wins below 70."""
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.cwd = self.LONG_CWD
+            await pilot.pause()
+            display = pilot.app.query_one("#cwd-display", CwdLabel)
+            condensed = str(display.render())
+            assert condensed.endswith("widgets")
+
+            await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            wider = str(display.render())
+            assert wider != condensed
+            assert wider.startswith("/home/user/")
+
+            # Below the hide threshold the display is dropped outright.
+            await pilot.resize_terminal(60, 24)
+            await pilot.pause()
+            assert display.display is False
 
 
 class TestBranchDisplay:

@@ -1,5 +1,6 @@
+*.egg-info/
+*.pyc
 .env
+.langgraph_api/
 .venv/
 __pycache__/
-*.pyc
-.langgraph_api/

@@ -153,9 +153,15 @@ def _filter_options() -> tuple[tuple[str, FilterValue], ...]:
     """Return level filter options valid for the current logging configuration."""
     if not _debug_records_enabled():
         return _BASE_FILTER_OPTIONS
-    all_option = _BASE_FILTER_OPTIONS[:1]
-    rest = _BASE_FILTER_OPTIONS[1:]
-    return (*all_option, *_DEBUG_FILTER_OPTIONS, *rest)
+    minimum_options = _BASE_FILTER_OPTIONS[:5]
+    only_options = _BASE_FILTER_OPTIONS[5:]
+    return (
+        minimum_options[0],
+        _DEBUG_FILTER_OPTIONS[0],
+        *minimum_options[1:],
+        _DEBUG_FILTER_OPTIONS[1],
+        *only_options,
+    )
 
 
 def _record_matches_filter(

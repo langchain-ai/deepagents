@@ -2837,17 +2837,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self,
         request: ModelRequest,
         thread_key: str,
-        identity: str,
     ) -> AutoClassifierConversation | None:
         persisted = _validate_classifier_conversation(
             request.state.get(AUTO_CLASSIFIER_CONVERSATION_STATE_KEY)
         )
         cached = self._classifier_conversation_heads.get(thread_key)
-        candidates = [
-            item
-            for item in (persisted, cached)
-            if item is not None and item["identity"] == identity
-        ]
+        candidates = [item for item in (persisted, cached) if item is not None]
         return max(candidates, key=itemgetter("revision"), default=None)
 
     def _remember_classifier_conversation(
@@ -3011,8 +3006,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
     ) -> tuple[AutoDecisionBatch, AutoClassifierConversation]:
         lock = self._classifier_conversation_lock(thread_key)
         async with lock:
-            head = self._classifier_conversation_head(request, thread_key, identity)
-            turns = head.get("turns", _MAX_CLASSIFIER_CONVERSATION_TURNS) if head else 0
+            # Revisions order checkpoint updates across identities as well as
+            # rotations. Only the newest head can be eligible for continuation.
+            head = self._classifier_conversation_head(request, thread_key)
+            turns = (
+                head.get("turns", _MAX_CLASSIFIER_CONVERSATION_TURNS)
+                if head is not None and head["identity"] == identity
+                else 0
+            )
             if turns >= _MAX_CLASSIFIER_CONVERSATION_TURNS:
                 turns = 0
             model_kwargs = dict(getattr(model, "model_kwargs", None) or {})
@@ -3586,10 +3587,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             update: dict[str, object] = {"_auto_decision_plan": plan}
             if classifier_conversation_update is not None:
-                identity, classifier_conversation = classifier_conversation_update
-                if self._classifier_conversation_head(
-                    request, thread_key, identity
-                ) == (classifier_conversation):
+                _identity, classifier_conversation = classifier_conversation_update
+                if self._classifier_conversation_head(request, thread_key) == (
+                    classifier_conversation
+                ):
                     update[AUTO_CLASSIFIER_CONVERSATION_STATE_KEY] = (
                         classifier_conversation
                     )

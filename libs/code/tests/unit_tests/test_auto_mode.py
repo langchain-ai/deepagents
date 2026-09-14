@@ -70,6 +70,7 @@ from deepagents_code.auto_mode import (
     _ClassifierModelUnavailableError,
     _default_counters,
     _fixed_repo_command_allowed,
+    _merge_classifier_conversation,
     _merge_temp_artifacts,
     _routine_write_allowed,
     _unresolvable_write_path_reason,
@@ -465,7 +466,14 @@ async def _plan_calls(
     assert response.command is not None
     update = response.command.update
     assert update is not None
-    cast("dict[str, Any]", request.state).update(cast("dict[str, Any]", update))
+    state = cast("dict[str, Any]", request.state)
+    updates = dict(cast("dict[str, Any]", update))
+    conversation_key = "_auto_classifier_conversation"
+    if conversation_key in updates:
+        updates[conversation_key] = _merge_classifier_conversation(
+            state.get(conversation_key), updates[conversation_key]
+        )
+    state.update(updates)
     return cast("dict[str, Any]", update)["_auto_decision_plan"]
 
 
@@ -740,6 +748,48 @@ async def test_openai_classifier_resume_restores_and_identity_changes_reset(
 
     assert resumed_model.call_kwargs[0]["previous_response_id"] == "resp_1"
     assert resumed_model.call_kwargs[1].get("previous_response_id") is None
+
+
+@pytest.mark.parametrize("restart_on_switch", [False, True])
+async def test_openai_identity_switch_checkpoints_monotonic_revisions(
+    tmp_path: Path, restart_on_switch: bool
+) -> None:
+    model = _OpenAIConversationModel([_allow_result()] * 7)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    for index, name in enumerate(["a", "a", "a", "b", "b", "a", "a"]):
+        model.model_name = name
+        if restart_on_switch and index in {3, 5}:
+            middleware = _middleware(tmp_path)
+        state = cast("dict[str, Any]", request.state)
+        previous = state.get("_auto_classifier_conversation")
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+        state = cast("dict[str, Any]", request.state)
+        checkpoint = state["_auto_classifier_conversation"]
+        assert checkpoint["revision"] == index + 1
+        assert checkpoint["response_id"] == f"resp_{index + 1}"
+        # An older update arriving after the identity switch cannot undo it.
+        if index == 3:
+            assert _merge_classifier_conversation(checkpoint, previous) == checkpoint
+            middleware = _middleware(tmp_path)
+
+    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
+        None,
+        "resp_1",
+        "resp_2",
+        None,
+        "resp_4",
+        None,
+        "resp_6",
+    ]
 
 
 @pytest.mark.parametrize(

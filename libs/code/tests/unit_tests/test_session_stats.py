@@ -179,6 +179,78 @@ class TestRecordMessageUsage:
         assert stats.per_kind["assistant"].request_count == 1
         assert ledger["child-1"].finalized is True
 
+    def test_completion_naming_no_model_keeps_the_model_chunks_found(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model-less completion must not re-file the request on the parent.
+
+        A chunk named the child's real model, so the record has already moved
+        off the caller's fallback. The completion carries the whole usage but
+        names no model; re-resolving it would land back on the parent's
+        expensive model and report a spike instead of a correction.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.cost_tracking.estimate_cost",
+            lambda _usage, model, _provider="": (
+                0.5 if model == "parent-model" else 0.05
+            ),
+        )
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        unnamed_chunk = AIMessageChunk(
+            content="",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 900,
+                "output_tokens": 10,
+                "total_tokens": 910,
+            },
+        )
+        naming_chunk = AIMessageChunk(
+            content="",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 5,
+                "total_tokens": 5,
+            },
+            response_metadata={"model_name": "child-model", "model_provider": "openai"},
+        )
+        completion = AIMessage(
+            content="done",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "total_tokens": 105,
+            },
+        )
+
+        for chunk in (unnamed_chunk, naming_chunk):
+            record_message_usage(
+                stats,
+                chunk,
+                fallback_model="parent-model",
+                fallback_provider="anthropic",
+                recorded_requests=ledger,
+            )
+        completion_usage = record_message_usage(
+            stats,
+            completion,
+            fallback_model="parent-model",
+            fallback_provider="anthropic",
+            recorded_requests=ledger,
+        )
+
+        assert completion_usage is not None
+        # A correction downward, never a spike back to the parent's rates.
+        assert completion_usage.cost_usd == pytest.approx(0.0)
+        assert ledger["child-1"].model_name == "child-model"
+        assert ledger["child-1"].provider == "openai"
+        assert stats.total_cost_usd == pytest.approx(0.05)
+        assert stats.per_model["openai", "child-model"].request_count == 1
+        assert ("anthropic", "parent-model") not in stats.per_model
+
     def test_replaying_a_completion_after_partial_chunks_is_a_no_op(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

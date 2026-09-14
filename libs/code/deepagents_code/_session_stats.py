@@ -799,6 +799,12 @@ def _finalize_from_completed(
         request_metadata=request_metadata,
         kind=kind,
     )
+    if not _names_a_model(message):
+        # An earlier chunk may already have upgraded the record off the
+        # caller's fallback. A completion that names no model of its own must
+        # not undo that, or the request goes back to the parent's pricing --
+        # the very mis-attribution the chunk path guards against.
+        model_name, provider = previous.model_name, previous.provider
     input_count, output_count = _display_token_counts(usage)
     cost_usd = estimate_cost(usage, model_name, provider)
     cache_reads, cache_writes = cache_token_counts(usage)

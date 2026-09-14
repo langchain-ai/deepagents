@@ -2790,7 +2790,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                structured = model.with_structured_output(AutoDecisionBatch)
+                thinking = getattr(model, "thinking", None)
+                if (
+                    spec is None
+                    and getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(thinking, dict)
+                    and thinking.get("type") in {"adaptive", "enabled"}
+                ):
+                    structured = model.with_structured_output(
+                        AutoDecisionBatch, method="json_schema"
+                    )
+                else:
+                    structured = model.with_structured_output(AutoDecisionBatch)
                 messages = [
                     SystemMessage(content=_CLASSIFIER_POLICY),
                     HumanMessage(

@@ -179,12 +179,16 @@ class _StructuredModel:
         self.calls: list[list[object]] = []
         self.call_kwargs: list[dict[str, object]] = []
         self.schema: object = None
+        self.structured_output_kwargs: dict[str, object] = {}
         # `_extract_model_name` reads `model_name` first and ignores a non-str,
         # so the default keeps existing tests labelled by class name.
         self.model_name = model_name
 
-    def with_structured_output(self, schema: object) -> _StructuredModel:
+    def with_structured_output(
+        self, schema: object, **kwargs: object
+    ) -> _StructuredModel:
         self.schema = schema
+        self.structured_output_kwargs = kwargs
         return self
 
     async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
@@ -195,9 +199,19 @@ class _StructuredModel:
         return self.result
 
 
+class _ThinkingAnthropicModel(_StructuredModel):
+    _llm_type = "anthropic-chat"
+
+    def __init__(self, result: object) -> None:
+        super().__init__(result)
+        self.thinking = {"type": "adaptive"}
+
+
 class _FailIfClassifiedModel(_StructuredModel):
-    def with_structured_output(self, schema: object) -> _StructuredModel:
-        msg = f"unexpected classifier call for {schema}"
+    def with_structured_output(
+        self, schema: object, **kwargs: object
+    ) -> _StructuredModel:
+        msg = f"unexpected classifier call for {schema} with {kwargs}"
         raise AssertionError(msg)
 
 
@@ -2473,6 +2487,29 @@ async def test_sensitive_write_requires_classifier(
 
     assert plan["decisions"][0]["disposition"] == "policy_deny"
     assert len(model.calls) == 1
+
+
+async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
+    tmp_path: Path,
+) -> None:
+    model = _ThinkingAnthropicModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": str(tmp_path / "old.py")},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": str(tmp_path / "old.py")},
+    )
+
+    assert model.structured_output_kwargs == {"method": "json_schema"}
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
 async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> None:

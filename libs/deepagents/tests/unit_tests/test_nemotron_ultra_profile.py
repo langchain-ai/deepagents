@@ -16,6 +16,7 @@ from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     _EMPTY_TOOL_PLACEHOLDER,
     _HARNESS_PROFILE_SUFFIX_MARKER,
     _READ_STATUS_HEADER_RE,
+    _TRANSITION_NUDGE_SOURCE,
     ChatNVIDIAMessageCompatibilityMiddleware,
     EntityResolutionGuardMiddleware,
     FinalAnswerGuardMiddleware,
@@ -70,6 +71,13 @@ def _request(name: str, args: dict[str, object]) -> ToolCallRequest:
 
 def _numbered_lines(count: int) -> str:
     return "\n".join(f"{index}\tline {index}" for index in range(count))
+
+
+def _tool_call(name: str, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": {}, "id": call_id, "type": "tool_call"}],
+    )
 
 
 def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
@@ -959,36 +967,82 @@ def test_domain_tool_nudge_fires_after_dead_end_filesystem_search() -> None:
     assert "non-filesystem API/domain tools" in update["messages"][0].content
 
 
-def test_conversation_transition_nudges_on_new_long_context_file_task() -> None:
-    """Long follow-on file work should receive a compact-conversation reminder."""
-    middleware = NemotronPolicyNudgeMiddleware()
-    state = {
-        "messages": [
-            HumanMessage("Read and summarize /first.py"),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "read_file",
-                        "args": {"file_path": "/first.py"},
-                        "id": "call_1",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            ToolMessage(content="1\talpha", tool_call_id="call_1"),
-            AIMessage(content="summary"),
-            HumanMessage("Thanks. Move on to a new task: read /second.py and summarize it."),
-            AIMessage(content="thinking"),
-            HumanMessage("Actually do the same for another file /third.py."),
-        ]
-    }
+def test_conversation_transition_ignores_in_progress_single_turn_file_work() -> None:
+    """Current-turn filesystem work is not a task transition."""
+    messages = [
+        HumanMessage("Analyze input.csv and create the required output file."),
+        _tool_call("ls", "call_1"),
+        ToolMessage(content="input\noutput", tool_call_id="call_1"),
+        _tool_call("read_file", "call_2"),
+        ToolMessage(content="region,revenue\nwest,100", tool_call_id="call_2"),
+        _tool_call("read_file", "call_3"),
+        ToolMessage(content='{"products": []}', tool_call_id="call_3"),
+    ]
 
-    update = middleware.before_model(state, None)
+    update = NemotronPolicyNudgeMiddleware().before_model({"messages": messages}, None)
+
+    transition_messages = [] if update is None else [message for message in update["messages"] if message.name == _TRANSITION_NUDGE_SOURCE]
+    assert transition_messages == []
+
+
+def test_conversation_transition_nudges_on_new_long_context_file_task() -> None:
+    """An explicit second-turn task transition should still receive a reminder."""
+    messages = [
+        HumanMessage("Look up the customer account."),
+        _tool_call("get_customer", "call_1"),
+        ToolMessage(content="Acme", tool_call_id="call_1"),
+        AIMessage(content="The customer is Acme."),
+        HumanMessage("Move on to a new task: read /second.py and summarize it."),
+        AIMessage(content="thinking"),
+    ]
+
+    update = NemotronPolicyNudgeMiddleware().before_model({"messages": messages}, None)
 
     assert update is not None
     assert update["nemotron_transition_nudged"] is True
     assert "compact_conversation" in update["messages"][0].content
+
+
+def test_conversation_transition_nudges_on_file_followup_after_prior_file_work() -> None:
+    """Follow-on file work should compact file context from an earlier turn."""
+    messages = [
+        HumanMessage("Read and summarize /first.py"),
+        _tool_call("read_file", "call_1"),
+        ToolMessage(content="1\talpha", tool_call_id="call_1"),
+        AIMessage(content="summary"),
+        HumanMessage("Do the same for /second.py."),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is True
+
+
+def test_conversation_transition_requires_prior_file_work_for_file_followup() -> None:
+    """A later file request alone does not imply stale file context."""
+    messages = [
+        HumanMessage("Look up the customer account."),
+        _tool_call("get_customer", "call_1"),
+        ToolMessage(content="Acme", tool_call_id="call_1"),
+        AIMessage(content="The customer is Acme."),
+        HumanMessage("Read /report.csv and summarize it."),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is False
+
+
+def test_conversation_transition_ignores_internal_human_messages() -> None:
+    """A middleware nudge is not a new external user turn."""
+    messages = [
+        HumanMessage("Analyze input.csv and create the required output file."),
+        _tool_call("read_file", "call_1"),
+        ToolMessage(content="region,revenue\nwest,100", tool_call_id="call_1"),
+        AIMessage(content="working"),
+        HumanMessage("Read /report.csv next.", name=_TRANSITION_NUDGE_SOURCE),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is False
 
 
 def test_entity_resolution_guard_keeps_current_entity_branch_bound() -> None:

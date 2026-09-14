@@ -282,12 +282,19 @@ def fetch_pypi_json(
         raise ValueError(msg)
 
     canonical_name = canonicalize_name(name)
+    # PyPI's JSON API is served through Fastly with `cache-control: max-age=900`,
+    # so a release published minutes ago can be missing from a cached response
+    # and a freshness check reads "release pending" as "up to date". `no-cache`
+    # makes the CDN revalidate with origin on every hop, which is the cheapest
+    # way to see fresh data without purging or cache-busting query params.
     url = f"https://pypi.org/pypi/{quote(canonical_name, safe='')}/json"
     request = Request(  # noqa: S310  # URL is fixed to the HTTPS PyPI origin.
         url,
         headers={
             "Accept": "application/json",
             "User-Agent": "langchain-ai/deepagents-release-deps-check",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
     open_url = opener or urlopen

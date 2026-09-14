@@ -12135,6 +12135,110 @@ class TestPasteRouting:
 class TestShellCommandInterrupt:
     """Tests for interruptible shell commands (! prefix) using worker pattern."""
 
+    @pytest.mark.parametrize("incognito", [False, True], ids=["shell", "incognito"])
+    async def test_shell_command_uses_user_langsmith_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        incognito: bool,
+    ) -> None:
+        """User shell commands keep dcode tracing credentials isolated."""
+        import json
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "LANGSMITH_API_KEY=project-key\nLANGSMITH_PROJECT=project-name\n"
+        )
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "shell-key"
+        carrier = json.dumps({"launch": launch, "user": dict(launch)})
+        monkeypatch.setenv("LANGSMITH_API_KEY", "dcode-key")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROFILE", "dcode-profile")
+        monkeypatch.setenv(config_mod._USER_LANGSMITH_ENV_CARRIER, carrier)
+        monkeypatch.setenv("SHELL_TEST_UNRELATED", "preserved")
+        monkeypatch.setenv("DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING", "1")
+        config_mod._apply_prefixed_langsmith_env()
+        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+
+        app = DeepAgentsApp(cwd=project)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"visible-output\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ) as create_shell:
+                await app._run_shell_task("echo visible-output", incognito=incognito)
+                await pilot.pause()
+
+        child_env = create_shell.call_args.kwargs["env"]
+        assert child_env["LANGSMITH_API_KEY"] == "shell-key"
+        assert child_env["LANGSMITH_PROJECT"] == "project-name"
+        assert child_env["SHELL_TEST_UNRELATED"] == "preserved"
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in child_env
+        assert not any(
+            key.startswith("DEEPAGENTS_CODE_LANGSMITH_") for key in child_env
+        )
+        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+        assert os.environ["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] == "prefixed-key"
+        if incognito:
+            assert app._pending_shell_messages == []
+        else:
+            assert "visible-output" in app._pending_shell_messages[0].content
+
+    async def test_shell_command_does_not_inherit_app_only_credentials(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """App-only LangSmith credentials are absent from user commands."""
+        import json
+
+        import deepagents_code.config as config_mod
+
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        carrier = json.dumps({"launch": launch, "user": dict(launch)})
+        monkeypatch.setenv("LANGSMITH_API_KEY", "dcode-only-key")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv(config_mod._USER_LANGSMITH_ENV_CARRIER, carrier)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        app = DeepAgentsApp(cwd=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ) as create_shell:
+                await app._run_shell_task("true", incognito=True)
+
+        child_env = create_shell.call_args.kwargs["env"]
+        assert "LANGSMITH_API_KEY" not in child_env
+        assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" not in child_env
+        assert os.environ["LANGSMITH_API_KEY"] == "dcode-only-key"
+
     @staticmethod
     def _shell_context_message(
         command: str, output: str, returncode: int = 0

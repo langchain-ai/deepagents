@@ -12694,11 +12694,16 @@ class DeepAgentsApp(App):
 
         refresh_started = False
         try:
+            from deepagents_code.config import restore_user_langsmith_env
+
+            shell_env = os.environ.copy()
+            restore_user_langsmith_env(shell_env, start_path=Path(self._cwd))
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
+                env=shell_env,
                 start_new_session=(sys.platform != "win32"),
             )
             self._shell_process = proc

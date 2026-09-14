@@ -440,7 +440,8 @@ class TaskToolSchema(BaseModel):
         after injecting the `runtime` parameter, which is not a schema field.
         """
         if isinstance(data, dict):
-            unknown = sorted(set(data) - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
+            keys: set[str] = {str(key) for key in data}
+            unknown = sorted(keys - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
             if unknown:
                 msg = f"Unexpected argument(s) {unknown}; put all instructions for the subagent in `description`."
                 raise ValueError(msg)

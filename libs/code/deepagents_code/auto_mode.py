@@ -2820,10 +2820,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         all_calls: Sequence[ToolCall],
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
-    ) -> tuple[
-        AutoDecisionBatch,
-        tuple[str, AutoClassifierConversation] | None,
-    ]:
+    ) -> tuple[AutoDecisionBatch, AutoClassifierConversation | None]:
         """Review one batch inside a span that survives the review failing.
 
         A deadline *cancels* the inner `ainvoke` rather than raising into it, and
@@ -3166,10 +3163,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         all_calls: Sequence[ToolCall],
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
-    ) -> tuple[
-        AutoDecisionBatch,
-        tuple[str, AutoClassifierConversation] | None,
-    ]:
+    ) -> tuple[AutoDecisionBatch, AutoClassifierConversation | None]:
         """Build the classifier, ask it for a verdict, and validate the reply.
 
         Args:
@@ -3243,7 +3237,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         identity,
                         {_tool_call_id(call) for call in calls},
                     )
-                    conversation_update = (identity, conversation)
+                    conversation_update = conversation
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget
             # from a provider that raises `TimeoutError` itself. `wait_for`
@@ -3691,12 +3685,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             update: dict[str, object] = {"_auto_decision_plan": plan}
             if classifier_conversation_update is not None:
-                _identity, classifier_conversation = classifier_conversation_update
-                if self._classifier_conversation_head(request, thread_key) == (
-                    classifier_conversation
-                ):
+                # A concurrent batch on this thread may have advanced the head
+                # while this review ran. Checkpointing a superseded head would
+                # rewind the conversation, so persist only our own.
+                head = self._classifier_conversation_head(request, thread_key)
+                if head == classifier_conversation_update:
                     update[AUTO_CLASSIFIER_CONVERSATION_STATE_KEY] = (
-                        classifier_conversation
+                        classifier_conversation_update
                     )
             return ExtendedModelResponse(
                 model_response=response,

@@ -4424,6 +4424,73 @@ class TestCreateModelForwardsProviderProfile:
             create_model("anthropic:claude-sonnet-4-5")
 
 
+class TestCreateModelAnthropicThinkingBinding:
+    """Tests for Anthropic preserved-thinking defaults."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_defaults_new_models_to_drop_stale_thinking(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5")
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_preserves_explicit_behavior_and_betas(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "anthropic:claude-fable-5-1",
+            extra_kwargs={
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 4096,
+                    "block_binding": {"prefix_mismatch_behavior": "error"},
+                },
+                "betas": ["other-beta", "thinking-binding-controls-2026-08-01"],
+            },
+        )
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 4096,
+            "block_binding": {"prefix_mismatch_behavior": "error"},
+        }
+        assert kwargs["betas"] == [
+            "other-beta",
+            "thinking-binding-controls-2026-08-01",
+        ]
+
+    @pytest.mark.parametrize(
+        ("model_name", "thinking"),
+        [("claude-opus-4-7", None), ("claude-opus-5", {"type": "disabled"})],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_skips_unsupported_thinking(
+        self, mock_init: Mock, model_name: str, thinking: dict[str, str] | None
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+        extra_kwargs = {"thinking": thinking} if thinking is not None else None
+
+        create_model(f"anthropic:{model_name}", extra_kwargs=extra_kwargs)
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs.get("thinking") == thinking
+        assert "betas" not in kwargs
+
+
 class TestCreateModelFromClass:
     """Tests for _create_model_from_class() custom class factory."""
 

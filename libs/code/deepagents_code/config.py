@@ -6108,6 +6108,44 @@ def _apply_google_anthropic_vertex_kwargs(
         raise ModelConfigError(msg)
 
 
+_ANTHROPIC_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+_ANTHROPIC_PRESERVED_THINKING_MIN_MAJOR = 5
+
+
+def _apply_anthropic_thinking_binding(
+    provider: str, model_name: str, kwargs: dict[str, Any]
+) -> None:
+    """Drop stale preserved thinking after dcode changes a prompt prefix."""
+    if provider != "anthropic":
+        return
+    thinking = kwargs.get("thinking")
+    if thinking is None:
+        match = re.match(r"^claude-[^-]+-(\d+)", model_name.lower())
+        if (
+            match is None
+            or int(match.group(1)) < _ANTHROPIC_PRESERVED_THINKING_MIN_MAJOR
+        ):
+            return
+        thinking = {"type": "adaptive"}
+    if not isinstance(thinking, dict) or thinking.get("type") not in {
+        "adaptive",
+        "enabled",
+    }:
+        return
+    block_binding = thinking.get("block_binding")
+    if block_binding is not None and not isinstance(block_binding, dict):
+        return
+    betas = kwargs.get("betas")
+    if betas is not None and not isinstance(betas, list):
+        return
+    block_binding = dict(block_binding or {})
+    block_binding.setdefault("prefix_mismatch_behavior", "drop_block")
+    kwargs["thinking"] = {**thinking, "block_binding": block_binding}
+    kwargs["betas"] = list(
+        dict.fromkeys([*(betas or []), _ANTHROPIC_THINKING_BINDING_BETA])
+    )
+
+
 def _compose_openai_reasoning_effort(
     provider: str,
     kwargs: dict[str, Any],
@@ -6660,6 +6698,7 @@ def create_model(
         reasoning_effort_override,
         reasoning_override,
     )
+    _apply_anthropic_thinking_binding(provider, model_name, kwargs)
 
     # dcode's model-node middleware owns the user-visible retry budget. Resolve
     # that budget separately, then force the provider's own retry loop off so

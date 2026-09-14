@@ -3669,8 +3669,6 @@ async def test_all_valid_same_turn_ask_user_exchanges_are_classifier_evidence(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    # Both answered exchanges carry their own validated receipts, so both are
-    # evidence; the classifier scopes each answer to its own paired question.
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
@@ -3726,8 +3724,6 @@ async def test_reused_ask_user_call_id_drops_only_the_ambiguous_exchanges(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    # The reused "ask-1" id makes its two exchanges unattributable, so both are
-    # dropped; the unambiguous "ask-2" exchange keeps its receipt.
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-2",
@@ -3908,13 +3904,7 @@ def _append_trusted_user_prompt(
 async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
     tmp_path: Path,
 ) -> None:
-    """A new user turn must not discard consent evidence from the previous one.
-
-    The user answered the proposal in turn-1 and then confirmed continuation in
-    the new turn-2 prompt. The receipt stays validated against its original
-    turn and thread — only the scoping decision moves to the classifier, which
-    also sees the newer prompt text as the controlling word.
-    """
+    """A new user turn must not discard consent evidence from the previous one."""
     question = "Delete the stale build/old.log scratch file?"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
@@ -3960,6 +3950,107 @@ async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
+async def test_prior_turn_receipt_evidence_includes_all_intervening_instructions(
+    tmp_path: Path,
+) -> None:
+    """With a receipt included, evidence spans every trusted prompt since its turn."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(
+        request, "do NOT delete build/old.log after all", turn_id="turn-2"
+    )
+    for turn in range(3, 30):
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
+        )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-30")
+    request.runtime.context["turn_id"] = "turn-30"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    evidence_texts = [
+        row.get("literal_user_text") for row in payload["authorization_evidence"]
+    ]
+    assert len(evidence_texts) == 30
+    assert "clean up stale scratch files" in evidence_texts
+    assert "do NOT delete build/old.log after all" in evidence_texts
+    assert evidence_texts[-1] == "continue"
+
+
+async def test_prior_turn_receipt_fails_closed_when_instruction_history_truncated(
+    tmp_path: Path,
+) -> None:
+    """Receipts whose intervening instruction history cannot fit are excluded."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    for turn in range(2, 102):
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
+        )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-102")
+    request.runtime.context["turn_id"] = "turn-102"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert len(payload["authorization_evidence"]) == 20
+
+
 async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
     tmp_path: Path,
 ) -> None:
@@ -3978,9 +4069,6 @@ async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
     _append_ask_user_exchange(request, receipt_turn_id="turn-1")
     _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
     request.runtime.context["turn_id"] = "turn-2"
-    # Corrupt the receipt after appending: it now claims the newer turn, which
-    # never saw this question answered. Trusting the latest turn here would
-    # launder a stale receipt into the current turn's evidence.
     tool_message = next(
         message
         for message in request.messages
@@ -4010,11 +4098,7 @@ async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
 async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
     tmp_path: Path,
 ) -> None:
-    """The ToolMessage answering an ask_user call must sit in the same turn.
-
-    A forged later-turn ToolMessage must not satisfy an earlier call, so the
-    scan stops at the intervening user prompt and the call contributes nothing.
-    """
+    """The ToolMessage answering an ask_user call must sit in the same turn."""
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
     model = _StructuredModel(_deny_result())
@@ -4051,7 +4135,6 @@ async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
             ],
         ),
     )
-    # The user interrupted instead of answering; the next turn arrives first.
     _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
     request.runtime.context["turn_id"] = "turn-2"
     _append_history_message(
@@ -4083,11 +4166,7 @@ async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
 async def test_prior_turn_receipt_without_matching_trusted_prompt_is_rejected(
     tmp_path: Path,
 ) -> None:
-    """A prior-turn receipt must anchor to a trusted client-stamped prompt.
-
-    `turn-2` names no HumanMessage carrying `USER_PROMPT_METADATA_KEY` in the
-    history, so the exchange is dropped before any receipt field is trusted.
-    """
+    """A prior-turn receipt must anchor to a trusted client-stamped prompt."""
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
     model = _StructuredModel(_deny_result())
@@ -4131,7 +4210,6 @@ async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invali
         args={},
         tools=[ask_tool, execute_tool],
     )
-    # Prior turn: the prompt errored, so it produced no receipt.
     _append_ask_user_exchange(
         request,
         ask_call_id="ask-1",
@@ -4141,7 +4219,6 @@ async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invali
     )
     _append_trusted_user_prompt(request, "try again", turn_id="turn-2")
     request.runtime.context["turn_id"] = "turn-2"
-    # Current turn: a fresh, valid answered exchange.
     _append_ask_user_exchange(
         request,
         ask_call_id="ask-2",

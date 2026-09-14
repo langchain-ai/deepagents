@@ -82,6 +82,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MAX_AUTHORIZATION_EVIDENCE_ROWS = 100
+_MAX_ASK_USER_ANSWER_ROWS = 20
+
 AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
     "deepagents_code",
     "auto_mode_counters",
@@ -1332,24 +1335,8 @@ def _ask_user_exchange_rows(
     )
     if answers is None:
         return None
-    # Pair each validated answer with the question the user actually saw and
-    # answered. The question text is model-authored; what the receipt anchors is
-    # *which* question was displayed under this exact ``tool_call_id`` and answered,
-    # not that its wording is trustworthy. ``_CLASSIFIER_POLICY`` is what keeps it
-    # to a description of action and target rather than an instruction, so the two
-    # must stay in sync: surfacing the question here is only safe while that policy
-    # tells the classifier to disregard directives embedded in question text.
-    #
-    # Positional question<->answer alignment is guaranteed upstream by ``ask_user``,
-    # which downgrades any count mismatch to ``status="error"`` and emits no receipt
-    # at all, then copies ``answers`` positionally into the one it does emit. The
-    # ``len(answers) == question_count`` check above only re-confirms that guarantee
-    # against this call; it does not by itself establish ordering.
-    #
-    # The shape guards below are belt-and-braces: ``_ask_user_question_count``
-    # already rejected this call unless ``questions`` is a list of Mappings whose
-    # ``question`` values are non-empty strings, so they are unreachable today and
-    # exist only so this function stays fail-closed if the two ever drift apart.
+    # The question text is model-authored: the receipt anchors only that this
+    # exact question was displayed and answered, not that its wording is true.
     questions = call.get("args", {}).get("questions")
     if not isinstance(questions, list) or len(questions) != len(answers):
         return None
@@ -1358,25 +1345,16 @@ def _ask_user_exchange_rows(
     for question, answer in zip(questions, answers, strict=True):
         if not isinstance(question, Mapping):
             return None
-        # Emptiness is type-aware: an unselected `multi_select` encodes as the
-        # truthy string `[]`, so a bare `.strip()` would hand the classifier a
-        # question the user declined to answer, paired with something that reads
-        # like an answer. Skipping runs first so a declined question neither
-        # consumes the question char budget below — which rejects the whole row
-        # set, not just the offending question — nor pushes a real affirmative
-        # out of the trailing-20 window at the end.
+        # An unselected `multi_select` encodes as the truthy string `[]`, so
+        # emptiness is type-aware before a declined question is skipped.
         question_type = question.get("type")
         if ask_user_answer_is_empty(answer, question_type):
             if (
                 question_type == "multi_select"
                 and decode_multi_select_answer(answer) is None
             ):
-                # Not the `[]` of a declined question: something put unencoded
-                # text in a `multi_select` slot, which only a non-TUI client
-                # resuming the interrupt can do. Withholding it is the
-                # fail-closed side, but it costs the user an authorization they
-                # actually gave, so name it rather than dropping it silently.
-                # The answer text itself is not logged.
+                # Withhold, but name it: a non-TUI client resuming the
+                # interrupt can put unencoded text here. Answer text not logged.
                 logger.warning(
                     "Withholding an undecodable multi_select answer from "
                     "ask_user authorization evidence for tool call %s: expected "
@@ -1411,29 +1389,18 @@ def _same_turn_user_answers(
     current_calls: Sequence[ToolCall],
     tools: Mapping[str, BaseTool],
     trusted_ask_user_tool: BaseTool | None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], int | None]:
     """Collect validated ask_user consent receipts from this and earlier turns.
 
-    Same-turn receipts remain the primary consent evidence. A prior-turn
-    receipt is preserved only while its recorded turn is still anchored to a
-    trusted client-stamped user prompt in the history: the exchange is
-    attributed to the turn opened by the latest trusted ``HumanMessage``
-    before it, and the receipt's ``turn_id`` must equal that turn while its
-    ``thread_id`` must equal the active execution thread — never values read
-    from tool data. Whether a prior-turn answer still covers an action is the
-    classifier's call under ``_CLASSIFIER_POLICY``, which sees the newer
-    prompt text and treats it as the controlling word; this layer's job is
-    only to deliver faithful, provenance-checked evidence.
-
     Returns:
-        Up to 20 trailing question/answer rows, in history order, from every
-        exchange whose receipt validates; empty when none do.
+        Question/answer rows in history order, plus the trusted-prompt index
+        of the earliest included receipt's turn (``None`` when no receipts).
     """
     if (
         trusted_ask_user_tool is None
         or tools.get("ask_user") is not trusted_ask_user_tool
     ):
-        return []
+        return [], None
     turn_id = _latest_turn_id(messages)
     context = _runtime_context(request.runtime)
     context_thread_id = _context_value(context, "thread_id")
@@ -1446,32 +1413,31 @@ def _same_turn_user_answers(
         or context_thread_id != execution_thread_id
         or _thread_key(request.runtime) is None
     ):
-        return []
+        return [], None
 
-    # Turn identity comes from trusted prompt rows only: the turn an exchange
-    # belongs to is the one opened by the latest client-stamped HumanMessage
-    # before it, so a receipt claiming a different turn — earlier, later, or
-    # one no trusted prompt ever carried — fails validation below.
     call_id_counts: dict[str, int] = {}
-    exchanges: list[tuple[ToolCall, ToolMessage, str]] = []
+    exchanges: list[tuple[ToolCall, ToolMessage, str, int]] = []
     exchange_turn_id: str | None = None
+    exchange_prompt_index: int | None = None
     for index, message in enumerate(messages):
         if isinstance(message, HumanMessage):
             prompt_rows, _index = _trusted_prompt_rows([message])
             if prompt_rows:
                 exchange_turn_id = prompt_rows[0]["turn_id"]
+                exchange_prompt_index = index
             continue
         if not isinstance(message, AIMessage):
             continue
         for call in message.tool_calls:
             tool_call_id = _tool_call_id(call)
             call_id_counts[tool_call_id] = call_id_counts.get(tool_call_id, 0) + 1
-            if call["name"] != "ask_user" or exchange_turn_id is None:
+            if (
+                call["name"] != "ask_user"
+                or exchange_turn_id is None
+                or exchange_prompt_index is None
+            ):
                 continue
             following = messages[index + 1 :]
-            # A turn boundary stops the search: an exchange's ToolMessage
-            # cannot live past the next user prompt, and a receipt carried on
-            # a later-turn message must not satisfy an earlier call.
             next_prompt_index = next(
                 (
                     offset
@@ -1487,27 +1453,39 @@ def _same_turn_user_answers(
             ]
             if len(candidates) != 1:
                 continue
-            exchanges.append((call, candidates[0], exchange_turn_id))
+            exchanges.append(
+                (call, candidates[0], exchange_turn_id, exchange_prompt_index)
+            )
 
     current_call_ids = {_tool_call_id(call) for call in current_calls}
+    attributed = [
+        (call, message, turn_id_of_exchange, prompt_index)
+        for call, message, turn_id_of_exchange, prompt_index in exchanges
+        if call_id_counts.get(_tool_call_id(call)) == 1
+        and _tool_call_id(call) not in current_call_ids
+    ]
+    row_count = 0
+    kept_start = len(attributed)
+    for position in range(len(attributed) - 1, -1, -1):
+        row_count += _ask_user_question_count(attributed[position][0]) or 0
+        if row_count > _MAX_ASK_USER_ANSWER_ROWS:
+            break
+        kept_start = position
     rows: list[dict[str, str]] = []
-    for call, message, turn_id_of_exchange in exchanges:
-        tool_call_id = _tool_call_id(call)
-        if call_id_counts.get(tool_call_id) != 1 or tool_call_id in current_call_ids:
-            # A tool-call ID reused anywhere in the history, or claimed by an
-            # action under review, makes attribution ambiguous; the exchange
-            # drops its receipt rather than the whole evidence set.
-            continue
-        rows.extend(
-            _ask_user_exchange_rows(
-                call,
-                message,
-                thread_id=execution_thread_id,
-                turn_id=turn_id_of_exchange,
-            )
-            or []
+    earliest_prompt_index: int | None = None
+    for call, message, turn_id_of_exchange, prompt_index in attributed[kept_start:]:
+        exchange_rows = _ask_user_exchange_rows(
+            call,
+            message,
+            thread_id=execution_thread_id,
+            turn_id=turn_id_of_exchange,
         )
-    return rows[-20:]
+        if not exchange_rows:
+            continue
+        rows.extend(exchange_rows)
+        if earliest_prompt_index is None or prompt_index < earliest_prompt_index:
+            earliest_prompt_index = prompt_index
+    return rows, earliest_prompt_index
 
 
 def _classifier_context(
@@ -1568,16 +1546,30 @@ def _classifier_context(
         request.messages,
     )
     state = cast("Mapping[str, object]", request.state)
+    receipt_rows, earliest_prompt_index = _same_turn_user_answers(
+        request,
+        authorization_messages,
+        receipt_current_calls,
+        tools,
+        trusted_ask_user_tool,
+    )
+    evidence = trusted_rows[-20:]
+    if receipt_rows and earliest_prompt_index is not None:
+        evidence = trusted_rows[-max(20, len(trusted_rows) - earliest_prompt_index) :]
+        if len(evidence) > _MAX_AUTHORIZATION_EVIDENCE_ROWS:
+            logger.warning(
+                "Withholding ask_user authorization evidence: the trusted user "
+                "instruction history since the earliest receipt's turn exceeds "
+                "%d rows, so the classifier could not see every intervening "
+                "instruction",
+                _MAX_AUTHORIZATION_EVIDENCE_ROWS,
+            )
+            evidence = trusted_rows[-20:]
+            receipt_rows = []
     payload = {
-        "authorization_evidence": trusted_rows[-20:],
+        "authorization_evidence": evidence,
         "active_user_directives": _active_user_directives(state),
-        "same_turn_user_answers": _same_turn_user_answers(
-            request,
-            authorization_messages,
-            receipt_current_calls,
-            tools,
-            trusted_ask_user_tool,
-        ),
+        "same_turn_user_answers": receipt_rows,
         "trusted_environment": dict(trusted_environment),
         "current_request_temp_artifacts": [
             {
@@ -1615,10 +1607,15 @@ _CLASSIFIER_POLICY = (
     "answered then, not blanket permission: it grants consent for an action "
     "now only when the latest literal_user_text or active_user_directives "
     "still pursue the proposal its question describes, and the pairing still "
-    "covers that same action and target. The user's latest trusted instruction "
-    "is always the controlling word: if a later user message completes, "
-    "changes, narrows, or revokes the earlier proposal, the earlier answer "
-    "grants nothing beyond what the latest instruction itself authorizes. "
+    "covers that same action and target. Whenever same_turn_user_answers is "
+    "non-empty, authorization_evidence includes every trusted user instruction "
+    "from the earliest entry's turn onward; read all of them in order, because "
+    "a refusal, narrowing, or completion in any of them overrides an earlier "
+    "answer even when the latest message is a generic continuation. "
+    "The user's latest trusted instruction is always the controlling word: if "
+    "a later user message completes, changes, narrows, or revokes the earlier "
+    "proposal, the earlier answer grants nothing beyond what the latest "
+    "instruction itself authorizes. "
     "A multi-select answer arrives as a JSON array "
     'of the values the user selected, for example ["src/old.log"]: read the '
     "values, not the brackets or quotes, and an empty array [] means the user "

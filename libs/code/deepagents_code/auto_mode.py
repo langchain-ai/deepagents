@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+import pydantic
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
     Decision,
@@ -292,6 +293,49 @@ class AutoDecisionBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decisions: list[AutoDecision]
+
+
+def _batch_decision_model(
+    allowed_ids: Sequence[str],
+) -> type[AutoDecision]:
+    """Build the per-batch decision model with an exact `tool_call_id` enum.
+
+    Returns:
+        A fresh `AutoDecision` subclass whose IDs enumerate `allowed_ids`.
+    """
+    # A runtime-constructed `Literal` subscript is not a valid static type
+    # expression, so build it through the dunder to keep `ty` quiet; the
+    # dunder avoids the ruff `Literal[...]`-subscript rewrite.
+    tool_call_id_type: Any = Literal.__getitem__(tuple(allowed_ids))  # noqa: PLC2801
+    return pydantic.create_model(  # type: ignore[return-value]
+        "_BatchDecision",
+        __base__=AutoDecision,
+        tool_call_id=tool_call_id_type,
+    )
+
+
+def _classifier_response_model(allowed_ids: Sequence[str]) -> type[AutoDecisionBatch]:
+    """Build a per-batch response model whose `tool_call_id` is an enum.
+
+    Each batch gets a fresh model restricting `tool_call_id` to the exact
+    original IDs requiring review, so the provider — not just downstream
+    validation — rejects mistyped IDs. Never mutate the shared
+    `AutoDecisionBatch` classes: successive and concurrent batches must stay
+    isolated from each other.
+
+    Args:
+        allowed_ids: Original tool-call IDs requiring classifier review.
+
+    Returns:
+        A fresh `AutoDecisionBatch` subclass with the batch's ID enum.
+    """
+    decision_model: Any = _batch_decision_model(allowed_ids)
+    decisions_type: Any = (list[decision_model], ...)  # type: ignore[invalid-type-form]
+    return pydantic.create_model(
+        AutoDecisionBatch.__name__,
+        __base__=AutoDecisionBatch,
+        decisions=decisions_type,
+    )
 
 
 class AutoModeCounters(TypedDict):
@@ -2785,7 +2829,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                structured = model.with_structured_output(AutoDecisionBatch)
+                structured = model.with_structured_output(
+                    _classifier_response_model([_tool_call_id(call) for call in calls]),
+                    strict=True,
+                )
                 messages = [
                     SystemMessage(content=_CLASSIFIER_POLICY),
                     HumanMessage(

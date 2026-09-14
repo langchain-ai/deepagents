@@ -116,6 +116,9 @@ class TalonConfig:
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
         _install_defaults(self.home)
+        from deepagents_talon.tool_approvals import ToolApprovalStore  # noqa: PLC0415
+
+        ToolApprovalStore(self.home / "tools.json").ensure()
         for child in (
             self.manifest_dir,
             self.agents_dir,

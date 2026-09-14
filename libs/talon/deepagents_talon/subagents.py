@@ -196,7 +196,10 @@ def _compile_fresh(
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
 ) -> CompiledSubAgent:
-    approvals = {key: value for key, value in (interrupt_on or {}).items() if value}
+    available = _tool_map(spec.get("tools", []))
+    approvals = {
+        key: value for key, value in (interrupt_on or {}).items() if value and key in available
+    }
     graph = create_agent(
         model=spec.get("model", model),
         tools=spec.get("tools", []),

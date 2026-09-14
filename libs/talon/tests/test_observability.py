@@ -124,6 +124,7 @@ async def test_host_wraps_agent_run_in_langsmith_context(tmp_path, monkeypatch) 
                 "origin_conversation_id": "chat",
                 "sender_id": "sender",
                 "message_id": None,
+                "tool_approval_operator": False,
             },
             "enabled": True,
         },

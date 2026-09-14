@@ -18094,8 +18094,8 @@ class DeepAgentsApp(App):
         cancel and no `finally` to run, so this releases the state instead and
         drains anything queued behind the abandoned turn.
 
-        Deliberately not a full `_cleanup_agent_task`: no turn ran, so there is
-        no spinner, stats, tool group, or goal state to reconcile.
+        Deliberately not a full `_cleanup_agent_task`: no turn ran, so there are
+        no stats, tool group, or goal state to reconcile.
 
         Runs from a `finally`, so every step is best-effort — raising here would
         replace the exception that abandoned the turn with a teardown error.
@@ -18103,6 +18103,8 @@ class DeepAgentsApp(App):
         self._set_agent_running(False)
         self._active_user_message = None
         self._active_turn_visible_output_started = False
+        with suppress(Exception):
+            await self._set_spinner(None)
         if self._chat_input:
             # Widget calls can fail against a torn-down DOM; the running flag is
             # the part that wedges the session, and it is already handed back.

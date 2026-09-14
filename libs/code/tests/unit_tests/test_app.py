@@ -4242,6 +4242,24 @@ class TestTurnStateRelease:
 
             assert app._agent_running is False
             assert app._agent_worker is None
+            assert app._loading_widget is None
+
+    async def test_rejected_turn_setup_clears_spinner(self) -> None:
+        """A readiness failure before worker creation clears the spinner."""
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(
+                app,
+                "_reset_blocked_goal_for_user_turn",
+                AsyncMock(return_value=SimpleNamespace(ready=False)),
+            ):
+                await app._send_to_agent("hello")
+
+            assert app._agent_running is False
+            assert app._agent_worker is None
+            assert app._loading_widget is None
 
     async def test_queued_message_drains_after_abandoned_turn(self) -> None:
         """A message queued behind an abandoned turn is sent, not just dropped."""

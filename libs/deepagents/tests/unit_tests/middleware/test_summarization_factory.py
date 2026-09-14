@@ -45,9 +45,10 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._truncate_args_keep == ("messages", 20)
 
 
-def test_factory_uses_default_summary_trim_limit() -> None:
+@pytest.mark.parametrize("with_profile_limit", [None, 120_000])
+def test_factory_uses_default_summary_trim_limit(with_profile_limit: int | None) -> None:
     """Keeps the summary request within the middleware's default token limit."""
-    model = _make_model(with_profile_limit=120_000)
+    model = _make_model(with_profile_limit=with_profile_limit)
     middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
 
     assert middleware._lc_helper.trim_tokens_to_summarize == _DEFAULT_TRIM_TOKEN_LIMIT

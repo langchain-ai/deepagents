@@ -373,6 +373,11 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## Chat commands
 
+The agent can call `send_message(text)` to post a progress update to the same chat
+while continuing to work. Updates do not end the turn; the final reply is sent
+normally. The destination is fixed by the host, and sending is disabled once the
+originating turn finishes or is superseded. Runs without a channel cannot send updates.
+
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
 and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.

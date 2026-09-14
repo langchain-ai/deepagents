@@ -12,12 +12,15 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import AIMessage
 
+import tests.evals.utils as eval_utils
 from tests.evals.utils import (
     AgentStep,
     AgentTrajectory,
     ToolCall,
     ToolCalled,
     ToolNotCalled,
+    TrajectoryScorer,
+    max_tool_call_requests,
     tool_call,
     tool_called,
     tool_not_called,
@@ -191,6 +194,64 @@ class TestToolCall:
             args_equals={"a": 1, "b": 2},
         )
         assert assertion.check(traj)
+
+
+class TestEfficiencyLogging:
+    def test_logs_tool_call_expectations_and_returns_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feedback: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            eval_utils.t,
+            "log_feedback",
+            lambda **kwargs: feedback.append(kwargs),
+        )
+        trajectory = _traj(_step(1, _tc("fetch_page")))
+        matching = tool_call(name="fetch_page")
+        missing = tool_call(name="lookup_population", step=1)
+        scorer = TrajectoryScorer().expect(tool_calls=[matching, missing])
+
+        result = eval_utils._log_efficiency(trajectory, scorer)
+
+        assert result is not None
+        assert result.expected_steps is None
+        assert result.expected_tool_calls is None
+        assert feedback[-2:] == [
+            {
+                "key": "efficiency_tool_call_1",
+                "score": True,
+                "value": repr(matching),
+            },
+            {
+                "key": "efficiency_tool_call_2",
+                "score": False,
+                "value": repr(missing),
+                "comment": missing.describe_failure(trajectory),
+            },
+        ]
+
+    def test_logs_other_efficiency_assertions_polymorphically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feedback: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            eval_utils.t,
+            "log_feedback",
+            lambda **kwargs: feedback.append(kwargs),
+        )
+        trajectory = _traj(_step(1, _tc("fetch_page")))
+        assertion = max_tool_call_requests(0)
+        scorer = TrajectoryScorer(_expectations=(assertion,))
+
+        result = eval_utils._log_efficiency(trajectory, scorer)
+
+        assert result is not None
+        assert {
+            "key": "efficiency_max_tool_call_requests_1",
+            "score": False,
+            "value": repr(assertion),
+            "comment": assertion.describe_failure(trajectory),
+        } in feedback
 
 
 # ---------------------------------------------------------------------------

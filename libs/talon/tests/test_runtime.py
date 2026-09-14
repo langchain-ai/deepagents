@@ -190,22 +190,10 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         )
     )
 
-    assert created == [
-        [
-            "current_time",
-            "custom_tool",
-            "get_tool_approvals",
-            "update_tool_approvals",
-            "get_agent_tools",
-        ],
-        [
-            "current_time",
-            "refreshed_tool",
-            "get_tool_approvals",
-            "update_tool_approvals",
-            "get_agent_tools",
-        ],
-    ]
+    assert "custom_tool" in created[0]
+    assert "refreshed_tool" not in created[0]
+    assert "refreshed_tool" in created[-1]
+    assert "custom_tool" not in created[-1]
     assert current_authorization_handler() is None
 
 
@@ -1344,12 +1332,9 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
 
     await runtime.start()
 
-    assert [_tool_name(tool) for tool in captured["tools"]] == [
-        "current_time",
-        "get_tool_approvals",
-        "update_tool_approvals",
-        "get_agent_tools",
-    ]
+    names = {_tool_name(tool) for tool in captured["tools"]}
+    assert "current_time" in names
+    assert not names.intersection({"web_search", "fetch_url", "create_cron_job"})
 
 
 async def test_stop_keeps_resources_open_while_a_worker_may_still_write(

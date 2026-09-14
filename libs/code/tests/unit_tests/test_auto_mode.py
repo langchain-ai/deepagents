@@ -53,6 +53,7 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _MAX_CLASSIFIER_CONVERSATION_TURNS,
     _REASON_LIMIT,
     AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
@@ -638,6 +639,34 @@ async def test_openai_classifier_continues_one_provider_conversation(
     assert model.use_responses_api is True
     assert model.use_previous_response_id is True
     assert model.store is True
+
+
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
+async def test_openai_classifier_rotates_bounded_history_after_resume(
+    tmp_path: Path, legacy_checkpoint: bool
+) -> None:
+    limit = _MAX_CLASSIFIER_CONVERSATION_TURNS
+    model = _OpenAIConversationModel([_allow_result()] * (2 * limit + 1))
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    for index in range(2 * limit + 1):
+        # Restarting the middleware on every review proves the bound survives
+        # cache eviction and checkpoint restoration.
+        plan = await _plan(
+            _middleware(tmp_path),
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+        expected = None if legacy_checkpoint or index % limit == 0 else f"resp_{index}"
+        assert model.call_kwargs[-1].get("previous_response_id") == expected
+        state = cast("dict[str, Any]", request.state)
+        assert state["_auto_classifier_conversation"]["revision"] == index + 1
+        if legacy_checkpoint:
+            state["_auto_classifier_conversation"].pop("turns")
 
 
 async def test_openai_classifier_conversations_are_thread_scoped(

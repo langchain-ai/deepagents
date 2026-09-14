@@ -152,6 +152,9 @@ _MAX_PENDING_EVENT_SCOPES = 32
 # a session creates by switching specs with `/auto model`.
 _MAX_CLASSIFIER_MODEL_CACHE = 4
 _MAX_CLASSIFIER_CONVERSATIONS = 32
+# Each review repeats a self-contained policy and payload. Bound the billable
+# provider history independently of the number of cached threads.
+_MAX_CLASSIFIER_CONVERSATION_TURNS = 8
 _CLASSIFIER_CONVERSATION_VERSION = 1
 _OPENAI_API_ORIGIN = "https://api.openai.com"
 _MAX_ARGUMENT_DEPTH = 4
@@ -306,6 +309,7 @@ class AutoClassifierConversation(TypedDict):
     identity: str
     response_id: str
     revision: int
+    turns: NotRequired[int]
 
 
 def _merge_classifier_conversation(
@@ -340,10 +344,15 @@ def _validate_classifier_conversation(
         return None
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
         return None
+    # Old checkpoints have unknown history lengths and must rotate on resume.
+    turns = value.get("turns", _MAX_CLASSIFIER_CONVERSATION_TURNS)
+    if not isinstance(turns, int) or isinstance(turns, bool) or turns < 1:
+        turns = _MAX_CLASSIFIER_CONVERSATION_TURNS
     return {
         "identity": identity,
         "response_id": response_id,
         "revision": revision,
+        "turns": turns,
     }
 
 
@@ -3003,9 +3012,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         lock = self._classifier_conversation_lock(thread_key)
         async with lock:
             head = self._classifier_conversation_head(request, thread_key, identity)
+            turns = head.get("turns", _MAX_CLASSIFIER_CONVERSATION_TURNS) if head else 0
+            if turns >= _MAX_CLASSIFIER_CONVERSATION_TURNS:
+                turns = 0
             model_kwargs = dict(getattr(model, "model_kwargs", None) or {})
             model_kwargs.pop("previous_response_id", None)
-            if head is not None:
+            if head is not None and turns:
                 model_kwargs["previous_response_id"] = head["response_id"]
             model = model.model_copy(update={"model_kwargs": model_kwargs})
             structured = model.with_structured_output(
@@ -3037,6 +3049,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 identity=identity,
                 response_id=response_id,
                 revision=1 if head is None else head["revision"] + 1,
+                turns=turns + 1,
             )
             self._remember_classifier_conversation(thread_key, conversation)
             return batch, conversation

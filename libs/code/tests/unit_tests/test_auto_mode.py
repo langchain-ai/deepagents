@@ -2808,6 +2808,111 @@ async def test_short_affirmative_attaches_to_bound_ask_user_question(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
+async def test_ask_user_receipt_carries_across_failed_turn_retry(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="commit with git commit --no-verify",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="Commit the changes with git commit --no-verify",
+    )
+    request.messages.append(
+        HumanMessage(
+            content="please retry",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "please retry", [], turn_id="turn-2"
+                )
+            },
+        )
+    )
+    request.state["messages"] = request.messages
+    request.runtime.context.update(
+        {
+            "turn_id": "turn-2",
+            "prior_turn_id": "turn-1",
+            "prior_turn_status": "stream_error",
+            "prior_turn_prompt": "commit with git commit --no-verify",
+        }
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git commit --no-verify -m retry"},
+    )
+
+    payload = cast("dict[str, Any]", json.loads(cast("str", model.calls[0][1].content)))
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": "How should I integrate the remote branch?",
+            "answer": "Commit the changes with git commit --no-verify",
+        }
+    ]
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_ask_user_receipt_does_not_carry_to_unrelated_instruction(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="commit with git commit --no-verify",
+    )
+    _append_ask_user_exchange(request)
+    request.messages.append(
+        HumanMessage(
+            content="delete the old branch",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "delete the old branch", [], turn_id="turn-2"
+                )
+            },
+        )
+    )
+    request.state["messages"] = request.messages
+    request.runtime.context.update(
+        {
+            "turn_id": "turn-2",
+            "prior_turn_id": "turn-1",
+            "prior_turn_status": "stream_error",
+            "prior_turn_prompt": "commit with git commit --no-verify",
+        }
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git branch -D old"},
+    )
+
+    payload = cast("dict[str, Any]", json.loads(cast("str", model.calls[0][1].content)))
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
 async def test_oversized_ask_user_question_is_excluded_from_classifier_context(
     tmp_path: Path,
 ) -> None:

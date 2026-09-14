@@ -1706,6 +1706,9 @@ async def execute_task_textual(
         turn_id, turn_number = advance_turn()
     else:
         turn_id, turn_number = None, None
+    prior_turn_id = getattr(session_state, "prior_turn_id", None)
+    prior_turn_status = getattr(session_state, "prior_turn_status", None)
+    prior_turn_prompt = getattr(session_state, "prior_turn_prompt", None)
     # `build_stream_config` does blocking git filesystem reads and may shell out
     # to `git`; offload it so the Textual event loop stays responsive. Advancing
     # the turn markers above is pure/cheap and stays on the loop.
@@ -1903,6 +1906,7 @@ async def execute_task_textual(
             )
 
     stream_completed = False
+    stream_started = False
     try:
         while True:
             interrupt_occurred = False
@@ -1918,6 +1922,9 @@ async def execute_task_textual(
                 context["turn_id"] = turn_id
             else:
                 context.pop("turn_id", None)
+            context["prior_turn_id"] = prior_turn_id
+            context["prior_turn_status"] = prior_turn_status
+            context["prior_turn_prompt"] = prior_turn_prompt
             raw_mode = getattr(session_state, "approval_mode", None)
             if raw_mode is None:
                 raw_mode = (
@@ -1989,6 +1996,7 @@ async def execute_task_textual(
             if adapter._set_spinner and not adapter._current_tool_messages:
                 await adapter._set_spinner("Thinking")
 
+            stream_started = True
             stream = agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
@@ -3980,6 +3988,9 @@ async def execute_task_textual(
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 stream_completed = True
+                session_state.prior_turn_id = None
+                session_state.prior_turn_status = None
+                session_state.prior_turn_prompt = None
                 break
 
     except ClientHookStopError:
@@ -4001,6 +4012,10 @@ async def execute_task_textual(
         )
         return turn_stats
     except Exception:
+        if stream_started and turn_id is not None and graph_input is None:
+            session_state.prior_turn_id = turn_id
+            session_state.prior_turn_status = "stream_error"
+            session_state.prior_turn_prompt = user_input
         # No retry event follows an exhausted final attempt. Reconcile its root
         # presentation now, before the generic teardown finalizes the live reply
         # and makes a partial generation look complete.

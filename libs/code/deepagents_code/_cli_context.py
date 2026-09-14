@@ -81,6 +81,12 @@ class CLIContextSchema:
 
     turn_id: str | None = None
 
+    prior_turn_id: str | None = None
+
+    prior_turn_status: str | None = None
+
+    prior_turn_prompt: str | None = None
+
     hooks_snapshot_id: str | None = None
 
     hooks_server_events: list[str] = field(default_factory=list)
@@ -158,6 +164,9 @@ class CLIContextSchema:
             approval_mode_key=_str("approval_mode_key"),
             thread_id=_str("thread_id"),
             turn_id=_str("turn_id"),
+            prior_turn_id=_str("prior_turn_id"),
+            prior_turn_status=_str("prior_turn_status"),
+            prior_turn_prompt=_str("prior_turn_prompt"),
             hooks_snapshot_id=_str("hooks_snapshot_id"),
             hooks_server_events=events,
             prompt_id=_str("prompt_id"),
@@ -235,6 +244,15 @@ class CLIContext(TypedDict, total=False):
 
     turn_id: str | None
     """Current user-turn ID for binding trusted interactive responses."""
+
+    prior_turn_id: str | None
+    """Immediately preceding turn eligible for receipt carry-forward."""
+
+    prior_turn_status: str | None
+    """Trusted termination status for the preceding turn."""
+
+    prior_turn_prompt: str | None
+    """Literal prompt from the preceding turn."""
 
     hooks_snapshot_id: str | None
     """Canonical Hooks v2 configuration hash for this session.

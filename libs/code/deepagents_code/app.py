@@ -2733,6 +2733,9 @@ class TextualSessionState:
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+        self.prior_turn_id: str | None = None
+        self.prior_turn_status: str | None = None
+        self.prior_turn_prompt: str | None = None
         self.previous_thread_id: str | None = None
         """Thread id abandoned by the most recent `reset_thread`.
 
@@ -2798,6 +2801,9 @@ class TextualSessionState:
         if value != self._thread_id:
             self.turn_number = 0
             self.turn_id = None
+            self.prior_turn_id = None
+            self.prior_turn_status = None
+            self.prior_turn_prompt = None
         self._thread_id = value
         from deepagents_code._debug import bind_debug_logging_to_thread
 

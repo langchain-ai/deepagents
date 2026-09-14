@@ -1224,6 +1224,7 @@ def _validated_ask_user_answers(
     turn_id: str,
     tool_call_id: str,
     question_count: int,
+    prior_turn_id: str | None = None,
 ) -> list[str] | None:
     if not isinstance(value, Mapping) or set(value) != _ASK_USER_RECEIPT_FIELDS:
         return None
@@ -1240,7 +1241,7 @@ def _validated_ask_user_answers(
         or receipt_thread_id != thread_id
         or not isinstance(receipt_turn_id, str)
         or not receipt_turn_id
-        or receipt_turn_id != turn_id
+        or receipt_turn_id not in {turn_id, prior_turn_id}
         or not isinstance(receipt_tool_call_id, str)
         or not receipt_tool_call_id
         or receipt_tool_call_id != tool_call_id
@@ -1256,6 +1257,66 @@ def _validated_ask_user_answers(
     ):
         return None
     return list(answer_values)
+
+
+def _retry_carry_forward_turn(
+    request: ModelRequest,
+    messages: Sequence[object],
+    latest_prompt_index: int,
+) -> tuple[str, int] | None:
+    """Return the immediately prior failed turn when the prompt is a retry."""
+    context = _runtime_context(request.runtime)
+    prior_turn_id = _context_value(context, "prior_turn_id")
+    prior_turn_status = _context_value(context, "prior_turn_status")
+    prior_prompt = _context_value(context, "prior_turn_prompt")
+    if (
+        not isinstance(prior_turn_id, str)
+        or not prior_turn_id
+        or prior_turn_status not in {"provider_error", "stream_error"}
+        or not isinstance(prior_prompt, str)
+    ):
+        return None
+    prompts, _ = _trusted_prompt_rows(messages)
+    if not prompts or prompts[-1]["turn_id"] is None:
+        return None
+    current_prompt = prompts[-1]["literal_user_text"]
+    previous_prompt = next(
+        (
+            prompt
+            for prompt in reversed(prompts[:-1])
+            if prompt["turn_id"] == prior_turn_id
+        ),
+        None,
+    )
+    if previous_prompt is None or previous_prompt["literal_user_text"] != prior_prompt:
+        return None
+    normalized = " ".join(current_prompt.casefold().split())
+    if (
+        normalized
+        in {
+            "retry",
+            "please retry",
+            "try again",
+            "please try again",
+            "continue",
+            "please continue",
+            "resume",
+            "please resume",
+        }
+        or current_prompt.casefold().strip() == prior_prompt.casefold().strip()
+    ):
+        prior_indices = [
+            index
+            for index, message in enumerate(messages[:latest_prompt_index])
+            if isinstance(message, HumanMessage)
+            and (rows := _trusted_prompt_rows([message])[0])
+            and rows[0]["turn_id"] == prior_turn_id
+        ]
+        if not prior_indices:
+            return None
+        prior_index = max(prior_indices)
+        return prior_turn_id, prior_index
+    return None
 
 
 def _authorization_messages(request: ModelRequest) -> Sequence[object]:
@@ -1337,7 +1398,15 @@ def _same_turn_user_answers(
     ):
         return []
 
-    current_messages = messages[latest_prompt_index + 1 :]
+    carry_forward = _retry_carry_forward_turn(request, messages, latest_prompt_index)
+    prior_turn_id = carry_forward[0] if carry_forward is not None else None
+    message_start = (
+        carry_forward[1] if carry_forward is not None else latest_prompt_index
+    )
+    message_end = (
+        latest_prompt_index + 1 if carry_forward is not None else len(messages)
+    )
+    current_messages = messages[message_start + 1 : message_end]
     ask_calls: list[tuple[str, ToolCall]] = []
     call_id_counts: dict[str, int] = {}
     for message in current_messages:
@@ -1377,6 +1446,7 @@ def _same_turn_user_answers(
         turn_id=turn_id,
         tool_call_id=tool_call_id,
         question_count=question_count,
+        prior_turn_id=prior_turn_id,
     )
     if answers is None:
         return []

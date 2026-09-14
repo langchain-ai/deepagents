@@ -662,6 +662,47 @@ class TestParallelChildrenAndLateCorrections:
         assert correction.cost_usd == pytest.approx(-0.45)
         assert stats.request_count == 2
 
+    def test_a_zero_token_reprice_keys_its_delta_to_its_own_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Google's model-naming chunk carries no tokens, only a re-pricing.
+
+        Its delta is usually negative -- the request moves off an expensive
+        fallback onto the real model -- so it is exactly the correction the
+        per-request keying exists for. Without a request ID the caller must
+        apply it to the whole provisional pool and would subtract a sibling's
+        spend.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.cost_tracking.estimate_cost",
+            lambda _usage, model, _provider="": 0.05 if model == "real-model" else 0.5,
+        )
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        record_message_usage(
+            stats,
+            self._chunk("child-1", 900, names_model=False),
+            recorded_requests=ledger,
+        )
+        naming_chunk = AIMessageChunk(
+            content="",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+            response_metadata={"model_name": "real-model", "model_provider": "openai"},
+        )
+
+        reprice = record_message_usage(stats, naming_chunk, recorded_requests=ledger)
+
+        assert reprice is not None
+        assert reprice.request_id == "child-1"
+        assert reprice.cost_usd == pytest.approx(-0.45)
+        assert reprice.input_tokens == 0
+        assert reprice.output_tokens == 0
+
     def test_event_with_changed_model_replaces_the_partial_record(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

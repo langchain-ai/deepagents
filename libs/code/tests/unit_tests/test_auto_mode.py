@@ -1330,6 +1330,54 @@ async def test_unsupported_classifier_remains_stateless(tmp_path: Path) -> None:
     assert "_auto_classifier_conversation" not in request.state
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("openai_api_base", "https://api.openai.com/v2"),
+        ("openai_api_base", "https://api.openai.com.evil.example/v1"),
+        ("openai_api_base", "http://api.openai.com/v1"),
+        ("model_name", ""),
+        ("store", False),
+        ("use_responses_api", False),
+    ],
+)
+def test_classifier_model_opt_outs_refuse_conversation_reuse(
+    attribute: str, value: object
+) -> None:
+    model = _OpenAIConversationModel([_allow_result()])
+    setattr(model, attribute, value)
+
+    assert (
+        AutoModeHITLMiddleware._openai_classifier_identity(
+            cast("BaseChatModel", model), {}
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"store": False},
+        {"use_responses_api": False},
+        {"previous_response_id": "resp_caller"},
+        {"conversation": "conv_caller"},
+        {"base_url": "https://gateway.internal.example/v1"},
+    ],
+)
+def test_classifier_setting_opt_outs_refuse_conversation_reuse(
+    settings: dict[str, Any],
+) -> None:
+    model = _OpenAIConversationModel([_allow_result()])
+
+    assert (
+        AutoModeHITLMiddleware._openai_classifier_identity(
+            cast("BaseChatModel", model), settings
+        )
+        is None
+    )
+
+
 async def test_classifier_review_lifecycle_reports_only_opaque_ids(
     tmp_path: Path,
 ) -> None:

@@ -465,6 +465,28 @@ async def test_aupdate_state_reset_reloads_skills_on_next_run(tmp_path: Path) ->
     assert "turn 1" in [message.text for message in model.call_history[-1]["messages"]]
 
 
+async def test_ainvoke_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
+    """Passing `skills_metadata=None` as `ainvoke()` input reloads skills for that run."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 2))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "invoke-reset"}}
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+
+    shutil.rmtree(skills_dir / "old-skill")
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="turn 2")], "skills_metadata": None}, config)
+
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+    assert "skills_metadata" not in result
+
+
 async def test_aupdate_state_reset_clears_fixed_skill_load_warnings(tmp_path: Path) -> None:
     """A reload after fixing a broken source removes its warnings from the prompt and state (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)

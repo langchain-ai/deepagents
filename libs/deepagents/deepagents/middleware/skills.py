@@ -107,7 +107,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated
 
 import yaml
-from langchain.agents.middleware.types import PrivateStateAttr
+from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -293,7 +293,7 @@ class SkillMetadata(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, PrivateStateAttr]]
+    skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents.
 
     Missing or `None` means not loaded; set to `None` to request a reload on the next run.
@@ -777,10 +777,12 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     earlier ones.
 
     Skills are loaded once per thread and cached in state. To pick up skills
-    added, edited, or deleted since then, set `skills_metadata` to `None`
-    between runs; the next run reloads every source:
+    added, edited, or deleted since then, set `skills_metadata` to `None`:
 
     ```python
+    agent.invoke({"messages": messages, "skills_metadata": None}, config)
+
+    # or without a run
     agent.update_state(config, {"skills_metadata": None})
     ```
 

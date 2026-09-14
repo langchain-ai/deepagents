@@ -4163,6 +4163,36 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
     ) == ("configured classifier model openai:missing is unavailable")
 
 
+async def test_classifier_opts_out_of_preserved_thinking_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The classifier must keep the forced tool call structured output needs.
+
+    An injected Anthropic `thinking` kwarg pushes `with_structured_output` onto
+    its unforced path, which drops `tool_choice` and raises when the model
+    answers in prose. One-shot classification replays no thinking blocks, so it
+    has nothing to gain from the binding in the first place.
+    """
+    factory = _RecordingModelFactory(_StructuredModel(_allow_result()))
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="anthropic:claude-opus-5")
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert factory.thinking_bindings == [False]
+
+
 async def test_invoke_failure_names_distinct_classifier_spec(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4370,12 +4400,18 @@ class _RecordingModelFactory:
         self.error = error
         self.specs: list[str] = []
         self.retry_overrides: list[int | None] = []
+        self.thinking_bindings: list[bool] = []
 
     def __call__(
-        self, spec: str, *, cli_max_retries: int | None = None
+        self,
+        spec: str,
+        *,
+        cli_max_retries: int | None = None,
+        bind_preserved_thinking: bool = True,
     ) -> SimpleNamespace:
         self.specs.append(spec)
         self.retry_overrides.append(cli_max_retries)
+        self.thinking_bindings.append(bind_preserved_thinking)
         if self.error is not None:
             raise self.error
         if len(self.models) == 1:
@@ -4409,7 +4445,7 @@ async def test_classifier_model_switch_bypasses_timed_out_construction(
     replacement = _StructuredModel(_allow_result())
     specs: list[str] = []
 
-    def create_model(spec: str) -> SimpleNamespace:
+    def create_model(spec: str, **_kwargs: object) -> SimpleNamespace:
         specs.append(spec)
         if spec == blocked_spec:
             blocked_started.set()

@@ -2618,6 +2618,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     result = await asyncio.to_thread(
                         create_model,
                         selected,
+                        # One-shot classification never replays thinking blocks,
+                        # so the Anthropic preserved-thinking binding would only
+                        # cost it the forced tool call `with_structured_output`
+                        # relies on.
+                        bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
             except asyncio.CancelledError:

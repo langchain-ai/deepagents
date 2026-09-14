@@ -6109,13 +6109,50 @@ def _apply_google_anthropic_vertex_kwargs(
 
 
 _ANTHROPIC_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+"""Beta flag gating the `thinking.block_binding` controls.
+
+Accepted on the Claude API only -- Bedrock and Vertex reject the header until
+the controls ship there, which is why `_apply_anthropic_thinking_binding`
+returns early for every other provider. Drop the flag once the controls are GA.
+"""
+
 _ANTHROPIC_PRESERVED_THINKING_MIN_MAJOR = 5
+"""First Claude major version whose preserved thinking supports block binding.
+
+Read from family-first ids such as `claude-opus-5`. Legacy
+`claude-<major>-<minor>-<family>` ids (`claude-3-5-haiku-*`) are excluded by the
+regex rather than by this bound, because their first numeric segment is the
+major version and their second would otherwise read as one.
+"""
 
 
 def _apply_anthropic_thinking_binding(
     provider: str, model_name: str, kwargs: dict[str, Any]
 ) -> None:
-    """Drop stale preserved thinking after dcode changes a prompt prefix."""
+    """Default Anthropic requests to drop thinking invalidated by a prefix edit.
+
+    dcode rewrites prompt prefixes between turns, which strands preserved
+    thinking blocks that the provider bound to the prefix it saw last.
+    `drop_block` discards those blocks; the alternative, `error`, would fail the
+    turn.
+
+    Applies three defaults, each of which an explicit caller value overrides:
+
+    - Sets `thinking.block_binding.prefix_mismatch_behavior`.
+    - Enables adaptive thinking when the caller configured none, carrying the
+      `display` the provider adapter would otherwise have supplied.
+    - Appends `_ANTHROPIC_THINKING_BINDING_BETA` to `betas`, which routes the
+      request through the provider's beta endpoint.
+
+    A malformed caller value is left untouched so the provider raises the
+    authoritative validation error, but is logged -- silently skipping would
+    restore the stale-thinking failure this function exists to prevent.
+
+    Args:
+        provider: Resolved model provider.
+        model_name: Resolved model name, matched against the version gate.
+        kwargs: Layered model constructor parameters, mutated in place.
+    """
     if provider != "anthropic":
         return
     thinking = kwargs.get("thinking")
@@ -6129,22 +6166,44 @@ def _apply_anthropic_thinking_binding(
             return
         # Explicit thinking bypasses the adapter's summarized-display default.
         thinking = {"type": "adaptive", "display": "summarized"}
-    if not isinstance(thinking, dict) or thinking.get("type") not in {
-        "adaptive",
-        "enabled",
-    }:
+    elif not isinstance(thinking, dict):
+        logger.warning(
+            "Provider 'anthropic' has non-mapping thinking (%s); skipping the"
+            " preserved-thinking binding. Stale thinking blocks may fail the"
+            " turn after a prompt prefix change.",
+            type(thinking).__name__,
+        )
+        return
+    if thinking.get("type") not in {"adaptive", "enabled"}:
         return
     block_binding = thinking.get("block_binding")
     if block_binding is not None and not isinstance(block_binding, dict):
+        logger.warning(
+            "Provider 'anthropic' has non-mapping thinking.block_binding (%s);"
+            " skipping the preserved-thinking binding.",
+            type(block_binding).__name__,
+        )
         return
     betas = kwargs.get("betas")
-    if betas is not None and not isinstance(betas, list):
+    if betas is None:
+        existing_betas: list[Any] = []
+    elif isinstance(betas, (list, tuple)):
+        existing_betas = list(betas)
+    else:
+        logger.warning(
+            "Provider 'anthropic' has non-sequence betas (%s); skipping the"
+            " preserved-thinking binding.",
+            type(betas).__name__,
+        )
         return
     block_binding = dict(block_binding or {})
     block_binding.setdefault("prefix_mismatch_behavior", "drop_block")
     kwargs["thinking"] = {**thinking, "block_binding": block_binding}
     kwargs["betas"] = list(
-        dict.fromkeys([*(betas or []), _ANTHROPIC_THINKING_BINDING_BETA])
+        dict.fromkeys([*existing_betas, _ANTHROPIC_THINKING_BINDING_BETA])
+    )
+    logger.debug(
+        "Applied Anthropic thinking binding for %r: %s", model_name, block_binding
     )
 
 
@@ -6483,6 +6542,7 @@ def create_model(
     extra_kwargs: dict[str, Any] | None = None,
     profile_overrides: dict[str, Any] | None = None,
     cli_max_retries: int | None = None,
+    bind_preserved_thinking: bool = True,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -6516,6 +6576,14 @@ def create_model(
             Merged on top of config file profile overrides (dcode wins).
         cli_max_retries: Explicit `--max-retries` value. When absent, the
             provider-specific or global config value applies.
+        bind_preserved_thinking: Whether to apply the Anthropic
+            preserved-thinking defaults (see
+            `_apply_anthropic_thinking_binding`).
+
+            Pass `False` for a single-shot model that never replays thinking
+            blocks across a prompt prefix change. Such a model gains nothing
+            from the binding, and the injected `thinking` would push
+            `with_structured_output` onto its unforced tool-call path.
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -6700,7 +6768,8 @@ def create_model(
         reasoning_effort_override,
         reasoning_override,
     )
-    _apply_anthropic_thinking_binding(provider, model_name, kwargs)
+    if bind_preserved_thinking:
+        _apply_anthropic_thinking_binding(provider, model_name, kwargs)
 
     # dcode's model-node middleware owns the user-visible retry budget. Resolve
     # that budget separately, then force the provider's own retry loop off so

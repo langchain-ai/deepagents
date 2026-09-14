@@ -4475,6 +4475,103 @@ class TestCreateModelAnthropicThinkingBinding:
         assert "thinking-binding-controls-2026-08-01" in payload["betas"]
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_opt_out_leaves_thinking_unset(self, mock_init: Mock) -> None:
+        """`bind_preserved_thinking=False` keeps structured output forceable."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5", bind_preserved_thinking=False)
+
+        kwargs = mock_init.call_args.kwargs
+        assert "thinking" not in kwargs
+        assert "betas" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_accepts_betas_sequence(self, mock_init: Mock) -> None:
+        """A tuple of betas is a valid config shape, not a reason to skip."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5", extra_kwargs={"betas": ("other-beta",)})
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["betas"] == [
+            "other-beta",
+            "thinking-binding-controls-2026-08-01",
+        ]
+        assert kwargs["thinking"]["block_binding"] == {
+            "prefix_mismatch_behavior": "drop_block"
+        }
+
+    @pytest.mark.parametrize(
+        ("extra_kwargs", "expected_log"),
+        [
+            ({"thinking": "adaptive"}, "non-mapping thinking (str)"),
+            (
+                {"thinking": {"type": "adaptive", "block_binding": "drop_block"}},
+                "non-mapping thinking.block_binding (str)",
+            ),
+            ({"betas": "other-beta"}, "non-sequence betas (str)"),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_warns_when_malformed_value_skips_binding(
+        self,
+        mock_init: Mock,
+        extra_kwargs: dict[str, Any],
+        expected_log: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A malformed value must not disable the fix silently."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            create_model("anthropic:claude-opus-5", extra_kwargs=extra_kwargs)
+
+        assert expected_log in caplog.text
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs.get("thinking") == extra_kwargs.get("thinking")
+        assert kwargs.get("betas") == extra_kwargs.get("betas")
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_preserves_block_binding_siblings(self, mock_init: Mock) -> None:
+        """Defaulting one key must not drop the caller's other keys."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "anthropic:claude-opus-5",
+            extra_kwargs={
+                "thinking": {"type": "adaptive", "block_binding": {"scope": "turn"}}
+            },
+        )
+
+        assert mock_init.call_args.kwargs["thinking"]["block_binding"] == {
+            "scope": "turn",
+            "prefix_mismatch_behavior": "drop_block",
+        }
+
+    @pytest.mark.parametrize(
+        ("spec", "extra_kwargs"),
+        [
+            (
+                "google_anthropic_vertex:claude-opus-5",
+                {"project": "p", "location": "us-east5"},
+            ),
+            ("bedrock:us.anthropic.claude-opus-5-v1:0", None),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_skips_non_anthropic_providers(
+        self, mock_init: Mock, spec: str, extra_kwargs: dict[str, Any] | None
+    ) -> None:
+        """The controls beta is not accepted on Bedrock or Vertex."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(spec, extra_kwargs=extra_kwargs)
+
+        kwargs = mock_init.call_args.kwargs
+        assert "thinking" not in kwargs
+        assert "betas" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_preserves_explicit_behavior_and_betas(self, mock_init: Mock) -> None:
         mock_init.return_value = _make_init_chat_model_mock()
 

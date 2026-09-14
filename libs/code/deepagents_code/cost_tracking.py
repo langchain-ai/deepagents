@@ -83,9 +83,9 @@ if TYPE_CHECKING:
     from pathlib import Path
     from uuid import UUID
 
-    from genai_prices import UpdatePrices
+    from genai_prices import UpdatePrices, Usage
     from genai_prices.data_snapshot import DataSnapshot
-    from genai_prices.types import AbstractUsage, ModelInfo, Provider
+    from genai_prices.types import ModelInfo, PriceCalculation, Provider
     from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
 
@@ -98,17 +98,220 @@ MODEL_USAGE_EVENT_VERSION = 1
 """Current shape version for nested model-usage events."""
 
 SESSION_COST_EVENT_TYPE = "session_cost"
+SESSION_COST_EVENT_VERSION = 2
 """Custom-stream event type carrying the thread's absolute cumulative cost.
 
 Emitted by the durable writer so the status bar can track spend live without
 re-pricing anything. The payload is `{"type": ..., "total": <usd>, "thread_id":
-<id>, "pricing_ok": <bool>}`; `total` is the full thread lifetime estimate,
-never a delta, so a client that misses an event still converges on the next one.
-`thread_id` lets a client that has since switched threads discard a total
-belonging to the previous one. `pricing_ok` reports whether price data loaded in
-the process that actually did the pricing, which is the only way a client can
-tell a broken remote install from models with no published rates.
+<id>, "pricing_ok": <bool>, "breakdown": <optional mapping>}`; `total` is the
+full thread lifetime estimate, never a delta, so a client that misses an event
+still converges on the next one. `breakdown` is likewise an absolute,
+checkpointed estimate when available. `thread_id` lets a client that has since
+switched threads discard a total belonging to the previous one. `pricing_ok`
+reports whether price data loaded in the process that actually did the pricing,
+which is the only way a client can tell a broken remote install from models with
+no published rates.
 """
+
+COST_BREAKDOWN_VERSION = 1
+"""Version of the private checkpoint and streamed cost-breakdown mapping."""
+
+
+class CostBreakdown(TypedDict):
+    """Additive token and estimated-cost accounting for one or more requests."""
+
+    version: int
+    request_count: int
+    priced_request_count: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    reasoning_tokens: int
+    input_tokens_complete: bool
+    output_tokens_complete: bool
+    cache_creation_tokens_complete: bool
+    cache_read_tokens_complete: bool
+    reasoning_tokens_complete: bool
+    input_cost_usd: float
+    output_cost_usd: float
+    total_cost_usd: float
+    cache_creation_cost_usd: float
+    cache_read_cost_usd: float
+    reasoning_cost_usd: float
+    input_cost_complete: bool
+    output_cost_complete: bool
+    cache_creation_cost_complete: bool
+    cache_read_cost_complete: bool
+    reasoning_cost_complete: bool
+    historical_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CostEstimate:
+    """One request's normalized usage and structured pricing result."""
+
+    total_cost_usd: float
+    input_cost_usd: float
+    output_cost_usd: float
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int | None
+    cache_read_tokens: int | None
+    reasoning_tokens: int | None
+    cache_creation_cost_usd: float | None
+    cache_read_cost_usd: float | None
+    reasoning_cost_usd: float | None
+
+
+def _empty_cost_breakdown(*, historical_complete: bool = True) -> CostBreakdown:
+    """Return the additive identity for the private breakdown channel."""
+    return {
+        "version": COST_BREAKDOWN_VERSION,
+        "request_count": 0,
+        "priced_request_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 0,
+        "input_tokens_complete": True,
+        "output_tokens_complete": True,
+        "cache_creation_tokens_complete": True,
+        "cache_read_tokens_complete": True,
+        "reasoning_tokens_complete": True,
+        "input_cost_usd": 0.0,
+        "output_cost_usd": 0.0,
+        "total_cost_usd": 0.0,
+        "cache_creation_cost_usd": 0.0,
+        "cache_read_cost_usd": 0.0,
+        "reasoning_cost_usd": 0.0,
+        "input_cost_complete": True,
+        "output_cost_complete": True,
+        "cache_creation_cost_complete": True,
+        "cache_read_cost_complete": True,
+        "reasoning_cost_complete": True,
+        "historical_complete": historical_complete,
+    }
+
+
+def _merge_cost_breakdowns(
+    left: CostBreakdown | None, right: CostBreakdown | None
+) -> CostBreakdown:
+    """Add two version-one breakdowns, preserving completeness flags.
+
+    Returns:
+        Their validated additive merge.
+    """
+    result = _empty_cost_breakdown()
+    for source in (left, right):
+        if not isinstance(source, Mapping) or source.get("version") != 1:
+            if source:
+                result["historical_complete"] = False
+            continue
+        for key in (
+            "request_count",
+            "priced_request_count",
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_tokens",
+            "cache_read_tokens",
+            "reasoning_tokens",
+        ):
+            value = source.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                result[key] += value  # type: ignore[literal-required]
+            else:
+                result["historical_complete"] = False
+        for key in (
+            "input_cost_usd",
+            "output_cost_usd",
+            "total_cost_usd",
+            "cache_creation_cost_usd",
+            "cache_read_cost_usd",
+            "reasoning_cost_usd",
+        ):
+            value = source.get(key)
+            if (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value >= 0
+            ):
+                result[key] += float(value)  # type: ignore[literal-required]
+            else:
+                result["historical_complete"] = False
+        for key in (
+            "input_tokens_complete",
+            "output_tokens_complete",
+            "cache_creation_tokens_complete",
+            "cache_read_tokens_complete",
+            "reasoning_tokens_complete",
+            "input_cost_complete",
+            "output_cost_complete",
+            "cache_creation_cost_complete",
+            "cache_read_cost_complete",
+            "reasoning_cost_complete",
+            "historical_complete",
+        ):
+            result[key] = bool(result[key] and source.get(key) is True)  # type: ignore[literal-required]
+    return result
+
+
+def _breakdown_for_estimate(
+    estimate: _CostEstimate | None,
+    *,
+    historical_complete: bool = True,
+) -> CostBreakdown:
+    """Build one request's additive checkpoint contribution.
+
+    Returns:
+        A versioned breakdown delta.
+    """
+    result = _empty_cost_breakdown(historical_complete=historical_complete)
+    result["request_count"] = 1
+    if estimate is None:
+        result["input_tokens_complete"] = False
+        result["output_tokens_complete"] = False
+        result["input_cost_complete"] = False
+        result["output_cost_complete"] = False
+        result["cache_creation_tokens_complete"] = False
+        result["cache_read_tokens_complete"] = False
+        result["reasoning_tokens_complete"] = False
+        result["cache_creation_cost_complete"] = False
+        result["cache_read_cost_complete"] = False
+        result["reasoning_cost_complete"] = False
+        return result
+    result["priced_request_count"] = 1
+    result["input_tokens"] = estimate.input_tokens
+    result["output_tokens"] = estimate.output_tokens
+    result["input_cost_usd"] = estimate.input_cost_usd
+    result["output_cost_usd"] = estimate.output_cost_usd
+    result["total_cost_usd"] = estimate.total_cost_usd
+    result["cache_creation_tokens_complete"] = (
+        estimate.cache_creation_tokens is not None
+    )
+    result["cache_read_tokens_complete"] = estimate.cache_read_tokens is not None
+    result["reasoning_tokens_complete"] = estimate.reasoning_tokens is not None
+    result["cache_creation_cost_complete"] = (
+        estimate.cache_creation_cost_usd is not None
+    )
+    result["cache_read_cost_complete"] = estimate.cache_read_cost_usd is not None
+    result["reasoning_cost_complete"] = estimate.reasoning_cost_usd is not None
+    if estimate.cache_creation_tokens is not None:
+        result["cache_creation_tokens"] = estimate.cache_creation_tokens
+    if estimate.cache_read_tokens is not None:
+        result["cache_read_tokens"] = estimate.cache_read_tokens
+    if estimate.reasoning_tokens is not None:
+        result["reasoning_tokens"] = estimate.reasoning_tokens
+    if estimate.cache_creation_cost_usd is not None:
+        result["cache_creation_cost_usd"] = estimate.cache_creation_cost_usd
+    if estimate.cache_read_cost_usd is not None:
+        result["cache_read_cost_usd"] = estimate.cache_read_cost_usd
+    if estimate.reasoning_cost_usd is not None:
+        result["reasoning_cost_usd"] = estimate.reasoning_cost_usd
+    return result
+
 
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
@@ -1166,8 +1369,16 @@ def _report_override_miss(
 
 
 def _override_price(
-    usage: AbstractUsage, model_ref: str, provider_id: str | None
-) -> float | None:
+    usage: Usage,
+    model_ref: str,
+    provider_id: str | None,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int | None,
+    cache_read_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> _CostEstimate | None:
     """Price one request from the override catalog after a primary miss.
 
     Pricing goes through `ModelInfo.calc_price` with the already-built `Usage`,
@@ -1183,9 +1394,14 @@ def _override_price(
         usage: The `Usage` object already built for this request.
         model_ref: Model identifier used for the request.
         provider_id: genai-prices provider identifier, or `None` to infer.
+        input_tokens: Inclusive input token count.
+        output_tokens: Inclusive output token count.
+        cache_creation_tokens: Cache-write detail, or `None` when unreported.
+        cache_read_tokens: Cache-read detail, or `None` when unreported.
+        reasoning_tokens: Reasoning detail, or `None` when unreported.
 
     Returns:
-        Estimated cost in USD, or `None` when no override covers the model or
+        Structured estimate, or `None` when no override covers the model or
             override loading itself failed. Nothing here may raise.
     """
     # Outside the handler below on purpose: `_price_overrides` reports its own
@@ -1202,7 +1418,17 @@ def _override_price(
             _report_override_miss(providers, model_ref, provider_id)
             return None
         provider, model = found
-        cost_usd = float(model.calc_price(usage, provider).total_price)
+        price = model.calc_price(usage, provider)
+        estimate = _estimate_from_price(
+            price,
+            usage,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        cost_usd = estimate.total_cost_usd
     except Exception:
         # Warned rather than logged at DEBUG, and keyed per model so it stays one
         # line: an override entry that matches but cannot be priced is a mistake
@@ -1246,7 +1472,92 @@ def _override_price(
         provider_id,
         provider.id,
     )
-    return cost_usd
+    return estimate
+
+
+def _category_costs(price: PriceCalculation, usage: Usage) -> dict[str, float | None]:
+    """Attribute requested child costs from one resolved pricing calculation.
+
+    Returns:
+        Cache creation, cache read, and reasoning costs when priced.
+    """
+    from genai_prices.types import (
+        _collect_resolved_model_prices,  # noqa: PLC2701
+        _compute_registry_priced_counts,  # noqa: PLC2701
+        calc_unit_price,
+    )
+    from genai_prices.units import _get_registry  # noqa: PLC2701
+
+    registry = _get_registry()
+    resolved = _collect_resolved_model_prices(price.model_price, registry)
+    counts = _compute_registry_priced_counts(resolved, usage)
+    total_input_tokens = (
+        getattr(usage, "input_tokens", 0)
+        if any(type(rate).__name__ == "TieredPrices" for _, rate in resolved)
+        else 0
+    )
+    costs: dict[str, float] = {
+        "cache_creation": 0.0,
+        "cache_read": 0.0,
+        "reasoning": 0.0,
+    }
+    seen = dict.fromkeys(costs, False)
+    for unit, rate in resolved:
+        token_type = unit.dimensions.get("token_type")
+        category = {
+            "cache_write": "cache_creation",
+            "cache_read": "cache_read",
+            "reasoning": "reasoning",
+        }.get(token_type)
+        if category is None:
+            continue
+        seen[category] = True
+        unit_cost = calc_unit_price(
+            rate,
+            counts[unit.usage_key],
+            total_input_tokens,
+            unit.per,
+        )
+        costs[category] += float(unit_cost)
+    return {name: costs[name] if seen[name] else None for name in costs}
+
+
+def _estimate_from_price(
+    price: PriceCalculation,
+    usage: Usage,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int | None,
+    cache_read_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> _CostEstimate:
+    """Convert one structured pricing result at the existing float boundary.
+
+    Returns:
+        The normalized structured estimate.
+    """
+    try:
+        category_costs = _category_costs(price, usage)
+    except (AttributeError, ImportError):
+        category_costs = {
+            "cache_creation": None,
+            "cache_read": None,
+            "reasoning": None,
+        }
+    return _CostEstimate(
+        total_cost_usd=float(price.total_price),
+        input_cost_usd=float(getattr(price, "input_price", 0.0)),
+        output_cost_usd=float(getattr(price, "output_price", 0.0)),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cache_creation_cost_usd=category_costs["cache_creation"],
+        cache_read_cost_usd=category_costs["cache_read"],
+        reasoning_cost_usd=category_costs["reasoning"],
+    )
 
 
 def _load_pricing() -> tuple[Any, Any] | None:
@@ -1287,12 +1598,12 @@ def _load_pricing() -> tuple[Any, Any] | None:
     return Usage, calc_price
 
 
-def estimate_cost(
+def _estimate_cost(
     usage_metadata: Mapping[str, Any] | None,
     model_name: str,
     provider: str = "",
-) -> float | None:
-    """Estimate one model request's cost in USD from LangChain usage metadata.
+) -> _CostEstimate | None:
+    """Estimate one request while retaining normalized tokens and priced categories.
 
     LangChain's `input_tokens` is the full input count, including cache reads and
     writes. `genai-prices` receives that inclusive total plus the cache, modality,
@@ -1309,7 +1620,7 @@ def estimate_cost(
             `genai-prices` infer the provider from `model_name`.
 
     Returns:
-        Estimated cost in USD, or `None` when usage or pricing is unavailable.
+        Structured estimated usage and cost, or `None` when unavailable.
     """
     global _AUDIO_CACHE_OVERLAP_REPORTED, _PRICING_CONTRACT_BROKEN  # noqa: PLW0603
     model_ref = model_name.strip()
@@ -1338,7 +1649,8 @@ def estimate_cost(
         return None
 
     input_details = usage_metadata.get("input_token_details")
-    if isinstance(input_details, Mapping):
+    cache_details_reported = isinstance(input_details, Mapping)
+    if cache_details_reported:
         cache_read_tokens = _token_count(input_details.get("cache_read"))
         cache_writes = _cache_write_counts(input_details)
         input_audio_tokens = _clamped_detail(
@@ -1354,7 +1666,8 @@ def estimate_cost(
         input_audio_tokens = 0
 
     output_details = usage_metadata.get("output_token_details")
-    if isinstance(output_details, Mapping):
+    reasoning_details_reported = isinstance(output_details, Mapping)
+    if reasoning_details_reported:
         output_reasoning_tokens = _token_count(output_details.get("reasoning"))
         # Unlike other integrations, langchain-perplexity reports completion
         # tokens as the output total and exposes reasoning as an extra bucket.
@@ -1484,13 +1797,24 @@ def estimate_cost(
         return None
     _PRICING_CONTRACT_BROKEN = False
 
+    cache_creation_detail = cache_write_tokens if cache_details_reported else None
+    cache_read_detail = cache_read_tokens if cache_details_reported else None
+    reasoning_detail = output_reasoning_tokens if reasoning_details_reported else None
     try:
         price = calc_price(
             usage,
             model_ref=model_ref,
             provider_id=provider_id,
         )
-        cost_usd = float(price.total_price)
+        estimate = _estimate_from_price(
+            price,
+            usage,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_tokens=cache_creation_detail,
+            cache_read_tokens=cache_read_detail,
+            reasoning_tokens=reasoning_detail,
+        )
     except LookupError:
         # The catalog publishes no rates for this model or provider. Ordinary,
         # not actionable, and specifically not a broken install -- so it must
@@ -1499,9 +1823,18 @@ def estimate_cost(
         # never reaches them, so upstream rates always win and a built-in entry
         # becomes dead weight the day upstream ships the model, with no
         # migration needed.
-        override_cost = _override_price(usage, model_ref, provider_id)
-        if override_cost is not None:
-            return override_cost
+        override_estimate = _override_price(
+            usage,
+            model_ref,
+            provider_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_tokens=cache_creation_detail,
+            cache_read_tokens=cache_read_detail,
+            reasoning_tokens=reasoning_detail,
+        )
+        if override_estimate is not None:
+            return override_estimate
         logger.debug(
             "Cost estimate unavailable for model=%r provider=%r",
             model_ref,
@@ -1521,7 +1854,68 @@ def estimate_cost(
         )
         return None
 
-    return cost_usd if math.isfinite(cost_usd) and cost_usd >= 0 else None
+    values = (
+        estimate.total_cost_usd,
+        estimate.input_cost_usd,
+        estimate.output_cost_usd,
+    )
+    return (
+        estimate
+        if all(math.isfinite(value) and value >= 0 for value in values)
+        else None
+    )
+
+
+def estimate_cost(
+    usage_metadata: Mapping[str, Any] | None,
+    model_name: str,
+    provider: str = "",
+) -> float | None:
+    """Estimate one model request's total cost in USD.
+
+    Preserves the established public interface while the private structured
+    estimate powers checkpointed debugger detail.
+
+    Returns:
+        Estimated total cost, or `None` when unavailable.
+    """
+    estimate = _estimate_cost(usage_metadata, model_name, provider)
+    return estimate.total_cost_usd if estimate is not None else None
+
+
+_ESTIMATE_COST_IMPL = estimate_cost
+
+
+def _request_estimate(
+    usage_metadata: Mapping[str, Any] | None,
+    model_name: str,
+    provider: str = "",
+) -> _CostEstimate | None:
+    """Use structured pricing in production while honoring patched public pricing.
+
+    Returns:
+        The structured estimate, or `None` when unavailable.
+    """
+    if estimate_cost is _ESTIMATE_COST_IMPL:
+        return _estimate_cost(usage_metadata, model_name, provider)
+    total = estimate_cost(usage_metadata, model_name, provider)
+    if total is None:
+        return None
+    input_tokens = _token_count((usage_metadata or {}).get("input_tokens"))
+    output_tokens = _token_count((usage_metadata or {}).get("output_tokens"))
+    return _CostEstimate(
+        total_cost_usd=total,
+        input_cost_usd=0.0,
+        output_cost_usd=0.0,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_tokens=None,
+        cache_read_tokens=None,
+        reasoning_tokens=None,
+        cache_creation_cost_usd=None,
+        cache_read_cost_usd=None,
+        reasoning_cost_usd=None,
+    )
 
 
 def resolve_message_model(
@@ -2064,12 +2458,18 @@ class PreparedOperationCost:
     thread_id: str
     records: list[_ModelCallRecord]
     delta_usd: float
+    breakdown: CostBreakdown
     _settled: bool = field(default=False, init=False)
 
     @property
-    def update(self) -> dict[str, float]:
+    def update(self) -> dict[str, Any]:
         """Additive checkpoint update for this prepared charge."""
-        return {"_session_cost_usd": self.delta_usd} if self.delta_usd > 0 else {}
+        update: dict[str, Any] = {}
+        if self.breakdown["request_count"] > 0:
+            update["_session_cost_breakdown"] = self.breakdown
+        if self.delta_usd > 0:
+            update["_session_cost_usd"] = self.delta_usd
+        return update
 
     def rollback(self) -> None:
         """Return claimed records to the recorder when no charge was committed.
@@ -2122,6 +2522,22 @@ class PreparedOperationCost:
             )
 
 
+def _has_legacy_cost_history(state: CostState) -> bool:
+    """Return whether scalar cost exists without structured historical detail.
+
+    Returns:
+        `True` when a legacy checkpoint has positive cost but no breakdown.
+    """
+    cost_usd = state.get("_session_cost_usd")
+    return (
+        isinstance(cost_usd, int | float)
+        and not isinstance(cost_usd, bool)
+        and math.isfinite(cost_usd)
+        and cost_usd > 0
+        and not isinstance(state.get("_session_cost_breakdown"), Mapping)
+    )
+
+
 def prepare_operation_cost(
     state: CostState,
     thread_id: str,
@@ -2144,13 +2560,19 @@ def prepare_operation_cost(
     records = _drain_recorded_costs(thread_id)
     fallback = _checkpointed_model_spec(state)
     delta_usd = 0.0
+    breakdown = _empty_cost_breakdown(
+        historical_complete=not _has_legacy_cost_history(state)
+    )
     try:
         for record in records:
-            cost_usd = estimate_cost(
+            estimate = _request_estimate(
                 record.usage_metadata,
                 *_pricing_target(record.model_name, record.provider, fallback),
             )
-            if cost_usd is None:
+            breakdown = _merge_cost_breakdowns(
+                breakdown, _breakdown_for_estimate(estimate)
+            )
+            if estimate is None:
                 # Matches `CostTrackingMiddleware`: silently omitting an
                 # unpriceable call leaves the total quietly short, so name what
                 # could not be priced.
@@ -2161,7 +2583,7 @@ def prepare_operation_cost(
                     record.provider,
                 )
                 continue
-            delta_usd += cost_usd
+            delta_usd += estimate.total_cost_usd
     except BaseException:
         if not _restore_recorded_costs(thread_id, records):
             # `_restore_recorded_costs` returns `bool` so callers can report a
@@ -2179,6 +2601,7 @@ def prepare_operation_cost(
         thread_id=thread_id,
         records=records,
         delta_usd=delta_usd,
+        breakdown=breakdown,
     )
 
 
@@ -2187,6 +2610,7 @@ class _CostTransfer(TypedDict):
 
     owner_scope: str
     cost_usd: float
+    breakdown: NotRequired[CostBreakdown]
 
 
 class CostState(ResumeState):
@@ -2200,6 +2624,11 @@ class CostState(ResumeState):
     priced and no write has to read-modify-write the running total.
     `operator.add` is last so LangGraph still detects the reducer.
     """
+
+    _session_cost_breakdown: Annotated[
+        NotRequired[CostBreakdown], PrivateStateAttr, _merge_cost_breakdowns
+    ]
+    """Thread-wide structured estimate, additive and absent on old checkpoints."""
 
     _session_cost_transfers: Annotated[
         NotRequired[dict[str, _CostTransfer]],
@@ -2328,7 +2757,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         """
         if not self._nested:
             return None
-        return {"_session_cost_usd": Overwrite(0.0)}
+        return {
+            "_session_cost_usd": Overwrite(0.0),
+            "_session_cost_breakdown": Overwrite(_empty_cost_breakdown()),
+        }
 
     async def abefore_agent(  # ty: ignore[invalid-method-override]
         self,
@@ -2426,8 +2858,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 prior_usd = 0.0
             delta_usd = update.get("_session_cost_usd", 0.0) if update else 0.0
             total_usd = max(float(prior_usd), 0.0) + delta_usd
+            prior_breakdown = state.get("_session_cost_breakdown")
+            delta_breakdown = update.get("_session_cost_breakdown") if update else None
+            total_breakdown = _merge_cost_breakdowns(prior_breakdown, delta_breakdown)
             scope = _checkpoint_scope(runtime)
-            if scope and total_usd > 0:
+            has_breakdown = total_breakdown["request_count"] > 0
+            if scope and (total_usd > 0 or has_breakdown):
                 transfers = dict(state.get("_session_cost_transfers") or {})
                 if update:
                     pending = update.get("_session_cost_transfers")
@@ -2436,6 +2872,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 transfers[scope] = {
                     "owner_scope": _owning_checkpoint_scope(scope),
                     "cost_usd": total_usd,
+                    "breakdown": total_breakdown,
                 }
                 if update is None:
                     update = {}
@@ -2472,6 +2909,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         )
         main_message_id = message.id if message is not None else None
         delta_usd = 0.0
+        breakdown = _empty_cost_breakdown(
+            historical_complete=not _has_legacy_cost_history(state)
+        )
         transfers = state.get("_session_cost_transfers") or {}
         remaining_transfers = dict(transfers)
         owner_scope = _checkpoint_scope(runtime)
@@ -2482,14 +2922,26 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 and isinstance(transfer, Mapping)
                 and transfer.get("owner_scope") == owner_scope
                 and isinstance(transfer.get("cost_usd"), int | float)
+                and not isinstance(transfer.get("cost_usd"), bool)
                 and math.isfinite(transfer["cost_usd"])
-                and transfer["cost_usd"] > 0
+                and transfer["cost_usd"] >= 0
+                and (
+                    transfer["cost_usd"] > 0
+                    or isinstance(transfer.get("breakdown"), Mapping)
+                )
             ):
                 delta_usd += float(transfer["cost_usd"])
+                transfer_breakdown = transfer.get("breakdown")
+                breakdown = _merge_cost_breakdowns(
+                    breakdown,
+                    transfer_breakdown
+                    if isinstance(transfer_breakdown, Mapping)
+                    else _empty_cost_breakdown(historical_complete=False),
+                )
                 remaining_transfers.pop(source_scope, None)
                 claimed_transfer = True
-        charged_message_ids: set[str] = set()
-        charged_count = 0
+        represented_message_ids: set[str] = set()
+        represented_count = 0
         pricing_attempted = False
         scope = _checkpoint_scope(runtime) if self._nested else None
         # `drain` removes what it returns, so anything that raises below would
@@ -2506,11 +2958,24 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 if main_message_id is not None and record.message_id == main_message_id:
                     provider = _resolve_pricing_provider(provider, fallback[1])
                 pricing_attempted = True
-                cost_usd = estimate_cost(
+                estimate = _request_estimate(
                     record.usage_metadata,
                     *_pricing_target(record.model_name, provider, fallback),
                 )
-                if cost_usd is None:
+                defer_to_message = (
+                    price_latest_message
+                    and main_message_id is not None
+                    and record.message_id == main_message_id
+                    and estimate is None
+                )
+                if not defer_to_message:
+                    breakdown = _merge_cost_breakdowns(
+                        breakdown, _breakdown_for_estimate(estimate)
+                    )
+                    represented_count += 1
+                    if record.message_id is not None:
+                        represented_message_ids.add(record.message_id)
+                if estimate is None:
                     # Silently omitting this leaves the total quietly short, so
                     # leave a breadcrumb naming what could not be priced.
                     logger.debug(
@@ -2520,60 +2985,67 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                         provider,
                     )
                     continue
-                delta_usd += cost_usd
-                charged_count += 1
-                if record.message_id is not None:
-                    charged_message_ids.add(record.message_id)
+                delta_usd += estimate.total_cost_usd
             if price_latest_message:
                 # A model that never fires callbacks (or a request the recorder
                 # could not attribute to this thread) leaves the agent's own
                 # response uncharged, so price it from state. Joining on message
-                # ID keeps a request the recorder already charged from being
-                # added twice; only successfully priced records are in the
-                # charged set. An unidentified response cannot be joined, so
-                # treat any charged request as covering it: undercounting one
-                # request beats charging the same one twice.
-                already_charged = (
-                    message.id in charged_message_ids
+                # ID keeps a request the recorder already represented from being
+                # added twice. An unpriceable matching record defers its breakdown
+                # contribution to this fallback so successful fallback pricing
+                # replaces rather than duplicates it. An unidentified response
+                # cannot be joined, so treat any represented request as covering
+                # it: undercounting one request beats charging the same one twice.
+                already_represented = (
+                    message.id in represented_message_ids
                     if message is not None and message.id is not None
-                    else charged_count > 0
+                    else represented_count > 0
                 )
                 if (
                     message is not None
                     and message.id is None
-                    and already_charged
+                    and already_represented
                     and logger.isEnabledFor(logging.DEBUG)
                 ):
                     logger.debug(
                         "Not pricing an unidentified main response from state; a "
                         "drained record may already cover it."
                     )
-                if message is not None and not already_charged:
+                if message is not None and not already_represented:
                     model_name, provider = resolve_message_model(
                         message,
                         fallback_model=fallback[0],
                         fallback_provider=fallback[1],
                     )
                     pricing_attempted = True
-                    cost_usd = estimate_cost(
+                    estimate = _request_estimate(
                         getattr(message, "usage_metadata", None),
                         *_pricing_target(model_name, provider, fallback),
                     )
-                    if cost_usd is not None:
-                        delta_usd += cost_usd
+                    breakdown = _merge_cost_breakdowns(
+                        breakdown, _breakdown_for_estimate(estimate)
+                    )
+                    if estimate is not None:
+                        delta_usd += estimate.total_cost_usd
 
-            if not self._nested and (delta_usd > 0 or pricing_attempted):
+            has_breakdown = breakdown["request_count"] > 0
+            if not self._nested and (
+                delta_usd > 0 or pricing_attempted or has_breakdown
+            ):
                 pricing_ok = pricing_data_available()
-                if delta_usd > 0 or not pricing_ok:
+                if delta_usd > 0 or has_breakdown or not pricing_ok:
                     self._emit_total(
                         state,
                         runtime,
                         delta_usd,
+                        breakdown,
                         pricing_ok=pricing_ok,
                     )
-            if delta_usd <= 0 and not claimed_transfer:
+            if delta_usd <= 0 and not claimed_transfer and not has_breakdown:
                 return None
             update: dict[str, Any] = {}
+            if has_breakdown or claimed_transfer:
+                update["_session_cost_breakdown"] = breakdown
             if claimed_transfer:
                 update["_session_cost_transfers"] = Overwrite(remaining_transfers)
             if delta_usd > 0:
@@ -2608,6 +3080,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
         delta_usd: float,
+        breakdown: CostBreakdown,
         *,
         pricing_ok: bool,
     ) -> None:
@@ -2622,6 +3095,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             state: State carrying the total this delta applies to.
             runtime: LangGraph runtime providing the custom stream writer.
             delta_usd: Cost just charged to the channel.
+            breakdown: Structured detail charged with the delta.
             pricing_ok: Whether price data loaded in the pricing process.
         """
         writer = getattr(runtime, "stream_writer", None)
@@ -2631,11 +3105,17 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         if not isinstance(prior_usd, int | float) or not math.isfinite(prior_usd):
             prior_usd = 0.0
         try:
+            prior_breakdown = state.get("_session_cost_breakdown")
+            absolute_breakdown = _merge_cost_breakdowns(prior_breakdown, breakdown)
+            if prior_usd > 0 and not isinstance(prior_breakdown, Mapping):
+                absolute_breakdown["historical_complete"] = False
             writer(
                 {
                     "type": SESSION_COST_EVENT_TYPE,
+                    "version": SESSION_COST_EVENT_VERSION,
                     "total": max(float(prior_usd), 0.0) + delta_usd,
                     "thread_id": _thread_id(runtime) or "",
+                    "breakdown": absolute_breakdown,
                     # Pricing runs here, which in a remote deployment is not the
                     # client's process. Without this the client can only inspect
                     # its own install and would blame the user's model choice

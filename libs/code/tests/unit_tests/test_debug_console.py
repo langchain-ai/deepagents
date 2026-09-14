@@ -422,6 +422,51 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
+    async def test_build_snapshot_has_copyable_raw_entire_thread_breakdown(
+        self,
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._session_cost_usd = 0.000123456789
+        app._session_cost_breakdown = {
+            "version": 1,
+            "request_count": 1,
+            "priced_request_count": 1,
+            "input_tokens": 1234,
+            "output_tokens": 56,
+            "cache_creation_tokens": 100,
+            "cache_read_tokens": 200,
+            "reasoning_tokens": 12,
+            "input_tokens_complete": True,
+            "output_tokens_complete": True,
+            "cache_creation_tokens_complete": True,
+            "cache_read_tokens_complete": True,
+            "reasoning_tokens_complete": True,
+            "input_cost_usd": 0.0001,
+            "output_cost_usd": 0.000023456789,
+            "total_cost_usd": 0.000123456789,
+            "cache_creation_cost_usd": 0.00001,
+            "cache_read_cost_usd": 0.00002,
+            "reasoning_cost_usd": 0.000003,
+            "input_cost_complete": True,
+            "output_cost_complete": True,
+            "cache_creation_cost_complete": True,
+            "cache_read_cost_complete": True,
+            "reasoning_cost_complete": True,
+            "historical_complete": True,
+        }
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Token/cost breakdown"
+            )
+
+        assert field.copyable is True
+        assert "Entire-thread estimated breakdown" in field.value
+        assert "cache creation" in field.value
+        assert "1234" in field.value
+        assert "0.000123456789" in field.value
+
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

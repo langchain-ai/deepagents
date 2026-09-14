@@ -71,6 +71,7 @@ if TYPE_CHECKING:
             *,
             thread_id: str = "",
             pricing_ok: bool | None = None,
+            breakdown: Mapping[str, Any] | None = None,
         ) -> None: ...
 
     class _ProvisionalCostCallback(Protocol):
@@ -1314,6 +1315,18 @@ def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream 
     return thread_id if isinstance(thread_id, str) else ""
 
 
+def _session_cost_breakdown(data: Any) -> Mapping[str, Any] | None:  # noqa: ANN401
+    """Return an optional versioned breakdown from a validated cost event."""
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_VERSION
+
+    if not isinstance(data, dict) or data.get("version") != SESSION_COST_EVENT_VERSION:
+        return None
+    breakdown = data.get("breakdown")
+    if not isinstance(breakdown, dict) or breakdown.get("version") != 1:
+        return None
+    return breakdown
+
+
 def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
     """Return whether the pricing process reported healthy price data.
 
@@ -2035,6 +2048,7 @@ async def execute_task_textual(
                                     session_cost_total,
                                     thread_id=_session_cost_thread_id(data),
                                     pricing_ok=_session_cost_pricing_ok(data),
+                                    breakdown=_session_cost_breakdown(data),
                                 )
                             except Exception:
                                 logger.warning(

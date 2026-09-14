@@ -224,9 +224,8 @@ class _OpenAIConversationModel(_StructuredModel):
     ) -> None:
         super().__init__(model_name=model_name)
         self.results = results
-        self.model_kwargs: dict[str, object] = (
-            {"project": project} if project is not None else {}
-        )
+        self.model_kwargs: dict[str, object] = {}
+        self.root_async_client = SimpleNamespace(project=project)
         self.openai_api_base = base_url
         self.openai_organization = organization
         self.use_responses_api: bool | None = None
@@ -408,7 +407,7 @@ def _middleware(
 def _request(
     tmp_path: Path,
     *,
-    model: _StructuredModel,
+    model: _StructuredModel | BaseChatModel,
     tool_name: str,
     args: dict[str, object],
     tools: list[BaseTool] | None = None,
@@ -796,14 +795,18 @@ async def test_openai_identity_switch_checkpoints_monotonic_revisions(
     ("attribute", "initial", "changed"),
     [
         ("openai_organization", "org-a", "org-b"),
-        ("model_kwargs", {"project": "project-a"}, {"project": "project-b"}),
+        (
+            "root_async_client",
+            SimpleNamespace(project="project-a"),
+            SimpleNamespace(project="project-b"),
+        ),
     ],
 )
 async def test_openai_classifier_account_changes_reset_conversation(
     tmp_path: Path,
     attribute: str,
-    initial: str | dict[str, str],
-    changed: str | dict[str, str],
+    initial: str | SimpleNamespace,
+    changed: str | SimpleNamespace,
 ) -> None:
     model = _OpenAIConversationModel([_allow_result(), _allow_result()])
     setattr(model, attribute, initial)
@@ -827,6 +830,98 @@ async def test_openai_classifier_account_changes_reset_conversation(
 
     assert model.call_kwargs[0].get("previous_response_id") is None
     assert model.call_kwargs[1].get("previous_response_id") is None
+
+
+async def test_real_openai_client_project_changes_reset_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        index = len(requests)
+        return httpx.Response(
+            200,
+            json={
+                "id": f"resp_{index}",
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-test",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": f"msg_{index}",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "annotations": [],
+                                "text": _allow_result(
+                                    call_id=f"call-{index}"
+                                ).model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as sync_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(respond)
+        ) as async_client:
+            for index, project in enumerate(
+                ["project-a", "project-a", "project-b", "project-b"], 1
+            ):
+                monkeypatch.setenv("OPENAI_PROJECT_ID", project)
+                model = ChatOpenAI(
+                    model="gpt-test",
+                    api_key=SecretStr("<FILL_IN>"),
+                    base_url="https://api.openai.com/v1",
+                    organization="org-test",
+                    openai_proxy="",
+                    http_client=sync_client,
+                    http_async_client=async_client,
+                )
+                # Prove the async client's resolved project wins over a different
+                # sync client and over later changes to the process environment.
+                model.root_client.project = "sync-project"
+                monkeypatch.setenv("OPENAI_PROJECT_ID", "later-project")
+                if index == 1:
+                    request, _store, _key = _request(
+                        tmp_path,
+                        model=model,
+                        tool_name="delete",
+                        args={"file_path": "old.py"},
+                    )
+                else:
+                    request = request.override(model=model)
+                plan = await _plan(
+                    _middleware(tmp_path),
+                    request,
+                    tool_name="delete",
+                    args={"file_path": f"old-{index}.py"},
+                    call_id=f"call-{index}",
+                )
+                assert plan["decisions"][0]["disposition"] == "classifier_allow"
+                assert requests[-1].headers["OpenAI-Project"] == project
+                state = cast("dict[str, Any]", request.state)
+                assert state["_auto_classifier_conversation"]["revision"] == index
+
+    assert [
+        json.loads(request.content).get("previous_response_id") for request in requests
+    ] == [
+        None,
+        "resp_1",
+        None,
+        "resp_3",
+    ]
 
 
 async def test_concurrent_openai_reviews_serialize_continuation(

@@ -2911,11 +2911,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         organization = settings.get(
             "organization", getattr(model, "openai_organization", None)
         )
-        model_kwargs = getattr(model, "model_kwargs", None)
-        model_project = getattr(model, "openai_project", None)
-        if isinstance(model_kwargs, Mapping):
-            model_project = model_kwargs.get("project", model_project)
-        project = settings.get("project", model_project)
+        # ChatOpenAI delegates OPENAI_PROJECT_ID resolution to the SDK client.
+        # Async invocation uses this client even if its sync peer differs.
+        client = getattr(model, "root_async_client", None)
+        if client is None:
+            client = getattr(model, "root_client", None)
+        project = getattr(client, "project", None)
         identity_payload = {
             "endpoint": endpoint,
             "endpoint_overrides": endpoint_overrides,

@@ -445,7 +445,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.13"
+version = "0.7.14"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -461,9 +461,9 @@ dependencies = [
 requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
     { name = "langchain", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.7.1,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.5,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.2,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.7.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.6,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.3,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.7" },
     { name = "langsmith", specifier = ">=0.12.4" },
@@ -585,9 +585,9 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.5,<1.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.7.1,<2.0.0" },
-    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.1,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.7.5,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.7.2,<2.0.0" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.7.6,<2.0.0" },
     { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.2.4,<1.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
@@ -1543,16 +1543,16 @@ wheels = [
 
 [[package]]
 name = "langchain-anthropic"
-version = "1.7.1"
+version = "1.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/28/94fa0b41c1dc70fc177d83ea5b48917651cc24da208d236bdebbe3600b8f/langchain_anthropic-1.7.1.tar.gz", hash = "sha256:ac087159e1356ae933d5443ded2bca72912a2ed34ea171520fcfdaddfb838687", size = 750799, upload-time = "2026-09-03T15:41:42.355Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/67/1a4f3b905d95192c54bf418ce50e058e2b7b330700c33f042622137b6c16/langchain_anthropic-1.7.2.tar.gz", hash = "sha256:0d39665211b3b40421de8be621536c4e32149500d20a75ee4338cac4ae97db19", size = 751259, upload-time = "2026-09-10T19:12:54.99Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/a6/1f2d0cfc0b635cbbe5832598f799121c3374e0a5f8936b46d2cd339ffe0a/langchain_anthropic-1.7.1-py3-none-any.whl", hash = "sha256:c461166def7b7d9d05de518d80afd041a6fcd0d49b07d3216d2a6b9a5069cb37", size = 60887, upload-time = "2026-09-03T15:41:40.931Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/84/436d1f5dea354ec7357e5cd9756a15765e828da7faebf2837cf60f3a638d/langchain_anthropic-1.7.2-py3-none-any.whl", hash = "sha256:9d114c3766f57bbffe8e84093efe396306520c51587263b96d00c055d3bb8370", size = 60957, upload-time = "2026-09-10T19:12:53.693Z" },
 ]
 
 [[package]]
@@ -1571,7 +1571,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.6.2"
+version = "1.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1585,9 +1585,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/89/7b/406b4a8dd43dd01f69e04aafdee206809a2097134b2f944e12802eae7948/langchain_core-1.6.2.tar.gz", hash = "sha256:1ec6d3a98f7c8cdbb5bb0deff86e7ca37e16bf4f8f49f022d10723656c62352d", size = 1004390, upload-time = "2026-09-04T21:29:22.769Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/d7/1482670ccebc863166852516a08a1956fc50da40fbe2fe7dd218abfef4a1/langchain_core-1.6.3.tar.gz", hash = "sha256:88b430944fbd4d40fa98135d6c873581d497b6f33515d01962337548e918df2f", size = 1006228, upload-time = "2026-09-11T17:37:45.614Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/62/d3fb7c215cb2f237c3fe84880bf347a38deafef6033b6d5f1339ba8ca401/langchain_core-1.6.2-py3-none-any.whl", hash = "sha256:21e6c7cf097c68b777fd69ea00864f09bd9ca76ac73e3e3fa14e1ee366eb4711", size = 571690, upload-time = "2026-09-04T21:29:21.175Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/18/cf18cfec118b02e003f35300b54d6a1173dc6e4905cffdf5ea49e390a7f9/langchain_core-1.6.3-py3-none-any.whl", hash = "sha256:114fe1868c9ed60606662b9dd0074bf3152cc6b0b1522ba37cbd6b04f55ca77d", size = 571753, upload-time = "2026-09-11T17:37:43.875Z" },
 ]
 
 [[package]]
@@ -1762,7 +1762,7 @@ requires-dist = [
     { name = "bsdiff4", specifier = ">=1.2.6,<2.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.2,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.3,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.11,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.2.5,<0.3.0" },
 ]

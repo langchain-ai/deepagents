@@ -422,6 +422,18 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
+    async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
+        import time
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "not started"
+
+            app._first_invocation_at = time.monotonic() - 72.3
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "1m 12s"
+
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

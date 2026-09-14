@@ -1170,7 +1170,7 @@ async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
         await host.stop()
 
 
-async def test_channel_background_turn_keeps_its_operator_context(tmp_path: Path) -> None:
+async def test_channel_background_turn_drops_interactive_authority(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = RoutedAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
@@ -1186,8 +1186,9 @@ async def test_channel_background_turn_keeps_its_operator_context(tmp_path: Path
         follow_up = agent.requests[-1]
         assert follow_up.text == _BACKGROUND_FOLLOW_UP
         assert "trigger" not in follow_up.metadata
-        assert follow_up.approval_handler is not None
-        assert follow_up.authorization_handler is not None
+        assert follow_up.metadata["background_delivery"] is True
+        assert follow_up.approval_handler is None
+        assert follow_up.authorization_handler is None
     finally:
         await host.stop()
 

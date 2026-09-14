@@ -4453,8 +4453,9 @@ class DeepAgentsApp(App):
         """Provisional dollars still held, keyed by request.
 
         A retraction is clamped to its own request's balance, so it cannot
-        subtract spend a concurrent request put in the pool. Cleared with
-        `_provisional_cost_usd` on every reset.
+        subtract spend a concurrent request put in the pool. A request drops
+        out once its balance reaches zero, so the map holds only what is in
+        flight; it is cleared with `_provisional_cost_usd` on every reset.
         """
 
         self._server_pricing_ok: bool | None = None
@@ -8955,7 +8956,14 @@ class DeepAgentsApp(App):
         # that fell further than the pool it is drawn from -- would otherwise
         # subtract spend that other in-flight children put there.
         applied_usd = max(delta_usd, -held) if delta_usd < 0 else delta_usd
-        self._provisional_cost_by_request[request_id] = held + applied_usd
+        remaining = held + applied_usd
+        if remaining > 0:
+            self._provisional_cost_by_request[request_id] = remaining
+        else:
+            # An absent row and a zero row mean the same thing to the guard
+            # above, so keep only the one representation and let the map track
+            # what is actually in flight.
+            self._provisional_cost_by_request.pop(request_id, None)
         self._apply_provisional_delta(applied_usd)
 
     def _pricing_is_broken(self) -> bool:

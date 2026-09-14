@@ -30479,3 +30479,26 @@ class TestProvisionalCostReconciliation:
             app._add_provisional_cost(-0.5, request_id="child-1")
 
             assert app._displayed_cost_usd == pytest.approx(1.7)
+
+    async def test_an_exhausted_request_stops_being_tracked(self) -> None:
+        """A request that gave back its whole contribution drops out.
+
+        Nothing clears the map until a backend total arrives, so a long fan-out
+        would otherwise keep a row per request for the rest of the turn.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.0)
+            app._add_provisional_cost(0.5, request_id="child-1")
+            app._add_provisional_cost(0.7, request_id="child-2")
+
+            app._add_provisional_cost(-0.5, request_id="child-1")
+
+            assert "child-1" not in app._provisional_cost_by_request
+            assert app._provisional_cost_by_request == {"child-2": pytest.approx(0.7)}
+            # A second retraction for the drained request still spares its
+            # sibling, exactly as it did while the row was present at zero.
+            app._add_provisional_cost(-0.3, request_id="child-1")
+
+            assert app._displayed_cost_usd == pytest.approx(1.7)

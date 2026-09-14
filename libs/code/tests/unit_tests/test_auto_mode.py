@@ -924,6 +924,24 @@ async def test_real_openai_client_project_changes_reset_checkpoint(
     ]
 
 
+@pytest.mark.parametrize("base_url_env", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
+def test_stored_custom_endpoint_stays_stateless(
+    monkeypatch: pytest.MonkeyPatch, base_url_env: str
+) -> None:
+    from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+
+    # `apply_stored_credentials` writes a `/auth` endpoint to the canonical
+    # OPENAI_BASE_URL and clears the alternate, and only the openai SDK reads
+    # that name. Either spelling must keep reuse and `store` off the endpoint.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.setenv(base_url_env, "https://gateway.internal.example/v1")
+    model = ChatOpenAI(model="gpt-test", api_key=SecretStr("<FILL_IN>"))
+
+    assert AutoModeHITLMiddleware._openai_classifier_identity(model, {}) is None
+
+
 async def test_concurrent_openai_reviews_serialize_continuation(
     tmp_path: Path,
 ) -> None:

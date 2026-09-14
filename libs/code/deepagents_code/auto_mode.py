@@ -2892,7 +2892,24 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             or "conversation" in settings
         ):
             return None
-        base_url = settings.get("base_url", getattr(model, "openai_api_base", None))
+        # ChatOpenAI delegates OPENAI_PROJECT_ID resolution to the SDK client.
+        # Async invocation uses this client even if its sync peer differs.
+        client = getattr(model, "root_async_client", None)
+        if client is None:
+            client = getattr(model, "root_client", None)
+        project = getattr(client, "project", None)
+        # `openai_api_base` reflects only `base_url` and OPENAI_API_BASE, but
+        # `apply_stored_credentials` writes a `/auth` endpoint to the canonical
+        # OPENAI_BASE_URL and clears the alternate. The openai SDK reads that
+        # name when it builds the client, so the client's own `base_url` is the
+        # only value that reflects where requests actually go. Reading the model
+        # attribute would leave it None for a stored custom endpoint, default to
+        # the canonical origin, and enable reuse plus `store` against exactly the
+        # third-party endpoint this gate exists to exclude.
+        client_base_url = getattr(client, "base_url", None)
+        base_url = settings.get(
+            "base_url", client_base_url or getattr(model, "openai_api_base", None)
+        )
         endpoint = str(base_url or f"{_OPENAI_API_ORIGIN}/v1").rstrip("/")
         parts = urlsplit(endpoint)
         if f"{parts.scheme}://{parts.netloc}" != _OPENAI_API_ORIGIN:
@@ -2911,12 +2928,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         organization = settings.get(
             "organization", getattr(model, "openai_organization", None)
         )
-        # ChatOpenAI delegates OPENAI_PROJECT_ID resolution to the SDK client.
-        # Async invocation uses this client even if its sync peer differs.
-        client = getattr(model, "root_async_client", None)
-        if client is None:
-            client = getattr(model, "root_client", None)
-        project = getattr(client, "project", None)
         identity_payload = {
             "endpoint": endpoint,
             "endpoint_overrides": endpoint_overrides,

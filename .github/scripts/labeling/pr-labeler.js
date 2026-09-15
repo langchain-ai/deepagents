@@ -21,7 +21,7 @@ function loadConfig() {
     throw new Error(`Failed to parse pr-labeler-config.json: ${e.message}`);
   }
   const required = [
-    'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
+    'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
@@ -40,6 +40,7 @@ function init(github, owner, repo, config, core) {
   const {
     trustedThreshold,
     labelColor,
+    labelColors,
     sizeThresholds,
     scopeToLabel,
     scopeAliases,
@@ -64,7 +65,21 @@ function init(github, owner, repo, config, core) {
 
   // ── Label management ──────────────────────────────────────────────
 
-  async function ensureLabel(name, color = labelColor) {
+  // A label's color follows its taxonomy prefix, so a label created on demand
+  // matches the ones already on the repo. Without this every auto-created
+  // label landed on the generic `labelColor`, which is how nine `type:*`
+  // labels ended up off-palette during the taxonomy migration.
+  function colorFor(name) {
+    let best = null;
+    for (const prefix of Object.keys(labelColors)) {
+      if ((name ?? '').startsWith(prefix) && (!best || prefix.length > best.length)) {
+        best = prefix;
+      }
+    }
+    return best ? labelColors[best] : labelColor;
+  }
+
+  async function ensureLabel(name, color = colorFor(name)) {
     try {
       await github.rest.issues.getLabel({ owner, repo, name });
     } catch (e) {
@@ -375,6 +390,7 @@ function init(github, owner, repo, config, core) {
 
   return {
     ensureLabel,
+    colorFor,
     getSizeLabel,
     computeSize,
     buildFileRules,
@@ -395,6 +411,7 @@ function init(github, owner, repo, config, core) {
     releaseLabel,
     trustedThreshold,
     labelColor,
+    labelColors,
   };
 }
 

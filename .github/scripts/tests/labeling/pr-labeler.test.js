@@ -364,3 +364,57 @@ for (const mode of ['live', 'backfill', 'release helper']) {
     assert.ok(!api.assigned.has('type:chore'));
   });
 }
+
+test('colorFor resolves a label color from its taxonomy prefix', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  for (const [prefix, color] of Object.entries(config.labelColors)) {
+    assert.equal(h.colorFor(`${prefix}anything`), color, `prefix ${prefix}`);
+  }
+  // A name matching no prefix falls back to the generic color.
+  assert.equal(h.colorFor('unprefixed'), config.labelColor);
+  assert.equal(h.colorFor(undefined), config.labelColor);
+});
+
+test('every label the config can apply has a prefix color', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const applied = new Set([
+    ...Object.values(config.typeToLabel), config.breakingLabel, config.releaseLabel,
+    ...Object.values(config.tierLabels), ...Object.values(config.scopeToLabel),
+    ...config.fileRules.map(r => r.label), ...config.branchRules.map(r => r.label),
+    ...config.sizeThresholds.map(t => t.label),
+  ]);
+  for (const name of applied) {
+    assert.notEqual(
+      h.colorFor(name), config.labelColor,
+      `${name} has no labelColors prefix, so it would be created off-palette`,
+    );
+  }
+});
+
+// `sync_priority_labels.yml` and `require_issue_link.yml` run their scripts in
+// a sandbox without `require`, so they inline a color instead of calling
+// ensureLabel. This asserts those inlined values still match the config —
+// a stale copy is how `do-not-close` and `pending-deletion` came back in the
+// wrong colors mid-migration.
+test('inlined workflow label colors match labelColors in the config', () => {
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const known = new Set(Object.values(config.labelColors));
+  for (const rel of ['.github/workflows/sync_priority_labels.yml',
+                     '.github/workflows/require_issue_link.yml']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    for (const hit of body.match(/color: ['"]([0-9a-f]{6})['"]/g) || []) {
+      const hex = hit.match(/([0-9a-f]{6})/)[1];
+      assert.ok(known.has(hex), `${rel} uses ${hex}, which is not a labelColors value`);
+    }
+  }
+});
+
+// Scripts that CAN require the helper must not carry their own hex.
+test('label-creating scripts resolve colors from the config', () => {
+  for (const rel of ['.github/scripts/labeling/close-old-prs.js',
+                     '.github/scripts/release/normalize-release-labels.js']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    const hits = body.match(/color: ['"][0-9a-f]{6}['"]/g) || [];
+    assert.deepEqual(hits, [], `${rel} hardcodes ${hits.join(', ')}`);
+  }
+});

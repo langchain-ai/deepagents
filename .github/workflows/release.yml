@@ -917,6 +917,12 @@ jobs:
       contents: write
       # This permission is needed to update release PR labels
       pull-requests: write
+      # `mark_release_tagged` creates `auto:release-tagged` if it is missing.
+      # Label creation is POST /repos/{o}/{r}/labels, which GitHub gates on
+      # Issues, not Pull requests. Without this the publish succeeds but the
+      # PR keeps `auto:release-pending`, and `guard-pending-release` then
+      # blocks every later release-please run.
+      issues: write
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 

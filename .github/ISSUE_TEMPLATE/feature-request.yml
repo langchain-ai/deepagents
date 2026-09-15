@@ -1,7 +1,6 @@
 name: "✨ Feature Request"
 description: Request a new feature or enhancement for Deep Agents. For questions, please use the Deep Agents forum (below).
 labels: ["type:feature"]
-type: feature
 body:
   - type: markdown
     attributes:

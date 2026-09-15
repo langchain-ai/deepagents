@@ -1,0 +1,140 @@
+.github/scripts/release/release-notes.js
+  s_8988014629c1f7::t_4bf21a9c446e8f 17
+.github/ISSUE_TEMPLATE/bug-report.yml
+  s_8988014629c1f7::t_59227242fb2aaa 3
+.github/workflows/check_sdk_pin.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 6,94-95
+.github/workflows/reopen_on_assignment.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 44,84-85,90,127,133,135
+.github/LABELS.md
+  s_8988014629c1f7::t_8d2a31dd74d063 210
+  s_8988014629c1f7::t_5201df9503de75 1-2,6,9,11,15,41,43,45,51,53,56,98,104,108,110,116,118-120,129,148,150,155,159,162-165,183-184,208,212
+  s_8988014629c1f7::t_4bf21a9c446e8f 121,123,130,166-171,174-176,179-180
+  s_8988014629c1f7::t_796152dfb2ede0 3-5,7-8,10,12-14,16-40,42,44,46-50,52,54-55,57-97,99-103,105-107,109,111-115,117,122,124-128,131-147,149,151-154,156-158,160-161,172-173,177-178,181-182,185-207,209,211,213-225
+.github/LAYOUT.md
+  s_8988014629c1f7::t_ba04258a7d0654 16,33,35-41
+  s_8988014629c1f7::t_4bf21a9c446e8f 50-52
+.github/scripts/release/check_lockfile_release_scope.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 31
+.github/workflows/release_please_scope_check.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 26,187
+.github/workflows/ripgrep_timeout_comment.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 5,135,140,195-196
+.github/workflows/check_release_deps.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 31,59
+.github/workflows/sync_priority_labels.yml
+  s_8988014629c1f7::t_72e48a2066f6f6 70-73,143,208-211,282,392-395,491
+  s_8988014629c1f7::t_1b84b26b5ad1fa 1,9-14,69,207,391
+  s_8988014629c1f7::t_d8d895f770306c 184-186,190-193
+.github/scripts/tests/labeling/pr-labeler.test.js
+  s_8988014629c1f7::t_128f0a86acab95 1-87
+.github/scripts/tests/checks/test_check_project_readmes.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 60
+.github/workflows/pr_scope_file_check.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 15,179
+.github/workflows/waiting_on_author.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 1,11,104,166,213,255,273
+.github/workflows/_test.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 97,139,141,148,187,207,300,334,336
+.github/workflows/keep_open_on_comment.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 1,3,34,41,88,137,139-140
+.github/workflows/pr_labeler_backfill.yml
+  s_8988014629c1f7::t_e56f9f8825b4cd 73
+  s_8988014629c1f7::t_4bf21a9c446e8f 75,77
+.github/scripts/labeling/pr-labeler-config.json
+  s_8988014629c1f7::t_9e248a00f90e23 32
+  s_8988014629c1f7::t_1ca1ab3d2d8d03 34-55,65,71,76,81,86,91,96-97,101-102,106-107,111-112,116-117,121-122,126-128
+  s_8988014629c1f7::t_13d8211538eb6b 56-58,60-61
+.github/scripts/tests/labeling/test_check_pr_scope_files.py
+  s_8988014629c1f7::t_fffc94453631c5 218,397,403-404,573-574,576
+  s_8988014629c1f7::t_6a1d61e534f1fb 579
+.github/ISSUE_TEMPLATE/feature-request.yml
+  s_8988014629c1f7::t_59227242fb2aaa 3
+.github/scripts/tests/labeling/close-old-prs.test.js
+  s_8988014629c1f7::t_4bf21a9c446e8f 201,203,231,356,449,506-507,538,548,557,563,577,582,608,611-612,619,639-640,648-649,660,667,670,678-679,693,696,735,758,771,788,826,835,848,884,934,991,1004,1010,1080,1085,1092-1093,1117-1118,1138,1151,1182,1224,1236,1253,1356,1461,1464,1474,1497,1509,1522,1526,1535,1537-1538,1554,1563-1564
+  s_8988014629c1f7::t_a6188d8a3f399d 806,871,900,975,994,1013,1035
+.github/workflows/close_old_prs.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 3,6
+.github/workflows/tag-external-issues.yml
+  s_8988014629c1f7::t_d2137472f5966b 1
+  s_8988014629c1f7::t_4bf21a9c446e8f 90,144,166
+  s_8988014629c1f7::t_e56f9f8825b4cd 105,164
+.github/workflows/auto-label-by-package.yml
+  s_8988014629c1f7::t_3f593a8a538b46 40-44,59-62
+  s_8988014629c1f7::t_921357c4e895a6 1-3,38-39,46-56
+.github/scripts/tests/workflows/test_ci_workflow.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 631,635-636,640,868
+.github/workflows/pr_lint.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 56,143,145,170-172,189
+.github/scripts/labeling/pr-labeler.js
+  s_8988014629c1f7::t_497549a6bb9d6f 160-162,166,178
+  s_8988014629c1f7::t_4bf21a9c446e8f 53,290-291
+  s_8988014629c1f7::t_64da5d14f70728 44,181-206,353
+  s_8988014629c1f7::t_9e248a00f90e23 25,45,319-326,360
+  s_8988014629c1f7::t_a33b0db108aa54 179-180
+.github/scripts/checks/markdown_file_check.js
+  s_8988014629c1f7::t_4bf21a9c446e8f 14
+.github/scripts/release/check_dep_freshness.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 31
+.github/scripts/tests/release/test_check_sdk_pin.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 271,275
+.github/workflows/clear_pending_deletion.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 1,14,30,50,52-53,82,106
+.github/workflows/release-please.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 998-999
+.github/scripts/labeling/close-old-prs.js
+  s_8988014629c1f7::t_5a844f47c26520 35
+  s_8988014629c1f7::t_4bf21a9c446e8f 3-4,275,317,319,402-403,408,526,562,590,676,707,715,718,800,812,872-873
+.github/workflows/release.yml
+  s_8988014629c1f7::t_5a844f47c26520 1092,1113
+  s_8988014629c1f7::t_4bf21a9c446e8f 84,767
+.github/scripts/tests/workflows/test_warnings_are_errors.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 4,165,169-170,174
+.github/workflows/markdown_file_check.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 19
+.github/scripts/tests/labeling/test_pr_labeler.py
+  s_8988014629c1f7::t_128f0a86acab95 1-16
+.github/workflows/pr_labeler.yml
+  s_8988014629c1f7::t_099467a76911cf 13-14,92-96,103-105,113-115,119,123,137
+  s_8988014629c1f7::t_f71edb40729b80 1-4,189,191-193,195,204,261,265,267
+.github/scripts/release/check_release_deps.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 44,1346
+.github/scripts/checks/check_project_readmes.py
+  s_8988014629c1f7::t_4bf21a9c446e8f 10,38
+.github/scripts/checks/readme-gate.js
+  s_8988014629c1f7::t_4bf21a9c446e8f 14,60
+.github/workflows/waiting_on_author_reply.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 1,62
+.github/RELEASING.md
+  s_8988014629c1f7::t_4bf21a9c446e8f 50,78,325-326,719,734,743,746,750,1006,1032
+.github/workflows/block_fork_main_prs.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 13,31,85
+.github/workflows/require_issue_link.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 3,6,34-36,43-44,122,125,149-150,179,184,192,194,197,206,208,224-225,287,296,316,327,335,337,394,405
+  s_8988014629c1f7::t_d2137472f5966b 8,33,46-48,191
+.github/workflows/project_readme_check.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 19,70
+.github/workflows/release_fanout_bypass_warn.yml
+  s_8988014629c1f7::t_4bf21a9c446e8f 2,4,37-38,40-43,121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5b737478cd40ed3b295f2c76ca364e510f34ed01",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_8988014629c1f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ed68c6e-c124-44d7-8dbb-6561e4745a48",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

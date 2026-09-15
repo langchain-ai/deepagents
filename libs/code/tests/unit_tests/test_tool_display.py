@@ -301,3 +301,27 @@ class TestFormatToolMessageContent:
         )
         assert "[Image:" in result
         assert "AAAA" not in result
+
+
+class TestMoveToolDisplay:
+    """`move` renders both endpoints, unlike the single-path file tools."""
+
+    def test_move_shows_source_and_destination(self) -> None:
+        result = format_tool_display(
+            "move", {"source_path": "/tmp/a.py", "destination_path": "/tmp/b.py"}
+        )
+        assert result.startswith(_PREFIX)
+        assert "move" in result
+        assert "a.py" in result
+        assert "b.py" in result
+        assert "->" in result
+
+    def test_move_missing_destination_falls_back_to_generic(self) -> None:
+        result = format_tool_display("move", {"source_path": "/tmp/a.py"})
+        assert _PREFIX in result
+        assert "move" in result
+
+    def test_move_missing_both_falls_back_to_generic(self) -> None:
+        result = format_tool_display("move", {})
+        assert _PREFIX in result
+        assert "move" in result

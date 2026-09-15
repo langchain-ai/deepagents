@@ -743,3 +743,90 @@ async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
 
     missing = await be.adelete("*")
     assert missing.error is not None and "not found" in missing.error
+
+
+def _move_op_batches(batch_calls: list[list]) -> list[list]:
+    """Batches that carried both halves of a move (a put plus a tombstone)."""
+    return [
+        ops
+        for ops in batch_calls
+        if any(isinstance(op, PutOp) and op.value is None for op in ops) and any(isinstance(op, PutOp) and op.value is not None for op in ops)
+    ]
+
+
+def test_store_backend_move_uses_single_batch_call() -> None:
+    """A move issues one batched store write, not a put followed by a delete."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.txt", "AAA")
+    store.batch_calls.clear()  # ignore the setup write
+
+    result = be.move("/a.txt", "/b.txt")
+    assert result.error is None
+
+    move_batches = _move_op_batches(store.batch_calls)
+    assert len(move_batches) == 1
+    ops = move_batches[0]
+    # Destination first: if a store applies ops in order and is interrupted, a
+    # recoverable duplicate beats an unrecoverable deleted source.
+    assert [op.key for op in ops] == ["/b.txt", "/a.txt"]
+    assert ops[0].value is not None
+    assert ops[1].value is None
+
+
+async def test_store_backend_amove_uses_single_batch_call() -> None:
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.txt", "AAA")
+    store.batch_calls.clear()
+
+    result = await be.amove("/a.txt", "/b.txt")
+    assert result.error is None
+
+    move_batches = _move_op_batches(store.batch_calls)
+    assert len(move_batches) == 1
+    assert [op.key for op in move_batches[0]] == ["/b.txt", "/a.txt"]
+
+
+def test_store_backend_move_writes_nothing_when_refused() -> None:
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/a.txt", "AAA")
+    store.batch_calls.clear()
+
+    assert be.move("/a.txt", "/a.txt").error is not None
+    assert be.move("/nope.txt", "/b.txt").error is not None
+
+    assert _move_op_batches(store.batch_calls) == []
+    assert be.read("/a.txt").file_data["content"] == "AAA"
+
+
+def test_store_backend_move_treats_wildcard_as_literal_key() -> None:
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "A")
+    be.write("/work/b.txt", "B")
+
+    # `*` is a literal key component, not a glob, so this matches nothing.
+    result = be.move("/work/*", "/dest.txt")
+
+    assert result.error is not None
+    assert "not found" in result.error
+    assert be.read("/work/a.txt").error is None
+    assert be.read("/work/b.txt").error is None
+
+
+def test_store_backend_move_preserves_an_unreadable_value() -> None:
+    """A value too malformed for `read` can still be relocated.
+
+    The move copies the stored value verbatim instead of round-tripping it
+    through `_convert_store_item_to_file_data`, which raises on a bad shape.
+    """
+    mem_store = InMemoryStore()
+    mem_store.put(("filesystem",), "/broken.txt", {"unexpected": "shape"})
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    result = be.move("/broken.txt", "/moved.txt")
+
+    assert result.error is None
+    assert mem_store.get(("filesystem",), "/moved.txt").value == {"unexpected": "shape"}
+    assert mem_store.get(("filesystem",), "/broken.txt") is None

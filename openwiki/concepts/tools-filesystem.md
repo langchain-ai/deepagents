@@ -69,7 +69,7 @@ MCP discovery is a separate source of tools. dcode wraps each remote tool as an 
 
 `FilesystemMiddleware` owns model-facing filesystem tools and accepts an initialized `BackendProtocol` instance, defaulting to ephemeral `StateBackend`. The backend owns storage and filesystem operations; middleware validates inputs, applies policy, formats `ToolMessage` output, and manages context eviction. A callable backend factory is rejected: callers must pass an initialized backend instance.
 
-The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`.
+The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `move`, `glob`, `grep`, and `execute`.
 
 | Tool | Role |
 | --- | --- |
@@ -78,6 +78,7 @@ The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`,
 | `write_file` | Create or replace a file. |
 | `edit_file` | Perform exact string replacements in an existing file. |
 | `delete` | Recursively delete a file, directory, or backend key prefix when supported. |
+| `move` | Relocate a single file to a new absolute path when supported. Files only: a directory or symlink source is refused, as is a directory destination. An existing destination needs `overwrite=True`. |
 | `glob` | Find matching regular files. |
 | `grep` | Search literal text. |
 | `execute` | Run a command only when the backend provides shell execution. |
@@ -88,11 +89,11 @@ Backends return structured results rather than preformatted text. `ReadResult` v
 
 `FilesystemMiddleware(tools=...)` is a visibility allowlist, not a permission policy. `None` and `"all"` opt into all names; a list constructs only listed factories, so omitted tools never reach the dispatchable node. An explicit list must include `read_file`, otherwise construction raises `ValueError`.
 
-Before both sync and async model calls, the middleware filters tools that the resolved backend cannot serve. `execute` requires `SandboxBackendProtocol`; `delete` requires a backend implementation rather than the protocol's default `NotImplementedError`. If `execute` somehow reaches its implementation without support, it returns an execution-not-available error. This request pass also rewrites `grep` and `execute` descriptions for the active search/execution tools and, when execution is active, adds composite-backend shell-path routing guidance.
+Before both sync and async model calls, the middleware filters tools that the resolved backend cannot serve. `execute` requires `SandboxBackendProtocol`; `delete` and `move` each require a backend implementation rather than the protocol's default `NotImplementedError`. If `execute` somehow reaches its implementation without support, it returns an execution-not-available error. This request pass also rewrites `grep` and `execute` descriptions for the active search/execution tools and, when execution is active, adds composite-backend shell-path routing guidance.
 
 `grep` is literal substring search, not regex. Its default total match cap is `grep_max_count=1000`; a call can override it with `max_count`, and `None` disables the default. The asynchronous protocol wrapper applies a wait timeout and enforces the requested cap even if an older concrete backend does not accept `max_count`. For actual regex, the `grep` description recommends `rg` through `execute` only if execution is available.
 
-Large results from tools outside the filesystem set can be evicted beneath the backend artifacts root so the model sees a preview and file reference. `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, and `delete` are excluded because they truncate themselves, have awkward reread behavior, or provide compact confirmations. Large human messages follow a related lifecycle: the full message remains in state while the request receives a tagged preview and filesystem reference.
+Large results from tools outside the filesystem set can be evicted beneath the backend artifacts root so the model sees a preview and file reference. `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, `delete`, and `move` are excluded because they truncate themselves, have awkward reread behavior, or provide compact confirmations. Large human messages follow a related lifecycle: the full message remains in state while the request receives a tagged preview and filesystem reference.
 
 ## Shell execution and path routing
 
@@ -106,7 +107,7 @@ In a `CompositeBackend`, file-tool paths can be virtual routes while `execute` r
 
 `FilesystemPermission` rules are enforced inside filesystem tool implementations, not by removing schemas. Rules use wcmatch operation-and-path matching and return the first matching `allow`, `deny`, or `interrupt` decision. Denied operations return an error, and denied paths are filtered from list and search results.
 
-Exact-path tools (`read_file`, `write_file`, `edit_file`) test their one target. Bulk tools (`ls`, `glob`, `grep`, `delete`) must interrupt when their search subtree may overlap an anchored protected prefix. A pathless bulk call such as `grep(path=None)` conservatively fires for any relevant interrupt rule; `glob` also considers an absolute pattern that can redirect its search outside the supplied path. Graph assembly converts interrupt-mode permission rules into predicates for `HumanInTheLoopMiddleware`, which owns pausing and approval. A preceding deny wins for exact-path calls, so a denial does not become an approval request.
+Exact-path tools (`read_file`, `write_file`, `edit_file`, `move`) test their named targets. `move` is the only tool with two path arguments: it declares read and write on its source and write on its destination, and an interrupt fires when either endpoint matches. Bulk tools (`ls`, `glob`, `grep`, `delete`) must interrupt when their search subtree may overlap an anchored protected prefix. A pathless bulk call such as `grep(path=None)` conservatively fires for any relevant interrupt rule; `glob` also considers an absolute pattern that can redirect its search outside the supplied path. Graph assembly converts interrupt-mode permission rules into predicates for `HumanInTheLoopMiddleware`, which owns pausing and approval. A preceding deny wins for exact-path calls, so a denial does not become an approval request.
 
 Permission patterns must start with `/` and cannot contain `..` or `~`. Permissions combined with an execution-capable backend are rejected unless every rule is scoped to routes, because arbitrary shell commands cannot be governed by tool-level filesystem permissions. This protects against mistaking path policy for a shell sandbox.
 
@@ -117,7 +118,7 @@ The state-backend integration tests demonstrate that two parallel `write_file` c
 When troubleshooting, first identify the layer:
 
 1. **Absent from model choices:** inspect the filesystem `tools=` list, installed middleware, profile exclusions, extension collisions, and MCP server status.
-2. **`execute` or `delete` absent:** inspect backend capability. An allowlist cannot manufacture a missing implementation.
+2. **`execute`, `delete`, or `move` absent:** inspect backend capability. An allowlist cannot manufacture a missing implementation.
 3. **Visible but rejected or paused:** distinguish exclusion, backend error, filesystem denial, and HITL interruption; they have different owners.
 4. **Search seems incomplete:** inspect `truncated`, then narrow the path or pattern.
 5. **Shell can’t see a file-tool path:** inspect composite route guidance; use file tools for mounts without a host mapping.

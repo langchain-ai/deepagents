@@ -98,7 +98,7 @@ Caption: Build-time resolves policy and compiles the LangChain graph; invoke-tim
 
 Public backend exports include `FilesystemBackend`, `StoreBackend`, `CompositeBackend`, `ContextHubBackend`, `LocalShellBackend`, and `LangSmithSandbox`. Select an implementation based on the required storage and execution boundary; see [backends](/openwiki/concepts/backends.md).
 
-`FilesystemMiddleware` provides `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. The `execute` tool runs a command only when the resolved backend implements `SandboxBackendProtocol`; otherwise it returns an error. In particular, `LocalShellBackend` implements that protocol but executes directly on the host without sandboxing, process isolation, or security restrictions. Shell access bypasses filesystem rules, so do not use it for web/API, multi-tenant, or untrusted workloads.
+`FilesystemMiddleware` provides `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `move`, `glob`, `grep`, and `execute`. The `execute` tool runs a command only when the resolved backend implements `SandboxBackendProtocol`; otherwise it returns an error. In particular, `LocalShellBackend` implements that protocol but executes directly on the host without sandboxing, process isolation, or security restrictions. Shell access bypasses filesystem rules, so do not use it for web/API, multi-tenant, or untrusted workloads.
 
 `tools=` is additive: application tools are merged with the built-in suite. To hide a built-in tool from the model, use a harness profile's `excluded_tools`; to remove filesystem tools from the harness itself, provide a `FilesystemMiddleware` configured with the desired `tools`.
 
@@ -154,7 +154,7 @@ The server pattern exposes endpoints to create threads, start/restart and poll r
 
 Use `permissions=` for built-in filesystem-tool policy, not sandboxing. `FilesystemPermission` rules are ordered first-match decisions with `allow`, `deny`, and `interrupt` modes; unmatched operations are allowed. `FilesystemMiddleware` enforces them for its tools, but direct backend use does not. Declarative subagents inherit parent rules unless their own rules replace them.
 
-Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem rules. The builder turns those rules into path-aware `HumanInTheLoopMiddleware` predicates and merges them with explicit entries; explicit configuration wins when both name the same tool. Bulk operations such as `ls`, `glob`, `grep`, and `delete` interrupt conservatively when their possible scope could overlap a protected path. Install a `checkpointer` when interrupted runs must be resumed.
+Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem rules. The builder turns those rules into path-aware `HumanInTheLoopMiddleware` predicates and merges them with explicit entries; explicit configuration wins when both name the same tool. Bulk operations such as `ls`, `glob`, `grep`, and `delete` interrupt conservatively when their possible scope could overlap a protected path. `move` interrupts when either of its endpoints matches. Install a `checkpointer` when interrupted runs must be resumed.
 
 ## 7. Pass LangGraph operational configuration through
 

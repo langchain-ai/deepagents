@@ -520,6 +520,18 @@ and the prompt reads as hung.
 """
 
 
+def _tool_path_arg(args: dict[str, Any]) -> str:
+    """Return the path a file-op tool acts on, across the differing arg names.
+
+    `move` names its endpoints `source_path`/`destination_path`. The source is
+    what carries the before-image, since that is the file whose prior content a
+    diff or a restore needs.
+    """
+    return str(
+        args.get("file_path") or args.get("path") or args.get("source_path") or ""
+    )
+
+
 def build_approval_preview(
     tool_name: str,
     args: dict[str, Any],
@@ -530,7 +542,7 @@ def build_approval_preview(
     Returns:
         ApprovalPreview with diff and details, or None if tool not supported.
     """
-    path_str = str(args.get("file_path") or args.get("path") or "")
+    path_str = _tool_path_arg(args)
     display_path = format_display_path(path_str)
     physical_path = resolve_physical_path(path_str, assistant_id)
 
@@ -569,6 +581,19 @@ def build_approval_preview(
             diff=diff,
             diff_title=f"Diff {display_path}",
             stats=stats,
+        )
+
+    if tool_name == "move":
+        destination = str(args.get("destination_path") or "")
+        details = [
+            f"From: {path_str}",
+            f"To: {destination}",
+            "Action: Move file"
+            + (", replacing the destination" if args.get("overwrite") else ""),
+        ]
+        return ApprovalPreview(
+            title=f"Move {display_path}",
+            details=details,
         )
 
     if tool_name == "delete":
@@ -700,9 +725,9 @@ class FileOpTracker:
         Creates a record for the operation and, for write/edit/delete
         operations, captures the file's content before the operation.
         """
-        if tool_name not in {"read_file", "write_file", "edit_file", "delete"}:
+        if tool_name not in {"read_file", "write_file", "edit_file", "delete", "move"}:
             return
-        path_str = str(args.get("file_path") or args.get("path") or "")
+        path_str = _tool_path_arg(args)
         display_path = format_display_path(path_str)
         record = FileOperationRecord(
             tool_name=tool_name,
@@ -717,7 +742,7 @@ class FileOpTracker:
             logger.warning("Could not read pre-edit content for %s: %s", target, reason)
             record.diff_outcome = "untrusted_before"
 
-        if tool_name in {"write_file", "edit_file", "delete"}:
+        if tool_name in {"write_file", "edit_file", "delete", "move"}:
             if self.backend and path_str:
                 try:
                     content, error = _response_content(

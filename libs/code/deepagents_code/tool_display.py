@@ -196,7 +196,21 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return path.name
 
     # Tool-specific formatting - show the most important argument(s)
-    if tool_name in {"read_file", "write_file", "edit_file", "delete"}:
+    if tool_name == "move":
+        # Two paths, so show the relocation rather than one endpoint.
+        source = tool_args.get("source_path")
+        destination = tool_args.get("destination_path")
+        if source is not None and destination is not None:
+            source_raw = strip_dangerous_unicode(str(source))
+            destination_raw = strip_dangerous_unicode(str(destination))
+            rendered = (
+                f"{abbreviate_path(source_raw)} -> {abbreviate_path(destination_raw)}"
+            )
+            if source_raw != str(source) or destination_raw != str(destination):
+                rendered += _HIDDEN_CHAR_MARKER
+            return f"{prefix} {tool_name}({rendered})"
+
+    elif tool_name in {"read_file", "write_file", "edit_file", "delete"}:
         # File operations: show the primary file path argument (file_path or path)
         path_value = tool_args.get("file_path")
         if path_value is None:

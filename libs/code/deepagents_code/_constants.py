@@ -14,7 +14,17 @@ DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
 FS_TOOL_NAMES: Final[frozenset[str]] = frozenset(
-    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+    {
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete",
+        "move",
+        "glob",
+        "grep",
+        "execute",
+    }
 )
 """Mirror of the SDK's `FsToolName` literal members.
 

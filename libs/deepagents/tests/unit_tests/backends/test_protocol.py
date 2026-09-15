@@ -17,10 +17,12 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     GrepResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     _method_accepts_max_count,
     _supports_delete,
+    _supports_move,
 )
 
 
@@ -73,6 +75,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.delete("/file.txt")
 
+    def test_move(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.move("/a.txt", "/b.txt")
+
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.upload_files([("/file.txt", b"data")])
@@ -121,6 +127,10 @@ class TestAsyncMethodsPropagateNotImplemented:
         with pytest.raises(NotImplementedError):
             await backend.adelete("/file.txt")
 
+    async def test_amove(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.amove("/a.txt", "/b.txt")
+
 
 class TestSupportsDelete:
     """`_supports_delete` detects whether a backend overrides `delete`."""
@@ -134,6 +144,54 @@ class TestSupportsDelete:
                 return DeleteResult(path=file_path)
 
         assert _supports_delete(MyBackend()) is True
+
+
+class TestSupportsMove:
+    """`_supports_move` detects whether a backend overrides `move`."""
+
+    def test_false_when_not_overridden(self, backend: BareBackend) -> None:
+        assert _supports_move(backend) is False
+
+    def test_true_when_overridden(self) -> None:
+        class MyBackend(BackendProtocol):
+            def move(self, source_path: str, destination_path: str, *, overwrite: bool = False) -> MoveResult:
+                return MoveResult(source_path=source_path, destination_path=destination_path)
+
+        assert _supports_move(MyBackend()) is True
+
+
+class TestMoveResult:
+    """`MoveResult` shares one shape for success and failure."""
+
+    def test_defaults_are_all_none(self) -> None:
+        result = MoveResult()
+        assert result.error is None
+        assert result.source_path is None
+        assert result.destination_path is None
+
+    def test_fields_are_mutable_for_composite_remapping(self) -> None:
+        # `CompositeBackend` rewrites both path fields in place to remap a
+        # routed result back into composite space, so this must not be frozen.
+        result = MoveResult(source_path="/a", destination_path="/b")
+        result.source_path = "/routed/a"
+        result.destination_path = "/routed/b"
+        assert (result.source_path, result.destination_path) == ("/routed/a", "/routed/b")
+
+
+class TestAmoveDefaultDelegatesToMove:
+    """The `amove` default forwards every argument to `move`, `overwrite` included."""
+
+    async def test_overwrite_is_forwarded(self) -> None:
+        seen: dict[str, object] = {}
+
+        class MyBackend(BackendProtocol):
+            def move(self, source_path: str, destination_path: str, *, overwrite: bool = False) -> MoveResult:
+                seen.update(source_path=source_path, destination_path=destination_path, overwrite=overwrite)
+                return MoveResult(source_path=source_path, destination_path=destination_path)
+
+        result = await MyBackend().amove("/a.txt", "/b.txt", overwrite=True)
+        assert result.error is None
+        assert seen == {"source_path": "/a.txt", "destination_path": "/b.txt", "overwrite": True}
 
 
 class TestAdditionalAsyncWrappersPropagateNotImplemented:

@@ -3941,7 +3941,15 @@ class TestCreateCliAgentFsToolsWiring:
             if isinstance(m, FilesystemMiddleware)
         )
 
-        disallowed = {"write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        disallowed = {
+            "write_file",
+            "edit_file",
+            "delete",
+            "move",
+            "glob",
+            "grep",
+            "execute",
+        }
         for filesystem in (main_filesystem, subagent_filesystem):
             names = {tool.name for tool in filesystem.tools}
             assert names == {"ls", "read_file"}

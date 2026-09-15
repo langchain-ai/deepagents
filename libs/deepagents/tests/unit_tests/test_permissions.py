@@ -18,8 +18,9 @@ from deepagents.backends.sandbox import _parse_glob_output
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
 from deepagents.middleware import filesystem as filesystem_module
-from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _make_fs_when_predicate
+from deepagents.middleware._fs_interrupt import _FS_TOOL_PATH_ARGS, _build_interrupt_on_from_permissions, _make_fs_when_predicate
 from deepagents.middleware.filesystem import (
+    _FS_TOOL_ORDER,
     FilesystemMiddleware,
     FilesystemPermission,
     _all_paths_scoped_to_routes,
@@ -646,12 +647,12 @@ class TestBuildInterruptOnFromPermissions:
         """A write-only interrupt rule registers only the write-op tools."""
         rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
         out = _build_interrupt_on_from_permissions([rule])
-        assert set(out) == {"write_file", "edit_file", "delete"}
+        assert set(out) == {"write_file", "edit_file", "delete", "move"}
 
     def test_registers_read_tools_for_read_interrupt(self):
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
         out = _build_interrupt_on_from_permissions([rule])
-        assert set(out) == {"ls", "read_file", "glob", "grep"}
+        assert set(out) == {"ls", "read_file", "glob", "grep", "move"}
 
     @pytest.mark.parametrize(
         ("file_path", "expected"),
@@ -1680,3 +1681,232 @@ class TestGlobResultPermissionFiltering:
         parsed = _parse_glob_output(resp, "/w")
 
         assert _apply_permissions_to_glob_results(rules, parsed.matches) == ["/w/app.py"]
+
+
+class TestMovePermissions:
+    """`move` must require the union of the authorities it fuses together.
+
+    A move is `read_file(source)` + `write_file(destination)` +
+    `delete(source)` in one call, so it must never succeed where that
+    three-call sequence would fail.
+    """
+
+    def _backend(self) -> StoreBackend:
+        return _make_backend({"/secrets/key.pem": "PRIVATE", "/work/a.txt": "AAA", "/vault/pinned.txt": "PINNED"})
+
+    def _move_tool(self, backend: StoreBackend):
+        return next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "move")
+
+    def test_read_deny_on_source_blocks_relocation(self) -> None:
+        # THE EXFILTRATION REGRESSION. Write is denied nowhere, so a move that
+        # only checked `write` would relocate the file to a readable path and
+        # `read_file` would then serve content that `deny read` protected --
+        # without the model ever touching a denied path.
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/secrets/key.pem", "destination_path": "/work/leak.pem"},
+            rules,
+            backend=backend,
+        )
+
+        assert "permission denied for read" in result
+        assert "/secrets/key.pem" in result
+        # Nothing moved: the secret is still only at its protected path.
+        assert backend.read("/secrets/key.pem").error is None
+        assert backend.read("/work/leak.pem").error is not None
+
+    async def test_read_deny_on_source_blocks_relocation_async(self) -> None:
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+
+        result = await _ainvoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/secrets/key.pem", "destination_path": "/work/leak.pem"},
+            rules,
+            backend=backend,
+        )
+
+        assert "permission denied for read" in result
+        assert backend.read("/work/leak.pem").error is not None
+
+    def test_write_deny_on_source_blocks_moving_the_file_away(self) -> None:
+        # A move is destructive at the source, so a deny-write rule there must
+        # stop the file being relocated out from under it.
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["write"], paths=["/vault/**"], mode="deny")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/vault/pinned.txt", "destination_path": "/work/freed.txt"},
+            rules,
+            backend=backend,
+        )
+
+        assert "permission denied for write" in result
+        assert "/vault/pinned.txt" in result
+        assert backend.read("/vault/pinned.txt").error is None
+        assert backend.read("/work/freed.txt").error is not None
+
+    def test_write_deny_on_destination_blocks_creating_the_file_there(self) -> None:
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["write"], paths=["/vault/**"], mode="deny")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/a.txt", "destination_path": "/vault/smuggled.txt"},
+            rules,
+            backend=backend,
+        )
+
+        assert "permission denied for write" in result
+        assert "/vault/smuggled.txt" in result
+        assert backend.read("/vault/smuggled.txt").error is not None
+        assert backend.read("/work/a.txt").error is None
+
+    def test_overwrite_against_denied_destination_is_blocked(self) -> None:
+        # `overwrite=True` needs no extra authority beyond write-on-destination,
+        # but it must not escape that check either.
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["write"], paths=["/vault/**"], mode="deny")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/a.txt", "destination_path": "/vault/pinned.txt", "overwrite": True},
+            rules,
+            backend=backend,
+        )
+
+        assert "permission denied for write" in result
+        assert backend.read("/vault/pinned.txt").file_data["content"] == "PINNED"
+
+    def test_allowed_move_succeeds(self) -> None:
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/a.txt", "destination_path": "/work/b.txt"},
+            rules,
+            backend=backend,
+        )
+
+        assert "Moved /work/a.txt to /work/b.txt" in result
+        assert backend.read("/work/b.txt").file_data["content"] == "AAA"
+        assert backend.read("/work/a.txt").error is not None
+
+    def test_read_allowed_destination_does_not_relax_source_read_deny(self) -> None:
+        # End-to-end shape of the exfiltration attempt: even with the
+        # destination fully readable, the source's read-deny governs.
+        backend = self._backend()
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),
+        ]
+        middleware = FilesystemMiddleware(backend=backend, _permissions=rules)
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        moved = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/secrets/key.pem", "destination_path": "/work/leak.pem"},
+            rules,
+            backend=backend,
+        )
+        assert "permission denied for read" in moved
+
+        # The destination never came into existence, so reading it fails too.
+        read_back = read_tool.invoke({"file_path": "/work/leak.pem", "runtime": _runtime("r1")})
+        assert read_back.status == "error"
+        assert "PRIVATE" not in str(read_back.content)
+
+    def test_directory_source_is_refused(self) -> None:
+        backend = _make_backend({"/work/sub/a.txt": "A", "/work/sub/b.txt": "B"})
+        rules = [FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="allow")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/sub", "destination_path": "/work/moved"},
+            rules,
+            backend=backend,
+        )
+
+        assert "missing or is a directory" in result
+        assert backend.read("/work/sub/a.txt").error is None
+
+    def test_same_path_is_refused(self) -> None:
+        backend = self._backend()
+        rules = [FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="allow")]
+
+        result = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/a.txt", "destination_path": "/work/a.txt"},
+            rules,
+            backend=backend,
+        )
+
+        assert "same path" in result
+        assert backend.read("/work/a.txt").error is None
+
+    def test_malformed_argument_is_named_in_the_error(self) -> None:
+        backend = self._backend()
+        rules: list[FilesystemPermission] = []
+
+        source_bad = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/../etc/passwd", "destination_path": "/work/x.txt"},
+            rules,
+            backend=backend,
+        )
+        dest_bad = _invoke_with_permissions(
+            self._move_tool(backend),
+            {"source_path": "/work/a.txt", "destination_path": "/work/../etc/passwd"},
+            rules,
+            backend=backend,
+        )
+
+        assert "source_path:" in source_bad
+        assert "destination_path:" in dest_bad
+
+
+class TestMoveInterruptRegistration:
+    """Interrupt-mode rules must reach `move` through either endpoint."""
+
+    def test_registry_covers_every_filesystem_tool(self) -> None:
+        # A tool missing from `_FS_TOOL_PATH_ARGS` gets no interrupt config, and
+        # the in-tool checks only test for "deny", so an "interrupt" rule would
+        # fall through to allow. That makes registry completeness a security
+        # property, not a tidiness one.
+        assert set(_FS_TOOL_ORDER) == set(_FS_TOOL_PATH_ARGS)
+
+    def test_move_is_registered_for_a_write_interrupt_rule(self) -> None:
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        assert "move" in _build_interrupt_on_from_permissions([rule])
+
+    def test_move_is_registered_for_a_read_interrupt_rule(self) -> None:
+        # A read-mode rule must gate `move`, because a move exports content.
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        assert "move" in _build_interrupt_on_from_permissions([rule])
+
+    def _fires(self, rules: list[FilesystemPermission], args: dict) -> bool:
+        config = _build_interrupt_on_from_permissions(rules)["move"]
+        request = ToolCallRequest(
+            runtime=_runtime("i1"),
+            tool_call={"id": "i1", "name": "move", "args": args},
+            state={},
+            tool=None,
+        )
+        return bool(config["when"](request))
+
+    def test_fires_on_a_source_only_match(self) -> None:
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")]
+        assert self._fires(rules, {"source_path": "/secrets/k.pem", "destination_path": "/scratch/x"})
+
+    def test_fires_on_a_destination_only_match(self) -> None:
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
+        assert self._fires(rules, {"source_path": "/scratch/x", "destination_path": "/secrets/k.pem"})
+
+    def test_does_not_fire_when_neither_endpoint_matches(self) -> None:
+        rules = [FilesystemPermission(operations=["read", "write"], paths=["/secrets/**"], mode="interrupt")]
+        assert not self._fires(rules, {"source_path": "/work/a.txt", "destination_path": "/work/b.txt"})

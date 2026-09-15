@@ -126,6 +126,35 @@
   },
   {
     "function": {
+      "description": "Moves a single file to a new absolute path.\n\nUsage:\n- Relocates one file without reading or rewriting its contents, so prefer this\n  over read_file + write_file + delete when a file just needs to live elsewhere.\n- `destination_path` is the file's full new path, including the name it should\n  have there. Passing an existing directory is an error, not a request to move\n  the file into it.\n- Files only. Moving a directory is not supported, and neither is moving a\n  symlink.\n- An existing file at `destination_path` is an error unless you pass\n  `overwrite=True`, which replaces it permanently.\n- Missing parent directories of the destination are created automatically.",
+      "name": "move",
+      "parameters": {
+        "properties": {
+          "destination_path": {
+            "description": "Absolute path to move the file to, including the file name it should have there. Must be absolute, not relative, and must not be an existing directory.",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "Set to true to replace an existing file at destination_path. Defaults to false, which errors instead.",
+            "type": "boolean"
+          },
+          "source_path": {
+            "description": "Absolute path of the file to move. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_path",
+          "destination_path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Find files matching a glob pattern, returning absolute paths.\n\nSupports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.\n\nA pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files).\n\nLeading-dot names are only matched when the pattern segment itself starts with `.` (use `.env`, or `.github/**/*.yml`). Because `**` will not descend into dot-directories, the bare form `*.yml` is *broader* than `**/*.yml` and is usually what you want.",
       "name": "glob",
       "parameters": {

@@ -61,7 +61,7 @@ LLM calls re-enter framework execution at the framework/agent-code boundary. `Su
 
 ### Filesystem rules are tool policy, not host confidentiality
 
-`FilesystemPermission` rules apply ordered `allow`, `deny`, or `interrupt` decisions to filesystem-tool reads and writes. Patterns must be absolute and may not contain `..` or `~`; `interrupt` delegates to `HumanInTheLoopMiddleware`. Recursive delete handling is conservative where a deny pattern might cover the target or a descendant.
+`FilesystemPermission` rules apply ordered `allow`, `deny`, or `interrupt` decisions to filesystem-tool reads and writes. Patterns must be absolute and may not contain `..` or `~`; `interrupt` delegates to `HumanInTheLoopMiddleware`. Recursive delete handling is conservative where a deny pattern might cover the target or a descendant. `move` requires read and write on its source plus write on its destination, because it fuses a read, a write, and a delete into one call; the read requirement is what prevents relocating a read-denied file to a readable path and reading it there.
 
 Do not describe these rules as a universal filesystem or secret boundary. The middleware rejects unscoped permissions with execution-capable backends because execute-tool permissions are not implemented. A shell command can still read an accessible absolute path. Use a separate UID, an OS keyring inaccessible to the agent process, or a sandbox when confidentiality matters.
 
@@ -75,7 +75,7 @@ The launcher copies the parent environment, strips selected cloud-auth and proce
 
 ### Project execution trust and approvals
 
-HITL gates dcode side-effecting tools including `execute`, `write_file`, `edit_file`, `web_search`, `fetch_url`, `task`, and compaction/async-subagent work. Non-interactive mode uses a shell allow-list. `auto_approve` bypasses prompts, although Unicode and URL warnings still display. Warnings for bidi/invisible Unicode or suspicious URLs are review aids, not sanitization or prompt-injection defenses.
+HITL gates dcode side-effecting tools including `execute`, `write_file`, `edit_file`, `delete`, `move`, `web_search`, `fetch_url`, `task`, and compaction/async-subagent work. Non-interactive mode uses a shell allow-list. `auto_approve` bypasses prompts, although Unicode and URL warnings still display. Warnings for bidi/invisible Unicode or suspicious URLs are review aids, not sanitization or prompt-injection defenses.
 
 Project MCP servers and hooks require workspace trust or explicit opt-in before they may create subprocesses or network connections. Hook trust is keyed to a canonical project root. A session grant is bound to hook-file content and is re-evaluated after a working-directory change; headless policy ignores persisted trust and needs an explicit grant.
 

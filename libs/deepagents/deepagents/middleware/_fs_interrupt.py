@@ -9,6 +9,7 @@ whether the access intersects an interrupt-mode rule.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -30,19 +31,66 @@ from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPerm
 #     anything.
 ToolScope = Literal["exact", "bulk"]
 
-# Map filesystem tool name → (operation, path-arg name, scope, pattern-arg name).
+
+@dataclass(frozen=True)
+class _FsPathSpec:
+    """One path argument of a filesystem tool and the operations it implies.
+
+    The optional pattern-arg name is set only for `glob`, whose `pattern`
+    argument can itself redirect the search root (an absolute pattern ignores
+    the call's `path`); see `_make_bulk_when_predicate`.
+    """
+
+    arg: str
+    operations: tuple[FilesystemOperation, ...]
+    scope: ToolScope
+    pattern_arg: str | None = None
+
+
+@dataclass(frozen=True)
+class _FsToolSpec:
+    """How a filesystem tool's arguments map onto permission checks.
+
+    `paths` is ordered, but the interrupt predicate is an OR across all of
+    them: a human approving a call must see it if *any* path argument is
+    sensitive.
+
+    Most tools have exactly one path argument. `move` has two, with different
+    operations on each -- read+write on the source it consumes, write on the
+    destination it creates -- which is why this is a spec rather than a tuple.
+    Stating it here means the HITL layer and the tool's own in-tool checks
+    derive from one description of what the tool does to each path.
+    """
+
+    paths: tuple[_FsPathSpec, ...]
+
+    @property
+    def operations(self) -> frozenset[FilesystemOperation]:
+        """Every operation this tool can perform, across all its path args."""
+        return frozenset(op for path in self.paths for op in path.operations)
+
+
+# Map filesystem tool name → how its arguments map onto permission checks.
 # Drives `_build_interrupt_on_from_permissions` when synthesizing `when`
-# predicates per tool. The optional pattern-arg name is set only for `glob`,
-# whose `pattern` argument can itself redirect the search root (an absolute
-# pattern ignores the call's `path`); see `_make_bulk_when_predicate`.
-_FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str, ToolScope, str | None]] = {
-    "ls": ("read", "path", "bulk", None),
-    "read_file": ("read", "file_path", "exact", None),
-    "write_file": ("write", "file_path", "exact", None),
-    "edit_file": ("write", "file_path", "exact", None),
-    "delete": ("write", "file_path", "bulk", None),
-    "glob": ("read", "path", "bulk", "pattern"),
-    "grep": ("read", "path", "bulk", None),
+# predicates per tool. A tool missing from this map gets no interrupt config at
+# all, and because the in-tool checks only test for `"deny"`, an `"interrupt"`
+# rule would then fall through to allow -- i.e. omitting a tool here is a
+# silent HITL bypass, not merely a gap. `_FS_TOOL_ORDER` and this map are kept
+# in sync by a test.
+_FS_TOOL_PATH_ARGS: dict[str, _FsToolSpec] = {
+    "ls": _FsToolSpec((_FsPathSpec("path", ("read",), "bulk"),)),
+    "read_file": _FsToolSpec((_FsPathSpec("file_path", ("read",), "exact"),)),
+    "write_file": _FsToolSpec((_FsPathSpec("file_path", ("write",), "exact"),)),
+    "edit_file": _FsToolSpec((_FsPathSpec("file_path", ("write",), "exact"),)),
+    "delete": _FsToolSpec((_FsPathSpec("file_path", ("write",), "bulk"),)),
+    "move": _FsToolSpec(
+        (
+            _FsPathSpec("source_path", ("read", "write"), "exact"),
+            _FsPathSpec("destination_path", ("write",), "exact"),
+        )
+    ),
+    "glob": _FsToolSpec((_FsPathSpec("path", ("read",), "bulk", "pattern"),)),
+    "grep": _FsToolSpec((_FsPathSpec("path", ("read",), "bulk"),)),
 }
 
 
@@ -71,6 +119,32 @@ def _make_fs_when_predicate(
     if scope == "exact":
         return _make_exact_when_predicate(rules, operation, path_arg_name)
     return _make_bulk_when_predicate(rules, operation, path_arg_name, pattern_arg_name)
+
+
+def _make_multi_path_when_predicate(
+    rules: list[FilesystemPermission],
+    spec: _FsToolSpec,
+) -> Callable[[ToolCallRequest], bool]:
+    """Fire when ANY of a tool's path arguments matches an interrupt-mode rule.
+
+    OR, not AND: `move("/secrets/k.pem", "/tmp/x")` must interrupt on its
+    source, and `move("/tmp/x", "/secrets/k.pem")` on its destination.
+
+    Composes `_make_fs_when_predicate` once per `(path, operation)` pair rather
+    than reimplementing matching, so single-path tools take the same code path
+    as a one-element `any()`.
+
+    Note a call that is *denied* on one endpoint and *interrupt* on another will
+    still interrupt; the tool's own pre-execution deny check then refuses it, so
+    the human may be prompted for a call that cannot succeed. That is noise, not
+    unsoundness -- HITL is not the authorization boundary.
+    """
+    sub_predicates = [_make_fs_when_predicate(rules, op, path.arg, path.scope, path.pattern_arg) for path in spec.paths for op in path.operations]
+
+    def when(req: ToolCallRequest) -> bool:
+        return any(predicate(req) for predicate in sub_predicates)
+
+    return when
 
 
 def _make_exact_when_predicate(
@@ -173,11 +247,14 @@ def _build_interrupt_on_from_permissions(
     # Annotated so ty narrows to `list[DecisionType]` instead of `list[str]`.
     allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "edit", "reject", "respond"]
     result: dict[str, InterruptOnConfig] = {}
-    for tool_name, (op, arg, scope, pattern_arg) in _FS_TOOL_PATH_ARGS.items():
-        if not any(r.mode == "interrupt" and op in r.operations for r in rules):
+    for tool_name, spec in _FS_TOOL_PATH_ARGS.items():
+        # A tool registers when an interrupt rule carries ANY of its
+        # operations. `move` carries both `read` and `write`, so a read-only
+        # interrupt rule gates it too -- correct, since a move exports content.
+        if not any(r.mode == "interrupt" and spec.operations & set(r.operations) for r in rules):
             continue
         result[tool_name] = InterruptOnConfig(
             allowed_decisions=allowed,
-            when=_make_fs_when_predicate(rules, op, arg, scope, pattern_arg),
+            when=_make_multi_path_when_predicate(rules, spec),
         )
     return result

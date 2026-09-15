@@ -39,6 +39,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -949,6 +950,131 @@ def _check_preflight_result(result: ExecuteResponse, file_path: str) -> WriteRes
         error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
         return WriteResult(error=error_msg)
     return None
+
+
+_MOVE_COMMAND_TEMPLATE = """python3 -c "
+import sys, os, errno, shutil, base64, json
+
+payload = json.loads(base64.b64decode(sys.stdin.read().strip()).decode('utf-8'))
+src, dst = payload['src'], payload['dst']
+overwrite = payload.get('overwrite', False)
+
+try:
+    if not os.path.exists(src) and not os.path.islink(src):
+        print(json.dumps({{'error': 'source_not_found'}}))
+        sys.exit(0)
+    # islink before isdir: isdir follows symlinks, so a link to a directory
+    # would otherwise be misreported as a directory.
+    if os.path.islink(src):
+        print(json.dumps({{'error': 'source_is_symlink'}}))
+        sys.exit(0)
+    if os.path.isdir(src):
+        print(json.dumps({{'error': 'source_is_directory'}}))
+        sys.exit(0)
+    if os.path.normpath(src) == os.path.normpath(dst):
+        print(json.dumps({{'error': 'same_path'}}))
+        sys.exit(0)
+    if os.path.islink(dst):
+        print(json.dumps({{'error': 'destination_is_symlink'}}))
+        sys.exit(0)
+    if os.path.isdir(dst):
+        print(json.dumps({{'error': 'destination_is_directory'}}))
+        sys.exit(0)
+    if os.path.exists(dst) and not overwrite:
+        print(json.dumps({{'error': 'destination_exists'}}))
+        sys.exit(0)
+
+    parent = os.path.dirname(dst)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    try:
+        if overwrite:
+            os.replace(src, dst)
+        else:
+            # os.link refuses with EEXIST instead of clobbering, so the
+            # no-clobber guarantee holds even if dst appears just now.
+            try:
+                os.link(src, dst)
+            except OSError as le:
+                if le.errno in (errno.EPERM, errno.EOPNOTSUPP, errno.EMLINK):
+                    os.replace(src, dst)
+                else:
+                    raise
+            else:
+                os.unlink(src)
+    except FileExistsError:
+        print(json.dumps({{'error': 'destination_exists'}}))
+        sys.exit(0)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        shutil.copy2(src, dst, follow_symlinks=False)
+        try:
+            os.unlink(src)
+        except OSError as ue:
+            print(json.dumps({{'error': 'source_not_removed', 'detail': str(ue)}}))
+            sys.exit(0)
+
+    print(json.dumps({{'moved': True}}))
+except Exception as e:
+    print(json.dumps({{'error': 'failed', 'detail': str(e)}}))
+" 2>&1 <<'__DEEPAGENTS_MOVE_EOF__'
+{payload_b64}
+__DEEPAGENTS_MOVE_EOF__
+"""
+# Keeps a trailing newline after __DEEPAGENTS_MOVE_EOF__ for the same reason as
+# the edit template: some integrations detect end-of-input on a newline.
+
+"""Relocate one file server-side, deciding every refusal in a single round trip.
+
+`delete`'s older probe-then-act shell needs two round trips and has to guess
+when `exit_code` is `None`; here the script's own JSON payload is the source of
+truth, so an undeterminable exit code never forces a diagnosis. Paths travel
+base64-encoded on stdin, so no shell quoting is involved at all.
+
+Like the rest of `BaseSandbox`, this is NOT a security boundary: it can rename
+anything the sandbox user can reach and confines nothing to a root.
+"""
+
+
+def _build_move_cmd(source_path: str, destination_path: str, *, overwrite: bool) -> str:
+    payload = json.dumps({"src": source_path, "dst": destination_path, "overwrite": overwrite})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    return _MOVE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+
+
+def _parse_move_output(result: ExecuteResponse, source_path: str, destination_path: str) -> MoveResult:
+    """Map the move script's JSON payload onto a `MoveResult`."""
+    output = result.output.rstrip()
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        detail = output[:200] if output else "(empty)"
+        return MoveResult(error=f"Error moving file '{source_path}' to '{destination_path}': unexpected server response: {detail}")
+    if "error" not in data:
+        return MoveResult(source_path=source_path, destination_path=destination_path)
+
+    detail = str(data.get("detail", "")).strip()
+    messages: dict[str, str] = {
+        "source_not_found": f"Error: '{source_path}' not found",
+        "source_is_symlink": f"Error: '{source_path}' is a symlink; move supports regular files only",
+        "source_is_directory": f"Error: '{source_path}' is a directory; move supports files only",
+        "same_path": f"Error: source and destination are the same path: '{source_path}'",
+        "destination_is_symlink": f"Error: '{destination_path}' is a symlink; move supports regular files only",
+        "destination_is_directory": f"Error: '{destination_path}' is a directory",
+        "destination_exists": f"Error: '{destination_path}' already exists; pass overwrite=True to replace it",
+        "source_not_removed": (
+            f"Error moving file '{source_path}' to '{destination_path}': the file was copied to the destination "
+            f"but the source could not be removed, so it now exists in both places: {detail or 'unknown error'}"
+        ),
+    }
+    code = str(data["error"])
+    if code in messages:
+        return MoveResult(error=messages[code])
+    return MoveResult(error=f"Error moving file '{source_path}' to '{destination_path}': {detail or code or 'unknown error'}")
 
 
 def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count: int | None = None) -> str:
@@ -1871,6 +1997,48 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return DeleteResult(path=file_path)
 
         return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
+
+    def move(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file inside the sandbox.
+
+        Files only -- see `BackendProtocol.move`. Unlike `delete`, this is one
+        round trip: a single `python3` script performs every check and the
+        rename together, so there is no probe-then-act window and no need to
+        guess when `exit_code` is `None`.
+
+        Args:
+            source_path: Path of the file to move.
+            destination_path: Path the file is moved to.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error.
+        """
+        result = self.execute(_build_move_cmd(source_path, destination_path, overwrite=overwrite))
+        return _parse_move_output(result, source_path, destination_path)
+
+    async def amove(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Async version of `move`, delegating to `aexecute`.
+
+        Defined rather than inherited so the call stays on the event loop.
+        The inherited default would run the sync path in a worker thread and
+        block on `execute`, which for a remote sandbox defeats the async
+        transport entirely -- the asymmetry `adelete` currently has.
+        """
+        result = await self.aexecute(_build_move_cmd(source_path, destination_path, overwrite=overwrite))
+        return _parse_move_output(result, source_path, destination_path)
 
     def grep(
         self,

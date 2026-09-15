@@ -53,12 +53,14 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     _apply_grep_max_count,
     _method_accepts_max_count,
     _supports_delete,
+    _supports_move,
     execute_accepts_timeout,
 )
 from deepagents.backends.sandbox import BaseSandbox
@@ -498,16 +500,25 @@ def _leaf_from_parent_listing(ls_result: LsResult, target: str) -> bool:
     return any(entry.get("is_dir") for entry in matches)
 
 
-def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
-    """Whether `delete` should use the conservative recursive permission check.
+def _target_may_have_descendants(backend: BackendProtocol, target: str) -> bool:
+    """Whether `target` may be a directory, or a flat-backend key with nested keys.
 
-    Falls back to the conservative check when no permission rules are configured
-    or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
-    descendants, and `not_a_directory` confirms a plain file. Only an empty result
-    with no error is ambiguous and requires `_leaf_from_parent_listing`.
+    Always probes the backend. `True` is the fail-closed answer and means "not
+    provably a plain file": an unreachable path, a backend without `ls`, and an
+    ambiguous listing all return `True`. Non-empty `ls(target)` results indicate
+    descendants, and `not_a_directory` confirms a plain file. Only an empty
+    result with no error is ambiguous and requires `_leaf_from_parent_listing`.
+
+    Note a bool cannot separate "missing" from "is a directory": `ls` reports a
+    missing path as `path_not_found`, which contains no `not_a_directory`, so it
+    also yields `True`. Callers that surface this to a model must word the
+    message to cover both.
+
+    Callers that only need this to choose between a conservative and an exact
+    permission check should use `_delete_target_may_have_descendants`, which
+    short-circuits when no rules are configured. Callers that must reject
+    directories outright (`move`) have to call this directly.
     """
-    if not permissions_configured:
-        return False
     try:
         ls_result = backend.ls(target)
     except NotImplementedError:
@@ -523,10 +534,8 @@ def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *
     return _leaf_from_parent_listing(parent_result, target)
 
 
-async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
-    """Async counterpart to `_delete_target_may_have_descendants`."""
-    if not permissions_configured:
-        return False
+async def _atarget_may_have_descendants(backend: BackendProtocol, target: str) -> bool:
+    """Async counterpart to `_target_may_have_descendants`."""
     try:
         ls_result = await backend.als(target)
     except NotImplementedError:
@@ -540,6 +549,26 @@ async def _adelete_target_may_have_descendants(backend: BackendProtocol, target:
     except NotImplementedError:
         return True
     return _leaf_from_parent_listing(parent_result, target)
+
+
+def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Whether `delete` should use the conservative recursive permission check.
+
+    Falls back to the conservative check when no permission rules are configured
+    or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
+    descendants, and `not_a_directory` confirms a plain file. Only an empty result
+    with no error is ambiguous and requires `_leaf_from_parent_listing`.
+    """
+    if not permissions_configured:
+        return False
+    return _target_may_have_descendants(backend, target)
+
+
+async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Async counterpart to `_delete_target_may_have_descendants`."""
+    if not permissions_configured:
+        return False
+    return await _atarget_may_have_descendants(backend, target)
 
 
 def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:
@@ -1292,6 +1321,22 @@ class DeleteSchema(BaseModel):
     file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
 
 
+class MoveSchema(BaseModel):
+    """Input schema for the `move` tool."""
+
+    source_path: str = Field(description="Absolute path of the file to move. Must be absolute, not relative.")
+    destination_path: str = Field(
+        description=(
+            "Absolute path to move the file to, including the file name it should have there. "
+            "Must be absolute, not relative, and must not be an existing directory."
+        )
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Set to true to replace an existing file at destination_path. Defaults to false, which errors instead.",
+    )
+
+
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
@@ -1409,6 +1454,21 @@ Usage:
 - This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
+MOVE_TOOL_DESCRIPTION = """Moves a single file to a new absolute path.
+
+Usage:
+- Relocates one file without reading or rewriting its contents, so prefer this
+  over read_file + write_file + delete when a file just needs to live elsewhere.
+- `destination_path` is the file's full new path, including the name it should
+  have there. Passing an existing directory is an error, not a request to move
+  the file into it.
+- Files only. Moving a directory is not supported, and neither is moving a
+  symlink.
+- An existing file at `destination_path` is an error unless you pass
+  `overwrite=True`, which replaces it permanently.
+- Missing parent directories of the destination are created automatically.
+"""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
 Supports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.
@@ -1467,10 +1527,10 @@ _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.fo
     grep_bad_example="",
 )
 
-FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
+FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
 
-_FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
+_FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "move", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
 
 
@@ -1616,6 +1676,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "edit_file",
     "write_file",
     "delete",
+    "move",
 )
 
 
@@ -1862,6 +1923,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ("write_file", self._create_write_file_tool),
             ("edit_file", self._create_edit_file_tool),
             ("delete", self._create_delete_tool),
+            ("move", self._create_move_tool),
             ("glob", self._create_glob_tool),
             ("grep", self._create_grep_tool),
             ("execute", self._create_execute_tool),
@@ -2423,6 +2485,163 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=DeleteSchema,
         )
 
+    def _create_move_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/support handling
+        """Create the move tool."""
+        tool_description = self._custom_tool_descriptions.get("move") or MOVE_TOOL_DESCRIPTION
+
+        def _denied(op: str, path: str, tool_call_id: str | None) -> ToolMessage:
+            # Bare message, like `write_file`/`edit_file`. `delete` cites the
+            # matched patterns only because its conservative branch unions
+            # several of them in a rule-order-independent way, which would
+            # otherwise be inexplicable; `move` always resolves through the
+            # exact first-match check, so the path alone explains the denial.
+            return _tool_error("move", tool_call_id, f"Error: permission denied for {op} on {path}")
+
+        def _validate_both(
+            source_path: str,
+            destination_path: str,
+            tool_call_id: str | None,
+        ) -> tuple[str, str] | ToolMessage:
+            """Validate both paths, naming which argument was malformed."""
+            try:
+                src = validate_path(source_path)
+            except ValueError as e:
+                return _tool_error("move", tool_call_id, f"Error: source_path: {e}")
+            try:
+                dst = validate_path(destination_path)
+            except ValueError as e:
+                return _tool_error("move", tool_call_id, f"Error: destination_path: {e}")
+            return src, dst
+
+        def _check_permissions(src: str, dst: str, tool_call_id: str | None) -> ToolMessage | None:
+            """Authorize the move as the union of its three sub-effects.
+
+            A move is `read_file(src)` + `write_file(dst)` + `delete(src)` fused
+            into one call, so it must require exactly what those three require.
+            The read check on the source is load-bearing: without it, a
+            `deny read` rule is bypassable by relocating the file to an
+            unprotected path and reading it there, never touching a denied path.
+
+            `overwrite=True` needs nothing extra -- `FilesystemPermission` has
+            no delete operation and `write_file` already clobbers silently, so
+            write-on-destination covers replacing the destination. Requiring
+            read-on-destination would make `move` stricter than its
+            decomposition, so it is deliberately absent.
+            """
+            if _check_fs_permission(self._permissions, "read", src) == "deny":
+                return _denied("read", src, tool_call_id)
+            if _check_fs_permission(self._permissions, "write", src) == "deny":
+                return _denied("write", src, tool_call_id)
+            if _check_fs_permission(self._permissions, "write", dst) == "deny":
+                return _denied("write", dst, tool_call_id)
+            return None
+
+        def _same_path_error(src: str, tool_call_id: str | None) -> ToolMessage:
+            return _tool_error("move", tool_call_id, f"Error: source and destination are the same path: {src}")
+
+        def _not_a_file_error(src: str, tool_call_id: str | None) -> ToolMessage:
+            # One message for two cases on purpose: `ls` reports a missing path
+            # as `path_not_found`, which the probe cannot distinguish from a
+            # directory without a tri-state return.
+            return _tool_error(
+                "move",
+                tool_call_id,
+                f"Error: move requires an existing file at source; {src} is missing or is a directory",
+            )
+
+        def _success(res: MoveResult, src: str, dst: str, tool_call_id: str | None) -> ToolMessage:
+            return ToolMessage(
+                content=f"Moved {res.source_path or src} to {res.destination_path or dst}",
+                name="move",
+                tool_call_id=tool_call_id,
+                status="success",
+            )
+
+        def sync_move(
+            source_path: str,
+            destination_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+            overwrite: bool = False,  # noqa: FBT001, FBT002  # Mirrors the tool schema the model calls with
+        ) -> ToolMessage:
+            """Synchronous wrapper for move tool."""
+            resolved_backend = self.backend
+            tool_call_id = runtime.tool_call_id
+
+            validated = _validate_both(source_path, destination_path, tool_call_id)
+            if isinstance(validated, ToolMessage):
+                return validated
+            src, dst = validated
+
+            if src == dst:
+                return _same_path_error(src, tool_call_id)
+
+            # Permissions BEFORE the probe, inverting `delete`'s order. The
+            # probe is `ls(src)` plus a fallback `ls(parent(src))` -- both
+            # structural reads -- so probing first would answer "is /secrets/x a
+            # directory?" and would read the parent, a path we may have no
+            # authority over. Sound either way: if the probe then rejects,
+            # nothing happened; if it passes, the checks already run were the
+            # right ones for a plain file.
+            denial = _check_permissions(src, dst, tool_call_id)
+            if denial is not None:
+                return denial
+
+            # Unconditional, because rejecting directories is functional here,
+            # not a permission concern -- so this costs 1-2 `ls` round trips
+            # even with no rules configured. It narrows the input domain to the
+            # one where the exact checks above are known-sound; the backend's
+            # own directory refusal is what closes the race, so do not drop
+            # that check on the strength of this one.
+            if _target_may_have_descendants(resolved_backend, src):
+                return _not_a_file_error(src, tool_call_id)
+
+            # The destination is deliberately NOT probed here: existence,
+            # collision and shape are the backend's atomic concern, and a
+            # middleware probe would be racy by construction.
+            res: MoveResult = resolved_backend.move(src, dst, overwrite=overwrite)
+            if res.error:
+                return _tool_error("move", tool_call_id, res.error)
+            return _success(res, src, dst, tool_call_id)
+
+        async def async_move(
+            source_path: str,
+            destination_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+            overwrite: bool = False,  # noqa: FBT001, FBT002  # Mirrors the tool schema the model calls with
+        ) -> ToolMessage:
+            """Asynchronous wrapper for move tool."""
+            resolved_backend = self.backend
+            tool_call_id = runtime.tool_call_id
+
+            validated = _validate_both(source_path, destination_path, tool_call_id)
+            if isinstance(validated, ToolMessage):
+                return validated
+            src, dst = validated
+
+            if src == dst:
+                return _same_path_error(src, tool_call_id)
+
+            denial = _check_permissions(src, dst, tool_call_id)
+            if denial is not None:
+                return denial
+
+            if await _atarget_may_have_descendants(resolved_backend, src):
+                return _not_a_file_error(src, tool_call_id)
+
+            res: MoveResult = await resolved_backend.amove(src, dst, overwrite=overwrite)
+            if res.error:
+                return _tool_error("move", tool_call_id, res.error)
+            return _success(res, src, dst, tool_call_id)
+
+        return StructuredTool.from_function(
+            name="move",
+            description=tool_description,
+            func=sync_move,
+            coroutine=async_move,
+            infer_schema=False,
+            args_schema=MoveSchema,
+        )
+
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/result shaping + timeout handling
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
@@ -2858,14 +3077,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Return unsupported filesystem tools and whether execute remains active."""
         # `tools=` exclusions are enforced at `__init__` (absent from
         # `self.tools` entirely), so only backend-capability gating
-        # `execute`/`delete` on a backend that doesn't support them is
+        # `execute`/`delete`/`move` on a backend that doesn't support them is
         # computed here.
         unsupported: set[str | None] = set()
         execution_active = False
         backend = None
         has_execute_tool = "execute" in tool_names
         has_delete_tool = "delete" in tool_names
-        if not has_delete_tool and not has_execute_tool:
+        has_move_tool = "move" in tool_names
+        if not has_delete_tool and not has_execute_tool and not has_move_tool:
             return unsupported, execution_active, backend
 
         backend = self.backend
@@ -2875,6 +3095,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 unsupported.add("execute")
         if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
             unsupported.add("delete")
+        if has_move_tool and "move" not in unsupported and not _supports_move(backend):
+            unsupported.add("move")
         return unsupported, execution_active, backend
 
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:

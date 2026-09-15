@@ -328,6 +328,25 @@ class DeleteResult:
 
 
 @dataclass
+class MoveResult:
+    """Result from backend `move` operations.
+
+    Attributes:
+        error: Error message on failure, `None` on success.
+        source_path: Absolute path the file was moved from, `None` on failure.
+        destination_path: Absolute path the file was moved to, `None` on failure.
+
+    Examples:
+        >>> MoveResult(source_path="/a.txt", destination_path="/b.txt")
+        >>> MoveResult(error="Error: '/a.txt' not found")
+    """
+
+    error: str | None = None
+    source_path: str | None = None
+    destination_path: str | None = None
+
+
+@dataclass
 class LsResult:
     """Result from backend `ls` operations.
 
@@ -751,6 +770,70 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `delete`."""
         return await asyncio.to_thread(self.delete, file_path)
 
+    def move(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file to a new absolute path.
+
+        This method is optional. Backends that do not implement it inherit this
+        default, which raises `NotImplementedError`. Callers that need to
+        support a mix of backends should guard with `_supports_move` before
+        calling, or catch `NotImplementedError`.
+
+        **Files only.** Unlike
+        [`delete`][deepagents.backends.protocol.BackendProtocol.delete], `move`
+        is not recursive and never relocates anything nested under a path. A
+        directory source is rejected with an error and nothing is moved; on
+        hierarchical backends this is enforced explicitly, because the
+        underlying rename primitive would otherwise move the directory and
+        silently violate this contract. A directory destination is likewise
+        rejected rather than being treated as a target to move *into* --
+        `destination_path` is always the file's full new path, so a basename
+        change is a move, not a special case. A symlink source is rejected:
+        relocating a link would create a path that permission rules, which
+        match on the path string, do not cover.
+
+        Content and metadata are carried over unchanged: `created_at` and
+        `modified_at` are both preserved, since relocating a file neither
+        creates nor modifies it. When `overwrite=True` replaces an existing
+        destination file, the surviving file keeps the *source* file's
+        timestamps.
+
+        Args:
+            source_path: Absolute path of the file to move. Must start with '/'.
+            destination_path: Absolute path the file is moved to, including its
+                new basename. Must start with '/'. Parent directories are
+                created as needed on backends that have them.
+            overwrite: If `True`, replace an existing destination file. If
+                `False` (default), an existing destination is an error. Never
+                permits replacing a directory.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error when the source
+                does not exist, the source is a directory or a symlink, the two
+                paths are the same, the destination is a directory, the
+                destination exists and `overwrite` is `False`, or the
+                relocation fails.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `move`.
+        """
+        raise NotImplementedError
+
+    async def amove(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Async version of `move`."""
+        return await asyncio.to_thread(self.move, source_path, destination_path, overwrite=overwrite)
+
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -982,3 +1065,21 @@ def _supports_delete(backend: BackendProtocol) -> bool:
         True if the backend overrides `delete`, False otherwise.
     """
     return type(backend).delete is not BackendProtocol.delete
+
+
+def _supports_move(backend: BackendProtocol) -> bool:
+    """Check whether a backend implements `move`.
+
+    `move` is optional: backends that don't override it inherit the
+    `NotImplementedError` default from
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol]. This
+    helper lets callers detect support without invoking the method and
+    triggering the error.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        True if the backend overrides `move`, False otherwise.
+    """
+    return type(backend).move is not BackendProtocol.move

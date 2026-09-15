@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-15)
+
+
+### Bug Fixes
+
+* **code:** delay hook status in footer ([#6322](https://github.com/langchain-ai/deepagents/issues/6322)) ([7f9e8ed](https://github.com/langchain-ai/deepagents/commit/7f9e8ed3a555933902045792da9bb184950ee7b2))
+
 ## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
 
 ### Features

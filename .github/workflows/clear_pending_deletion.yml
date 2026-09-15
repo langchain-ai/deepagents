@@ -47,7 +47,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  remove-auto:pending-deletion:
+  remove-pending-deletion:
     if: >-
       github.event.label.name == 'ci:keep-open' &&
       contains(github.event.pull_request.labels.*.name, 'auto:pending-deletion')

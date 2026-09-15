@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.8...deepagents-talon==0.0.9) (2026-09-15)
+
+
+### Features
+
+* **talon:** register chat commands as Discord slash commands ([#6303](https://github.com/langchain-ai/deepagents/issues/6303)) ([f36b641](https://github.com/langchain-ai/deepagents/commit/f36b641ce3e1f44dbd47835d6dc9f5bb1c82324a))
+
+
+### Bug Fixes
+
+* **talon:** retry statusless provider overload errors ([#6304](https://github.com/langchain-ai/deepagents/issues/6304)) ([f8acbd0](https://github.com/langchain-ai/deepagents/commit/f8acbd0ae24278d35aeb1fa014056084a58f70d2))
+
+
+### Performance Improvements
+
+* **talon:** reduce archive replay transactions ([#6320](https://github.com/langchain-ai/deepagents/issues/6320)) ([89bd48f](https://github.com/langchain-ai/deepagents/commit/89bd48f7d531c9affafa3f0dc096083cbc5969dd))
+
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.7...deepagents-talon==0.0.8) (2026-09-11)
 
 ### Features

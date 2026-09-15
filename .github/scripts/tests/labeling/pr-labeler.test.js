@@ -90,6 +90,71 @@ test('pr_labeler.yml consumes the shared helper, not an inline alias map', () =>
   );
 });
 
+// ── Label descriptions ────────────────────────────────────────────
+
+// Every label ensureLabel() can be asked to create. `fileRules` and
+// `branchRules` carry a singular `label`, not a `labels` array.
+//
+// The org labels are applied by pr_labeler.yml directly rather than derived
+// from config (see its `org:external` branch), so they are not reachable from
+// any config map and have to be named here.
+const WORKFLOW_APPLIED_LABELS = ['org:external', 'org:internal'];
+
+function creatableLabels() {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const names = new Set([
+    ...Object.values(config.typeToLabel),
+    ...Object.values(config.scopeToLabel),
+    ...h.sizeLabels,
+    ...h.tierLabels,
+    ...WORKFLOW_APPLIED_LABELS,
+    config.breakingLabel,
+    config.releaseLabel,
+  ]);
+  for (const rule of [...config.fileRules, ...config.branchRules]) {
+    if (rule.label) names.add(rule.label);
+  }
+  return { config, names };
+}
+
+// Guards the helper above: if a rule key is ever renamed, the reachability
+// set silently empties and both tests below stop meaning anything.
+test('rule-derived labels are actually reachable', () => {
+  const { names } = creatableLabels();
+  assert.ok(names.has('org:open-swe'), 'branchRules label not picked up');
+  assert.ok(names.has('package:deepagents'), 'fileRules label not picked up');
+  assert.ok(names.size > 25, `expected the full taxonomy, got ${names.size}`);
+});
+
+// ensureLabel() writes a description only when it CREATES a label, and it
+// creates each one once, lazily. A label that first appears without a
+// description keeps the blank forever — `getLabel` succeeds on every later
+// run, so nothing patches it. That makes a missing entry permanent in
+// practice, which is why this is a test and not a lint.
+test('every label the labeler can create has a description', () => {
+  const { config, names } = creatableLabels();
+  const undescribed = [...names]
+    .filter(name => !config.labelDescriptions[name]?.trim())
+    .sort();
+  assert.deepEqual(
+    undescribed, [],
+    `labelDescriptions is missing entries for: ${undescribed.join(', ')}`,
+  );
+});
+
+// Catches a description left behind by a rename, which would otherwise sit in
+// the config looking authoritative while applying to nothing.
+test('labelDescriptions has no entry for a label nothing creates', () => {
+  const { config, names } = creatableLabels();
+  const orphaned = Object.keys(config.labelDescriptions)
+    .filter(name => !names.has(name))
+    .sort();
+  assert.deepEqual(
+    orphaned, [],
+    `labelDescriptions describes labels the labeler never creates: ${orphaned.join(', ')}`,
+  );
+});
+
 // ── Contributor tier labels ───────────────────────────────────────
 //
 // These were the last label literals hardcoded in pr-labeler.js. They are

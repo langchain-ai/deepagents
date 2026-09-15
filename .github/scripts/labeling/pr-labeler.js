@@ -168,12 +168,12 @@ function init(github, owner, repo, config, core) {
   // Conventional Commit itself. Scope labels identify packages/integrations.
   function matchTitleLabels(title) {
     const labels = new Set();
-    const m = (title ?? '').match(/^(\w+)(!)?(?:\(([^)]+)\))?(!)?:/);
+    const m = (title ?? '').match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
     if (!m) return { labels, type: null, typeLabel: null, scopes: [], breaking: false };
 
     const type = m[1].toLowerCase();
-    const scopeStr = m[3] ?? '';
-    const breaking = !!(m[2] || m[4]);
+    const scopeStr = m[2] ?? '';
+    const breaking = !!m[3];
     const typeLabel = type === 'release' ? releaseLabel :
       Object.hasOwn(typeToLabel, type) ? typeToLabel[type] : null;
     if (typeLabel) labels.add(typeLabel);

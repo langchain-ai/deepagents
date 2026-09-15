@@ -102,12 +102,20 @@ for (const [type, label] of typeCases) {
   });
 }
 
-for (const title of ['feat(sdk)!: incompatible change', 'feat!(sdk): incompatible change', 'feat!: incompatible change']) {
+for (const title of ['feat(sdk)!: incompatible change', 'feat!: incompatible change']) {
   test(`${title} carries both the feature and breaking labels`, () => {
     const { labels, breaking } = helpers().matchTitleLabels(title);
     assert.ok(labels.has('type:feature'));
     assert.ok(labels.has('type:breaking'));
     assert.equal(breaking, true);
+  });
+}
+
+for (const title of ['feat!(sdk): incompatible change', 'feat!(sdk)!: incompatible change']) {
+  test(`${title} supplies no classification and preserves existing labels`, () => {
+    const h = helpers();
+    assert.deepEqual([...h.matchTitleLabels(title).labels], []);
+    assert.deepEqual(h.getStaleTitleLabels(title, ['type:bug', 'type:breaking']), []);
   });
 }
 

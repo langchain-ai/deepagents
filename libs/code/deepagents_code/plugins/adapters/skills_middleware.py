@@ -273,11 +273,13 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         Returns:
             The state update carrying merged skill metadata and any errors.
         """
-        update = sdk_skills.SkillsStateUpdate(skills_metadata=list(all_skills.values()))
         if errors:
             logger.warning("Skills load errors: %s", errors)
-            update["skills_load_errors"] = errors
-        return update
+        # Always write the errors so warnings from an earlier load are cleared
+        return sdk_skills.SkillsStateUpdate(
+            skills_metadata=list(all_skills.values()),
+            skills_load_errors=errors,
+        )
 
     def before_agent(
         self,
@@ -289,9 +291,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         Returns:
             A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            when skills are already loaded. Set `skills_metadata` to `None` in
+            state to request a reload.
         """
-        if "skills_metadata" in state:
+        # Skip if skills are already loaded (even if empty); `None` requests a reload
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend
@@ -335,9 +339,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         Returns:
             A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            when skills are already loaded. Set `skills_metadata` to `None` in
+            state to request a reload.
         """
-        if "skills_metadata" in state:
+        # Skip if skills are already loaded (even if empty); `None` requests a reload
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend

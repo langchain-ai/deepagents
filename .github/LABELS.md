@@ -1,7 +1,5 @@
 # Labels
 
-The label taxonomy for this repo, and which automation owns each label. Written for future agents: before adding, renaming, or reading a label, find it here first.
-
 ## The model
 
 > Issue or PR work type via `type:*` + one `package:*` + optional `topic:*` and `integration:*` + provenance via `org:*` + optional `priority:*` + one PR `size:*` + temporary `triage:*`, `auto:*`, and `ci:*` state.
@@ -52,11 +50,7 @@ Rules that are easy to get wrong:
 | `integration:vercel` | `vercel`, `langchain-vercel-sandbox` | `libs/partners/vercel/` |
 | `integration:langsmith` | `langsmith-sandbox` | — |
 
-Additive: these are never removed on edit. `skipExcludedFiles: true` means a lockfile-only change does not pull in a package label.
-
-`pr_labeler.yml` first rewrites package-component title scopes to their canonical PR scope (`deepagents`→`sdk`, `deepagents-code`→`code`, …) via `scopeAliases` and `h.canonicalizeTitleScopes()`, skipping `release(...)` titles whose scope is a canonical version record. Nothing in the workflow hardcodes a scope.
-
-`pr_scope_file_check.yml` reuses these two maps as package identity, so a label rename changes that gate's behavior too — see [`scripts/labeling/check_pr_scope_files.py`](./scripts/labeling/check_pr_scope_files.py). `package:evals` deliberately covers both `libs/evals/` and `libs/harbor/`; neither is a release-please component, so the merge costs the gate nothing.
+Package and integration labels are additive: title edits do not remove them. `pr_labeler.yml` normalizes package aliases such as `deepagents` → `sdk` before labeling. `pr_scope_file_check.yml` uses the same mappings to validate that PR title scopes match changed packages.
 
 ### `topic:*` — maintainers
 
@@ -91,7 +85,7 @@ Applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token (org
 
 `clear_pending_deletion.yml` drops `auto:pending-deletion` the moment `ci:keep-open` lands. Thresholds (14/30 days) and the release exemption (`RELEASE_LABELS`) live in [`scripts/labeling/close-old-prs.js`](./scripts/labeling/close-old-prs.js).
 
-> `auto:release-pending` / `auto:release-tagged` are release-please's own lifecycle labels, set via the `label` / `release-label` keys in [`release-please-config.json`](../release-please-config.json). release-please requires every configured pending label, so listing old and new names in config would require both rather than accept either. Before release-please runs, automation adds `auto:release-pending` to open PRs carrying the legacy `autorelease: pending` label. The publish guard reads either pending name; the publisher recognizes either pending/tagged name and removes both pending labels when applying `auto:release-tagged`. No manual label rename or pending label cleanup is needed. Let workflows running the old code finish before merging the migration; an already-running workflow cannot adopt this handling.
+> During migration, release workflows accept legacy `autorelease: pending` and `autorelease: tagged` labels. Before release-please runs, automation adds `auto:release-pending` to open PRs that still use the legacy pending label. Publishing then removes both pending-label variants and applies `auto:release-tagged`. Let workflows running the old code finish before merging.
 
 ### `triage:*` — maintainers and agents
 
@@ -143,21 +137,16 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 | `ci:bypass-fork-main` | `block_fork_main_prs.yml` |
 | `ci:keep-open` | the `close_old_prs.yml` sweep; also set by a `!keep-open` comment (`keep_open_on_comment.yml`) |
 
-Applying `ci:skip-title-lint`, `ci:allow-scope-mismatch`, or `ci:allow-lockfile-release` triggers a sticky comment (`release_fanout_bypass_warn.yml`, `pr_lint.yml`) spelling out the release-please consequence. Those warnings are advisory and never fail.
-
 ## Mechanics worth knowing
 
-- **Labels are created on demand.** `h.ensureLabel(name)` in [`scripts/labeling/pr-labeler.js`](./scripts/labeling/pr-labeler.js) does a get-then-create, so an applied label appears the first time it is used, colored `labelColor` from the config with its `labelDescriptions` text. A label that is only *read* never auto-creates — **create those by hand**, or the gate offers a bypass nobody can select. That is every `ci:*` except `ci:keep-open` and `ci:skip-issue-link`, whose workflows create them on demand (with their own hardcoded colors, not `labelColor`).
-- **A batch containing one nonexistent label 422s entirely.** `pr_labeler.yml` calls `ensureLabel` for every label in `toAdd` before a single `addLabels`. Keep that ordering.
-- **Events from the default `GITHUB_TOKEN` do not trigger other workflows.** A label applied with `secrets.GITHUB_TOKEN` fires no `labeled` event, so anything that must wake a downstream workflow (`org:external` → `require_issue_link.yml`) uses the App token. Same reason `keep_open_on_comment.yml` duplicates `clear_pending_deletion.yml`'s cleanup inline.
-- **All PR labeling goes through one workflow on purpose.** `pr_labeler.yml` replaced four concurrent workflows that raced on label mutations. Add PR label logic inside it.
-- **Bypass labels are read from the live API**, not the event payload, wherever a re-run must see a label added after the fact (see the `gh api` read in [`workflows/_test.yml`](./workflows/_test.yml)).
+- Labels applied by `pr_labeler.yml` are created on demand. Labels that workflows only read, including most `ci:*` labels, must already exist in the repository.
+- All PR label changes belong in `pr_labeler.yml` to avoid workflows racing to update the same labels.
+- Workflows that must trigger follow-up label events use the GitHub App token because events created by the default `GITHUB_TOKEN` do not start other workflows.
 
 ## Changing the taxonomy
 
 1. **New package**: add a `scopeToLabel` key and a `fileRules` prefix in `pr-labeler-config.json`, add the scope to `pr_lint.yml`, and add the issue form option plus its `mapping` entry in `auto-label-by-package.yml`. Check `check_pr_scope_files.py`'s tests — it reads both maps as package identity.
 2. **New `ci:*` gate**: read the label from the live API in the gate workflow, create the label by hand, and add a row above.
-3. **Backfill**: open PRs via `pr_labeler_backfill.yml` (`workflow_dispatch`, `max_items`); open issues via `tag-external-issues.yml`'s dispatch job.
-4. **Tests** live in [`scripts/tests/labeling/`](./scripts/tests/labeling/) and run in CI under `pytest .github/scripts/tests` ("Validate Release Options"). Keep reusable label logic in `pr-labeler.js` and workflow steps thin. The labeler tests also execute the live and backfill scripts against a fake API.
+3. **Backfill**: use `pr_labeler_backfill.yml` for open PRs and the dispatch job in `tag-external-issues.yml` for open issues.
 
-Note for agents: a PR adding a Markdown file is red under `markdown_file_check.yml` unless titled `docs(...)` or carrying `ci:ack-markdown`.
+`markdown_file_check.yml` flags new Markdown files in non-documentation PRs so reviewers explicitly acknowledge unexpected documentation changes, including files added by coding agents. After reviewing the file, apply `ci:ack-markdown`.

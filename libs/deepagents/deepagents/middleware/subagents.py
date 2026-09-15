@@ -22,7 +22,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage, convert_to_messages
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -237,7 +237,12 @@ class CompiledSubAgent(TypedDict):
     When the subagent completes, the parent reads the returned state:
     if `structured_response` is non-`None`, it is JSON-serialized and used as
     the `ToolMessage` content; otherwise, the last non-empty `AIMessage`
-    text is used.
+    text is used. This fallback accepts message representations supported by
+    `langchain_core.messages.convert_to_messages`, including serialized
+    dictionaries returned by `RemoteGraph`. It converts messages as it scans
+    backward, skipping entries that raise `ValueError`, `TypeError`, `KeyError`,
+    or `NotImplementedError` during conversion. Other errors propagate. A
+    non-`None` `structured_response` skips this conversion.
 
     Examples:
         Using `create_agent` with `response_format`:
@@ -700,7 +705,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
             # successful final tool call, which would otherwise be forwarded
             # as an empty ToolMessage.
             content = ""
-            for msg in reversed(result["messages"]):
+            for message in reversed(result["messages"]):
+                try:
+                    msg = convert_to_messages([message])[0]
+                except (ValueError, TypeError, KeyError, NotImplementedError):
+                    continue
                 if isinstance(msg, AIMessage):
                     text = msg.text.rstrip() if msg.text else ""
                     if text:

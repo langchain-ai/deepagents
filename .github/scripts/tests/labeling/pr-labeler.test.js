@@ -400,7 +400,8 @@ test('inlined workflow label colors match labelColors in the config', () => {
   const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
   const known = new Set(Object.values(config.labelColors));
   for (const rel of ['.github/workflows/sync_priority_labels.yml',
-                     '.github/workflows/require_issue_link.yml']) {
+                     '.github/workflows/require_issue_link.yml',
+                     '.github/workflows/auto-label-by-package.yml']) {
     const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
     for (const hit of body.match(/color: ['"]([0-9a-f]{6})['"]/g) || []) {
       const hex = hit.match(/([0-9a-f]{6})/)[1];

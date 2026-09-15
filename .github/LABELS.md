@@ -66,9 +66,13 @@ Package and integration labels are additive: title edits do not remove them. `pr
 
 `org:external` is applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token, because org membership is private. A non-404 membership error fails the step rather than defaulting to external. The other two come from the default-token step, so they fire no `labeled` event.
 
-### `priority:*` — `sync_priority_labels.yml`
+### `priority:*` — `auto-label-by-package.yml`, `sync_priority_labels.yml`
 
-`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive, copied from issues linked by `Closes/Fixes/Resolves #N` onto the PR; highest across linked issues wins. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
+`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive.
+
+**Every new issue gets `priority:backlog`** from the "Apply default priority" step in `auto-label-by-package.yml`, which runs on `opened` before the Area sync so an issue filed without the form is still prioritized. It skips an issue that already carries a `priority:*`, so a re-run never overwrites an escalation.
+
+`sync_priority_labels.yml` copies a priority from issues linked by `Closes/Fixes/Resolves #N` onto the PR, highest across linked issues winning — but **only `priority:urgent` and `priority:high` propagate** (`PROPAGATED_PRIORITY_LABELS`). Backlog is every issue's default, so copying it would label nearly every PR while saying nothing; a PR carrying a backlog label from an earlier run gets it stripped. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
 
 ### `auto:*` — lifecycle and release automation
 

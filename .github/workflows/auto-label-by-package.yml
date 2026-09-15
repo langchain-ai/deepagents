@@ -1,5 +1,6 @@
 # Applies `package:*` / `integration:*` labels from the issue form's
-# "Area" section. Taxonomy: .github/LABELS.md.
+# "Area" section, and gives every new issue a default `priority:backlog`.
+# Taxonomy: .github/LABELS.md.
 
 name: Auto Label Issues by Package
 
@@ -17,6 +18,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Every new issue starts in the backlog; a maintainer escalates from
+      # there. Runs before the Area sync so an issue opened without the form
+      # (API, blank issue) is still prioritized even though that step fails on
+      # the missing "## Area" heading. Skipped when a priority is already
+      # present, so a re-run or a form-applied label is never overwritten and
+      # an escalation is never demoted.
+      - name: Apply default priority
+        if: github.event.action == 'opened'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const DEFAULT_PRIORITY = 'priority:backlog';
+
+            const current = (context.payload.issue.labels ?? []).map(l => l.name ?? l);
+            if (current.some(name => name.startsWith('priority:'))) {
+              console.log(`Issue #${issue_number} already has a priority; leaving it alone.`);
+              return;
+            }
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: DEFAULT_PRIORITY });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              try {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: DEFAULT_PRIORITY,
+                  // Must match `labelColors['priority:']` in
+                  // .github/scripts/labeling/pr-labeler-config.json; asserted
+                  // by pr-labeler.test.js.
+                  color: 'eba58b',
+                  description: 'Prioritized backlog work affecting a limited feature or set of users.',
+                });
+              } catch (createErr) {
+                if (createErr.status !== 422) throw createErr;
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number, labels: [DEFAULT_PRIORITY],
+            });
+            console.log(`Applied '${DEFAULT_PRIORITY}' to issue #${issue_number}`);
+
       - name: Sync package labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:

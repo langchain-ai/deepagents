@@ -6,6 +6,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.s3_store import S3Client, S3Store
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import NamespaceFactory, StoreBackend
 
@@ -18,6 +19,8 @@ __all__ = [
     "LangSmithSandbox",
     "LocalShellBackend",
     "NamespaceFactory",
+    "S3Client",
+    "S3Store",
     "StateBackend",
     "StoreBackend",
 ]

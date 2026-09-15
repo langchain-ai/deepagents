@@ -6,6 +6,7 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.blob_storage import BlobStorageMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
@@ -28,6 +29,7 @@ from deepagents.profiles.provider.provider_profiles import (
 __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "BlobStorageMiddleware",
     "CompiledSubAgent",
     "DeepAgentState",
     "FilesystemMiddleware",

@@ -27,7 +27,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
@@ -410,6 +410,10 @@ When returning updates:
 """
 
 
+_TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
+"""Arguments the tool node injects into the `task` call alongside the model's."""
+
+
 class TaskToolSchema(BaseModel):
     """Input schema for the `task` tool."""
 
@@ -421,6 +425,27 @@ class TaskToolSchema(BaseModel):
     )
 
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_keys(cls, data: object) -> object:
+        """Refuse keys the schema does not define.
+
+        Models sometimes put the real instructions under an invented key (e.g.
+        `prompt`) and leave a short label in `description`. Ignoring the extra key
+        dispatched the subagent with the label alone and reported success; a
+        validation error goes back to the model as a tool error naming the key.
+
+        `extra="forbid"` cannot be used: the tool node validates the arguments
+        after injecting the `runtime` parameter, which is not a schema field.
+        """
+        if isinstance(data, dict):
+            keys: set[str] = {str(key) for key in data}
+            unknown = sorted(keys - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
+            if unknown:
+                msg = f"Unexpected argument(s) {unknown}; put all instructions for the subagent in `description`."
+                raise ValueError(msg)
+        return data
 
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle a complex, multi-step task.

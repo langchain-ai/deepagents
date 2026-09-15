@@ -30,7 +30,7 @@ Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring i
 
 ### Labeling workflows
 
-- `pr_labeler.yml` — unified PR labeler: size, title-derived change type and breaking marker, package/integration, org provenance, contributor tier. Conventional Commit titles remain authoritative for releases.
+- `pr_labeler.yml` — unified PR labeler: size, title-derived change type and breaking marker, package/integration, org provenance, contributor tier.
 - `pr_labeler_backfill.yml` — manual backfill of those labels on open PRs.
 - `auto-label-by-package.yml` — applies `package:*`/`integration:*` to issues from the form's Area section.
 - `tag-external-issues.yml` — applies `org:external`/`org:internal` to issues, plus the contributor tier.

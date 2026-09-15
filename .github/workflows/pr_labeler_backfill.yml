@@ -109,8 +109,9 @@ jobs:
                 )).map(l => l.name ?? '');
 
                 const managed = [...h.sizeLabels, ...h.tierLabels];
+                const staleTitleLabels = h.getStaleTitleLabels(pr.title ?? '', currentLabels);
                 for (const name of currentLabels) {
-                  if (managed.includes(name) && !labels.has(name)) {
+                  if ((managed.includes(name) || staleTitleLabels.includes(name)) && !labels.has(name)) {
                     try {
                       await github.rest.issues.removeLabel({
                         owner, repo, issue_number: pr.number, name,

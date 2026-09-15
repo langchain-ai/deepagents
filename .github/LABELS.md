@@ -9,13 +9,13 @@ conventions are in root [`AGENTS.md`](../AGENTS.md).
 
 ## The model
 
-> One issue `type:*` + one `package:*` + optional `topic:*` and
+> Issue or PR work type via `type:*` + one `package:*` + optional `topic:*` and
 > `integration:*` + provenance via `org:*` + optional `priority:*` + one PR
 > `size:*` + temporary `triage:*`, `auto:*`, and `ci:*` state.
 
 | Prefix | Purpose | Applied by |
 | --- | --- | --- |
-| `type:*` | Issue work type | Issue forms + maintainers |
+| `type:*` | Issue/PR work type and PR breaking marker | Issue forms + PR title labeler + maintainers |
 | `package:*` | Repository package | Labeler + maintainers |
 | `topic:*` | Technical subject spanning packages | Maintainers |
 | `integration:*` | External sandbox or service under `libs/partners/` | Labeler + maintainers |
@@ -28,10 +28,11 @@ conventions are in root [`AGENTS.md`](../AGENTS.md).
 
 Rules that are easy to get wrong:
 
-- **PR change type is the Conventional Commit title, not a label.** The labeler
-  derives no `fix`/`refactor`/`breaking`/`dependencies` label from a title —
-  only `package:*` and `integration:*` from its scope. `auto:release-pr` is the
-  single exception, because `close-old-prs.js` and `release.yml` key off it.
+- **PR type labels mirror the Conventional Commit title.** The labeler derives
+  the work type and optional breaking marker from the title, and `package:*`
+  and `integration:*` from its scope. Labels support triage; release-please
+  still reads Conventional Commits to determine releases. `release(...)`
+  titles receive `auto:release-pr` for release and stale-PR automation.
 - An issue carries exactly one `type:*`, normally one `package:*`, and any
   number of `topic:*`.
 - `priority:*` has three levels. **Backlog is the absence of a priority
@@ -123,7 +124,7 @@ that list once no open item carries one.
 | `auto:missing-issue-link` | `require_issue_link.yml` | external PR had no approved, assigned issue link; PR was closed |
 | `auto:new-contributor` | `pr_labeler.yml` | external author, 0 merged PRs (PRs only) |
 | `auto:trusted-contributor` | `pr_labeler.yml`, `tag-external-issues.yml` | external author, ≥`trustedThreshold` (5) merged PRs **in this repo** |
-| `auto:release-pr` | `release-please.yml` via `h.labelPR()` | package release PR (`releaseLabel` in the config) |
+| `auto:release-pr` | PR title labeler + `release-please.yml` via `h.labelPR()` | package release PR (`releaseLabel` in the config) |
 | `auto:release-pending` | release-please itself | release PR open, not yet tagged |
 | `auto:release-tagged` | `release.yml` after tagging | release tagged |
 
@@ -151,12 +152,37 @@ that list once no open item carries one.
 information is requested in a comment rather than tracked as another label
 lifecycle.
 
-### `type:*` — issue forms and maintainers
+### `type:*` — issue forms, PR title labeler, and maintainers
 
-`type:bug`, `type:feature`, `type:spike`, `type:chore`, `type:docs`.
 [`ISSUE_TEMPLATE/bug-report.yml`](./ISSUE_TEMPLATE/) applies `type:bug` and
-`feature-request.yml` applies `type:feature`; the rest are hand-applied. These
-replace GitHub Issue Types so the repo owns the names and descriptions.
+`feature-request.yml` applies `type:feature`. Maintainers can also assign
+`type:spike`, `type:chore`, or `type:docs` to issues. These replace GitHub Issue
+Types so the repo owns the names and descriptions.
+
+For PRs, `typeToLabel` in `pr-labeler-config.json` maps the title's commit type:
+
+| Commit type | Label |
+| --- | --- |
+| `feat` | `type:feature` |
+| `fix` | `type:bug` |
+| `docs` | `type:docs` |
+| `hotfix` | `type:hotfix` |
+| `style` | `type:style` |
+| `refactor` | `type:refactor` |
+| `perf` | `type:performance` |
+| `test` | `type:test` |
+| `build` | `type:build` |
+| `ci` | `type:ci` |
+| `chore` | `type:chore` |
+| `revert` | `type:revert` |
+| `release` | `auto:release-pr` |
+
+The `!` marker adds `type:breaking` (`breakingLabel` in the config) alongside
+the work type. A recognized title edit replaces stale managed type labels and
+removes the breaking label when `!` is dropped; unrecognized titles preserve
+the previous classification. Live labeling, backfill, and release PR labeling
+share this behavior. Scope/file labels remain additive. Newly created type
+labels receive descriptions from `labelDescriptions` in the same config.
 
 > A label in an issue form's `labels:` list that does not exist on the repo is
 > **silently skipped** — GitHub applies nothing and reports nothing. Create the
@@ -223,8 +249,8 @@ release-please consequence. Those warnings are advisory and never fail.
    `max_items`); open issues via `tag-external-issues.yml`'s dispatch job.
 4. **Tests** live in [`scripts/tests/labeling/`](./scripts/tests/labeling/) and
    run in CI under `pytest .github/scripts/tests` ("Validate Release Options").
-   Put logic in `pr-labeler.js`, not in a workflow `script:` block — only the
-   former is reachable from a test.
+   Keep reusable label logic in `pr-labeler.js` and workflow steps thin. The
+   labeler tests also execute the live and backfill scripts against a fake API.
 
 Note for agents: a PR adding a Markdown file is red under
 `markdown_file_check.yml` unless titled `docs(...)` or carrying `ci:ack-markdown`.

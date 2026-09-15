@@ -23,6 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
+    'typeToLabel', 'breakingLabel', 'labelDescriptions',
     'excludedFiles', 'excludedPaths',
   ];
   const missing = required.filter(k => !(k in config));
@@ -43,6 +44,9 @@ function init(github, owner, repo, config, core) {
     scopeToLabel,
     scopeAliases,
     releaseLabel,
+    typeToLabel,
+    breakingLabel,
+    labelDescriptions,
     fileRules: fileRulesDef,
     branchRules: branchRulesDef,
     excludedFiles,
@@ -51,6 +55,7 @@ function init(github, owner, repo, config, core) {
 
   const sizeLabels = sizeThresholds.map(t => t.label);
   const tierLabels = ['auto:new-contributor', 'auto:trusted-contributor'];
+  const titleTypeLabels = new Set([...Object.values(typeToLabel), breakingLabel, releaseLabel]);
 
   // ── Label management ──────────────────────────────────────────────
 
@@ -60,7 +65,9 @@ function init(github, owner, repo, config, core) {
     } catch (e) {
       if (e.status !== 404) throw e;
       try {
-        await github.rest.issues.createLabel({ owner, repo, name, color });
+        await github.rest.issues.createLabel({
+          owner, repo, name, color, description: labelDescriptions[name] ?? '',
+        });
       } catch (createErr) {
         // 422 = label created by a concurrent run between our get and create
         if (createErr.status !== 422) throw createErr;
@@ -157,17 +164,20 @@ function init(github, owner, repo, config, core) {
 
   // ── Title-based labels ────────────────────────────────────────────
 
-  // Only `package:*` / `integration:*` labels come from a title. The change
-  // type (and whether it breaks) is carried by the Conventional Commit title
-  // itself — see the taxonomy in .github/LABELS.md.
+  // Type labels mirror the title for triage; release-please still reads the
+  // Conventional Commit itself. Scope labels identify packages/integrations.
   function matchTitleLabels(title) {
     const labels = new Set();
-    const m = (title ?? '').match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
-    if (!m) return { labels, type: null, scopes: [], breaking: false };
+    const m = (title ?? '').match(/^(\w+)(!)?(?:\(([^)]+)\))?(!)?:/);
+    if (!m) return { labels, type: null, typeLabel: null, scopes: [], breaking: false };
 
     const type = m[1].toLowerCase();
-    const scopeStr = m[2] ?? '';
-    const breaking = !!m[3];
+    const scopeStr = m[3] ?? '';
+    const breaking = !!(m[2] || m[4]);
+    const typeLabel = type === 'release' ? releaseLabel :
+      Object.hasOwn(typeToLabel, type) ? typeToLabel[type] : null;
+    if (typeLabel) labels.add(typeLabel);
+    if (breaking && typeLabel) labels.add(breakingLabel);
 
     const scopes = scopeStr.split(',').map(s => s.trim()).filter(Boolean);
     for (const scope of scopes) {
@@ -175,7 +185,14 @@ function init(github, owner, repo, config, core) {
       if (sl) labels.add(sl);
     }
 
-    return { labels, type, scopes, breaking };
+    return { labels, type, typeLabel, scopes, breaking };
+  }
+
+  function getStaleTitleLabels(title, currentLabels) {
+    const { labels, typeLabel } = matchTitleLabels(title);
+    // A malformed/unrecognized title supplies no replacement classification.
+    if (!typeLabel) return [];
+    return currentLabels.filter(name => titleTypeLabels.has(name) && !labels.has(name));
   }
 
   // ── Title scope canonicalization ──────────────────────────────────
@@ -316,14 +333,8 @@ function init(github, owner, repo, config, core) {
     })).data.title;
 
     // Title-based labels
-    const { labels: titleLabels, type } = matchTitleLabels(prTitle);
+    const { labels: titleLabels } = matchTitleLabels(prTitle);
     for (const l of titleLabels) toAdd.add(l);
-
-    // `release(<pkg>): <version>` titles get the release marker. This is the
-    // one change-type-shaped label that survives, because close-old-prs.js and
-    // release.yml both key off it — every other change type is read from the
-    // Conventional Commit title instead.
-    if (type === 'release') toAdd.add(releaseLabel);
 
     // File-based labels + size
     const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -333,6 +344,16 @@ function init(github, owner, repo, config, core) {
     for (const l of matchFileLabels(files)) toAdd.add(l);
 
     for (const name of toAdd) await ensureLabel(name);
+    const currentLabels = (await github.paginate(github.rest.issues.listLabelsOnIssue, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    })).map(label => label.name);
+    for (const name of getStaleTitleLabels(prTitle, currentLabels)) {
+      try {
+        await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name });
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
     const labels = [...toAdd];
     if (labels.length) {
       await github.rest.issues.addLabels({
@@ -350,6 +371,7 @@ function init(github, owner, repo, config, core) {
     matchFileLabels,
     matchBranchLabels,
     matchTitleLabels,
+    getStaleTitleLabels,
     canonicalizeTitleScopes,
     labelPR,
     checkMembership,

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const prLabeler = require('../../labeling/pr-labeler.js');
 
@@ -85,3 +86,124 @@ test('pr_labeler.yml consumes the shared helper, not an inline alias map', () =>
     'the inline alias map is back — keep it in pr-labeler-config.json',
   );
 });
+
+const typeCases = [
+  ['feat', 'type:feature'], ['fix', 'type:bug'], ['docs', 'type:docs'],
+  ['hotfix', 'type:hotfix'], ['style', 'type:style'], ['refactor', 'type:refactor'],
+  ['perf', 'type:performance'], ['test', 'type:test'], ['build', 'type:build'],
+  ['ci', 'type:ci'], ['chore', 'type:chore'], ['revert', 'type:revert'],
+  ['release', 'auto:release-pr'],
+];
+
+for (const [type, label] of typeCases) {
+  test(`${type} titles derive ${label} alongside package/integration labels`, () => {
+    const result = helpers().matchTitleLabels(`${type}(sdk,daytona): update behavior`);
+    assert.deepEqual([...result.labels].sort(), [label, 'package:deepagents', 'integration:daytona'].sort());
+  });
+}
+
+for (const title of ['feat(sdk)!: incompatible change', 'feat!(sdk): incompatible change', 'feat!: incompatible change']) {
+  test(`${title} carries both the feature and breaking labels`, () => {
+    const { labels, breaking } = helpers().matchTitleLabels(title);
+    assert.ok(labels.has('type:feature'));
+    assert.ok(labels.has('type:breaking'));
+    assert.equal(breaking, true);
+  });
+}
+
+test('title edits remove obsolete classifications but preserve unrelated metadata', () => {
+  const stale = helpers().getStaleTitleLabels('fix(code): correct behavior', [
+    'type:feature', 'type:breaking', 'type:bug', 'package:dcode', 'priority:high',
+    'auto:release-pending', 'auto:release-tagged', 'type:spike',
+  ]);
+  assert.deepEqual(stale, ['type:feature', 'type:breaking']);
+});
+
+for (const title of ['', undefined, 'not a conventional title', 'unknown(sdk): change', 'constructor(sdk): change']) {
+  test(`unrecognized title ${JSON.stringify(title)} preserves existing classifications`, () => {
+    const h = helpers();
+    assert.equal(h.matchTitleLabels(title).typeLabel, null);
+    assert.deepEqual(h.getStaleTitleLabels(title, ['type:feature', 'type:breaking']), []);
+  });
+}
+
+function labelerApi(title, labels) {
+  const assigned = new Set(labels);
+  const known = new Map(labels.map(name => [name, {}]));
+  const pr = { number: 12, title, user: { login: 'contributor', type: 'User' }, head: { ref: 'feature-branch' } };
+  const issues = {
+    listLabelsOnIssue: async () => [...assigned].map(name => ({ name })),
+    getLabel: async ({ name }) => {
+      if (!known.has(name)) throw Object.assign(new Error('Missing label'), { status: 404 });
+    },
+    createLabel: async options => known.set(options.name, options),
+    removeLabel: async ({ name }) => assigned.delete(name),
+    addLabels: async ({ labels: added }) => {
+      for (const name of added) {
+        assert.ok(known.has(name), `label ${name} must exist before applying`);
+        assigned.add(name);
+      }
+    },
+  };
+  const pulls = {
+    get: async () => ({ data: pr }), list: async () => [pr],
+    listFiles: async () => [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }],
+  };
+  const github = { rest: { issues, pulls }, paginate: (method, options) => method(options) };
+  const h = prLabeler.loadAndInit(github, 'owner', 'repo', core).h;
+  h.getContributorInfo = async () => ({ isExternal: false });
+  return { assigned, known, pr, github, h };
+}
+
+function workflowScript(filename, stepName) {
+  const yaml = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows', filename), 'utf8');
+  const step = yaml.split(`      - name: ${stepName}\n`)[1].split('\n      - name:')[0];
+  return step.split('          script: |\n')[1].split('\n')
+    .map(line => line.slice(12)).join('\n').replace('${{ inputs.max_items }}', '100');
+}
+
+async function runLabeler(mode, api) {
+  if (mode === 'release helper') return api.h.labelPR(api.pr.number);
+  const [filename, stepName] = mode === 'live'
+    ? ['pr_labeler.yml', 'Apply PR labels']
+    : ['pr_labeler_backfill.yml', 'Backfill labels on open PRs'];
+  const script = workflowScript(filename, stepName);
+  // The script is checked-in workflow code; PR titles remain data in context.
+  await vm.runInNewContext(`(async () => { ${script}\n })()`, {
+    github: api.github,
+    context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action: 'edited' } },
+    require: () => ({ loadAndInit: () => ({ h: api.h }) }),
+    core: { ...core, setFailed(message) { throw new Error(message); } },
+    process: { env: {} }, console: { log() {} },
+  });
+}
+
+for (const mode of ['live', 'backfill', 'release helper']) {
+  test(`${mode} replaces stale types and breaking labels after a title edit`, async () => {
+    const api = labelerApi('refactor(code): simplify the implementation', [
+      'type:feature', 'type:breaking', 'package:dcode', 'priority:high',
+    ]);
+    await runLabeler(mode, api);
+    assert.ok(api.assigned.has('type:refactor'));
+    assert.ok(!api.assigned.has('type:feature'));
+    assert.ok(!api.assigned.has('type:breaking'));
+    assert.ok(api.assigned.has('package:dcode'));
+    assert.ok(api.assigned.has('priority:high'));
+    assert.ok(api.known.get('type:refactor').description);
+  });
+
+  test(`${mode} preserves classification when a title has no recognized type`, async () => {
+    const api = labelerApi('work in progress', ['type:bug', 'type:breaking']);
+    await runLabeler(mode, api);
+    assert.ok(api.assigned.has('type:bug'));
+    assert.ok(api.assigned.has('type:breaking'));
+  });
+
+  test(`${mode} applies the release marker without touching lifecycle labels`, async () => {
+    const api = labelerApi('release(deepagents-code): 1.2.0', ['type:chore', 'auto:release-pending']);
+    await runLabeler(mode, api);
+    assert.ok(api.assigned.has('auto:release-pr'));
+    assert.ok(api.assigned.has('auto:release-pending'));
+    assert.ok(!api.assigned.has('type:chore'));
+  });
+}

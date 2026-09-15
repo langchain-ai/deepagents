@@ -30,6 +30,36 @@
     "docs/"
   ],
   "releaseLabel": "auto:release-pr",
+  "typeToLabel": {
+    "feat": "type:feature",
+    "fix": "type:bug",
+    "docs": "type:docs",
+    "hotfix": "type:hotfix",
+    "style": "type:style",
+    "refactor": "type:refactor",
+    "perf": "type:performance",
+    "test": "type:test",
+    "build": "type:build",
+    "ci": "type:ci",
+    "chore": "type:chore",
+    "revert": "type:revert"
+  },
+  "breakingLabel": "type:breaking",
+  "labelDescriptions": {
+    "type:feature": "A new feature or enhancement.",
+    "type:bug": "A bug report or bug fix.",
+    "type:docs": "Documentation changes or requests.",
+    "type:hotfix": "An urgent fix using the manual release path.",
+    "type:style": "Formatting or style changes without behavior changes.",
+    "type:refactor": "Code restructuring without a feature or bug fix.",
+    "type:performance": "Performance improvements.",
+    "type:test": "New or updated tests.",
+    "type:build": "Changes to the build system or external dependencies.",
+    "type:ci": "Changes to continuous integration workflows.",
+    "type:chore": "Maintenance work.",
+    "type:revert": "Reverts a previous change.",
+    "type:breaking": "The PR title declares a breaking change with !."
+  },
   "scopeToLabel": {
     "acp": "package:acp",
     "code": "package:dcode",

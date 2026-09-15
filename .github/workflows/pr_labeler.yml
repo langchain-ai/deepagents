@@ -1,6 +1,5 @@
-# Unified PR labeler — applies size, package/integration, and contributor
-# classification labels in a single sequential workflow. Change-type labels
-# are deliberately absent: the Conventional Commit title is that record.
+# Unified PR labeler — applies size, change-type, package/integration, and
+# contributor classification labels in a single sequential workflow.
 # Taxonomy: .github/LABELS.md.
 #
 # Consolidates pr_size_labeler.yml, pr_labeler_file.yml,
@@ -186,15 +185,16 @@ jobs:
               toAdd.add(label);
             }
 
-            // ── Title-based labels (package: / integration: only) ──
+            // ── Title-based type, breaking, package, and integration labels ──
             // Use renamed title if the scope-rename step rewrote it,
-            // since pr.title still reflects the pre-update value. Change type
-            // is carried by the Conventional Commit title itself, so no
-            // change-type label is derived here.
+            // since pr.title still reflects the pre-update value.
             const title = process.env.RENAMED_TITLE || pr.title || '';
             const { labels: titleLabels } = h.matchTitleLabels(title);
             for (const label of titleLabels) {
               toAdd.add(label);
+            }
+            for (const label of h.getStaleTitleLabels(title, currentLabels)) {
+              toRemove.add(label);
             }
 
             // ── Internal label (only on open, non-external contributors) ──

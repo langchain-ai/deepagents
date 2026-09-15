@@ -60,6 +60,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_renderable_auto_mode_event,
     _parse_auto_mode_review_event,
     _read_mentioned_file,
+    _tool_call_ids_from_current_turn,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -289,6 +290,195 @@ class TestInterruptCleanup:
         assistant_msg.stop_stream.assert_awaited_once_with()
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
+
+    async def test_persisted_tool_request_is_not_appended_again(self) -> None:
+        """A checkpointed streamed tool call must not be duplicated by cleanup."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        calls: list[str] = []
+        persisted = AIMessage(
+            content="",
+            id="assistant-1",
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "name": "execute",
+                    "args": {"command": "sleep 120", "timeout": 130},
+                }
+            ],
+        )
+        state = SimpleNamespace(
+            values={"messages": [HumanMessage(content="Run execute"), persisted]}
+        )
+
+        def cancel_runs(_config: object) -> None:
+            calls.append("cancel")
+
+        def get_state(_config: object) -> object:
+            calls.append("get_state")
+            return state
+
+        def update_state(_config: object, _values: dict[str, Any]) -> None:
+            calls.append("update")
+
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=cancel_runs),
+            aget_state=AsyncMock(side_effect=get_state),
+            aupdate_state=AsyncMock(side_effect=update_state),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget(
+                "execute", {"command": "sleep 120", "timeout": 130}
+            )
+        }
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert calls == ["cancel", "get_state", "update"]
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_fully_persisted_assistant_output_is_not_appended_again(self) -> None:
+        """Checkpointed text and tool calls require only the interruption notice."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="I will run that.",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "I will run that."},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_checkpoint_read_failure_preserves_unsaved_output(self) -> None:
+        """An indeterminate checkpoint read must not discard partial output."""
+        from langchain_core.messages import AIMessage
+
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(side_effect=RuntimeError("read failed")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert agent.aupdate_state.await_count == 2
+        recovered = agent.aupdate_state.await_args_list[0].args[1]["messages"][0]
+        assert isinstance(recovered, AIMessage)
+        assert recovered.content == "partial explanation"
+        assert [call["id"] for call in recovered.tool_calls] == ["call-1"]
+
+    async def test_partial_text_survives_when_tool_request_was_persisted(self) -> None:
+        """Only the checkpointed tool call is removed from mixed partial output."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        recovered = agent.aupdate_state.await_args_list[0].args[1]["messages"][0]
+        assert recovered.content == "partial explanation"
+        assert recovered.tool_calls == []
 
     async def test_interrupt_cancels_active_remote_runs_before_state_writes(
         self,
@@ -5617,6 +5807,45 @@ class TestDictIterationSafety:
         assert len(result.tool_calls) == 4
         names = {tc["name"] for tc in result.tool_calls}
         assert names == {"tool_0", "tool_1", "tool_2", "tool_3"}
+
+    def test_current_turn_tool_ids_stop_at_user_boundary(self) -> None:
+        """Repeated IDs from an earlier turn do not suppress new partial calls."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "reused", "name": "execute", "args": {}}],
+                    ),
+                    HumanMessage(content="next turn"),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "current", "name": "execute", "args": {}}],
+                    ),
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"current"}
+
+    def test_serialized_checkpoint_tool_ids_are_supported(self) -> None:
+        """Remote state snapshots remain serialized at this boundary."""
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    {"type": "human", "content": "run it"},
+                    {
+                        "type": "ai",
+                        "content": "",
+                        "tool_calls": [{"id": "call-1", "name": "execute", "args": {}}],
+                    },
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"call-1"}
 
     def test_build_interrupted_ai_message_empty(self) -> None:
         """Returns None when there is no text and no tool calls."""

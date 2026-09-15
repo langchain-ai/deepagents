@@ -141,7 +141,7 @@ jobs:
 
             const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
-            const tierLabels = ['auto:trusted-contributor'];
+            const tierLabels = [h.tierLabelsByTier.trusted];
             for (const name of tierLabels) {
               await h.ensureLabel(name);
             }
@@ -163,7 +163,7 @@ jobs:
 
                 const labels = [info.isExternal ? 'org:external' : 'org:internal'];
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
-                  labels.push('auto:trusted-contributor');
+                  labels.push(h.tierLabelsByTier.trusted);
                 }
 
                 // Ensure all labels exist before batch add

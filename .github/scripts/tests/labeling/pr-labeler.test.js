@@ -8,6 +8,9 @@ const prLabeler = require('../../labeling/pr-labeler.js');
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 const PR_LABELER_YML = path.join(REPO_ROOT, '.github/workflows/pr_labeler.yml');
+const REQUIRE_ISSUE_LINK_YML = path.join(REPO_ROOT, '.github/workflows/require_issue_link.yml');
+const TAG_EXTERNAL_ISSUES_YML = path.join(REPO_ROOT, '.github/workflows/tag-external-issues.yml');
+const BACKFILL_YML = path.join(REPO_ROOT, '.github/workflows/pr_labeler_backfill.yml');
 
 // `core` is supplied by actions/github-script at runtime; init() refuses to
 // run without one, so stub the two methods the helpers touch.
@@ -85,6 +88,84 @@ test('pr_labeler.yml consumes the shared helper, not an inline alias map', () =>
     /scopeAliases\s*=\s*new Map/,
     'the inline alias map is back — keep it in pr-labeler-config.json',
   );
+});
+
+// ── Contributor tier labels ───────────────────────────────────────
+//
+// These were the last label literals hardcoded in pr-labeler.js. They are
+// now config-driven, but require_issue_link.yml gates its whole check on the
+// trusted name from a workflow-level `if:` expression, which cannot read the
+// config — so that literal has to stay, and these tests are what stop it
+// drifting from the producer.
+
+test('applyTierLabel derives both tiers from config, not literals', async () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  assert.deepEqual(
+    [...h.tierLabels].sort(),
+    [config.tierLabels.new, config.tierLabels.trusted].sort(),
+  );
+  // Every tier name must be one the labeler can actually create.
+  for (const name of h.tierLabels) {
+    assert.match(name, /^auto:/, `${name} should live under the auto: prefix`);
+  }
+});
+
+test('tier thresholds select the configured label', async () => {
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+
+  // applyTierLabel runs its own merged-PR search, so drive it by count.
+  async function appliedFor(mergedCount) {
+    const applied = [];
+    const github = {
+      rest: {
+        search: {
+          issuesAndPullRequests: async () => ({ data: { total_count: mergedCount } }),
+        },
+        issues: {
+          getLabel: async () => ({}),
+          addLabels: async ({ labels }) => { applied.push(...labels); },
+        },
+      },
+    };
+    const h = prLabeler.init(github, 'o', 'r', config, core);
+    await h.applyTierLabel(1, 'someone');
+    return applied;
+  }
+
+  assert.deepEqual(await appliedFor(config.trustedThreshold), [config.tierLabels.trusted]);
+  assert.deepEqual(await appliedFor(0), [config.tierLabels.new]);
+  // Between the two tiers: no tier label at all.
+  assert.deepEqual(await appliedFor(1), []);
+});
+
+test('workflows that cannot read the config still name the configured tier labels', () => {
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const trusted = config.tierLabels.trusted;
+
+  // A workflow-level `if:` cannot require() the config, so the literal is
+  // load-bearing: if it ever stops matching, every trusted contributor's PR
+  // gets labeled auto:missing-issue-link and closed.
+  const requireIssueLink = fs.readFileSync(REQUIRE_ISSUE_LINK_YML, 'utf8');
+  assert.ok(
+    requireIssueLink.includes(`'${trusted}'`),
+    `require_issue_link.yml must skip on ${trusted}; its literal no longer matches the config`,
+  );
+
+  // These run inside github-script and read the helper, so assert they do not
+  // reintroduce a literal instead.
+  for (const [file, yml] of [
+    ['tag-external-issues.yml', TAG_EXTERNAL_ISSUES_YML],
+    ['pr_labeler_backfill.yml', BACKFILL_YML],
+  ]) {
+    const body = fs.readFileSync(yml, 'utf8');
+    assert.match(body, /h\.tierLabelsByTier\./, `${file} should read tier labels from the helper`);
+    for (const name of Object.values(config.tierLabels)) {
+      assert.ok(
+        !body.includes(`'${name}'`),
+        `${file} hardcodes ${name} — use h.tierLabelsByTier instead`,
+      );
+    }
+  }
 });
 
 const typeCases = [

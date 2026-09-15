@@ -30,6 +30,10 @@
     "docs/"
   ],
   "releaseLabel": "auto:release-pr",
+  "tierLabels": {
+    "new": "auto:new-contributor",
+    "trusted": "auto:trusted-contributor"
+  },
   "typeToLabel": {
     "feat": "type:feature",
     "fix": "type:bug",

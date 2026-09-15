@@ -23,7 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
-    'typeToLabel', 'breakingLabel', 'labelDescriptions',
+    'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
   const missing = required.filter(k => !(k in config));
@@ -46,6 +46,7 @@ function init(github, owner, repo, config, core) {
     releaseLabel,
     typeToLabel,
     breakingLabel,
+    tierLabels,
     labelDescriptions,
     fileRules: fileRulesDef,
     branchRules: branchRulesDef,
@@ -54,7 +55,11 @@ function init(github, owner, repo, config, core) {
   } = config;
 
   const sizeLabels = sizeThresholds.map(t => t.label);
-  const tierLabels = ['auto:new-contributor', 'auto:trusted-contributor'];
+  // Config-driven like every other label. These were the last hardcoded
+  // literals, and require_issue_link.yml gates its whole check on
+  // `trusted`, so a rename that reached only one side would start closing
+  // trusted contributors' PRs.
+  const tierLabelNames = [tierLabels.new, tierLabels.trusted];
   const titleTypeLabels = new Set([...Object.values(typeToLabel), breakingLabel, releaseLabel]);
 
   // ── Label management ──────────────────────────────────────────────
@@ -304,8 +309,8 @@ function init(github, owner, repo, config, core) {
     }
 
     let tierLabel = null;
-    if (mergedCount >= trustedThreshold) tierLabel = 'auto:trusted-contributor';
-    else if (mergedCount === 0 && !skipNewContributor) tierLabel = 'auto:new-contributor';
+    if (mergedCount >= trustedThreshold) tierLabel = tierLabels.trusted;
+    else if (mergedCount === 0 && !skipNewContributor) tierLabel = tierLabels.new;
 
     if (tierLabel) {
       await ensureLabel(tierLabel);
@@ -378,7 +383,10 @@ function init(github, owner, repo, config, core) {
     getContributorInfo,
     applyTierLabel,
     sizeLabels,
-    tierLabels,
+    // Array for the "managed labels" sweeps; map for callers that need to
+    // pick a specific tier.
+    tierLabels: tierLabelNames,
+    tierLabelsByTier: tierLabels,
     releaseLabel,
     trustedThreshold,
     labelColor,

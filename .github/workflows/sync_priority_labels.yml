@@ -128,7 +128,11 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Must match `labelColors` in
+                    // .github/scripts/labeling/pr-labeler-config.json; this workflow's
+                    // script runs in a sandbox without `require`, so the value is
+                    // inlined and asserted by pr-labeler.test.js.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;
@@ -268,7 +272,11 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Must match `labelColors` in
+                    // .github/scripts/labeling/pr-labeler-config.json; this workflow's
+                    // script runs in a sandbox without `require`, so the value is
+                    // inlined and asserted by pr-labeler.test.js.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;
@@ -449,7 +457,11 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Must match `labelColors` in
+                    // .github/scripts/labeling/pr-labeler-config.json; this workflow's
+                    // script runs in a sandbox without `require`, so the value is
+                    // inlined and asserted by pr-labeler.test.js.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;

@@ -1,6 +1,8 @@
 // release-please requires ALL configured labels, so listing both names in its
 // config is not an alias mechanism. Add the canonical label before it looks up
 // open PRs, retaining the legacy name until publishing clears both.
+const { loadConfig } = require('../labeling/pr-labeler.js');
+
 module.exports = async function normalizeReleaseLabels(github, owner, repo) {
   const legacy = 'autorelease: pending';
   const canonical = 'auto:release-pending';
@@ -23,7 +25,7 @@ module.exports = async function normalizeReleaseLabels(github, owner, repo) {
     if (error.status !== 404) throw error;
     try {
       await github.rest.issues.createLabel({
-        owner, repo, name: canonical, color: 'd9dce0',
+        owner, repo, name: canonical, color: loadConfig().labelColors['auto:'],
         description: 'Release PR pending publication and tagging.',
       });
     } catch (createErr) {

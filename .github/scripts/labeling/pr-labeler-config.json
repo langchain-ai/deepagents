@@ -2,6 +2,18 @@
   "org": "langchain-ai",
   "trustedThreshold": 5,
   "labelColor": "b76e79",
+  "labelColors": {
+    "type:": "a8c8e8",
+    "package:": "b5d6b2",
+    "topic:": "cbbfe6",
+    "integration:": "a9d3d8",
+    "org:": "ddc9b4",
+    "priority:": "eba58b",
+    "size: ": "dedbd5",
+    "triage:": "f0d79a",
+    "auto:": "d9dce0",
+    "ci:": "e3c3cc"
+  },
   "sizeThresholds": [
     {
       "label": "size: XS",

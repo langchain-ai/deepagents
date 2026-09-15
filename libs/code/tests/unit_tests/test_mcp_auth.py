@@ -10,13 +10,14 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import patch
 
 import anyio
 import httpx
+import httpx2
 import pytest
-from mcp.client.auth import TokenStorage
+from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.shared.auth import OAuthToken
 
 from deepagents_code.mcp_auth import (
@@ -27,6 +28,11 @@ from deepagents_code.mcp_auth import (
     format_login_failure,
     resolve_headers,
 )
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from fastmcp.client.transports import StreamableHttpTransport
 
 _RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
 _BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
@@ -65,11 +71,25 @@ def _http_status_error(
     status_code: int,
     *,
     headers: dict[str, str] | list[tuple[str, str]] | None = None,
-) -> httpx.HTTPStatusError:
-    """Build an `httpx.HTTPStatusError` with a canned response."""
-    request = httpx.Request("GET", "https://mcp.example.com/")
-    response = httpx.Response(status_code, headers=headers or {}, request=request)
-    return httpx.HTTPStatusError("boom", request=request, response=response)
+    client: ModuleType = httpx2,
+) -> httpx.HTTPStatusError | httpx2.HTTPStatusError:
+    """Build an `HTTPStatusError` with a canned response.
+
+    Defaults to `httpx2`, which is what the MCP SDK's client raises in
+    production; `httpx` is still reachable because dcode makes its own calls
+    (device flow, remote preflight) with that client.
+
+    Args:
+        status_code: Status code for the canned response.
+        headers: Response headers to attach.
+        client: Which HTTP client library to build the error from.
+
+    Returns:
+        An `HTTPStatusError` from the requested client library.
+    """
+    request = client.Request("GET", "https://mcp.example.com/")
+    response = client.Response(status_code, headers=headers or {}, request=request)
+    return client.HTTPStatusError("boom", request=request, response=response)
 
 
 @pytest.fixture
@@ -961,7 +981,7 @@ class TestExpiryAwareOAuthClientProvider:
             interactive=False,
         )
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
 
         # The valid token is attached and the request is yielded unchanged.
@@ -970,9 +990,71 @@ class TestExpiryAwareOAuthClientProvider:
 
         # Feeding a 401 back must reach the SDK's `response.status_code` check
         # and trigger metadata discovery — not raise AttributeError.
-        discovery_request = await flow.asend(httpx.Response(401, request=first_request))
+        discovery_request = await flow.asend(
+            httpx2.Response(401, request=first_request)
+        )
         assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
         await flow.aclose()
+
+    @pytest.mark.parametrize(
+        ("interactive", "expected"),
+        [(False, True), (True, False)],
+    )
+    async def test_delegated_flow_toggles_reauth_log_suppression(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        interactive: bool,
+        expected: bool,
+    ) -> None:
+        """The contextvar is set during delegation only for non-interactive runs.
+
+        Guards the wiring between `build_oauth_provider(interactive=...)` and the
+        filter: the SDK flow logs synchronously inside the delegated generator,
+        so the suppression flag must be visible there. A fake SDK flow records
+        what the contextvar reads at that point.
+        """
+        del fake_home
+        import httpx
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import (
+            _SUPPRESS_EXPECTED_REAUTH_LOGS,
+            build_oauth_provider,
+        )
+
+        observed: dict[str, bool] = {}
+
+        async def fake_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            del self
+            observed["suppressed"] = _SUPPRESS_EXPECTED_REAUTH_LOGS.get()
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_flow)
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=interactive,
+        )
+        flow = provider.async_auth_flow(
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        await anext(flow)
+        await flow.aclose()
+
+        assert observed["suppressed"] is expected
+        # The flag never leaks past the flow.
+        assert _SUPPRESS_EXPECTED_REAUTH_LOGS.get() is False
 
     async def test_delegated_flow_forwards_responses_on_every_iteration(
         self,
@@ -1002,12 +1084,12 @@ class TestExpiryAwareOAuthClientProvider:
             interactive=False,
         )
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
 
         first_request = await anext(flow)
         # First forwarded response (401) advances to the path-scoped PRM URL.
-        prm_path_request = await flow.asend(httpx.Response(401, request=first_request))
+        prm_path_request = await flow.asend(httpx2.Response(401, request=first_request))
         assert str(prm_path_request.url).endswith(
             "/.well-known/oauth-protected-resource/mcp"
         )
@@ -1015,7 +1097,7 @@ class TestExpiryAwareOAuthClientProvider:
         # discovery to the root PRM URL — proving the loop didn't stop after
         # the first send.
         prm_root_request = await flow.asend(
-            httpx.Response(404, request=prm_path_request)
+            httpx2.Response(404, request=prm_path_request)
         )
         assert str(prm_root_request.url).endswith(
             "/.well-known/oauth-protected-resource"
@@ -1082,7 +1164,7 @@ class TestRefreshTokenSerialization:
         )
 
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
         first_request = await anext(flow)
         # No refresh round-trip: the reloaded token is attached directly, and
@@ -1113,7 +1195,7 @@ class TestRefreshTokenSerialization:
             interactive=False,
         )
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
 
         refresh_request = await anext(flow)
@@ -1123,7 +1205,7 @@ class TestRefreshTokenSerialization:
         assert "grant_type=refresh_token" in body
         assert "refresh_token=rt" in body
 
-        token_response = httpx.Response(
+        token_response = httpx2.Response(
             200,
             json={
                 "access_token": "at-rotated",
@@ -1198,13 +1280,13 @@ class TestRefreshTokenSerialization:
         )
 
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
 
         refresh_request = await anext(flow)
         assert str(refresh_request.url) == "https://auth.example/token"
 
-        actual_request = await flow.asend(httpx.Response(401, request=refresh_request))
+        actual_request = await flow.asend(httpx2.Response(401, request=refresh_request))
 
         assert delegated == {"entered": True}
         assert str(actual_request.url) == "https://mcp.notion.com/mcp"
@@ -1265,7 +1347,7 @@ class TestRefreshTokenSerialization:
         try:
             caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
             flow = provider.async_auth_flow(
-                httpx.Request("POST", "https://mcp.notion.com/mcp")
+                httpx2.Request("POST", "https://mcp.notion.com/mcp")
             )
             actual_request = await anext(flow)
             assert str(actual_request.url) == "https://mcp.notion.com/mcp"
@@ -1296,7 +1378,7 @@ class TestRefreshTokenSerialization:
             # `anyio` lock is task-affine, so driving `anext` here and
             # `aclose` on another task would raise on release.
             flow = provider.async_auth_flow(
-                httpx.Request("POST", "https://mcp.notion.com/mcp")
+                httpx2.Request("POST", "https://mcp.notion.com/mcp")
             )
             try:
                 return await anext(flow)
@@ -1334,10 +1416,10 @@ class TestRefreshTokenSerialization:
         provider, storage = await self._build_stale_refreshable_provider()
 
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.notion.com/mcp")
+            httpx2.Request("POST", "https://mcp.notion.com/mcp")
         )
         refresh_request = await anext(flow)
-        token_response = httpx.Response(
+        token_response = httpx2.Response(
             200,
             json={
                 "access_token": "at-rotated",
@@ -2456,9 +2538,52 @@ class TestPasteBackHandlers:
         monkeypatch.setattr(
             "builtins.input", lambda _: "https://localhost/?code=abc&state=xyz"
         )
-        code, state = await callback()
-        assert code == "abc"
-        assert state == "xyz"
+        result = await callback()
+        assert result.code == "abc"
+        assert result.state == "xyz"
+
+    async def test_callback_returns_the_sdk_authorization_result(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The handler returns what the MCP SDK reads, not a bare tuple.
+
+        `OAuthClientProvider._perform_authorization` accesses `.state`, `.iss`
+        and `.code` on this value, so returning a `(code, state)` tuple made
+        every OAuth login fail with `AttributeError` and dropped the RFC 9207
+        issuer the SDK validates.
+        """
+        from mcp.shared.auth import AuthorizationCodeResult
+
+        from deepagents_code.mcp_auth import _make_paste_back_handlers
+
+        _, callback = _make_paste_back_handlers()
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: (
+                "https://localhost/?code=abc&state=xyz&iss=https%3A%2F%2Fslack.com"
+            ),
+        )
+        result = await callback()
+
+        assert isinstance(result, AuthorizationCodeResult)
+        assert (result.code, result.state) == ("abc", "xyz")
+        assert result.iss == "https://slack.com"
+
+    async def test_callback_leaves_absent_state_and_iss_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A callback URL carrying only `code` leaves the optionals `None`."""
+        from deepagents_code.mcp_auth import _make_paste_back_handlers
+
+        _, callback = _make_paste_back_handlers()
+        monkeypatch.setattr("builtins.input", lambda _: "https://localhost/?code=abc")
+        result = await callback()
+
+        assert result.code == "abc"
+        assert result.state is None
+        assert result.iss is None
 
     async def test_callback_missing_code_raises(
         self,
@@ -2584,7 +2709,7 @@ class TestBuildOAuthProvider:
             interactive=False,
         )
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.slack.com/mcp")
+            httpx2.Request("POST", "https://mcp.slack.com/mcp")
         )
 
         prm_path_request = await anext(flow)
@@ -2592,13 +2717,13 @@ class TestBuildOAuthProvider:
             "/.well-known/oauth-protected-resource/mcp"
         )
         prm_root_request = await flow.asend(
-            httpx.Response(404, request=prm_path_request)
+            httpx2.Response(404, request=prm_path_request)
         )
         assert str(prm_root_request.url).endswith(
             "/.well-known/oauth-protected-resource"
         )
         auth_metadata_request = await flow.asend(
-            httpx.Response(
+            httpx2.Response(
                 200,
                 request=prm_root_request,
                 json={
@@ -2611,7 +2736,7 @@ class TestBuildOAuthProvider:
             "/.well-known/oauth-authorization-server"
         )
         refresh_request = await flow.asend(
-            httpx.Response(
+            httpx2.Response(
                 200,
                 request=auth_metadata_request,
                 json={
@@ -2655,12 +2780,12 @@ class TestBuildOAuthProvider:
             interactive=False,
         )
         flow = provider.async_auth_flow(
-            httpx.Request("POST", "https://mcp.slack.com/mcp")
+            httpx2.Request("POST", "https://mcp.slack.com/mcp")
         )
 
         metadata_request = await anext(flow)
         refresh_request = await flow.athrow(
-            httpx.TransportError("metadata unavailable", request=metadata_request)
+            httpx2.TransportError("metadata unavailable", request=metadata_request)
         )
 
         assert str(refresh_request.url).endswith("/token")
@@ -2692,7 +2817,7 @@ class TestBuildOAuthProvider:
 
         assert await storage.get_oauth_metadata() is None
         token_json = json.loads(_make_tokens().model_dump_json(exclude_none=True))
-        await provider._handle_token_response(httpx.Response(200, json=token_json))
+        await provider._handle_token_response(httpx2.Response(200, json=token_json))
 
         stored = await storage.get_oauth_metadata()
         assert stored is not None
@@ -2897,9 +3022,9 @@ class TestLoopbackHandlers:
             response = await client.get(f"{redirect_uri}?code=abc&state=xyz")
 
         assert response.status_code == 200
-        code, state = await callback_handler()
-        assert code == "abc"
-        assert state == "xyz"
+        result = await callback_handler()
+        assert result.code == "abc"
+        assert result.state == "xyz"
 
     async def test_loopback_callback_surfaces_provider_error(
         self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
@@ -2990,9 +3115,9 @@ class TestLoopbackHandlers:
         assert callback_handler is not None
 
         await redirect_handler("https://auth.example/authorize")
-        code, state = await callback_handler()
-        assert code == "fallback"
-        assert state == "s"
+        result = await callback_handler()
+        assert result.code == "fallback"
+        assert result.state == "s"
 
     async def test_loopback_falls_back_on_bind_failure(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3025,9 +3150,9 @@ class TestLoopbackHandlers:
         assert callback_handler is not None
 
         await redirect_handler("https://auth.example/authorize")
-        code, state = await callback_handler()
-        assert code == "fallback"
-        assert state == "s"
+        result = await callback_handler()
+        assert result.code == "fallback"
+        assert result.state == "s"
 
     async def test_loopback_falls_back_when_webbrowser_get_raises(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3070,9 +3195,9 @@ class TestLoopbackHandlers:
         assert callback_handler is not None
 
         await redirect_handler("https://auth.example/authorize")
-        code, state = await callback_handler()
-        assert code == "fallback"
-        assert state == "s"
+        result = await callback_handler()
+        assert result.code == "fallback"
+        assert result.state == "s"
 
     async def test_loopback_falls_back_on_callback_timeout(
         self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
@@ -3104,8 +3229,8 @@ class TestLoopbackHandlers:
         assert callback_handler is not None
 
         await redirect_handler("https://auth.example/authorize")
-        code, _state = await callback_handler()
-        assert code == "after_timeout"
+        result = await callback_handler()
+        assert result.code == "after_timeout"
 
     async def test_loopback_repeat_request_after_error_shows_error_page(
         self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
@@ -3555,9 +3680,8 @@ class TestLogin:
 
         from deepagents_code.mcp_auth import login
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            storage = FileTokenStorage("notion", server_url=transport.url)
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
             )
@@ -3603,13 +3727,16 @@ class TestLogin:
 
         seen: dict[str, Any] = {}
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider_storage = connection["auth"].context.storage
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            server_name, connection = "notion", transport
+            provider = connection.auth
+            assert isinstance(provider, OAuthClientProvider)
+            provider_storage = provider.context.storage
+            assert isinstance(provider_storage, FileTokenStorage)
             seen["tokens"] = await provider_storage.get_tokens()
             seen["expiry"] = await provider_storage.get_tokens_with_expiry()
             seen["client_info"] = await provider_storage.get_client_info()
-            fresh = FileTokenStorage(server_name, server_url=connection["url"])
+            fresh = FileTokenStorage(server_name, server_url=connection.url)
             await fresh.set_tokens(OAuthToken(access_token="new", token_type="Bearer"))
 
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
@@ -3641,7 +3768,7 @@ class TestLogin:
         await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
         await storage.set_client_info(_make_client_info())
 
-        async def _failing_handshake(connections: dict) -> None:
+        async def _failing_handshake(transport: StreamableHttpTransport) -> None:
             msg = "user aborted"
             raise RuntimeError(msg)
 
@@ -3664,9 +3791,8 @@ class TestLogin:
         from deepagents_code.mcp_auth import login
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            storage = FileTokenStorage("notion", server_url=transport.url)
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
             )
@@ -3710,9 +3836,10 @@ class TestLogin:
         monkeypatch.setenv("MCP_GATEWAY_TOKEN", "gw-token")
         captured: dict[str, Any] = {}
 
-        async def _fake_handshake(connections: dict) -> None:
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
             await asyncio.sleep(0)
-            captured.update(next(iter(connections.values())))
+            captured["url"] = transport.url
+            captured["headers"] = dict(transport.headers or {})
 
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
@@ -3911,12 +4038,14 @@ class TestLogin:
 
         ui = _CapturingUI()
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            server_name, connection = "notion", transport
+            provider = connection.auth
+            assert isinstance(provider, OAuthClientProvider)
             redirect = provider.context.redirect_handler
+            assert redirect is not None
             await redirect("https://slack.com/oauth/v2/authorize?client_id=x")
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):

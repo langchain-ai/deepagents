@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -32,6 +33,12 @@ from deepagents.backends.protocol import (
 from deepagents.backends.state import StateBackend
 
 _DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}'."
+_MOVE_UNSUPPORTED_ERROR = "Error: moving is not supported for '{source_path}'."
+_MOVE_CROSS_BACKEND_ERROR = (
+    "Error: cannot move '{source_path}' to '{destination_path}': the paths are stored by "
+    "different backends. Nothing was moved. Read the source and write it to the destination "
+    "explicitly, then delete the source, if that is what you intended."
+)
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -809,6 +816,83 @@ class CompositeBackend(BackendProtocol):
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
+        return res
+
+    def move(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Move a file, routing both endpoints to the same backend.
+
+        A move whose endpoints route to two *different* backends is refused
+        rather than composed out of read + write + delete. Routes exist because
+        backends differ in persistence and scope, so relocating across one is a
+        trust-boundary crossing that deserves its own review; and a composed
+        implementation has no atomicity, so a delete failing after a successful
+        write would leave the file duplicated with no honest result to report.
+
+        Routing is compared by backend *identity*, not by route prefix: one
+        backend instance aliased at two prefixes shares a single key space, so
+        such a move is legal and is delegated normally.
+
+        Args:
+            source_path: Absolute path of the file to move.
+            destination_path: Absolute path the file is moved to.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with the original paths on success, or an error
+            (including cross-backend moves and routes that cannot move).
+        """
+        src_backend, src_key = self._get_backend_and_key(source_path)
+        dst_backend, dst_key = self._get_backend_and_key(destination_path)
+        if src_backend is not dst_backend:
+            return MoveResult(
+                error=_MOVE_CROSS_BACKEND_ERROR.format(
+                    source_path=source_path,
+                    destination_path=destination_path,
+                )
+            )
+        try:
+            res = src_backend.move(src_key, dst_key, overwrite=overwrite)
+        except NotImplementedError:
+            return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(source_path=source_path))
+        # Two independent guards, so a backend that populates only one field is
+        # not silently "fixed" into a wrong pair.
+        if res.source_path is not None:
+            res.source_path = source_path
+        if res.destination_path is not None:
+            res.destination_path = destination_path
+        return res
+
+    async def amove(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Async version of `move`."""
+        src_backend, src_key = self._get_backend_and_key(source_path)
+        dst_backend, dst_key = self._get_backend_and_key(destination_path)
+        if src_backend is not dst_backend:
+            return MoveResult(
+                error=_MOVE_CROSS_BACKEND_ERROR.format(
+                    source_path=source_path,
+                    destination_path=destination_path,
+                )
+            )
+        try:
+            res = await src_backend.amove(src_key, dst_key, overwrite=overwrite)
+        except NotImplementedError:
+            return MoveResult(error=_MOVE_UNSUPPORTED_ERROR.format(source_path=source_path))
+        if res.source_path is not None:
+            res.source_path = source_path
+        if res.destination_path is not None:
+            res.destination_path = destination_path
         return res
 
     def execute(

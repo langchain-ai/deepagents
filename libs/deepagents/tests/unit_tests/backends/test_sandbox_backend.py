@@ -2561,3 +2561,123 @@ def test_glob_search_root_is_forced_absolute() -> None:
     assert _glob_search_root("/workspace") == "/workspace"
     assert _glob_search_root(None) == "/"
     assert _glob_search_root("") == "/"
+
+
+class TestSandboxMove:
+    """`BaseSandbox.move` runs one script and reads its JSON verdict."""
+
+    def _payload(self, command: str) -> dict:
+        """Decode the base64 heredoc payload the command feeds on stdin."""
+        match = re.search(r"__DEEPAGENTS_MOVE_EOF__.?\n([A-Za-z0-9+/=]+)\n", command)
+        assert match is not None, f"no move payload found in command: {command[:200]}"
+        return json.loads(base64.b64decode(match.group(1)).decode("utf-8"))
+
+    def test_move_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"moved": True})
+        sandbox._next_exit_code = 0
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.error is None
+        assert result.source_path == "/a.txt"
+        assert result.destination_path == "/b.txt"
+        # One round trip, unlike delete's probe-then-act pair.
+        assert len(sandbox.commands) == 1
+
+    def test_paths_travel_base64_not_shell_quoted(self) -> None:
+        # Quoting is sidestepped entirely, so a path full of shell
+        # metacharacters needs no escaping reasoning.
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"moved": True})
+        nasty = "/a b; rm -rf /$(whoami)'\".txt"
+
+        result = sandbox.move(nasty, "/safe.txt")
+
+        assert result.error is None
+        assert sandbox.last_command is not None
+        assert nasty not in sandbox.last_command
+        assert self._payload(sandbox.last_command)["src"] == nasty
+
+    def test_overwrite_flag_is_a_literal_bool_in_the_payload(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"moved": True})
+
+        sandbox.move("/a.txt", "/b.txt", overwrite=True)
+
+        assert sandbox.last_command is not None
+        assert self._payload(sandbox.last_command)["overwrite"] is True
+
+    @pytest.mark.parametrize(
+        ("code", "expected"),
+        [
+            ("source_not_found", "not found"),
+            ("source_is_symlink", "is a symlink"),
+            ("source_is_directory", "is a directory; move supports files only"),
+            ("same_path", "same path"),
+            ("destination_is_symlink", "is a symlink"),
+            ("destination_is_directory", "is a directory"),
+            ("destination_exists", "already exists; pass overwrite=True"),
+        ],
+    )
+    def test_error_codes_map_to_messages(self, code: str, expected: str) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"error": code})
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.source_path is None
+        assert result.error is not None
+        assert expected in result.error
+
+    def test_source_not_removed_reports_both_locations(self) -> None:
+        # The cross-device path is copy-then-unlink, so a failed unlink leaves
+        # the file in two places and the message must not imply otherwise.
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"error": "source_not_removed", "detail": "permission denied"})
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.error is not None
+        assert "both places" in result.error
+        assert "permission denied" in result.error
+
+    def test_unexpected_payload_is_reported_verbatim(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "not json at all"
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.error is not None
+        assert "unexpected server response" in result.error
+        assert "not json at all" in result.error
+
+    def test_empty_payload_is_reported(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.error is not None
+        assert "unexpected server response" in result.error
+
+    def test_generic_failure_surfaces_the_detail(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"error": "failed", "detail": "disk on fire"})
+
+        result = sandbox.move("/a.txt", "/b.txt")
+
+        assert result.error is not None
+        assert "disk on fire" in result.error
+
+    async def test_amove_uses_aexecute(self) -> None:
+        # A real `amove` rather than the threaded default, so a remote sandbox
+        # keeps its async transport.
+        sandbox = MockSandbox()
+        sandbox._next_output = json.dumps({"moved": True})
+
+        result = await sandbox.amove("/a.txt", "/b.txt")
+
+        assert result.error is None
+        assert result.destination_path == "/b.txt"
+        assert len(sandbox.commands) == 1

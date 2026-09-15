@@ -48,8 +48,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "delete"})
+_GUARDED_TOOLS: frozenset[str] = frozenset(
+    {"write_file", "edit_file", "delete", "move"}
+)
 """Tool names whose calls can mutate a guarded file and must be inspected."""
+
+_REMOVING_TOOLS: frozenset[str] = frozenset({"delete", "move"})
+"""Guarded tools that can make a guarded file stop existing at its path.
+
+`move` belongs here alongside `delete`: relocating a guarded file away from
+its guarded path, or replacing it by moving another file on top of it, both
+leave no managed block at the path the guard protects.
+"""
 
 _REJECTION_MESSAGE = (
     "The region between the `deepagents:onboarding-name:start` and "
@@ -73,10 +83,10 @@ _RESTORE_FAILED_MESSAGE = (
 _DELETE_REJECTION_MESSAGE = (
     "The guarded memory file {path} contains a machine-managed region between "
     "the `deepagents:onboarding-name:start` and `deepagents:onboarding-name:end` "
-    "markers and must not be deleted. Do not delete this file or a parent "
-    "directory that contains it."
+    "markers and must not be deleted or relocated. Do not delete or move this "
+    "file, a parent directory that contains it, or another file onto it."
 )
-"""Error returned when a delete would remove a managed memory block."""
+"""Error returned when a delete or move would remove a managed memory block."""
 
 
 class _RestoreOutcome(Enum):
@@ -146,9 +156,28 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if tool_name not in _GUARDED_TOOLS:
             return None
         args = request.tool_call.get("args") or {}
+        if tool_name == "move":
+            # Both endpoints matter: the source stops holding the managed block
+            # when the file leaves, and the destination loses it when another
+            # file is moved on top. Check the source first so its message wins.
+            for arg_name in ("source_path", "destination_path"):
+                candidate = args.get(arg_name)
+                if isinstance(candidate, str) and candidate:
+                    matched = self._match_guarded(candidate, tool_name)
+                    if matched is not None:
+                        return matched
+            return None
         file_path = args.get("file_path")
         if not isinstance(file_path, str) or not file_path:
             return None
+        return self._match_guarded(file_path, tool_name)
+
+    def _match_guarded(self, file_path: str, tool_name: str) -> Path | None:
+        """Resolve `file_path` and match it against the guarded set.
+
+        Returns:
+            The matching guarded `Path`, or `None` when it is unrelated.
+        """
         try:
             resolved = Path(file_path).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
@@ -161,9 +190,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
                 exc_info=True,
             )
             return None
-        if tool_name == "delete":
-            # `is_relative_to` is True when the guarded file is the delete
-            # target itself or lives under a directory being deleted.
+        if tool_name in _REMOVING_TOOLS:
+            # `is_relative_to` is True when the guarded file is the target
+            # itself or lives under a directory being removed.
             for guarded in self._guarded:
                 if guarded.is_relative_to(resolved):
                     return guarded
@@ -435,7 +464,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if path is None:
             return handler(request)
         before = self._read(path)
-        if request.tool_call["name"] == "delete":
+        if request.tool_call["name"] in _REMOVING_TOOLS:
             if self._reject_delete(path, before):
                 return self._delete_error(request, path)
             return handler(request)
@@ -462,7 +491,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if path is None:
             return await handler(request)
         before = await asyncio.to_thread(self._read, path)
-        if request.tool_call["name"] == "delete":
+        if request.tool_call["name"] in _REMOVING_TOOLS:
             if await asyncio.to_thread(self._reject_delete, path, before):
                 return self._delete_error(request, path)
             return await handler(request)

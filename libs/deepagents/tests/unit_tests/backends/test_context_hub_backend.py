@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1257,3 +1258,214 @@ def test_later_same_path_enqueue_wins_coalesced_batch() -> None:
     mock_client.push_agent.assert_called_once()
     payload = mock_client.push_agent.call_args.kwargs["files"]
     assert payload["same.md"].content == "second"
+
+
+def test_move_commits_both_halves_in_one_push() -> None:
+    """A move must be one mutation, so both halves land in a single commit."""
+    backend, mock_client = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="AAA"),
+            "keep.md": FileEntry(type="file", content="KKK"),
+        }
+    )
+
+    result = backend.move("/a.md", "/moved.md")
+
+    assert result.error is None
+    assert result.source_path == "/a.md"
+    assert result.destination_path == "/moved.md"
+    assert mock_client.push_agent.call_count == 1
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # The write and the delete travel together: `None` is the delete marker.
+    assert files_arg["moved.md"].content == "AAA"
+    assert files_arg["a.md"] is None
+    assert "keep.md" not in files_arg
+
+
+def test_move_same_path_is_refused_and_pushes_nothing() -> None:
+    """`{dst: content, src: None}` collapses to a delete when the paths match."""
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="AAA")})
+
+    result = backend.move("/a.md", "/a.md")
+
+    assert result.error is not None
+    assert "same path" in result.error
+    assert mock_client.push_agent.call_count == 0
+    assert backend.read("/a.md").file_data["content"] == "AAA"
+
+
+def test_move_directory_source_is_refused() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "work/a.md": FileEntry(type="file", content="A"),
+            "work/b.md": FileEntry(type="file", content="B"),
+        }
+    )
+
+    result = backend.move("/work", "/moved")
+
+    assert result.error is not None
+    assert "is a directory" in result.error
+    assert mock_client.push_agent.call_count == 0
+
+
+def test_move_missing_source_is_refused() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="AAA")})
+
+    result = backend.move("/nope.md", "/x.md")
+
+    assert result.error is not None
+    assert "not found" in result.error
+    assert mock_client.push_agent.call_count == 0
+
+
+def test_move_existing_destination_needs_overwrite() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="AAA"),
+            "b.md": FileEntry(type="file", content="BBB"),
+        }
+    )
+
+    refused = backend.move("/a.md", "/b.md")
+    assert refused.error is not None
+    assert "already exists" in refused.error
+    assert mock_client.push_agent.call_count == 0
+
+    allowed = backend.move("/a.md", "/b.md", overwrite=True)
+    assert allowed.error is None
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    assert files_arg["b.md"].content == "AAA"
+    assert files_arg["a.md"] is None
+
+
+def test_move_refuses_to_replace_a_linked_entry() -> None:
+    """Linked entries are invisible to `ls`, so collision must consult them."""
+    backend, mock_client = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="AAA"),
+            "linked": AgentEntry(type="agent", repo_handle="owner/other"),
+        }
+    )
+
+    result = backend.move("/a.md", "/linked", overwrite=True)
+
+    assert result.error is not None
+    assert "linked entry" in result.error
+    assert mock_client.push_agent.call_count == 0
+
+
+def test_move_rematerializes_against_the_reloaded_tree() -> None:
+    """A conflict replay re-reads the source instead of replaying stale bytes.
+
+    The intent is "relocate whatever is at the source", so a remote edit to the
+    source between accept and push must be carried to the destination rather
+    than silently reverted.
+    """
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"a.md": FileEntry(type="file", content="local view")},
+    )
+    remote_hash = "feedface" * 8
+    reloaded = SimpleNamespace(
+        commit_id="remote",
+        commit_hash=remote_hash,
+        files={"a.md": FileEntry(type="file", content="edited remotely")},
+    )
+    mock_client = MagicMock()
+
+    def pull_agent(_identifier: str) -> SimpleNamespace:
+        return initial if mock_client.pull_agent.call_count == 1 else reloaded
+
+    mock_client.pull_agent.side_effect = pull_agent
+
+    pushes: list[dict[str, Any]] = []
+
+    conflict = LangSmithConflictError("conflict")
+
+    def push_agent(_identifier: str, **kwargs: Any) -> str:
+        pushes.append(kwargs["files"])
+        if len(pushes) == 1:
+            raise conflict
+        return _COMMIT_URL
+
+    mock_client.push_agent.side_effect = push_agent
+
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+    result = backend.move("/a.md", "/b.md")
+
+    assert result.error is None
+    assert len(pushes) == 2
+    # First attempt carried the stale snapshot; the replay carried the content
+    # actually present on the reloaded tree.
+    assert pushes[0]["b.md"].content == "local view"
+    assert pushes[1]["b.md"].content == "edited remotely"
+    assert pushes[1]["a.md"] is None
+
+
+def test_move_conflict_raises_when_the_source_vanished_remotely() -> None:
+    """A move whose premise is gone must report, not fabricate success."""
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"a.md": FileEntry(type="file", content="AAA")},
+    )
+    remote_hash = "feedface" * 8
+    reloaded = SimpleNamespace(commit_id="remote", commit_hash=remote_hash, files={})
+    mock_client = MagicMock()
+
+    def pull_agent(_identifier: str) -> SimpleNamespace:
+        return initial if mock_client.pull_agent.call_count == 1 else reloaded
+
+    mock_client.pull_agent.side_effect = pull_agent
+    mock_client.push_agent.side_effect = LangSmithConflictError("conflict")
+
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+    result = backend.move("/a.md", "/b.md")
+
+    assert result.error is not None
+    assert "Hub unavailable" in result.error
+
+
+def test_move_conflict_raises_when_the_destination_appeared_remotely() -> None:
+    """`overwrite=False` is re-evaluated against the reloaded tree."""
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"a.md": FileEntry(type="file", content="AAA")},
+    )
+    remote_hash = "feedface" * 8
+    reloaded = SimpleNamespace(
+        commit_id="remote",
+        commit_hash=remote_hash,
+        files={
+            "a.md": FileEntry(type="file", content="AAA"),
+            "b.md": FileEntry(type="file", content="SOMEONE ELSE"),
+        },
+    )
+    mock_client = MagicMock()
+
+    def pull_agent(_identifier: str) -> SimpleNamespace:
+        return initial if mock_client.pull_agent.call_count == 1 else reloaded
+
+    mock_client.pull_agent.side_effect = pull_agent
+    mock_client.push_agent.side_effect = LangSmithConflictError("conflict")
+
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+    result = backend.move("/a.md", "/b.md")
+
+    assert result.error is not None
+    assert "Hub unavailable" in result.error
+
+
+def test_amove_uses_the_threaded_default() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="AAA")})
+
+    result = asyncio.run(backend.amove("/a.md", "/b.md"))
+
+    assert result.error is None
+    assert mock_client.push_agent.call_count == 1
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    assert files_arg["b.md"].content == "AAA"
+    assert files_arg["a.md"] is None

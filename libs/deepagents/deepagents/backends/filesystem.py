@@ -35,6 +35,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -613,6 +614,156 @@ class FilesystemBackend(BackendProtocol):
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+    def _lexical_path(self, key: str) -> Path:
+        """Join `key` under the root *without* resolving symlinks.
+
+        `_resolve_path` calls `.resolve()`, which follows symlinks, so a key
+        naming a symlink comes back as its target and `is_symlink()` on the
+        result is always `False`. `move` needs to know whether the caller named
+        a link, so it tests this unresolved join instead.
+
+        Safe because `self.cwd` is already fully resolved at construction, so
+        the only symlink this can surface is one the key itself names. Only the
+        final component is meaningful here: a symlinked *directory* component is
+        still followed, consistent with the rest of this backend, and in
+        `virtual_mode` `_resolve_path`'s root containment still applies.
+
+        Args:
+            key: File path as supplied by the caller.
+
+        Returns:
+            The unresolved absolute `Path` the key names.
+        """
+        if self.virtual_mode:
+            vpath = key if key.startswith("/") else "/" + key
+            return self.cwd / vpath.lstrip("/")
+        path = Path(key)
+        return path if path.is_absolute() else self.cwd / path
+
+    def _rename_no_clobber(self, src: Path, dst: Path) -> None:
+        """Rename `src` to `dst`, refusing atomically if `dst` already exists.
+
+        `os.replace` clobbers unconditionally, so `exists()`-then-`replace`
+        leaves a window in which a destination created by someone else is
+        destroyed despite `overwrite=False`. `os.link` fails with `EEXIST`
+        instead, which closes that window: the link either wins or the
+        destination is untouched.
+
+        Falls back to `os.replace` where hardlinks are unavailable (some FUSE
+        and FAT mounts report `EPERM`/`EOPNOTSUPP`/`EMLINK`). That fallback does
+        carry the check-then-act window, an inherent limitation of a filesystem
+        that cannot express an atomic no-clobber rename.
+
+        Raises:
+            FileExistsError: If `dst` exists.
+            OSError: With `errno.EXDEV` when the paths span filesystems, or for
+                any other rename failure.
+        """
+        try:
+            os.link(src, dst)
+        except OSError as e:
+            if e.errno in (errno.EPERM, errno.EOPNOTSUPP, errno.EMLINK):
+                src.replace(dst)
+                return
+            raise
+        else:
+            src.unlink()
+
+    def move(  # noqa: C901, PLR0911, PLR0912 -- one guarded early-exit per refusal condition; collapsing them would obscure which check rejected the call
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file on the filesystem.
+
+        Files only -- see `BackendProtocol.move`. A directory source is refused
+        explicitly, because the underlying rename primitive would move it
+        happily and silently break the contract. A symlink source is refused
+        too: relocating a link would create a path that permission rules, which
+        match on the path string, do not cover.
+
+        Uses `os.replace` for `overwrite=True` (an atomic replace) and
+        `os.link` + `os.unlink` for `overwrite=False`, so the no-clobber
+        guarantee has no check-then-act window. `Path.rename` is unusable here
+        because it silently clobbers on POSIX but raises on Windows, and
+        `shutil.move` is unusable because it moves *into* an existing directory
+        destination -- exactly the behavior this refuses.
+
+        Args:
+            source_path: Path of the file to move.
+            destination_path: Path the file is moved to, including its basename.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error.
+        """
+        try:
+            src = self._resolve_path(source_path)
+            dst = self._resolve_path(destination_path)
+        except (OSError, RuntimeError, ValueError) as e:
+            # `delete` lets `_resolve_path`'s `ValueError` escape; `move`
+            # resolves two paths, doubling the exposure, and a `ValueError`
+            # escaping a tool-boundary method is a latent bug rather than a
+            # convention worth propagating.
+            return MoveResult(error=f"Error moving '{source_path}' to '{destination_path}': {e}")
+
+        # Tested on the UNRESOLVED join: `_resolve_path` already followed any
+        # symlink, so `src.is_symlink()` can never be true here. Refusing the
+        # link matters because the permission check upstream matched on
+        # `source_path`, not on wherever the link points -- relocating the
+        # target would move content the checked path does not name.
+        lexical_src = self._lexical_path(source_path)
+        lexical_dst = self._lexical_path(destination_path)
+
+        try:
+            if not lexical_src.exists() and not lexical_src.is_symlink():
+                return MoveResult(error=f"Error: '{source_path}' not found")
+            if lexical_src.is_symlink():
+                return MoveResult(error=f"Error: '{source_path}' is a symlink; move supports regular files only")
+            if lexical_dst.is_symlink():
+                return MoveResult(error=f"Error: '{destination_path}' is a symlink; move supports regular files only")
+            if src.is_dir():
+                return MoveResult(error=f"Error: '{source_path}' is a directory; move supports files only")
+            if os.path.normpath(source_path) == os.path.normpath(destination_path):
+                return MoveResult(error=f"Error: source and destination are the same path: '{source_path}'")
+            if not dst.is_symlink() and dst.is_dir():
+                return MoveResult(error=f"Error: '{destination_path}' is a directory")
+            if (dst.exists() or dst.is_symlink()) and not overwrite:
+                return MoveResult(error=f"Error: '{destination_path}' already exists; pass overwrite=True to replace it")
+
+            # Matches `write`, which also creates missing parents.
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if overwrite:
+                    src.replace(dst)
+                else:
+                    self._rename_no_clobber(src, dst)
+            except FileExistsError:
+                # Lost the race: someone created the destination after the check
+                # above. `os.link` refused rather than clobbering, so report it.
+                return MoveResult(error=f"Error: '{destination_path}' already exists; pass overwrite=True to replace it")
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    raise
+                # rename(2) cannot span filesystems. `copy2` preserves mtime,
+                # matching the metadata contract. This path is NOT atomic.
+                shutil.copy2(src, dst, follow_symlinks=False)
+                try:
+                    src.unlink()
+                except OSError as unlink_error:
+                    return MoveResult(
+                        error=(
+                            f"Error moving '{source_path}' to '{destination_path}': the file was copied to the "
+                            f"destination but the source could not be removed, so it now exists in both "
+                            f"places: {unlink_error}"
+                        )
+                    )
+            return MoveResult(source_path=source_path, destination_path=destination_path)
+        except (OSError, RuntimeError) as e:
+            return MoveResult(error=f"Error moving '{source_path}' to '{destination_path}': {e}")
 
     def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,

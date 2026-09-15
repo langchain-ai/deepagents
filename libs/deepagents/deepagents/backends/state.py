@@ -1,6 +1,7 @@
 """`StateBackend`: Store files in LangGraph agent state (ephemeral)."""
 
 import base64
+import os
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -18,6 +19,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -272,6 +274,61 @@ class StateBackend(BackendProtocol):
 
         self._send_files_update(dict.fromkeys(to_delete, None))
         return DeleteResult(path=file_path)
+
+    def move(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file within state.
+
+        Files only -- see `BackendProtocol.move`. A source with nested keys
+        under it is a directory and is refused. Both halves of the relocation
+        are queued in one `CONFIG_KEY_SEND` update, so the `files` channel
+        reducer applies them together and there is no observable state where
+        the file exists twice or not at all.
+
+        Args:
+            source_path: Path of the file to move.
+            destination_path: Path the file is moved to.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error.
+        """
+        files = self._read_files()
+        src = source_path.rstrip("/")
+        dst = destination_path.rstrip("/")
+
+        # Nested keys win even when the exact key also exists: on a flat
+        # backend `/work/a.txt` and `/work/a.txt/child` can coexist, and moving
+        # the exact key alone would strand the child.
+        if any(key.startswith(src + "/") for key in files):
+            return MoveResult(error=f"Error: '{source_path}' is a directory; move supports files only")
+        file_data = files.get(src)
+        if file_data is None:
+            return MoveResult(error=f"Error: File '{source_path}' not found")
+
+        # MUST precede building the change map below: `{dst: value, src: None}`
+        # with `dst == src` collapses to `{src: None}`, which the reducer reads
+        # as a deletion marker -- a same-path move would delete the file.
+        if os.path.normpath(src) == os.path.normpath(dst):
+            return MoveResult(error=f"Error: source and destination are the same path: '{source_path}'")
+
+        # Exact key first, so `overwrite=True` is not refused on a file that
+        # also happens to have nested keys beneath it.
+        if dst in files:
+            if not overwrite:
+                return MoveResult(error=f"Error: File '{destination_path}' already exists; pass overwrite=True to replace it")
+        elif any(key.startswith(dst + "/") for key in files):
+            return MoveResult(error=f"Error: '{destination_path}' is a directory")
+
+        # `_prepare_for_storage` copies the stored value verbatim, so
+        # `created_at` and `modified_at` both survive: a move is not a write.
+        self._send_files_update({dst: self._prepare_for_storage(file_data), src: None})
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     def grep(
         self,

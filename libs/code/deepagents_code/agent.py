@@ -935,7 +935,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"execute", "write_file", "edit_file", "delete"}
+    {"execute", "write_file", "edit_file", "delete", "move"}
 )
 """Tools considered write/shell capable for PTC auditing.
 
@@ -1728,6 +1728,23 @@ def _format_delete_description(
     return "Action: Delete file or directory"
 
 
+def _format_move_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format move tool call for approval prompt.
+
+    Returns:
+        Formatted description string for the move tool call.
+    """
+    args = tool_call.get("args") or {}
+    source = args.get("source_path", "")
+    destination = args.get("destination_path", "")
+    action = "Action: Move file"
+    if args.get("overwrite"):
+        action += ", replacing the destination"
+    return f"From: {source}\nTo: {destination}\n{action}"
+
+
 def _format_web_search_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -2212,6 +2229,12 @@ def _add_interrupt_on(
         "when": when,
     }
 
+    move_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_move_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": when,
+    }
+
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
@@ -2241,6 +2264,7 @@ def _add_interrupt_on(
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
         "delete": delete_interrupt_config,
+        "move": move_interrupt_config,
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,

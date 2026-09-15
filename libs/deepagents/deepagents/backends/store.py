@@ -1,6 +1,7 @@
 """`StoreBackend`: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
 import base64
+import os
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -20,6 +21,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -85,6 +87,68 @@ def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
             raise ValueError(msg)
 
     return namespace
+
+
+def _plan_store_move(
+    items: list[Item],
+    source_path: str,
+    destination_path: str,
+    *,
+    overwrite: bool,
+) -> tuple[str | None, str, str, dict[str, Any] | None]:
+    """Decide a `move` against an already-enumerated namespace.
+
+    Shared by `move` and `amove` so the two cannot drift: the sync and async
+    methods differ only in how they reach the store, not in what they decide.
+
+    Args:
+        items: Every item in the namespace, from `_search_store_paginated`.
+        source_path: Path of the file to move.
+        destination_path: Path the file is moved to.
+        overwrite: Whether an existing destination file may be replaced.
+
+    Returns:
+        `(error, src_key, dst_key, value)`. On refusal `error` is the message
+            and `value` is `None`; on success `error` is `None` and `value` is
+            the stored value to re-put under `dst_key`.
+    """
+    keys = {str(item.key): item for item in items}
+    src = source_path.rstrip("/")
+    dst = destination_path.rstrip("/")
+
+    # Nested keys win even when the exact key also exists: on a flat backend
+    # `/work/a.txt` and `/work/a.txt/child` can coexist, and moving the exact
+    # key alone would strand the child.
+    if any(key.startswith(src + "/") for key in keys):
+        return (f"Error: '{source_path}' is a directory; move supports files only", src, dst, None)
+    src_item = keys.get(src)
+    if src_item is None:
+        return (f"Error: File '{source_path}' not found", src, dst, None)
+
+    # MUST precede building the op list in the callers: two `PutOp`s on one key
+    # resolve last-wins, so a same-path move would commit only the `None`
+    # tombstone and delete the file.
+    if os.path.normpath(src) == os.path.normpath(dst):
+        return (f"Error: source and destination are the same path: '{source_path}'", src, dst, None)
+
+    # Exact key first, so `overwrite=True` is not refused on a file that also
+    # happens to have nested keys beneath it.
+    if dst in keys:
+        if not overwrite:
+            return (
+                f"Error: File '{destination_path}' already exists; pass overwrite=True to replace it",
+                src,
+                dst,
+                None,
+            )
+    elif any(key.startswith(dst + "/") for key in keys):
+        return (f"Error: '{destination_path}' is a directory", src, dst, None)
+
+    # Copy the stored value verbatim rather than round-tripping through
+    # `_convert_store_item_to_file_data`, which raises on a malformed value.
+    # That preserves `created_at`/`modified_at` and any extra keys, and means a
+    # file too malformed to read can still be relocated.
+    return (None, src, dst, dict(src_item.value))
 
 
 class StoreBackend(BackendProtocol):
@@ -587,6 +651,65 @@ class StoreBackend(BackendProtocol):
 
         await store.abatch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
+
+    def move(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file within the store.
+
+        Files only -- see `BackendProtocol.move`. The namespace is enumerated
+        once and every check is then decided locally, so this costs the same two
+        round trips as `delete`.
+
+        Both halves travel in one `store.batch`, with the destination `PutOp`
+        ordered first: whether a batch is transactional depends on the
+        `BaseStore` implementation, so if one is applied and interrupted the
+        recoverable outcome (a duplicate) beats the unrecoverable one (a deleted
+        source). Because `PutOp` has no compare-and-set, `overwrite=False` is
+        advisory against a writer racing us on the same store between the
+        enumeration and the batch -- the same window `delete` already has.
+
+        Args:
+            source_path: Path of the file to move.
+            destination_path: Path the file is moved to.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = self._search_store_paginated(store, namespace)
+        error, src, dst, value = _plan_store_move(items, source_path, destination_path, overwrite=overwrite)
+        if error is not None:
+            return MoveResult(error=error)
+
+        store.batch([PutOp(namespace, dst, value), PutOp(namespace, src, None)])
+        return MoveResult(source_path=source_path, destination_path=destination_path)
+
+    async def amove(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Async version of `move` using native store async methods."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = await self._asearch_store_paginated(store, namespace)
+        error, src, dst, value = _plan_store_move(items, source_path, destination_path, overwrite=overwrite)
+        if error is not None:
+            return MoveResult(error=error)
+
+        await store.abatch([PutOp(namespace, dst, value), PutOp(namespace, src, None)])
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     # Removed legacy grep() convenience to keep lean surface
 

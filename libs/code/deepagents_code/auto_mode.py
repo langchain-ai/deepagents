@@ -1805,7 +1805,7 @@ def _path_error_reason(error: Exception, raw: str) -> str:
     return sanitize_auto_reason(f"{type(error).__name__}: {error} (path: {raw})")
 
 
-_WRITE_PATH_TOOLS = frozenset({"write_file", "edit_file", "delete"})
+_WRITE_PATH_TOOLS = frozenset({"write_file", "edit_file", "delete", "move"})
 
 
 def _unresolvable_write_path_reason(root: Path, raw: object) -> str | None:

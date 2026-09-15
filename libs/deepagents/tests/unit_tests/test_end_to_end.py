@@ -5033,3 +5033,117 @@ class TestMultimodalProfileScrubAsyncPath:
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+
+class TestMoveFileTool:
+    """Agent-level `move`, driven by a fake model through `create_deep_agent`."""
+
+    def _agent_with_move(self, args: dict) -> object:
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "move", "args": args, "id": "call_1", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        return create_deep_agent(model=model)
+
+    def test_move_relocates_a_file_in_state(self) -> None:
+        # `StateBackend` needs a graph context, so this is where its `move` is
+        # exercised: both halves land in one channel write.
+        agent = self._agent_with_move({"source_path": "/a.txt", "destination_path": "/b.txt"})
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move it")],
+                "files": {"/a.txt": create_file_data("AAA"), "/keep.txt": create_file_data("KKK")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Moved /a.txt to /b.txt"
+        assert set(result["files"]) == {"/b.txt", "/keep.txt"}
+        assert result["files"]["/b.txt"]["content"] == "AAA"
+
+    def test_move_preserves_state_timestamps(self) -> None:
+        agent = self._agent_with_move({"source_path": "/a.txt", "destination_path": "/b.txt"})
+        original = create_file_data("AAA")
+
+        result = agent.invoke({"messages": [HumanMessage(content="move it")], "files": {"/a.txt": original}})
+
+        moved = result["files"]["/b.txt"]
+        assert moved["created_at"] == original["created_at"]
+        assert moved["modified_at"] == original["modified_at"]
+
+    def test_move_same_path_leaves_the_file_intact(self) -> None:
+        # The change map would collapse to a tombstone, so the guard has to
+        # fire before the backend builds it.
+        agent = self._agent_with_move({"source_path": "/a.txt", "destination_path": "/a.txt"})
+
+        result = agent.invoke({"messages": [HumanMessage(content="move it")], "files": {"/a.txt": create_file_data("AAA")}})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "error"
+        assert "same path" in tool_messages[0].content
+        assert set(result["files"]) == {"/a.txt"}
+        assert result["files"]["/a.txt"]["content"] == "AAA"
+
+    def test_move_missing_source_returns_error(self) -> None:
+        agent = self._agent_with_move({"source_path": "/nope.txt", "destination_path": "/b.txt"})
+
+        result = agent.invoke({"messages": [HumanMessage(content="move it")], "files": {"/a.txt": create_file_data("AAA")}})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "error"
+        assert set(result["files"]) == {"/a.txt"}
+
+    def test_move_existing_destination_needs_overwrite(self) -> None:
+        agent = self._agent_with_move({"source_path": "/a.txt", "destination_path": "/b.txt"})
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move it")],
+                "files": {"/a.txt": create_file_data("AAA"), "/b.txt": create_file_data("BBB")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "error"
+        assert "already exists" in tool_messages[0].content
+        assert result["files"]["/b.txt"]["content"] == "BBB"
+        assert result["files"]["/a.txt"]["content"] == "AAA"
+
+    def test_move_overwrite_replaces_destination(self) -> None:
+        agent = self._agent_with_move({"source_path": "/a.txt", "destination_path": "/b.txt", "overwrite": True})
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move it")],
+                "files": {"/a.txt": create_file_data("AAA"), "/b.txt": create_file_data("BBB")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "success"
+        assert set(result["files"]) == {"/b.txt"}
+        assert result["files"]["/b.txt"]["content"] == "AAA"
+
+    def test_move_directory_source_is_refused(self) -> None:
+        agent = self._agent_with_move({"source_path": "/work", "destination_path": "/moved"})
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="move it")],
+                "files": {"/work/a.txt": create_file_data("A"), "/work/b.txt": create_file_data("B")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "error"
+        assert set(result["files"]) == {"/work/a.txt", "/work/b.txt"}

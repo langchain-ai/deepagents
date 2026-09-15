@@ -14,6 +14,7 @@ from deepagents.backends.protocol import (
     LsResult,
     SandboxBackendProtocol,
     WriteResult,
+    _supports_move,
 )
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -1803,3 +1804,130 @@ async def test_composite_adelete_unsupported_route_returns_error() -> None:
     assert result.path is None
     assert result.error is not None
     assert "not supported" in result.error
+
+
+class _NoMoveStore(StoreBackend):
+    """StoreBackend variant that opts out of move (inherits protocol default)."""
+
+    move = BackendProtocol.move
+    amove = BackendProtocol.amove
+
+
+def test_composite_move_routes_within_a_single_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    be.write("/memories/a.txt", "MA")
+
+    res = be.move("/memories/a.txt", "/memories/b.txt")
+
+    assert res.error is None
+    # Both path fields are remapped back into composite space.
+    assert res.source_path == "/memories/a.txt"
+    assert res.destination_path == "/memories/b.txt"
+    assert be.read("/memories/b.txt").file_data["content"] == "MA"
+    assert be.read("/memories/a.txt").error is not None
+
+
+def test_composite_move_across_backends_is_refused() -> None:
+    """A cross-route move is refused rather than composed from read+write+delete.
+
+    Routes exist because backends differ in persistence and scope, so relocating
+    across one is a trust-boundary crossing; and a composed implementation has
+    no atomicity, so a failure partway would leave no honest result to report.
+    """
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    be.write("/memories/a.txt", "MA")
+    be.write("/plain.txt", "PL")
+
+    res = be.move("/memories/a.txt", "/plain2.txt")
+
+    assert res.source_path is None
+    assert res.destination_path is None
+    assert res.error is not None
+    assert "different backends" in res.error
+    assert "Nothing was moved" in res.error
+    # Both sides are untouched.
+    assert be.read("/memories/a.txt").file_data["content"] == "MA"
+    assert be.read("/plain2.txt").error is not None
+
+
+async def test_composite_amove_across_backends_is_refused() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    be.write("/memories/a.txt", "MA")
+
+    res = await be.amove("/memories/a.txt", "/plain2.txt")
+
+    assert res.error is not None
+    assert "different backends" in res.error
+    assert be.read("/memories/a.txt").file_data["content"] == "MA"
+
+
+def test_composite_move_between_aliased_routes_is_allowed() -> None:
+    """One backend aliased at two prefixes shares a key space, so this is legal.
+
+    Routing is compared by backend identity, not route prefix, so a move
+    between two aliases of the same instance is delegated normally.
+    """
+    mem_store = InMemoryStore()
+    shared = StoreBackend(store=mem_store, namespace=lambda _rt: ("shared",))
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/a/": shared, "/b/": shared},
+    )
+    be.write("/a/f.txt", "SHARED")
+
+    res = be.move("/a/f.txt", "/b/g.txt")
+
+    assert res.error is None
+    assert res.destination_path == "/b/g.txt"
+    assert be.read("/b/g.txt").file_data["content"] == "SHARED"
+
+
+def test_composite_move_unsupported_route_returns_error() -> None:
+    """A route to a backend without move yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nomove/": _NoMoveStore(store=mem_store, namespace=lambda _rt: ("nomove",))},
+    )
+
+    result = be.move("/nomove/a.txt", "/nomove/b.txt")
+
+    assert result.source_path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+async def test_composite_amove_unsupported_route_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nomove/": _NoMoveStore(store=mem_store, namespace=lambda _rt: ("nomove",))},
+    )
+
+    result = await be.amove("/nomove/a.txt", "/nomove/b.txt")
+
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+def test_composite_always_advertises_move_support() -> None:
+    # It overrides `move`, so the tool is never filtered out for a composite;
+    # an unsupported route becomes an error result at call time instead.
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=_NoMoveStore(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={},
+    )
+    assert _supports_move(be) is True

@@ -34,6 +34,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsResult,
+    MoveResult,
     ReadResult,
     WriteResult,
 )
@@ -74,11 +75,25 @@ class _DeleteIntent:
     path: str
 
 
+@dataclass(frozen=True)
+class _MoveIntent:
+    """A single-file relocation, replayable against a refreshed tree.
+
+    Carries `overwrite` because a conflict replay has to re-evaluate the
+    collision rule against the newly pulled tree, not the snapshot the move was
+    accepted against.
+    """
+
+    source: str
+    destination: str
+    overwrite: bool
+
+
 @dataclass
 class _Mutation:
     """One accepted mutation and the caller waiting for its durability."""
 
-    intent: _WriteIntent | _EditIntent | _DeleteIntent
+    intent: _WriteIntent | _EditIntent | _DeleteIntent | _MoveIntent
     changes: dict[str, str | None]
     occurrences: int | None = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -186,7 +201,7 @@ class ContextHubBackend(BackendProtocol):
         self,
         changes: dict[str, str | None],
         *,
-        intent: _WriteIntent | _EditIntent | _DeleteIntent | None = None,
+        intent: _WriteIntent | _EditIntent | _DeleteIntent | _MoveIntent | None = None,
         occurrences: int | None = None,
     ) -> _Mutation:
         accepted_changes = dict(changes)
@@ -279,6 +294,27 @@ class ContextHubBackend(BackendProtocol):
                 raise conflict
             content, occurrences = result
             return {intent.path: content}, occurrences
+        if isinstance(intent, _MoveIntent):
+            # Re-read the source from the refreshed tree rather than replaying
+            # the bytes captured at accept time: the intent is "relocate
+            # whatever is at the source", so replaying stale content would
+            # silently revert a remote edit and turn the move into a hidden
+            # write. Same philosophy as `_EditIntent` above.
+            content = cache.get(intent.source)
+            if content is None:
+                # The premise of the operation is gone. Returning `{}` would
+                # report success having done nothing, and writing the stale
+                # content would resurrect a file someone else deleted.
+                raise conflict
+            if not intent.overwrite:
+                # The caller asked us not to clobber, and the pre-flight that
+                # passed ran against a stale snapshot, so re-check both the
+                # exact key and the directory-prefix case.
+                if intent.destination in cache:
+                    raise conflict
+                if any(path.startswith(intent.destination + "/") for path in cache):
+                    raise conflict
+            return {intent.destination: content, intent.source: None}, None
 
         base = intent.path
         prefix = base + "/"
@@ -557,6 +593,74 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub delete failed for %r", self._identifier)
             return DeleteResult(error=f"Hub unavailable: {exc}")
         return DeleteResult(path=file_path)
+
+    def move(  # noqa: PLR0911 -- one guarded early-exit per refusal condition; collapsing them would obscure which check rejected the call
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> MoveResult:
+        """Relocate a single file within the hub repo.
+
+        Files only -- see `BackendProtocol.move`. Both halves are queued as one
+        `_Mutation` so they merge into a single `push_agent` call (a `None`
+        content is the on-the-wire delete marker, so a write and a delete travel
+        together). Queuing them as separate write and delete intents would
+        rematerialize the two halves against different snapshots on a conflict.
+
+        Args:
+            source_path: Path of the file to move.
+            destination_path: Path the file is moved to.
+            overwrite: Replace an existing destination file.
+
+        Returns:
+            `MoveResult` with both paths on success, or an error.
+        """
+        hub_src = self._strip_prefix(source_path).rstrip("/")
+        hub_dst = self._strip_prefix(destination_path).rstrip("/")
+        try:
+            with self._mutations.condition:
+                cache = self._visible_cache_locked()
+
+                # Nested entries win even when the exact key also exists: hub
+                # paths are flat, so `a.md` and `a.md/child` can coexist, and
+                # moving the exact key alone would strand the child.
+                if any(path.startswith(hub_src + "/") for path in cache):
+                    return MoveResult(error=f"Error: '{source_path}' is a directory; move supports files only")
+                content = cache.get(hub_src)
+                if content is None:
+                    return MoveResult(error=f"Error: File '{source_path}' not found")
+
+                # MUST precede building the change map below: `{dst: content,
+                # src: None}` with `dst == src` collapses to `{src: None}`,
+                # which `_overlay` and `push_agent` both read as a deletion.
+                if os.path.normpath(hub_src) == os.path.normpath(hub_dst):
+                    return MoveResult(error=f"Error: source and destination are the same path: '{source_path}'")
+
+                # Linked entries (agent/skill repos) are absent from `cache` and
+                # invisible to `ls`/`glob`/`grep`, so without this check a move
+                # would push a `FileEntry` over one and report no collision.
+                if hub_dst in self._linked_entries:
+                    return MoveResult(error=f"Error: '{destination_path}' is a linked entry and cannot be replaced")
+
+                # Exact key first, so `overwrite=True` is not refused on a file
+                # that also happens to have nested entries beneath it.
+                if hub_dst in cache:
+                    if not overwrite:
+                        return MoveResult(error=f"Error: File '{destination_path}' already exists; pass overwrite=True to replace it")
+                elif any(path.startswith(hub_dst + "/") for path in cache):
+                    return MoveResult(error=f"Error: '{destination_path}' is a directory")
+
+                mutation = self._queue_changes_locked(
+                    {hub_dst: content, hub_src: None},
+                    intent=_MoveIntent(source=hub_src, destination=hub_dst, overwrite=overwrite),
+                )
+            self._wait_for_mutation(mutation)
+        except LangSmithError as exc:
+            logger.exception("Hub move failed for %r", self._identifier)
+            return MoveResult(error=f"Hub unavailable: {exc}")
+        return MoveResult(source_path=source_path, destination_path=destination_path)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""

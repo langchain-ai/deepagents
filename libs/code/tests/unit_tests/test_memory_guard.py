@@ -406,3 +406,119 @@ async def test_async_edit_outside_block_passes_through(tmp_path) -> None:
     content = path.read_text(encoding="utf-8")
     assert "New note." in content
     assert extract_onboarding_name_block(content) is not None
+
+
+def _move_request(source: str, destination: str, **args: Any) -> ToolCallRequest:
+    return ToolCallRequest(
+        runtime=cast("Any", None),
+        tool_call={
+            "id": "call-1",
+            "name": "move",
+            "args": {"source_path": source, "destination_path": destination, **args},
+        },
+        state={},
+        tool=None,
+    )
+
+
+def _must_not_run(_request: ToolCallRequest) -> ToolMessage:
+    msg = "the guarded call should have been rejected before the handler ran"
+    raise AssertionError(msg)
+
+
+def test_move_of_guarded_file_is_rejected(tmp_path) -> None:
+    """Relocating the guarded file would leave no managed block at its path."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path)
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    result = middleware.wrap_tool_call(
+        _move_request(str(path), str(tmp_path / "elsewhere.md")), _must_not_run
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "must not be deleted or relocated" in result.content
+    # The guarded file is still where the guard expects it.
+    assert path.exists()
+    assert extract_onboarding_name_block(path.read_text(encoding="utf-8")) is not None
+
+
+def test_move_onto_guarded_file_is_rejected(tmp_path) -> None:
+    """Moving another file on top of the guarded file would destroy the block."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path)
+    other = tmp_path / "other.md"
+    other.write_text("unrelated", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    result = middleware.wrap_tool_call(
+        _move_request(str(other), str(path), overwrite=True), _must_not_run
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert extract_onboarding_name_block(path.read_text(encoding="utf-8")) is not None
+
+
+def test_move_of_parent_directory_is_rejected(tmp_path) -> None:
+    """A guarded file inside the moved directory is still protected."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path)
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    result = middleware.wrap_tool_call(
+        _move_request(str(tmp_path / "agent"), str(tmp_path / "moved")), _must_not_run
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert path.exists()
+
+
+def test_move_of_unrelated_file_passes_through(tmp_path) -> None:
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path)
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    result = middleware.wrap_tool_call(
+        _move_request(str(tmp_path / "a.txt"), str(tmp_path / "b.txt")),
+        lambda _r: _success("move"),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+
+
+def test_move_of_guarded_file_without_managed_block_is_allowed(tmp_path) -> None:
+    """With no managed block there is nothing to protect."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("just notes, no managed region\n", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    result = middleware.wrap_tool_call(
+        _move_request(str(path), str(tmp_path / "elsewhere.md")),
+        lambda _r: _success("move"),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+
+
+async def test_amove_of_guarded_file_is_rejected(tmp_path) -> None:
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path)
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:  # noqa: RUF029  # must match the awaited handler signature
+        msg = "the guarded call should have been rejected before the handler ran"
+        raise AssertionError(msg)
+
+    result = await middleware.awrap_tool_call(
+        _move_request(str(path), str(tmp_path / "elsewhere.md")), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert path.exists()

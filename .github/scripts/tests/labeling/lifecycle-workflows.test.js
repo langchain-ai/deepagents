@@ -18,7 +18,7 @@ function runStep(name, step, globals) {
   const body = (end === -1 ? lines : lines.slice(0, end))
     .map(line => line.slice(12)).join('\n');
   return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
-    console: { log() {} }, core: { warning() {} }, ...globals,
+    URL, console: { log() {} }, core: { warning() {} }, ...globals,
   });
 }
 
@@ -36,7 +36,7 @@ for (const label of [null, 'ci:keep-open', 'do-not-close']) {
         ],
       });
       const issues = {
-        listForRepo: async () => [item()],
+        listForRepo: async ({ labels }) => labels === 'auto:waiting-on-author' ? [item()] : [],
         get: async () => ({ data: item() }),
         listEvents: async () => [{
           event: 'labeled', label: { name: 'auto:waiting-on-author' },
@@ -53,6 +53,117 @@ for (const label of [null, 'ci:keep-open', 'do-not-close']) {
       assert.deepEqual(closed, label ? [] : [42]);
     });
   }
+}
+
+const waitingLabels = ['auto:waiting-on-author', 'waiting-on-author'];
+const scanWorkflow = ['waiting_on_author.yml', 'Close issues and PRs awaiting an author response'];
+const replyWorkflow = ['waiting_on_author_reply.yml', 'Verify author response and remove label'];
+
+function waitingFixture(labels, { pull = false, replied = false, eventName = 'issue_comment' } = {}) {
+  const item = {
+    number: 42, state: 'open', updated_at: '2020-01-01T00:00:00Z',
+    user: { login: 'contributor', type: 'User' },
+    labels: [...labels, 'package:deepagents'].map(name => ({ name })),
+    ...(pull ? { pull_request: {} } : {}),
+  };
+  const events = labels.map(name => ({
+    event: 'labeled', label: { name }, created_at: '2020-01-01T00:00:00Z',
+  }));
+  const response = {
+    user: item.user, created_at: '2020-01-02T00:00:00Z', submitted_at: '2020-01-02T00:00:00Z',
+    issue_url: 'https://api.github.com/repos/langchain-ai/deepagents/issues/42',
+    pull_request_url: 'https://api.github.com/repos/langchain-ai/deepagents/pulls/42',
+  };
+  const closed = [];
+  const comments = [];
+  const issues = {
+    // listForRepo uses AND semantics for comma-separated labels.
+    listForRepo: async ({ labels }) => labels.split(',').every(name =>
+      item.labels.some(label => label.name === name)) ? [item] : [],
+    get: async () => ({ data: item }),
+    listEvents: async () => events,
+    listComments: async () => replied && eventName === 'issue_comment' ? [response] : [],
+    getComment: async () => ({ data: response }),
+    removeLabel: async ({ name }) => {
+      item.labels = item.labels.filter(label => label.name !== name);
+    },
+    createComment: async ({ issue_number }) => comments.push(issue_number),
+    update: async ({ issue_number }) => closed.push(issue_number),
+  };
+  const pulls = {
+    get: async () => ({ data: { draft: false } }),
+    getReviewComment: async () => ({ data: response }),
+    getReview: async () => ({ data: response }),
+    listReviewComments: async () => replied && eventName === 'pull_request_review_comment' ? [response] : [],
+    listReviews: async () => replied && eventName === 'pull_request_review' ? [response] : [],
+  };
+  return {
+    item, events, response, closed, comments,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    github: { rest: { issues, pulls }, paginate: (method, params) => method(params) },
+    require: name => {
+      assert.equal(name, 'fs');
+      return { readFileSync: () => JSON.stringify({ eventName, responseId: 123, pullNumber: 42 }) };
+    },
+  };
+}
+
+for (const labels of [[waitingLabels[0]], [waitingLabels[1]], waitingLabels]) {
+  for (const pull of [false, true]) {
+    test(`timeout closes ${pull ? 'PR' : 'issue'} with ${labels} exactly once`, async () => {
+      const fixture = waitingFixture(labels, { pull });
+      await runStep(...scanWorkflow, fixture);
+      assert.deepEqual(fixture.closed, [42]);
+      assert.deepEqual(fixture.comments, [42]);
+    });
+  }
+
+  for (const eventName of ['issue_comment', 'pull_request_review_comment', 'pull_request_review']) {
+    for (const step of [scanWorkflow, replyWorkflow]) {
+      test(`${step[0]} clears ${labels} after ${eventName}`, async () => {
+        const fixture = waitingFixture(labels, { pull: true, replied: true, eventName });
+        await runStep(...step, fixture);
+        assert.deepEqual(fixture.item.labels, [{ name: 'package:deepagents' }]);
+        assert.deepEqual(fixture.closed, []);
+      });
+    }
+  }
+}
+
+for (const latest of waitingLabels) {
+  for (const step of [scanWorkflow, replyWorkflow]) {
+    test(`${step[0]} preserves a newer ${latest} request after an old reply`, async () => {
+      const fixture = waitingFixture(waitingLabels, { replied: true });
+      fixture.events.push({ event: 'labeled', label: { name: latest }, created_at: new Date().toISOString() });
+      await runStep(...step, fixture);
+      assert.deepEqual(fixture.closed, []);
+      assert.deepEqual(fixture.item.labels.map(label => label.name), [...waitingLabels, 'package:deepagents']);
+    });
+  }
+}
+
+for (const step of [scanWorkflow, replyWorkflow]) {
+  test(`${step[0]} clears the other waiting label when one was already removed`, async () => {
+    const fixture = waitingFixture(waitingLabels, { replied: true });
+    const removeLabel = fixture.github.rest.issues.removeLabel;
+    fixture.github.rest.issues.removeLabel = async params => {
+      await removeLabel(params);
+      if (params.name === waitingLabels[0]) throw Object.assign(new Error('Absent'), { status: 404 });
+    };
+    await runStep(...step, fixture);
+    assert.deepEqual(fixture.item.labels, [{ name: 'package:deepagents' }]);
+    assert.deepEqual(fixture.closed, []);
+  });
+}
+
+for (const step of [scanWorkflow, replyWorkflow]) {
+  test(`${step[0]} ignores a reply from someone other than the author`, async () => {
+    const fixture = waitingFixture(['waiting-on-author'], { replied: true });
+    fixture.response.user = { login: 'someone-else', type: 'User' };
+    await runStep(...step, fixture);
+    assert.ok(fixture.item.labels.some(label => label.name === 'waiting-on-author'));
+    assert.deepEqual(fixture.closed, step === scanWorkflow ? [42] : []);
+  });
 }
 
 function issueLinkGate(payload) {

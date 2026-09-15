@@ -1,7 +1,8 @@
 # Close issues and PRs ten days after a maintainer applies `auto:waiting-on-author`,
-# unless the original author explicitly replies. The timeout is measured from
-# the latest label event, so unrelated activity never resets it. Maintainers
-# can therefore ask their question before or after applying the label.
+# or legacy `waiting-on-author`, unless the original author explicitly replies.
+# The timeout is measured from the latest label event, so unrelated activity
+# never resets it. Maintainers can therefore ask their question before or after
+# applying the label.
 #
 # This workflow records author responses from conversation comments
 # (`issue_comment`, which covers issues and PR conversations), review-thread
@@ -101,7 +102,8 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const waitingOnAuthorLabel = 'auto:waiting-on-author';
+            // Accept existing lifecycle state until legacy labels are migrated.
+            const waitingOnAuthorLabels = new Set(['auto:waiting-on-author', 'waiting-on-author']);
             // Preserve exemptions applied before the taxonomy migration.
             const bypassLabels = new Set(['ci:keep-open', 'do-not-close']);
             const timeoutMs = 10 * 24 * 60 * 60 * 1000;
@@ -109,12 +111,12 @@ jobs:
               'This item has been automatically closed because we have not received a response from the original author. Please comment with any additional information if you would like us to reopen it.';
 
             // Mirrored inline in waiting_on_author_reply.yml; keep both in step.
-            function findLatestLabelEvent(events, label) {
+            function findLatestLabelEvent(events) {
               return events
                 .filter(
                   (event) =>
                     event.event === 'labeled' &&
-                    event.label?.name === label &&
+                    waitingOnAuthorLabels.has(event.label?.name) &&
                     event.created_at,
                 )
                 .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
@@ -154,15 +156,21 @@ jobs:
               return reviewComments.some(responseByAuthor) || reviews.some(responseByAuthor);
             }
 
-            const items = await github.paginate(github.rest.issues.listForRepo, {
-              owner,
-              repo,
-              state: 'open',
-              labels: waitingOnAuthorLabel,
-              per_page: 100,
-            });
+            // The API combines multiple labels with AND, so query each name
+            // separately and process items carrying both labels only once.
+            const items = new Map();
+            for (const label of waitingOnAuthorLabels) {
+              const matches = await github.paginate(github.rest.issues.listForRepo, {
+                owner,
+                repo,
+                state: 'open',
+                labels: label,
+                per_page: 100,
+              });
+              for (const item of matches) items.set(item.number, item);
+            }
 
-            for (const item of items) {
+            for (const item of items.values()) {
               if (
                 item.user?.type === 'Bot' ||
                 item.labels.some((label) => bypassLabels.has(label.name))
@@ -187,11 +195,11 @@ jobs:
                 issue_number: item.number,
                 per_page: 100,
               });
-              const latestLabelEvent = findLatestLabelEvent(events, waitingOnAuthorLabel);
+              const latestLabelEvent = findLatestLabelEvent(events);
 
               if (!latestLabelEvent) {
                 core.warning(
-                  `No ${waitingOnAuthorLabel} label event found for #${item.number}; leaving it open.`,
+                  `No waiting-on-author label event found for #${item.number}; leaving it open.`,
                 );
                 continue;
               }
@@ -211,7 +219,7 @@ jobs:
               ).data;
               if (
                 currentItem.state !== 'open' ||
-                !currentItem.labels.some((label) => label.name === waitingOnAuthorLabel) ||
+                !currentItem.labels.some((label) => waitingOnAuthorLabels.has(label.name)) ||
                 currentItem.labels.some((label) => bypassLabels.has(label.name))
               ) {
                 continue;
@@ -226,26 +234,33 @@ jobs:
                   per_page: 100,
                 },
               );
-              const currentLabelEvent = findLatestLabelEvent(currentEvents, waitingOnAuthorLabel);
+              const currentLabelEvent = findLatestLabelEvent(currentEvents);
 
               if (
                 !currentLabelEvent ||
                 currentLabelEvent.created_at !== latestLabelEvent.created_at
               ) {
-                console.log(`${waitingOnAuthorLabel} was reapplied to #${item.number}; skipping.`);
+                console.log(`waiting-on-author was reapplied to #${item.number}; skipping.`);
                 continue;
               }
 
               const labelTime = Date.parse(currentLabelEvent.created_at);
               if (await authorRespondedAfter(currentItem, labelTime)) {
-                await github.rest.issues.removeLabel({
-                  owner,
-                  repo,
-                  issue_number: item.number,
-                  name: waitingOnAuthorLabel,
-                });
+                for (const label of currentItem.labels) {
+                  if (!waitingOnAuthorLabels.has(label.name)) continue;
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner,
+                      repo,
+                      issue_number: item.number,
+                      name: label.name,
+                    });
+                  } catch (error) {
+                    if (error.status !== 404) throw error;
+                  }
+                }
                 console.log(
-                  `Removed ${waitingOnAuthorLabel} from #${item.number} after an author reply.`,
+                  `Removed waiting-on-author from #${item.number} after an author reply.`,
                 );
                 continue;
               }
@@ -271,7 +286,7 @@ jobs:
               if (
                 finalItem.state !== 'open' ||
                 finalItem.updated_at !== currentItem.updated_at ||
-                !finalItem.labels.some((label) => label.name === waitingOnAuthorLabel) ||
+                !finalItem.labels.some((label) => waitingOnAuthorLabels.has(label.name)) ||
                 finalItem.labels.some((label) => bypassLabels.has(label.name))
               ) {
                 console.log(`#${item.number} changed during the scan; skipping.`);

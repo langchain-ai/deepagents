@@ -24,7 +24,7 @@ conventions are in root [`AGENTS.md`](../AGENTS.md).
 | `size:*` | PR diff size | Automation |
 | `triage:*` | Issue management state | Maintainers + agents |
 | `auto:*` | State owned by automation | Automation |
-| `ci:*` | Human acknowledgement or override of a check | Maintainers only |
+| `ci:*` | Human acknowledgement or override of a check | Maintainers (two applied on their instruction) |
 
 Rules that are easy to get wrong:
 
@@ -37,7 +37,12 @@ Rules that are easy to get wrong:
   number of `topic:*`.
 - `priority:*` has three levels. **Backlog is the absence of a priority
   label** — the retired `p3`/`p4` are not migrated onto `priority:backlog`.
-- `ci:*` is never applied by automation. Every one of them is read by a gate.
+- **A `ci:*` label always represents a human decision, but two of them are
+  written by automation on a maintainer's instruction:** `ci:keep-open`
+  (`keep_open_on_comment.yml`, on a `!keep-open` comment) and
+  `ci:skip-issue-link` (`require_issue_link.yml`, when a maintainer bypasses
+  the gate). The labeler never applies a `ci:*`, and every one of them is read
+  by a gate. See the `ci:*` table for which are read-only.
 - Every label must have a description.
 
 ## Automatic labels
@@ -192,7 +197,10 @@ labels receive descriptions from `labelDescriptions` in the same config.
 
 ## `ci:*` — human overrides
 
-Read, never applied by automation. Each unblocks a gate that is otherwise red.
+Each unblocks a gate that is otherwise red. Every one is read-only and must be
+created by hand except `ci:skip-issue-link` and `ci:keep-open`, which
+automation also applies on a maintainer's instruction (noted in their rows
+below). See [Mechanics](#mechanics-worth-knowing).
 
 | Label | Gate it bypasses |
 | --- | --- |
@@ -220,9 +228,11 @@ release-please consequence. Those warnings are advisory and never fail.
 - **Labels are created on demand.** `h.ensureLabel(name)` in
   [`scripts/labeling/pr-labeler.js`](./scripts/labeling/pr-labeler.js) does a
   get-then-create, so an applied label appears the first time it is used,
-  colored `labelColor` from the config. A label that is only *read* (every
-  `ci:*`) never auto-creates — **create those by hand**, or the gate offers a
-  bypass nobody can select.
+  colored `labelColor` from the config with its `labelDescriptions` text. A
+  label that is only *read* never auto-creates — **create those by hand**, or
+  the gate offers a bypass nobody can select. That is every `ci:*` except
+  `ci:keep-open` and `ci:skip-issue-link`, whose workflows create them on
+  demand (with their own hardcoded colors, not `labelColor`).
 - **A batch containing one nonexistent label 422s entirely.** `pr_labeler.yml`
   calls `ensureLabel` for every label in `toAdd` before a single `addLabels`.
   Keep that ordering.

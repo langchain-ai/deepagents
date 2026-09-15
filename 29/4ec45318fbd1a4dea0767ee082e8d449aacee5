@@ -1,0 +1,39 @@
+.github/LABELS.md
+  s_8988014629c1f7::t_7d71b496a883a5 127-128
+  s_8988014629c1f7::t_31671f76d72f22 135-141
+.github/RELEASING.md
+  s_8988014629c1f7::t_7d71b496a883a5 260,283,311-312,373,693,863,865,874,955,1026
+release-please-config.json
+  s_8988014629c1f7::t_7d71b496a883a5 3-4
+.github/workflows/release-please.yml
+  s_8988014629c1f7::t_7d71b496a883a5 279,304,402-403,412,513,523,531,631,644,648,650
+.github/scripts/tests/labeling/close-old-prs.test.js
+  s_8988014629c1f7::t_7d71b496a883a5 827,835,942,961
+.github/scripts/labeling/close-old-prs.js
+  s_8988014629c1f7::t_7d71b496a883a5 28,33,35
+.github/workflows/release.yml
+  s_8988014629c1f7::t_7d71b496a883a5 1032,1036,1057-1059,1065,1079,1091,1102,1112,1124,1127
+.github/workflows/release_comment_update.yml
+  s_8988014629c1f7::t_7d71b496a883a5 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "294ec45318fbd1a4dea0767ee082e8d449aacee5",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_8988014629c1f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ed68c6e-c124-44d7-8dbb-6561e4745a48",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

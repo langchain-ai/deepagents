@@ -2,8 +2,6 @@
 
 The label taxonomy for this repo, and which automation owns each label. Written for future agents: before adding, renaming, or reading a label, find it here first.
 
-The file map for this folder is [`LAYOUT.md`](./LAYOUT.md); repo-wide CI conventions are in root [`AGENTS.md`](../AGENTS.md).
-
 ## The model
 
 > Issue or PR work type via `type:*` + one `package:*` + optional `topic:*` and `integration:*` + provenance via `org:*` + optional `priority:*` + one PR `size:*` + temporary `triage:*`, `auto:*`, and `ci:*` state.

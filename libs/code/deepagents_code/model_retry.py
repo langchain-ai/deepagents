@@ -58,7 +58,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_MODEL_RETRIES",
     "INTERRUPTED_TOOL_OUTPUT",
+    "MODEL_ATTEMPT_TIMEOUT_SECONDS",
+    "OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS",
     "CodeModelRetryMiddleware",
+    "ModelAttemptTimeoutError",
     "aretry_model_call",
     "build_attempt_event",
     "build_retry_event",
@@ -77,6 +80,12 @@ _MAX_DELAY_SECONDS = 10.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _JITTER_FRACTION = 0.1
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+# Bounds one asynchronous provider attempt, including time spent streaming.
+MODEL_ATTEMPT_TIMEOUT_SECONDS = 300.0
+"""Total wall-clock seconds allowed for one asynchronous model attempt."""
+# Keep the inter-chunk deadline below langchain-openai's 120-second default.
+OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS = 30.0
+"""Maximum seconds OpenAI-family models may wait between streamed chunks."""
 # Provider-SDK error classes that name a transient failure, keyed by the root
 # package that owns the name. The package is part of the key on purpose: these
 # are generic words, and matching a bare class name would classify any
@@ -108,6 +117,7 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
 _RETRY_STATUS_FALLBACK = "Retrying model request"
+_RETRY_REASON_ATTEMPT_TIMEOUT = "attempt timed out"
 # Total sleep the interactive model node may spend across one call's retries.
 # Per-delay caps bound nothing (see `_delay_budget_guard`): five honoured
 # `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
@@ -125,11 +135,21 @@ RETRY_BOUNDARY_LINE = (
 RETRY_MARKER_FALLBACK = (
     "Connection dropped; the partial response above is incomplete. Retrying."
 )
+
+
 """Retry marker for a payload whose attempt counts are unusable."""
 TERMINAL_ATTEMPT_MARKER = (
     "The model request failed; the partial response above is incomplete."
 )
 """Marker for partial output left behind by an exhausted retry budget."""
+
+
+class ModelAttemptTimeoutError(TimeoutError):
+    """A model attempt exceeded the dcode wall-clock deadline."""
+
+    retry_reason = _RETRY_REASON_ATTEMPT_TIMEOUT
+
+
 _ATTEMPT_PHASES = frozenset({"start", "complete"})
 _CALL_ID_MAX_LENGTH = 64
 _CALL_ID_CHARS = frozenset(
@@ -508,7 +528,9 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     return False
 
 
-def format_retry_status(attempt: int, max_retries: int) -> str:
+def format_retry_status(
+    attempt: int, max_retries: int, *, reason: str | None = None
+) -> str:
     """Return the concise user-facing status shown during a retry backoff.
 
     Carries no trailing ellipsis: the TUI spinner appends its own. Names no
@@ -518,10 +540,13 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
     Args:
         attempt: The 1-indexed retry number about to be attempted.
         max_retries: The configured maximum retry count.
+        reason: Optional retry reason for the status line.
 
     Returns:
         A short status line, e.g. `"Retrying model request 1/5"`.
     """
+    if reason == _RETRY_REASON_ATTEMPT_TIMEOUT:
+        return f"{reason} - retrying {attempt}/{max_retries}"
     return f"Retrying model request {attempt}/{max_retries}"
 
 
@@ -618,7 +643,7 @@ async def _aretry_call[ResultT](
 
     for attempt in range(max_retries + 1):
         try:
-            return await call()
+            return await _call_with_attempt_timeout(call)
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
@@ -640,6 +665,18 @@ async def _aretry_call[ResultT](
                 await asyncio.sleep(delay)
     msg = "Unexpected: retry loop completed without returning"
     raise RuntimeError(msg)
+
+
+async def _call_with_attempt_timeout[ResultT](
+    call: Callable[[], Awaitable[ResultT]],
+) -> ResultT:
+    import asyncio
+
+    try:
+        async with asyncio.timeout(MODEL_ATTEMPT_TIMEOUT_SECONDS):
+            return await call()
+    except TimeoutError as exc:
+        raise ModelAttemptTimeoutError from exc
 
 
 def _log_auxiliary_retry(attempt: int, max_retries: int, exc: Exception) -> None:
@@ -831,7 +868,10 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str:
     if counts is None:
         logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
         return _RETRY_STATUS_FALLBACK
-    return format_retry_status(*counts)
+    reason = event.get("reason")
+    return format_retry_status(
+        *counts, reason=reason if reason == _RETRY_REASON_ATTEMPT_TIMEOUT else None
+    )
 
 
 def retry_marker_from_event(event: Mapping[Any, object]) -> str:
@@ -894,6 +934,7 @@ def build_retry_event(
     call_id: str | None = None,
     failed_attempt: int | None = None,
     output_may_have_started: bool = False,
+    reason: str | None = None,
 ) -> dict[str, object]:
     """Build the custom-stream payload announcing a model retry.
 
@@ -907,6 +948,7 @@ def build_retry_event(
         output_may_have_started: Whether the superseded attempt may have put
             message output beyond server control. Conservative by design: the
             tracker flags before forwarding a chunk.
+        reason: Optional retry reason for the status line.
 
     Returns:
         A stream-writer payload consumed by the client renderers.
@@ -921,8 +963,10 @@ def build_retry_event(
         "type": "model_retry",
         "attempt": attempt,
         "max_retries": max_retries,
-        "message": format_retry_status(attempt, max_retries),
+        "message": format_retry_status(attempt, max_retries, reason=reason),
     }
+    if reason == _RETRY_REASON_ATTEMPT_TIMEOUT:
+        event["reason"] = reason
     if call_id is not None:
         event["call_id"] = call_id
         event["failed_attempt"] = failed_attempt
@@ -1112,6 +1156,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             call_id=call_id,
             failed_attempt=attempt - 1,
             output_may_have_started=has_streamed and self.stream_output_is_visible,
+            reason=getattr(exc, "retry_reason", None),
         )
         # The user-facing event stays deliberately vague, but the log must name
         # the cause: only the last exception is re-raised, so an attempt logged

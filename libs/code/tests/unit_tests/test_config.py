@@ -4578,6 +4578,92 @@ class TestCreateModelForwardsProviderProfile:
             create_model("anthropic:claude-sonnet-4-5")
 
 
+class TestCreateModelTimeouts:
+    """Tests for provider request and streaming timeout defaults."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_openai_defaults_include_request_and_chunk_timeouts(
+        self, mock_init: Mock
+    ) -> None:
+        from deepagents_code.model_retry import (
+            MODEL_ATTEMPT_TIMEOUT_SECONDS,
+            OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS,
+        )
+
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openai:gpt-5.5")
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["timeout"] == MODEL_ATTEMPT_TIMEOUT_SECONDS
+        assert kwargs["stream_chunk_timeout"] == OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_anthropic_only_gets_request_timeout(self, mock_init: Mock) -> None:
+        from deepagents_code.model_retry import MODEL_ATTEMPT_TIMEOUT_SECONDS
+
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-sonnet-4-5")
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["timeout"] == MODEL_ATTEMPT_TIMEOUT_SECONDS
+        assert "stream_chunk_timeout" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_timeout_values_take_precedence(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={"timeout": 12.0, "stream_chunk_timeout": 7.0},
+        )
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["timeout"] == pytest.approx(12.0)
+        assert kwargs["stream_chunk_timeout"] == pytest.approx(7.0)
+
+    def test_custom_classes_do_not_receive_openai_chunk_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[models.providers.openai]
+class_path = "my_pkg.models:MyChatModel"
+models = ["gpt-5.5"]
+"""
+        )
+        mock_instance = MagicMock(spec=BaseChatModel)
+        mock_instance.profile = None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_code.config._create_model_from_class",
+                return_value=mock_instance,
+            ) as mock_factory,
+        ):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_factory.call_args.args[3]
+        assert "stream_chunk_timeout" not in kwargs
+
+
 class TestCreateModelAnthropicThinkingBinding:
     """Tests for Anthropic preserved-thinking defaults."""
 

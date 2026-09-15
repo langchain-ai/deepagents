@@ -567,6 +567,39 @@ async def test_failed_attempt_is_retried_after_streaming(
     assert events[1]["output_may_have_started"] is True
 
 
+async def test_async_attempt_timeout_is_cancelled_retried_and_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A never-returning attempt is cancelled and retried with a reason."""
+    monkeypatch.setattr(model_retry, "MODEL_ATTEMPT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(model_retry, "_retry_delay_seconds", lambda *_: 0.0)
+    events: list[dict[str, object]] = []
+    calls = 0
+    cancelled = False
+
+    async def handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls, cancelled
+        calls += 1
+        if calls == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+        return cast("ModelResponse", "recovered")
+
+    result = await CodeModelRetryMiddleware(max_retries=1).awrap_model_call(
+        _req(events), _async_handler(handler)
+    )
+
+    assert result == "recovered"
+    assert calls == 2
+    assert cancelled is True
+    retry_event = next(event for event in events if event["type"] == "model_retry")
+    assert retry_event["reason"] == "attempt timed out"
+    assert retry_event["message"] == "attempt timed out - retrying 1/1"
+
+
 def test_hidden_model_call_marks_retry_output_as_not_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -6765,6 +6765,16 @@ def create_model(
             )
             raise ModelConfigError(msg) from exc
 
+    class_path = config.get_class_path(provider) if provider else None
+    from deepagents_code.model_retry import (
+        MODEL_ATTEMPT_TIMEOUT_SECONDS,
+        OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS,
+    )
+
+    kwargs.setdefault("timeout", MODEL_ATTEMPT_TIMEOUT_SECONDS)
+    if provider in {"openai", CODEX_PROVIDER} and class_path is None:
+        kwargs.setdefault("stream_chunk_timeout", OPENAI_STREAM_CHUNK_TIMEOUT_SECONDS)
+
     # App --model-params take highest priority.
     reasoning_effort_override: object = None
     reasoning_override: object = None
@@ -6806,9 +6816,6 @@ def create_model(
     kwargs.update(_provider_retry_disable_kwargs(retry_config, provider, kwargs))
 
     _apply_google_anthropic_vertex_kwargs(provider, kwargs)
-
-    # Check if this provider uses a custom BaseChatModel class
-    class_path = config.get_class_path(provider) if provider else None
 
     if provider == CODEX_PROVIDER:
         # Codex models are constructed directly via `_ChatOpenAICodex` so the

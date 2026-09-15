@@ -24,6 +24,27 @@ def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any
     return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
 
 
+def _create_anthropic_vertex_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
+    """Create Anthropic Vertex caching middleware when available."""
+    module_name = "langchain_google_vertexai.middleware.prompt_caching"
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        if exc.name not in {
+            "langchain_google_vertexai",
+            "langchain_google_vertexai.middleware",
+            module_name,
+        }:
+            raise
+        logger.debug("Anthropic Vertex caching middleware is unavailable.", exc_info=exc)
+        return None
+    middleware_cls = module.AnthropicVertexPromptCachingMiddleware
+    return cast(
+        "AgentMiddleware[Any, Any, Any]",
+        middleware_cls(unsupported_model_behavior="ignore"),
+    )
+
+
 def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
     """Create Fireworks prompt caching middleware when `langchain-fireworks` is installed."""
     module_name = "langchain_fireworks.middleware.prompt_caching"
@@ -41,6 +62,9 @@ def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, A
 def append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
     """Append provider-specific prompt caching middleware."""
     middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    vertex_middleware = _create_anthropic_vertex_prompt_caching_middleware()
+    if vertex_middleware is not None:
+        middleware.append(vertex_middleware)
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)

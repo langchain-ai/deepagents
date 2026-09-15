@@ -444,6 +444,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_anthropic_vertex_prompt_caching_middleware", return_value=None),
             patch(
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
@@ -523,6 +524,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_anthropic_vertex_prompt_caching_middleware", return_value=None),
             patch(
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),

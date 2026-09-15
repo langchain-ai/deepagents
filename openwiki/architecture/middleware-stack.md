@@ -1,36 +1,24 @@
 ---
 type: architecture pattern
-title: Middleware Stack and Customization Boundaries
-description: How create_deep_agent assembles and filters the ordered middleware stacks for a main agent and its subagents. Covers profile exclusions, caller insertion and replacement, state boundaries, and the distinction between middleware and ordinary tools.
+title: Middleware Stack and Extension Boundaries
+description: How create_deep_agent assembles and filters ordered middleware stacks for the main agent and subagents. Covers core and tail extension seams, profile exclusions, state boundaries, and context compaction.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
-  - id: openwiki-source-68ae2141dbec1e0915410ac3
-    resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-b93533cac55718d75277d1cf
-    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-fc54598423086acf9d53d9fd
-    resource: repo://libs/deepagents/deepagents/middleware/__init__.py
-  - id: openwiki-source-7a16b9a53a07e882b7305459
-    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-13b8cea81b8a29f0950cc836
+    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-  - id: openwiki-source-454da083c2cc29febd156c7e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+  - id: openwiki-source-6228ff9cf1d681a771797121
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-15T08:05:27.526Z
 ---
 
-# Middleware Stack and Customization Boundaries
+# Middleware Stack and Extension Boundaries
 
 `create_deep_agent()` is a harness assembler, not a separate agent runtime. It resolves the model and applicable `HarnessProfile`, constructs ordered `AgentMiddleware`, and passes the final main stack to LangChain's `create_agent()`, which owns the model/tool loop. The passed-through graph options include the system prompt, tools, response format, schemas, checkpointing, store, debugging, name, and cache. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md) for the runtime boundary.
 
@@ -71,9 +59,17 @@ The first profile-exclusion pass runs after the tail is assembled. Caller `middl
 
 The assembler also combines an explicit `state_schema` with middleware-contributed schemas, derives private state-field names, and assigns them to `SubAgentMiddleware`. This determines what ordinary synchronous delegation may carry across its state boundary.
 
+### Core safeguards
+
+`FilesystemMiddleware` is the owner of the built-in filesystem tool suite and its permission check at the tool boundary. Do not move that authorization concern into a profile tool filter: tool exclusion controls advertisement and dispatch consistency, whereas filesystem permissions decide whether a built-in file operation may proceed.
+
+`PatchToolCallsMiddleware` runs before later request-tail behavior and repairs persisted incomplete tool-call turns in `before_agent`. For every prior valid or invalid call ID without a `ToolMessage`, it writes an error `ToolMessage`; valid calls are described as incomplete or cancelled, and invalid calls as malformed or truncated. This preserves a usable model history after interruption rather than leaving a dangling provider tool-call pair.
+
 ### Context-management role
 
-The default summarization component is not merely a prompt addition. It can truncate old large tool arguments, compact history when configured thresholds are crossed, and retry through compaction after `ContextOverflowError`. Evicted history is offloaded to the configured backend and a private summarization event records the replacement summary and recovery path; an offload failure warns that older messages are unrecoverable. Its factory selects model-aware thresholds when profile information is available. See [context management](/openwiki/concepts/context-management.md).
+The default summarization component is not merely a prompt addition. It first reconstructs effective history from any prior summarization event, may truncate old large tool arguments, and compacts history when configured thresholds are crossed or the request is over budget. If an otherwise normal request receives a recognized provider context-overflow error, it falls back to compaction and makes at most one smaller retry; repeated overflow or irreducible input raises `ContextOverflowError` rather than retrying indefinitely.
+
+Before summarizing evicted messages, it offloads them to the configured backend (and replaces inline media with saved references where possible). Its private state update stores the summary event and session ID; an offload failure warns that older messages are unrecoverable but does not prevent summarization. The asynchronous path offloads and generates the summary concurrently. Its factory selects model-aware thresholds when profile information is available. See [context management](/openwiki/concepts/context-management.md).
 
 ## Caller middleware and profile exclusions
 

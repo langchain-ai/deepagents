@@ -5,7 +5,7 @@ description: How dcode discovers, provisions, and owns sandbox providers; how pr
 tags: [sandbox, backends, integrations, deepagents, dcode, partners, quickjs]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
@@ -47,7 +47,7 @@ sources:
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
   - id: openwiki-source-1176ea0659c06327fcdf25b1
     resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -87,7 +87,7 @@ These helpers do not narrow shell authority. Delete uses shell quoting only to p
 ### Bounded results and failure behavior
 
 - `read()` performs text pagination in the environment and caps text output at about 500 KiB; binary previews have a separate cap. A cap appends pagination guidance.
-- The generated glob program limits brace expansion to 1,000 candidates, results to 10,000 matches, and walking time to 5 seconds. A limit yields a truncated warning, not an apparently exhaustive result. Since that budget excludes interpreter startup and transport, `aglob` has a 30-second outer timeout and `agrep` uses `(2 * DEFAULT_GREP_TIMEOUT) + 5`; both return a structured narrowing error on expiry.
+- The generated glob program rejects brace expansion beyond 1,000 candidates as `pattern_too_broad`. It limits a completed walk to 10,000 matches or 5 seconds and marks those partial results as truncated; unreadable subtrees are reported separately, because narrowing a pattern cannot recover them. Since the walk budget excludes interpreter startup and transport, `aglob` has a 30-second outer timeout and `agrep` uses `(2 * DEFAULT_GREP_TIMEOUT) + 5`; both return a structured narrowing error on expiry.
 - `execute_with_offload()` is opt-in through `enable_capture_offload=False` by default because its wrapper requires shell/coreutils behavior that images may lack. When enabled, oversized combined output is captured in the environment and represented by a head/tail preview; capture is capped without killing the command, preserving its exit code. When disabled, execution is unwrapped and returns `offloaded=False`.
 
 ## dcode provider selection, setup, and ownership

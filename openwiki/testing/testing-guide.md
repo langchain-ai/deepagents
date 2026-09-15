@@ -3,9 +3,6 @@ type: testing strategy
 title: Testing Strategy and Change Validation
 description: Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.
 tags: [testing, pytest, ci, validation, benchmarks, evaluations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -53,7 +50,10 @@ sources:
     resource: repo://libs/talon/tests/conftest.py
   - id: openwiki-source-d8eca7d18614ffc90856e204
     resource: repo://libs/talon/tests/integration_tests/test_core_flows.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-15T08:05:27.526Z
 ---
 
 # Testing Strategy and Change Validation
@@ -84,6 +84,8 @@ flowchart TD
     EvalRun --> Report["Experiment and aggregate report"]
     Harbor --> Sandbox["Selected sandbox environment"]
 ```
+
+This source-grounded selection flow maps the package Makefile boundaries and eval requirements to the smallest validation that can observe the changed behavior.
 
 This decision path separates deterministic correctness checks from process/provider contracts, stochastic model evaluation, and sandbox-runtime experiments.
 

@@ -5,14 +5,8 @@ description: System-level map of the independently versioned Deep Agents package
 tags: [architecture, deep-agents, langchain, langgraph, monorepo, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
-  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
-    resource: repo://.release-please-manifest.json
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-8134f31fb22085cb0e6b4054
     resource: repo://libs/acp/README.md
   - id: openwiki-source-68ae2141dbec1e0915410ac3
@@ -21,14 +15,8 @@ sources:
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-f2bb883b9cbec377de535c00
     resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
@@ -43,31 +31,31 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # Monorepo Architecture Overview
 
-Deep Agents is an opinionated agent harness, not a replacement runtime. Start a change by locating its behavior in the SDK stack, then trace the relevant `create_deep_agent()` argument into middleware, a backend, a profile, or the product package that owns the user-facing behavior.
+Deep Agents is an opinionated agent harness, not a replacement runtime. To change behavior safely, first locate its owning layer, then trace a `create_deep_agent()` argument into SDK middleware, a backend, a profile, or the product package that owns the user-facing policy.
 
 - **Middleware ordering and extension points:** [middleware-stack.md](./middleware-stack.md)
 - **SDK construction and execution:** [sdk-construction-execution.md](./sdk-construction-execution.md)
 - **Responsibility-by-file index:** [source-map.md](./source-map.md)
 - **Coding product details:** [code-agent.md](./code-agent.md)
 - **Protocol and host integrations:** [ACP](../integrations/acp.md) and [Talon](../integrations/talon.md)
-- **Local setup and commands:** [development](../operations/development.md)
+- **Getting started:** [quickstart](../quickstart.md)
 
 ## Runtime layers and ownership
 
 ```mermaid
 flowchart TD
-  Products["dcode, ACP clients, Talon, and applications"] --> SDK["Deep Agents SDK"]
+  Products["Applications, dcode, ACP clients, and Talon"] --> SDK["Deep Agents SDK"]
   SDK --> LC["LangChain create_agent"]
   LC --> LG["LangGraph runtime"]
   SDK --> Harness["Middleware, backends, profiles, and subagents"]
   Harness --> LC
 ```
-The diagram shows the runtime dependency direction and the SDK's harness extension boundary.
+The diagram shows dependency direction: products consume the SDK, which configures LangChain's agent abstraction on LangGraph's runtime.
 
 The stack has three distinct owners:
 
@@ -81,7 +69,7 @@ The dependency direction is **Deep Agents → LangChain `create_agent()` → Lan
 
 The reusable `deepagents` package publicly exports `create_deep_agent`, `DeepAgentState`, common filesystem, memory, rubric, and subagent middleware types, plus harness and provider profile registration APIs. `create_deep_agent()` in `libs/deepagents/deepagents/graph.py` is the principal assembly point.
 
-At construction, it resolves the model and applicable harness profile, rewrites applicable tool descriptions, chooses `StateBackend()` when no backend is supplied, builds the default general-purpose subagent when appropriate, and composes caller and profile prompt text. It then delegates the model, tools, assembled middleware, schemas, checkpointer, store, debug, name, and cache to LangChain `create_agent(...)`. The returned runnable is configured with Deep Agents metadata and a recursion limit of 9,999.
+At construction, it resolves the model and applicable harness profile, rewrites applicable tool descriptions, chooses `StateBackend()` when no backend is supplied, builds the default general-purpose subagent when appropriate, and composes caller and profile prompt text. It delegates the model, tools, assembled middleware, schemas, checkpointer, store, debug, name, and cache to LangChain `create_agent(...)`. The returned runnable is configured with Deep Agents metadata and a recursion limit of 9,999.
 
 ```mermaid
 sequenceDiagram
@@ -97,11 +85,11 @@ sequenceDiagram
   App->>LG: Invoke with messages
   LG->>LC: Execute model and tool loop
 ```
-The sequence separates SDK assembly from LangGraph-driven execution after invocation.
+The sequence separates SDK construction from the LangGraph-driven agent execution that follows invocation.
 
 ### Middleware, state, and failure boundaries
 
-The main-agent stack is assembled in `graph.py`: filesystem and subagent support, summarization, patch-tool-calls, optional asynchronous subagents, profile middleware, prompt caching, optional memory, tool exclusion, and human-in-the-loop support. Skills are included when configured. Declarative subagents get separately built middleware stacks; compiled and remote subagents retain independently configured behavior.
+The main-agent stack is assembled in `graph.py`: optional skills, filesystem and subagent support, summarization, patch-tool-calls, optional asynchronous subagents, profile middleware, prompt caching, optional memory, tool exclusion, and human-in-the-loop support. Caller middleware is spliced into this constructed stack. Declarative subagents get separately built middleware stacks; compiled and remote subagents retain independently configured behavior.
 
 Tool visibility is not authorization. A missing tool normally indicates middleware assembly or a profile tool exclusion. A visible tool that fails normally points to backend capability or filesystem permission enforcement. Profile exclusion validation fails closed: protected middleware, private names, ambiguous class matches, and exclusions that match no assembled middleware are rejected rather than silently producing a partial harness.
 
@@ -109,7 +97,7 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 ## Package map and dependency direction
 
-`libs/` is a monorepo of independently versioned packages. The release manifest tracks released package versions separately, including the SDK, ACP, Code, Talon, and each sandbox/provider partner. Package manifests make the dependency direction explicit: product, evaluation, and host packages consume the SDK rather than the SDK depending on them.
+`libs/` is a monorepo of independently versioned packages. The release manifest tracks released package versions separately, including the SDK, ACP, Code, Talon, and each sandbox/provider partner. Product, evaluation, and host packages consume the SDK rather than the SDK depending on them.
 
 | Package | Public entry point and ownership boundary |
 | --- | --- |
@@ -122,7 +110,7 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 ### dcode product assembly
 
-`create_cli_agent()` is the Code package's product assembly point. It builds an SDK agent with a composite backend, `CLIContextSchema`, CLI middleware, interrupt policy, checkpoint/store, subagents, and a sanitized assistant name. Registered extensions are resolved before construction; an extension with the same name replaces the corresponding tool or middleware, then an extension runtime middleware is appended. This keeps terminal-product policy in `code` while reusing the SDK graph constructor.
+`create_cli_agent()` is the Code package's product assembly point. It builds an SDK agent with a composite backend, `CLIContextSchema`, CLI middleware, interrupt policy, checkpoint/store, subagents, and a sanitized assistant name. Registered extensions replace same-named tools and middleware before construction, then an extension runtime middleware is appended. This keeps terminal-product policy in `code` while reusing the SDK graph constructor.
 
 ### ACP session boundary
 
@@ -130,7 +118,7 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 ### Talon lifecycle and security boundary
 
-Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, establishes request-scoped authorization, history, cron, graph, and background-result context, then resets those contexts in a `finally` block. `stop()` cancels background work before releasing the graph and closing a closeable checkpointer.
+Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, establishes request-scoped authorization, history, cron, graph, approval, and background-result context, then resets those contexts in a `finally` block. `stop()` cancels background work before releasing the graph and closing a closeable checkpointer; if cancellation does not complete, it leaves resources open and raises rather than closing them under a still-running worker.
 
 Talon is alpha software and does not provide production-grade human approval policy, channel administrator controls, sandbox execution isolation, or multi-tenant boundaries. Treat a channel user as having direct access to the operator's agent, credentials, MCP tools, and local-host resources. This is a deployment constraint, not an SDK permission guarantee.
 

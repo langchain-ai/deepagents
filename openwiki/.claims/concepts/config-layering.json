@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:821511372862b5cc93cc3136a9b0e838a018d3acda9d273ec5e6ba64a8286d58",
+  "pageVersion": "sha256:1e9fdc6bd572b76f78bbff2388ad92ab83a88d60655cfc7f39ce7b680c5e6fc7",
   "claims": [
     {
       "id": "claim_1cfe64c62dd94bdf928836136186968f",
@@ -347,10 +347,24 @@
           "version": "repo-lines-v1:sha256:1826ffe948e9e3aefe94ce31ea4139965d4f83b0facf5067aa535eb4df06ca73:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1MWUyNWQwMzI5MWFjMjZlY2U3ZjNmNTE5MTBkNWE1YjQ3ZmFhNjBkMmFjNzUyYjVmMjAxNjY5MzQyYzZkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTQ1NGM3NWZkMGQ5ODY2MjA0NmZlODFiMTg5ZDY1NjczNDUzY2YwM2IxZjk0NjZkNTYzZDA1MmNkM2QyNmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTQ1ZmVjNDI1ODM3YTZlMWQ2NGRjY2MzN2M1ZGRiNTE1YmU2M2JkZmUxODJjZTI5ZmYzMjFlNGZkNDMzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3YWU5MjBkYzdkMWU2NmFhM2ZiNjRjYTIzMmVkNTEyYWNkODUwYWNjMzhiM2M2ZTc3MWRkNDI4OWY1NTc2MzgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_f3650bef2986442cbcfa3337898241cc",
+      "statement": "Dotenv evaluation preserves the initial environment as the winning baseline, applies project values before global values, and prevents cross-file interpolation; if the trusted global dotenv cannot be read while resolving the project-dotenv toggle, dcode skips the untrusted project dotenv rather than losing the user's opt-out.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L632-L780",
+          "version": "repo-lines-v1:sha256:091282d626fb0bbb567c87853cbefe2b8c168fa6438575bcb9afda8d41b0fe28:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDYyMDA1ODIyMzVkZDc2YzU0NzdkNmMzMjBkYzNlY2EwODQyMTA4NDZiN2RmYmU3MjFhODkxNDllMmRiMDczIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1MDZmZTRhOGY5NjYxMmRhN2UxNTdlMDgwMDBmYzY2NTIwY2I5ZjFiNjQwZDMzZWEyODg3Mjk3NTNjZWFjMDYxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzOTk4MzdhZWYyMDYyMTQwMTEwNDI2MzM4MmQ1NzVlOGYyNzFlMjA0MTJhNzExZjY2NTViMjA1NTFjNGY0ODBkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NzBhMWI2YzEyMWZhY2ZlMWU4ODg2MTFmYmY1NGY2MDdmZTI3N2RiOWNiNjVmZmU2NGU1NDIwNDNlMmVmNjJjIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L1308-L1382",
+          "version": "repo-lines-v1:sha256:51b9dccd6b4b679643115bc9a44981ab19803abee0691d29e1b0937a34e9a0ef:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjZGUxNWRiMThmMmUyZjNkNmIxNmZmN2I0NzNlN2I4ZjgyMTI3MTk1NzUyMWM3ZjhjNjRhNTc4YzQ1MTljOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1YWM0ODA5YTY0NGI2OTkwNzc0NTJhYWY3YTI2ZjU1MTg1ZmZhODU3N2JhNTFhZmNlYjIxNDc4OWM1NmE2MzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYmFlZDQxMDI0ZThlYzMzNWI4MTNjMzQ1OTYwNGUxMTBiN2ZmN2U2YmY5YTUzNWQxOTE5MWQwYTUyOWJiM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMGUxYzUxZmIwMjQ0Y2VhMDRjNDY3NzQxMTQxODc5NTMwMmYwYmFjOGIxNmM2ZjQyOWFlNmU4N2QwNjEwZmIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

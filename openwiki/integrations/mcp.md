@@ -34,10 +34,10 @@ sources:
     resource: repo://libs/talon/tests/test_mcp.py
   - id: openwiki-source-e2be45e59936bfba43c18816
     resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-15T08:05:27.526Z
 ---
 
 # MCP Integration
@@ -125,20 +125,17 @@ tokens; do not log token values.
 ## dcode: discovery versus runtime calls
 
 ```mermaid
-sequenceDiagram
-    participant Caller
-    participant Resolver
-    participant Loader
-    participant Remote as MCP server
-    Caller->>Resolver: paths and trust inputs
-    Resolver->>Resolver: merge and trust filter
-    Resolver->>Loader: permitted definitions
-    Loader->>Remote: temporary initialize and list tools
-    Remote-->>Loader: schemas and annotations
-    Loader-->>Caller: sorted tools and statuses
-    Caller->>Remote: invoke through runtime session
+flowchart TD
+    Caller["dcode caller"] --> Disabled{"no_mcp enabled"}
+    Disabled -->|yes| Empty["return no tools"]
+    Disabled -->|no| Discover["discover user plugin and project layers"]
+    Discover --> Merge["merge layers and optional explicit config"]
+    Merge --> Trust["filter project servers by trust policy"]
+    Trust --> Load["bounded preflight and throwaway discovery"]
+    Load --> Result["sorted tools and ordered server status"]
+    Result --> Runtime["lazy persistent session on first tool call"]
 ```
-This shows dcode's throwaway discovery session followed by lazy runtime session use.
+This shows dcode's discovery pipeline: it decides project trust before a permitted definition reaches connection preflight, while runtime calls use a separate lazy session.
 
 dcode preflights connections and discovers tools using bounded concurrency.
 Setup, discovery, and conversion failure is isolated to that server; status order

@@ -1,11 +1,8 @@
 ---
 type: evaluation workflow
-title: Run and Extend Evaluations
-description: Run, interpret, and extend the real-model Deep Agents behavioral eval suite, multi-trial reporting, Harbor benchmarks, and the unified cross-model battery.
+title: Run Evals and Harbor Benchmarks
+description: Run deterministic eval-harness tests separately from real-model behavioral trials and Harbor sandbox benchmarks. Interpret generated reports, preserve comparable configurations, and escalate infrastructure failures correctly.
 tags: [evaluations, testing, langsmith, harbor, benchmarking]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-0153e073a6645f3118ca08c4
     resource: repo://libs/evals/AGENTS.md
@@ -37,6 +34,8 @@ sources:
     resource: repo://libs/evals/README.md
   - id: openwiki-source-f3c8f48b7dd96f2acf2b21a8
     resource: repo://libs/evals/scripts/run_trials.py
+  - id: openwiki-source-444185e93422c817e5e81a83
+    resource: repo://libs/evals/tests/evals/conftest.py
   - id: openwiki-source-4c40634a8db8c72db8e98001
     resource: repo://libs/evals/tests/evals/utils.py
   - id: openwiki-source-57ffc78483cbb0541044827d
@@ -45,10 +44,13 @@ sources:
     resource: repo://libs/evals/UNIFIED_EVALS.md
   - id: openwiki-source-9731136dc92d76802b2fc11a
     resource: repo://libs/evals/UNIFIED_SCORECARD.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-15T08:05:27.526Z
 ---
 
-# Run and Extend Evaluations
+# Run Evals and Harbor Benchmarks
 
 `libs/evals` contains the real-model behavioral evaluation suite for the Deep Agents SDK. An eval runs an agent against an LLM, retains its tool calls, file mutations, and final response as a trajectory, then scores correctness and efficiency. This is distinct from the deterministic package suite: use deterministic tests to validate harness mechanics, and use real-model evaluations to make a claim about agent behavior or model quality.
 
@@ -123,7 +125,7 @@ deepagents-evals list models --group set0
 deepagents-evals list evals --category tool_use
 
 # Start narrow, then expand.
-deepagents-evals run --model claude-opus-4-7 \
+deepagents-evals run --model claude-opus-5 \
   --eval-category tool_use --eval-tier baseline --report evals_report.json
 ```
 
@@ -134,8 +136,8 @@ For `run` and `trials`, `--model` takes precedence over `DEEPAGENTS_EVALS_MODEL`
 The Makefile is retained for CI-compatible invocation:
 
 ```sh
-make evals MODEL=claude-opus-4-7
-make evals-trials MODEL=openai:gpt-5.5 TRIALS=3 \
+make evals MODEL=claude-opus-5
+make evals-trials MODEL=openai:gpt-6-astra TRIALS=3 \
   TRIAL_ARGS="--eval-category memory"
 ```
 
@@ -166,14 +168,14 @@ To add a capability category:
 One rollout is a diagnostic, not a stable comparison. Run repeated trials with identical model and configuration:
 
 ```sh
-deepagents-evals trials --model openai:gpt-5.5 --trials 3 \
+deepagents-evals trials --model openai:gpt-6-astra --trials 3 \
   --eval-category memory --out-dir trial_runs/memory
 
 # Merge reports downloaded from separate CI jobs.
 deepagents-evals aggregate trial_runs/memory
 
 # Retry every failed test node ID at most once.
-deepagents-evals trials --model openai:gpt-5.5 --trials 1 \
+deepagents-evals trials --model openai:gpt-6-astra --trials 1 \
   --retry-failed trial_runs/memory/trials_summary.json
 ```
 

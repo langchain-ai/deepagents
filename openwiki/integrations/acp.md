@@ -1,11 +1,11 @@
 ---
 type: integration-guide
 title: Agent Client Protocol Integration
-description: Run a reusable Deep Agents graph or dcode's prebuilt coding agent from an ACP-capable editor over stdio. Covers session creation and recovery, working-directory validation, streamed turns, approvals, and the MCP ownership boundary.
+description: Run a reusable Deep Agents graph or dcode's coding agent from an ACP-capable editor over stdio. Covers session creation and recovery, working-directory validation, streamed turns, approvals, and the MCP ownership boundary.
 tags: [acp, integration, dcode, editor, stdio, langgraph]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
@@ -13,6 +13,14 @@ sources:
     resource: repo://libs/acp/deepagents_acp/utils.py
   - id: openwiki-source-8134f31fb22085cb0e6b4054
     resource: repo://libs/acp/README.md
+  - id: openwiki-source-8288b43b279d5cf7aaf1505d
+    resource: repo://libs/acp/tests/test_agent.py
+  - id: openwiki-source-50847de2816cad7dfeca96d7
+    resource: repo://libs/acp/tests/test_command_allowlist.py
+  - id: openwiki-source-912f6fd213a91dec13f6c089
+    resource: repo://libs/acp/tests/test_dangerous_patterns.py
+  - id: openwiki-source-6459ac49eafda0be2c80b813
+    resource: repo://libs/acp/tests/test_model_switching.py
   - id: openwiki-source-4d4186e9d62fb4abe495cdd0
     resource: repo://libs/code/deepagents_code/acp.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
@@ -21,7 +29,7 @@ sources:
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-5dc287d30945406e0821cb29
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -31,7 +39,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
 - **`deepagents-acp`** provides `AgentServerACP`, a reusable adapter from a LangGraph graph to ACP.
 - **`dcode --acp`** runs that protocol server around dcode's coding-agent factory. It supplies dcode's tools, configured MCP tools, subagents, checkpointer, model selection, and approval policy.
 
-`--acp` is separate from the normal dcode UI path: it selects an ACP server over stdio instead of the Textual UI. The normal remote client lazily creates a LangGraph `RemoteGraph`. See [Code Agent architecture](/openwiki/architecture/code-agent.md), [state persistence](/openwiki/concepts/state-persistence.md), [testing guide](/openwiki/testing/testing-guide.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
+`--acp` is separate from the normal dcode UI path: it selects an ACP server over stdio instead of the Textual UI. The normal remote client lazily creates a LangGraph `RemoteGraph`. See [Code Agent architecture](/openwiki/architecture/code-agent.md), [state persistence](/openwiki/concepts/state-persistence.md), [testing guide](/openwiki/testing/testing-guide.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
 
 ## Use the reusable adapter
 
@@ -89,6 +97,25 @@ For a prompt, the adapter converts ACP text, images, resource links, and embedde
 
 The adapter streams the graph in `messages` and `updates` modes with subgraphs enabled. It exposes only top-level assistant content and plaintext reasoning, keeping subagent content internal. It maps `todos` to ACP plan updates. It emits assistant content before tool activity from the same chunk, accumulates tool-call argument fragments until they parse as JSON, then emits the tool start and completes it when its result arrives. If the graph has no checkpointer, `prompt` attaches `MemorySaver`; that can support the turn but not restart recovery.
 
+```mermaid
+sequenceDiagram
+    participant Editor
+    participant Adapter as AgentServerACP
+    participant Graph
+    Editor->>Adapter: prompt content blocks
+    Adapter->>Adapter: convert to LangChain content
+    Adapter->>Graph: astream messages and updates
+    Graph-->>Adapter: top level content and tool chunks
+    Adapter-->>Editor: session updates
+    Graph-->>Adapter: action request interrupt
+    Adapter->>Editor: request permission
+    Editor-->>Adapter: decision or cancel
+    Adapter->>Graph: resume with decisions
+    Adapter-->>Editor: end turn or cancelled
+```
+
+*One prompt may contain multiple graph stream/resume cycles when ACP-compatible permission interrupts require a decision.*
+
 `cancel` sets a cancellation flag checked before and while iterating a graph stream. A detected cancellation returns `PromptResponse(stop_reason="cancelled")`; a completed turn returns `end_turn`. When an interrupt update arrives, the adapter first exits the stream iterator before reading state, avoiding a stale pre-interrupt checkpoint snapshot.
 
 ### Permission boundary
@@ -125,7 +152,7 @@ uv tool install -U deepagents-code --with deepagents-acp
     "Deep Agents Code": {
       "type": "custom",
       "command": "dcode",
-      "args": ["--acp", "--model", "anthropic:claude-sonnet-4-5"]
+      "args": ["--acp", "--model", "anthropic:claude-sonnet-5"]
     }
   }
 }
@@ -143,4 +170,6 @@ ACP presentation and dcode approval policy are separate. The dcode factory passe
 
 ## Focused verification
 
-`libs/acp/tests/test_agent.py` covers initialization, selectors and restoration, multimodal conversion, ordering of content/reasoning/tool updates, cancellation, permission and plan behavior, command allowlisting, durable replay, tool-history replay, and cwd validation. The dcode smoke test starts `deepagents --acp --no-mcp`, connects through ACP pipes, initializes a session, and asserts that a session ID is returned.
+`libs/acp/tests/test_agent.py` exercises stream ordering and cancellation, session replay and cwd rejection, permission/plan handling, tool lifecycle updates, factory reset behavior, and waiting for a persistent interrupt checkpoint. `test_model_switching.py` covers model and mode selection validation and factory context delivery. `test_command_allowlist.py` and `test_dangerous_patterns.py` cover command-signature granularity and patterns that must not receive automatic approval.
+
+The dcode smoke test starts `deepagents --acp --no-mcp`, connects through ACP pipes, initializes a session, and asserts that a session ID is returned. It validates process startup and protocol handshake, not a model turn or editor behavior.

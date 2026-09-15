@@ -5,7 +5,7 @@ description: How dcode resolves ranked configuration sources, maintains coherent
 tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -35,14 +35,14 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-4df2bda291da47157bed7cbb
     resource: repo://libs/code/tests/unit_tests/test_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # dcode Configuration Layering
 
 Deep Agents Code (`dcode`) resolves typed settings from ranked sources. Its central consistency choice is to serve one coherent file generation—even if it is stale—rather than mix an edit into only some reads. Managed policy is additionally fail-closed: a bad replacement must not remove a restriction and let a weaker source win.
 
-For model-specific settings, see [profiles and models](/openwiki/concepts/profiles-models.md); for a session lifecycle, see [run a dcode session](/openwiki/workflows/run-dcode-session.md).
+For model-specific settings, see [profiles and models](/openwiki/concepts/profiles-models.md); for the client/server ownership boundary, see [the code agent architecture](/openwiki/architecture/code-agent.md); for MCP trust, see [MCP](/openwiki/integrations/mcp.md).
 
 ## Source model and precedence
 
@@ -72,7 +72,7 @@ The parsed command line becomes an immutable `CliProvider` snapshot of the `argp
 There are three deliberate read models:
 
 - **Shared generation:** managed and user TOML providers retain parsed snapshots. An edit is visible to shared readers only when the generation advances.
-- **Direct snapshot:** a caller can inspect a file itself when it needs the exact file/health it read or precedence the shared chain cannot express. This is a caller-level exception, not a per-setting cache choice.
+- **Direct snapshot:** a caller can inspect a file itself when it needs the exact file or health it read, or precedence the shared chain cannot express. This is a caller-level exception, not a per-setting cache choice.
 - **Active environment:** `EnvProvider` reads `active_environment()` on each resolution and is non-durable. Normally that is live `os.environ`; during workspace construction, `use_environment()` supplies an immutable context-local mapping.
 
 A default-path in-app write refreshes the shared resolver, as does `/reload`; a write to another path does not. Since the write has already committed, a refresh failure is logged and the process continues to serve prior values until a later refresh or restart.
@@ -100,7 +100,9 @@ For the small set of resolver values that runtime reload owns, `_ReloadOverrideP
 
 The dotenv stack is derived from an explicit environment mapping. Existing shell values win; enabled nearest-project and global-profile dotenv files can fill absent values. `resolve_read_project_dotenv()` runs before the project `.env` is applied, so it reads configuration locally: it must place a trusted global-dotenv value between process environment and user TOML, a tier the standard resolver cannot represent, without establishing the shared generation as a bootstrap side effect.
 
-A repository-controlled project `.env` cannot inject project-MCP allow/deny lists, Auto classifier model or timeout, forked-subagent mode, `LANGGRAPH_DEFAULT_RECURSION_LIMIT`, or `TERM_PROGRAM`. Those decisions remain available from the shell and trusted global dotenv. Environment lookup helpers that use `resolve_env_var()` give `DEEPAGENTS_CODE_{NAME}` precedence over `{NAME}`; the presence of an empty prefixed value suppresses the canonical value.
+The project file is applied before the global file, so it wins over global dotenv values but never over the initial shell mapping. The loader interpolates each dotenv file against that original baseline, not against values from the other dotenv file. This prevents a project file from influencing a trusted global file through interpolation. If the trusted global dotenv cannot be read while determining `startup.read_project_dotenv`, dcode skips the project `.env` rather than silently losing the user's global opt-out; managed policy and a shell export still outrank that fallback.
+
+A repository-controlled project `.env` cannot inject project-MCP allow or deny lists, Auto review controls, subagent inheritance, graph recursion fallback, or launch terminal tracing. Those decisions remain available from the shell and trusted global dotenv. Environment lookup helpers that use `resolve_env_var()` give `DEEPAGENTS_CODE_{NAME}` precedence over `{NAME}`; the presence of an empty prefixed value suppresses the canonical value.
 
 ## Server boundary and workspace isolation
 
@@ -130,10 +132,10 @@ Before graph assembly, `_make_graphs()` creates the workspace-specific dotenv ma
 ## Safe change checklist
 
 1. Add source-specific coercion in a provider or manifest domain, not in the generic rank engine.
-2. Choose rank and merge strategy deliberately; preserve managed precedence and keyword-only managed/user snapshot construction.
+2. Choose rank and merge strategy deliberately; preserve managed precedence and keyword-only managed or user snapshot construction.
 3. Use `get_config_resolver()` for ordinary process reads. Document a direct snapshot as a caller-level exception and decide whether it needs the CLI tier.
 4. Preserve last-usable behavior and test failed managed refreshes so lower-ranked settings cannot become effective.
-5. Treat project `.env` as untrusted for user-level security controls and preserve explicit environment snapshots.
-6. When adding a server-facing setting, extend the shared `ServerConfig` serialization/deserialization contract and include resource-affecting values in workspace policy and fingerprint validation.
+5. Treat project `.env` as untrusted for user-level security controls, preserve shell-first and baseline-only dotenv evaluation, and preserve explicit environment snapshots.
+6. When adding a server-facing setting, extend the shared `ServerConfig` serialization and deserialization contract and include resource-affecting values in workspace policy and fingerprint validation.
 
-Focused tests in `test_configuration_resolution.py` exercise enforced managed-key failures and snapshot consistency; `test_reload.py` checks fresh previews, retained user configuration, and notices for rejected reload candidates.
+Focused tests in `test_configuration_resolver.py` exercise provider precedence and snapshot consistency; `test_reload.py` checks fresh previews, retained user configuration, and notices for rejected reload candidates. `test_config.py` covers project and global dotenv precedence, provenance, denied keys, and runtime dotenv reload behavior.

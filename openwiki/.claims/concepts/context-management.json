@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cca9bd3acb617ac4ef20a2c54ef9ce636c7ba8340b675b3a3ef740ee827d0f87",
+  "pageVersion": "sha256:64bdc65b7131a08b3cd175800b226bc9c15f12e9d801ebe75835e2a29656ac43",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -28,13 +28,13 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
     {
       "id": "claim_eb4c583b960b4d75b8f073c146b5bfca",
-      "statement": "After a ContextOverflowError-triggered summarization, `_clip_overflow_tail` shrinks the trailing consecutive ToolMessage batch when its combined token count reaches a threshold derived from `keep` (the keep token budget, or 5000 tokens when keep is message-based).",
+      "statement": "`_clip_overflow_tail` derives its threshold from its supplied `keep` policy (or uses 5,000 tokens for message-based/unknown-limit policies), while SummarizationMiddleware's overflow-recovery call supplies `keep=(\"tokens\", 1)` so a trailing ToolMessage batch with content is eligible for clipping.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py",
@@ -42,7 +42,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -52,7 +52,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -90,7 +90,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -110,7 +110,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -140,7 +140,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -154,7 +154,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -168,7 +168,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -361,10 +361,30 @@
           "version": "repo-lines-v1:sha256:c381e3e94451ec6f95315ba57af4868bfc3fcdb9cb946fcd2e1102ea601d5b3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3Nzc2ZWQ3NjBiZTA4OWU5MDY0NTcwOGM2ZTYxNjgzZjRjYjM3NjIwNmEyZTgwYzQ5ODYxYTc3MjVhODRiOWM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OWFlZTllM2U2MWI5Yzc3OTEwNzJmMjU2MTNlMGExMzYyNjU0ZTQwOTMwNWQyNDllYjQ0MDljOGY1ODgxNTQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NzdjOGEzZGVlM2NiMTUzMmVmZmNjYmMxOGM3ODQ1OWI3MmMyZjExMDdiMDZlYzljOGFkNzQzMTEwYzYzZmFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MiwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMTg2YzA2YWNlOWMxZjIxZmExMjY2ODAxYmY0NzU1ZDczYjcwNDUwYTYwZjNkYjMwYmNlYjYwNzMxYzkxYzlmIn0"
         }
       ]
+    },
+    {
+      "id": "claim_87ee6278cb034e6ca5434d03ae259d10",
+      "statement": "Model-aware summarization defaults use an 85% trigger and 10% keep fraction when `max_input_tokens` is available; otherwise they use a 170,000-token trigger, retain six messages, and configure argument truncation at 20 messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L262-L299",
+          "version": "repo-lines-v1:sha256:e28ddad74ac7860a97c55785f96e49fa6382d02797cc228452bb84fc1fd36aa4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwZGRmNDBmZDg4Y2NmYjY2OWVhMmVlMGUyNmRhZGZhMzUzOGViYjY2MDgyNjhhMTA4ZDAyYWFjNzQ4MTcyYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwYjIxYmY4OTVmYWUyZDczOTIwZDkzMTc4Y2ZkNTg0MWNkZjhmOTUyNDUxNmM4YTU2NTg0MzZhNGFjNDhmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiNWM4ZDFhNDIxMTEzMDRlNDJkOTQzOWRhZGQ0ZDlmYjk1ZjM2MmJkY2U2YmVlZjVjNmQ3ZmIxNmIyNDUzYWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3e0aeffa4229493e91a572af5e767770",
+      "statement": "Before an overflow-recovery retry, SummarizationMiddleware reserves configured output tokens and 5% headroom from the model input limit, requires the reduced request to be strictly smaller and within that budget, and permits at most one smaller retry before raising ContextOverflowError.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1380-L1470",
+          "version": "repo-lines-v1:sha256:aec5f75101a7094ebeb55ad2551249f357c08db5085f877c8c0c911237aba439:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkMTQzNzVlZjlkMTRmZTBiNDZkYWFiMDZmMzMyNmU0NDliNTZjZTQ2MGU3NzhhYWU2YjY1OTNjOGVmZDZhMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3YzQ4ODg1NDY4ZTI5NDBkMTU0MDk0NjE5MzAyYThkZmU1MDJmMjJlMDQ5OWEwYTYwMTA2MGMyOWQ4MTE0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5NDVkNTdmYmI4N2Y3ODE4NDVhYzY0NTBlMDUyN2I3MzRmNDEwOWVhOTdmYTNiNTQzOTMwYTBlYTIyMjVlYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

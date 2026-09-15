@@ -1,38 +1,18 @@
 ---
 type: architecture concept
-title: Backends and Storage Routing
-description: Backends determine where agent files live, how long they persist, and whether shell execution is available. This page describes the shared contract, concrete storage choices, and CompositeBackend path routing.
+title: Backends and Execution Placement
+description: Backends determine where agent files live, how long they persist, and whether shell execution is available. This page explains the shared protocol, storage choices, composite path routing, and execution trust boundaries.
 tags: [backends, storage, filesystem, state, persistence, sandbox, routing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
-  - id: openwiki-source-a1549ea98d425efea270be93
-    resource: repo://libs/deepagents/deepagents/backends/composite.py
-  - id: openwiki-source-d70fe6f8bf81e2aa641a4950
-    resource: repo://libs/deepagents/deepagents/backends/context_hub.py
-  - id: openwiki-source-e483ff4cfd25918c8107d575
-    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-78080f2f51de08303032f288
-    resource: repo://libs/deepagents/deepagents/backends/langsmith.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-ab8bfe29057131f7fc94fb78
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
-# Backends and Storage Routing
+# Backends and Execution Placement
 
 A **backend** is the implementation boundary behind agent file operations: it determines where files are stored, their persistence scope, and whether a shell is available. It is not itself a model-visible tool or a permission policy. [Filesystem middleware](/openwiki/concepts/tools-filesystem.md) exposes and dispatches model-visible file tools (`ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, and `grep`) to a backend; it exposes `execute` only when the selected backend supports execution. Tool allowlists and [permissions/HITL](/openwiki/concepts/permissions-hitl.md) are separate controls.
 

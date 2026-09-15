@@ -16,6 +16,8 @@ sources:
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-c8dacdfd6192dd22d24a9362
@@ -28,10 +30,10 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
   - id: openwiki-source-f598809da8d8fbff2d7ae090
     resource: repo://libs/code/tests/unit_tests/test_server_manager.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+    at: 2026-09-15T08:05:27.526Z
 ---
 
 # dcode Runtime Behavior and Failure Handling
@@ -110,7 +112,34 @@ Checkpoint data and the development server's HTTP thread row have separate lifec
 
 Lost or cancelled work is recovered destructively, not resumed. `aabandon_pending_work` cancels active runs, calculates error `ToolMessage` values only for unanswered calls in the trailing AI-message turn, writes `__end__` to discard queued work, then re-reads state and fails if queued nodes, tasks, or interrupts remain. The trailing-turn restriction preserves tool-use/result adjacency and avoids producing invalid history for older interrupted calls.
 
-The server also exposes backend-owned offload through an authenticated custom HTTP route rather than a second addressable graph. The generated configuration enables custom-route authentication when a deployment supplies auth; local process launch explicitly uses noop auth and loopback binding. The remote offload client ensures the thread exists, forwards workspace context, validates protocol responses, and treats an absent route as a server compatibility error.
+### Server-owned offload
+
+Offload is a custom HTTP operation, not a second client-addressable graph. The built-in `langgraph.json` registers `deepagents_code.offload_api:app` with custom-route authentication enabled; a locally launched child selects noop auth and loopback binding. The operation resolves the same binding-specific `ServerRuntime` and `CompositeBackend` as the graph, so its archive and compaction policy remain readable by the agent. The `/extensions` provenance route is available only when experimental mode is enabled and the request originates from loopback.
+
+`RemoteAgent.aoffload` requires a thread ID, obtains its workspace descriptor, idempotently registers the live HTTP thread row, and posts a UUID operation ID, runtime context, and accumulated hook responses. A hook interrupt is returned to the client for fulfillment; the client reposts all responses under the same operation ID and permits at most 32 hook fulfillments. Cancellation is not assumed to have stopped server work: after local cancellation it calls the operation cancellation route, waits up to 10 seconds for a `cancelled` or `finished` acknowledgement despite repeated caller cancellation, then re-raises cancellation. A missing route is explicitly reported as an incompatible custom server; malformed responses and invalid completed result fields fail locally rather than reaching renderers.
+
+```mermaid
+flowchart TD
+    Start["Offload request"] --> Shape{"Request shape valid"}
+    Shape -- No --> BadRequest["422 no work ran"]
+    Shape -- Yes --> Registration{"Operation ID available"}
+    Registration -- No --> Duplicate["409 duplicate or terminal operation"]
+    Registration -- Yes --> Quiet{"Thread idle and checkpoint has no pending work"}
+    Quiet -- No --> Conflict["409 no state committed"]
+    Quiet -- Yes --> Runtime{"Binding and runtime available"}
+    Runtime -- No --> Unavailable["409 conflict or 503 runtime unavailable"]
+    Runtime -- Yes --> Hook{"Hook response needed"}
+    Hook -- Yes --> Interrupt["200 hook request and resume"]
+    Hook -- No --> Fresh{"Checkpoint unchanged before commit"}
+    Fresh -- No --> Changed["409 no state committed"]
+    Fresh -- Yes --> Commit["Commit allowed offload state"]
+    Commit --> Complete["200 completed result"]
+    Commit --> Indeterminate["500 commit may have landed"]
+```
+
+This decision path shows the operation's state-commit boundary. It refuses active, interrupted, unregistered, checkpoint-less, or pending-work threads and serializes each thread with a weakly held lock. Before committing it rereads the checkpoint; an advance means the completed compaction is discarded rather than overwriting a newer turn. The boundary hydrates serialized messages itself, uses checkpointed model settings rather than client-selected model or transport settings, and permits only `OffloadStateUpdate` channels—never `messages`—to prevent an un-attributed operation from clobbering concurrent conversation data. A 422 means validation prevented work, a 409 means no state was committed, a 503 means runtime construction failed before work, and a 500 can explicitly mean the write outcome is indeterminate.
+
+Cost and archive settlement are deliberately conservative. If the state write fails and a readback shows an advance, or cannot be read back, drained cost records stay claimed to avoid a later double charge; the latter case can understate the thread total. For a deferred archive, state is reserved before append; a failed archive-link update is verified, rolls the append back when known absent, and reports indeterminate linkage when it cannot be read. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md) for accounting and [Security](/openwiki/operations/security.md) for deployment boundaries.
 
 ## Retry, startup, and shutdown semantics
 
@@ -124,7 +153,7 @@ The child environment strips `PYTHONPATH` and other startup-influencing values b
 
 ## Focused regression coverage and safe changes
 
-Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, and nonblocking bootstrap. They also exercise ordered, identity-based criteria tool selection and fail-closed MCP annotations. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding.
+Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, and nonblocking bootstrap. They also exercise ordered, identity-based criteria tool selection and fail-closed MCP annotations. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding. Remote-client tests use fake graphs and transports to cover stream conversion, state-update conflict recovery, durable workspace binding, offload hook/cancellation/protocol behavior, and recovery. The integration test constructs an in-memory graph with queued tools and verifies abandonment clears the queue, emits an error result for the dangling call, and never runs the side-effecting tool.
 
 When changing this area:
 

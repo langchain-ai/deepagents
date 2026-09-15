@@ -93,6 +93,11 @@ function isTransient(status) {
   return status === 429 || (typeof status === 'number' && status >= 500);
 }
 
+// Keep existing exemptions until legacy labels have been migrated.
+function hasBypassLabel(labels, bypassLabel) {
+  return labels.includes(bypassLabel) || labels.includes('do-not-close');
+}
+
 function labelNames(labels) {
   return labels.map(label => typeof label === 'string' ? label : label.name);
 }
@@ -436,7 +441,7 @@ async function refreshLabelsUnlessBypassed({
     core.info(`PR #${number} not found at the label boundary; skipping`);
     return null;
   }
-  if (!latest.labels.includes(bypassLabel)) return latest.labels;
+  if (!hasBypassLabel(latest.labels, bypassLabel)) return latest.labels;
 
   await removeIssueLabel({
     github,
@@ -447,7 +452,7 @@ async function refreshLabelsUnlessBypassed({
     existingLabels: latest.labels,
   });
   await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
-  core.info(`PR #${number} gained ${bypassLabel}; skipping ${action}`);
+  core.info(`PR #${number} gained ${latest.labels.includes(bypassLabel) ? bypassLabel : 'do-not-close'}; skipping ${action}`);
   return null;
 }
 
@@ -549,7 +554,7 @@ async function processPr({
     core.info(`PR #${number} is a release PR; skipping`);
     return 'skippedRelease';
   }
-  if (live.labels.includes(bypassLabel)) {
+  if (hasBypassLabel(live.labels, bypassLabel)) {
     await removeIssueLabel({
       github,
       owner,
@@ -566,7 +571,7 @@ async function processPr({
     // path that failed to minimize earlier. Safe to run unconditionally
     // because minimization is idempotent (see minimizeMarkerComment).
     await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
-    core.info(`PR #${number} has ${bypassLabel}; skipping`);
+    core.info(`PR #${number} has ${live.labels.includes(bypassLabel) ? bypassLabel : 'do-not-close'}; skipping`);
     return 'skipped';
   }
 
@@ -769,7 +774,7 @@ async function sweepStalePendingDeletionLabels({
 
         const stale = live.state !== 'open'
           || isReleasePr(live, { owner, repo, core, number: item.number, warnOnAnomaly: false })
-          || live.labels.includes(bypassLabel);
+          || hasBypassLabel(live.labels, bypassLabel);
         if (!stale) continue;
 
         // The label search index lags the label mutations this same run makes

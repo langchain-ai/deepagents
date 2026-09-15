@@ -1707,3 +1707,26 @@ test('records an unparseable created date as a fatal per-PR error', async () => 
   assert.match(core.failed, /#1001/);
   assert.deepEqual(calls.close, []);
 });
+
+for (const bypassLabel of ['ci:keep-open', 'do-not-close']) {
+  for (const boundary of ['initial', 'close']) {
+    test(`${bypassLabel} prevents closure at the ${boundary} check`, async () => {
+      const labels = ['auto:pending-deletion', bypassLabel];
+      const { github, calls } = makeGithub({
+        items: [{ number: 901, created_at: '2026-04-08T00:00:00Z' }],
+        comments: new Map([[901, [{
+          id: 901, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot,
+        }]]]),
+        live: new Map([[901, boundary === 'initial'
+          ? { labels }
+          : liveLabelSequence(['auto:pending-deletion'], labels)]]),
+      });
+      const summary = await run({ github, context, core: makeCore(), options: { now } });
+      assert.equal(summary.skipped, 1);
+      assert.deepEqual(calls.close, []);
+      assert.deepEqual(calls.updateComment, []);
+      assert.equal(calls.removeLabel[0].name, 'auto:pending-deletion');
+      assertMinimized(calls, ['node-901']);
+    });
+  }
+}

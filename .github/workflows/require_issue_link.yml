@@ -167,7 +167,7 @@ jobs:
               }
 
               // Add ci:skip-issue-link so future triggers skip enforcement
-              await ensureAndAddLabel('ci:skip-issue-link', '0e8a16');
+              await ensureAndAddLabel('ci:skip-issue-link', 'e3c3cc');
 
               // Minimize stale enforcement comment (best-effort; must not
               // abort bypass — sync w/ reopen_on_assignment.yml & step below)
@@ -211,7 +211,7 @@ jobs:
               // only matches labeled events for "org:external", so no re-trigger.
               console.log(`Non-member ${login} removed auto:missing-issue-link — re-adding`);
               try {
-                await ensureAndAddLabel('auto:missing-issue-link', 'b76e79');
+                await ensureAndAddLabel('auto:missing-issue-link', 'd9dce0');
               } catch (e) {
                 core.warning(
                   `Failed to re-add auto:missing-issue-link (HTTP ${e.status ?? 'unknown'}): ${e.message}. ` +
@@ -322,7 +322,7 @@ jobs:
               if (e.status !== 404) throw e;
               try {
                 await github.rest.issues.createLabel({
-                  owner, repo, name: labelName, color: 'b76e79',
+                  owner, repo, name: labelName, color: 'd9dce0',
                 });
               } catch (createErr) {
                 if (createErr.status !== 422) throw createErr;

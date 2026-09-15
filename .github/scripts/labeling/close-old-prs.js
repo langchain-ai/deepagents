@@ -1,5 +1,19 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+const { loadConfig } = require('./pr-labeler.js');
+
+// Label colors follow the taxonomy prefix; see `labelColors` in
+// pr-labeler-config.json. Resolved here rather than hardcoded so a color
+// change lands in one place.
+function colorFor(name) {
+  const { labelColor, labelColors } = loadConfig();
+  let best = null;
+  for (const prefix of Object.keys(labelColors)) {
+    if (name.startsWith(prefix) && (!best || prefix.length > best.length)) best = prefix;
+  }
+  return best ? labelColors[best] : labelColor;
+}
+
 const DEFAULT_BYPASS_LABEL = 'ci:keep-open';
 const DEFAULT_PENDING_DELETION_LABEL = 'auto:pending-deletion';
 // Why release PRs are exempt at all: release-please keeps one long-lived PR
@@ -845,7 +859,7 @@ async function run({ github, context, core, options = {} }) {
     owner,
     repo,
     name: bypassLabel,
-    color: '0e8a16',
+    color: colorFor(bypassLabel),
     description: 'Bypass automatic closure of old PRs',
   });
   await ensureLabel({
@@ -853,7 +867,7 @@ async function run({ github, context, core, options = {} }) {
     owner,
     repo,
     name: pendingDeletionLabel,
-    color: 'fbca04',
+    color: colorFor(pendingDeletionLabel),
     description: 'PR is past the auto-close warning threshold and will be closed unless exempted',
   });
   const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });

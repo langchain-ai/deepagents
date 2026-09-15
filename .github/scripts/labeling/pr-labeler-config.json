@@ -2,6 +2,18 @@
   "org": "langchain-ai",
   "trustedThreshold": 5,
   "labelColor": "b76e79",
+  "labelColors": {
+    "type:": "a8c8e8",
+    "package:": "b5d6b2",
+    "topic:": "cbbfe6",
+    "integration:": "a9d3d8",
+    "org:": "ddc9b4",
+    "priority:": "eba58b",
+    "size: ": "dedbd5",
+    "triage:": "f0d79a",
+    "auto:": "d9dce0",
+    "ci:": "e3c3cc"
+  },
   "sizeThresholds": [
     {
       "label": "size: XS",
@@ -183,6 +195,150 @@
       "label": "integration:vercel",
       "prefix": "libs/partners/vercel/",
       "skipExcludedFiles": true
+    }
+  ],
+  "topicFileRules": [
+    {
+      "label": "topic:middleware",
+      "prefix": "libs/deepagents/deepagents/middleware/"
+    },
+    {
+      "label": "topic:subagents",
+      "pattern": "(?:^|/)subagents\\.py$"
+    },
+    {
+      "label": "topic:async-subagents",
+      "pattern": "(?:^|/)async_subagents\\.py$"
+    },
+    {
+      "label": "topic:memory",
+      "pattern": "(?:^|/)(?:memory|memory_guard)\\.py$"
+    },
+    {
+      "label": "topic:filesystem",
+      "pattern": "(?:^|/)(?:filesystem|file_ops|_fs_interrupt)\\.py$"
+    },
+    {
+      "label": "topic:backends",
+      "prefix": "libs/deepagents/deepagents/backends/"
+    },
+    {
+      "label": "topic:sandboxes",
+      "pattern": "(?:^|/)(?:sandbox|local_shell)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "pattern": "(?:^|/)(?:skills|skill_providers)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/skills/"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/built_in_skills/"
+    },
+    {
+      "label": "topic:mcp",
+      "pattern": "(?:^|/)mcp_[^/]+\\.py$"
+    },
+    {
+      "label": "topic:mcp",
+      "prefix": "libs/code/deepagents_code/mcp_providers/"
+    },
+    {
+      "label": "topic:models",
+      "pattern": "(?:^|/)(?:_models|model_config|configurable_model|model_retry)\\.py$"
+    },
+    {
+      "label": "topic:tracing",
+      "pattern": "(?:^|/)_tracing\\.py$"
+    },
+    {
+      "label": "topic:prompts",
+      "pattern": "(?:^|/)(?:system_prompt\\.md|default_agent_prompt\\.md|_prompt_caching\\.py)$"
+    },
+    {
+      "label": "topic:harness",
+      "prefix": "libs/deepagents/deepagents/profiles/"
+    },
+    {
+      "label": "topic:multimodal",
+      "pattern": "(?:^|/)(?:_video|media_utils)\\.py$"
+    },
+    {
+      "label": "topic:streaming",
+      "pattern": "(?:^|/)_tool_stream\\.py$"
+    },
+    {
+      "label": "topic:performance",
+      "pattern": "(?:^|/)(?:cost_tracking|cold_cache)\\.py$"
+    }
+  ],
+  "topicKeywords": [
+    {
+      "label": "topic:async-subagents",
+      "pattern": "\\basync\\s+sub-?agents?\\b"
+    },
+    {
+      "label": "topic:subagents",
+      "pattern": "\\bsub-?agents?\\b"
+    },
+    {
+      "label": "topic:mcp",
+      "pattern": "\\bmcp\\b|\\bmodel context protocol\\b"
+    },
+    {
+      "label": "topic:skills",
+      "pattern": "\\bskills?\\b|\\bprogressive disclosure\\b"
+    },
+    {
+      "label": "topic:memory",
+      "pattern": "\\bmemor(?:y|ies)\\b|\\bpersistent context\\b"
+    },
+    {
+      "label": "topic:filesystem",
+      "pattern": "\\bfile ?system\\b|\\bfile (?:tool|ops|operations)\\b"
+    },
+    {
+      "label": "topic:backends",
+      "pattern": "\\bbackends?\\b|\\bstore backend\\b"
+    },
+    {
+      "label": "topic:sandboxes",
+      "pattern": "\\bsandboxe?s?\\b"
+    },
+    {
+      "label": "topic:middleware",
+      "pattern": "\\bmiddlewares?\\b"
+    },
+    {
+      "label": "topic:models",
+      "pattern": "\\bmodel (?:provider|config|selection|id)\\b|\\bconfigurable model\\b"
+    },
+    {
+      "label": "topic:tracing",
+      "pattern": "\\btracing\\b|\\btelemetry\\b|\\bobservability\\b"
+    },
+    {
+      "label": "topic:streaming",
+      "pattern": "\\bstreaming\\b"
+    },
+    {
+      "label": "topic:multimodal",
+      "pattern": "\\bmultimodal\\b|\\bvision\\b|\\bimage input\\b|\\baudio\\b|\\bvideo\\b"
+    },
+    {
+      "label": "topic:prompts",
+      "pattern": "\\bsystem prompt\\b|\\bprompt (?:construction|template|caching)\\b"
+    },
+    {
+      "label": "topic:harness",
+      "pattern": "\\bharness profiles?\\b|\\bharness config\\b"
+    },
+    {
+      "label": "topic:performance",
+      "pattern": "\\bcost optimi[sz]ation\\b|\\btoken usage\\b|\\blatency\\b|\\bmemory usage\\b"
     }
   ]
 }

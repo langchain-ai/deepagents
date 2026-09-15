@@ -364,3 +364,104 @@ for (const mode of ['live', 'backfill', 'release helper']) {
     assert.ok(!api.assigned.has('type:chore'));
   });
 }
+
+test('colorFor resolves a label color from its taxonomy prefix', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  for (const [prefix, color] of Object.entries(config.labelColors)) {
+    assert.equal(h.colorFor(`${prefix}anything`), color, `prefix ${prefix}`);
+  }
+  // A name matching no prefix falls back to the generic color.
+  assert.equal(h.colorFor('unprefixed'), config.labelColor);
+  assert.equal(h.colorFor(undefined), config.labelColor);
+});
+
+test('every label the config can apply has a prefix color', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const applied = new Set([
+    ...Object.values(config.typeToLabel), config.breakingLabel, config.releaseLabel,
+    ...Object.values(config.tierLabels), ...Object.values(config.scopeToLabel),
+    ...config.fileRules.map(r => r.label), ...config.branchRules.map(r => r.label),
+    ...config.sizeThresholds.map(t => t.label),
+  ]);
+  for (const name of applied) {
+    assert.notEqual(
+      h.colorFor(name), config.labelColor,
+      `${name} has no labelColors prefix, so it would be created off-palette`,
+    );
+  }
+});
+
+// `sync_priority_labels.yml` and `require_issue_link.yml` run their scripts in
+// a sandbox without `require`, so they inline a color instead of calling
+// ensureLabel. This asserts those inlined values still match the config —
+// a stale copy is how `do-not-close` and `pending-deletion` came back in the
+// wrong colors mid-migration.
+test('inlined workflow label colors match labelColors in the config', () => {
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const known = new Set(Object.values(config.labelColors));
+  for (const rel of ['.github/workflows/sync_priority_labels.yml',
+                     '.github/workflows/require_issue_link.yml',
+                     '.github/workflows/auto-label-by-package.yml']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    for (const hit of body.match(/color: ['"]([0-9a-f]{6})['"]/g) || []) {
+      const hex = hit.match(/([0-9a-f]{6})/)[1];
+      assert.ok(known.has(hex), `${rel} uses ${hex}, which is not a labelColors value`);
+    }
+  }
+});
+
+// Scripts that CAN require the helper must not carry their own hex.
+test('label-creating scripts resolve colors from the config', () => {
+  for (const rel of ['.github/scripts/labeling/close-old-prs.js',
+                     '.github/scripts/release/normalize-release-labels.js']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    const hits = body.match(/color: ['"][0-9a-f]{6}['"]/g) || [];
+    assert.deepEqual(hits, [], `${rel} hardcodes ${hits.join(', ')}`);
+  }
+});
+
+test('topic labels come from the modules a PR touched', () => {
+  const h = helpers();
+  const f = filename => ({ filename, additions: 1, deletions: 0 });
+  const cases = [
+    ['libs/deepagents/deepagents/middleware/subagents.py', ['topic:middleware', 'topic:subagents']],
+    ['libs/deepagents/deepagents/middleware/async_subagents.py', ['topic:async-subagents', 'topic:middleware']],
+    ['libs/deepagents/deepagents/backends/sandbox.py', ['topic:backends', 'topic:sandboxes']],
+    ['libs/code/deepagents_code/mcp_tools.py', ['topic:mcp']],
+    ['libs/code/deepagents_code/skills/index.py', ['topic:skills']],
+    ['libs/deepagents/deepagents/profiles/harness/base.py', ['topic:harness']],
+    ['libs/code/deepagents_code/_tracing.py', ['topic:tracing']],
+    ['README.md', []],
+    ['libs/deepagents/pyproject.toml', []],
+  ];
+  for (const [file, expected] of cases) {
+    assert.deepEqual([...h.matchTopicFileLabels([f(file)])].sort(), expected, file);
+  }
+});
+
+test('topic keywords match the phrase that names the subject, not stray prose', () => {
+  const h = helpers();
+  assert.deepEqual([...h.matchTopicKeywordLabels('async subagents deadlock')].sort(),
+    ['topic:async-subagents', 'topic:subagents']);
+  assert.deepEqual([...h.matchTopicKeywordLabels('MCP oauth login loops')], ['topic:mcp']);
+  assert.deepEqual([...h.matchTopicKeywordLabels('system prompt is truncated')], ['topic:prompts']);
+  // Bare common words must not earn a label, or every issue gets one.
+  for (const text of ['the model is slow', 'streams of log output', 'file not found', '']) {
+    assert.deepEqual([...h.matchTopicKeywordLabels(text)], [], `"${text}" must not match`);
+  }
+  assert.deepEqual([...h.matchTopicKeywordLabels(undefined, null)], []);
+});
+
+test('every topic rule points at a real topic label and compiles', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const declared = new Set(Object.keys(config.labelColors));
+  for (const rule of [...config.topicFileRules, ...config.topicKeywords]) {
+    assert.match(rule.label, /^topic:/, `${rule.label} is not a topic label`);
+    assert.ok(declared.has('topic:'), 'topic: must have a prefix color');
+    assert.notEqual(h.colorFor(rule.label), config.labelColor,
+      `${rule.label} would be created off-palette`);
+  }
+  // A bad regex must fail here rather than at 2am in a workflow run.
+  for (const rule of config.topicKeywords) new RegExp(rule.pattern, 'i');
+  h.buildRules(config.topicFileRules, 'topicFileRules');
+});

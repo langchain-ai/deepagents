@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `type:*` | Issue/PR work type and PR breaking marker | Issue forms + PR title labeler + maintainers |
 | `package:*` | Repository package | Labeler + maintainers |
-| `topic:*` | Technical subject spanning packages | Maintainers |
+| `topic:*` | Technical subject spanning packages | Labeler (paths + keywords) + maintainers |
 | `integration:*` | External sandbox or service under `libs/partners/` | Labeler + maintainers |
 | `org:*` | Author provenance | Automation |
 | `priority:*` | Priority | Maintainers |
@@ -52,9 +52,18 @@ Rules that are easy to get wrong:
 
 Package and integration labels are additive: title edits do not remove them. `pr_labeler.yml` normalizes package aliases such as `deepagents` → `sdk` before labeling. `pr_scope_file_check.yml` uses the same mappings to validate that PR title scopes match changed packages.
 
-### `topic:*` — maintainers
+### `topic:*` — `pr_labeler.yml`, `auto-label-by-package.yml`, maintainers
 
-`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. No automation applies these. `topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns.
+`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. Any number may apply.
+
+Two signals feed them, both additive — a topic is never removed, so an edit that drops a phrase cannot strip one, and a maintainer's hand-applied topic survives:
+
+- **Changed modules** (`topicFileRules`): a PR touching `middleware/subagents.py` gets `topic:subagents` (and `topic:middleware`, since the whole middleware dir maps too); `backends/sandbox.py` gets `topic:backends` and `topic:sandboxes`; `mcp_*.py` gets `topic:mcp`. Rules name a *module*, not a package, so the label means the diff actually touched that subject.
+- **Wording** (`topicKeywords`): an issue's title and body, and a PR's title only — a PR body is mostly template prose and quoted issues, which produce topics the diff does not support. Patterns demand the phrase that names the topic: `MCP`, `async subagents`, `system prompt`, `harness profile`. A bare "model" or "stream" is deliberately unmatched, since it appears in prose that has nothing to do with the topic.
+
+`topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns; a file or phrase naming async subagents gets both.
+
+To add a topic: add its rules to `topicFileRules` / `topicKeywords` in the labeler config. `pr-labeler.test.js` asserts every rule points at a real `topic:` label and that each keyword pattern compiles.
 
 ### `org:*` — `pr_labeler.yml` (PRs), `tag-external-issues.yml` (issues)
 
@@ -66,9 +75,13 @@ Package and integration labels are additive: title edits do not remove them. `pr
 
 `org:external` is applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token, because org membership is private. A non-404 membership error fails the step rather than defaulting to external. The other two come from the default-token step, so they fire no `labeled` event.
 
-### `priority:*` — `sync_priority_labels.yml`
+### `priority:*` — `auto-label-by-package.yml`, `sync_priority_labels.yml`
 
-`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive, copied from issues linked by `Closes/Fixes/Resolves #N` onto the PR; highest across linked issues wins. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
+`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive.
+
+**Every new issue gets `priority:backlog`** from the "Apply default priority" step in `auto-label-by-package.yml`, which runs on `opened` before the Area sync so an issue filed without the form is still prioritized. It skips an issue that already carries a `priority:*`, so a re-run never overwrites an escalation.
+
+`sync_priority_labels.yml` copies a priority from issues linked by `Closes/Fixes/Resolves #N` onto the PR, highest across linked issues winning — but **only `priority:urgent` and `priority:high` propagate** (`PROPAGATED_PRIORITY_LABELS`). Backlog is every issue's default, so copying it would label nearly every PR while saying nothing; a PR carrying a backlog label from an earlier run gets it stripped. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
 
 ### `auto:*` — lifecycle and release automation
 
@@ -139,7 +152,8 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 
 ## Mechanics worth knowing
 
-- Labels applied by `pr_labeler.yml` are created on demand. Labels that workflows only read, including most `ci:*` labels, must already exist in the repository.
+- Labels applied by `pr_labeler.yml` are created on demand, taking their description from `labelDescriptions` and their color from `labelColors` (keyed by taxonomy prefix) in `pr-labeler-config.json`, so a label created on demand matches the ones already on the repo. Labels that workflows only read, including most `ci:*` labels, must already exist in the repository.
+- Colors have one source of truth. `close-old-prs.js` and `normalize-release-labels.js` resolve theirs from the config; `sync_priority_labels.yml` and `require_issue_link.yml` run their scripts in a sandbox without `require`, so they inline the hex and `pr-labeler.test.js` asserts it still matches the config.
 - All PR label changes belong in `pr_labeler.yml` to avoid workflows racing to update the same labels.
 - Workflows that must trigger follow-up label events use the GitHub App token because events created by the default `GITHUB_TOKEN` do not start other workflows.
 

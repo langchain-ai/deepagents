@@ -228,11 +228,18 @@ release-please consequence. Those warnings are advisory and never fail.
 - **Labels are created on demand.** `h.ensureLabel(name)` in
   [`scripts/labeling/pr-labeler.js`](./scripts/labeling/pr-labeler.js) does a
   get-then-create, so an applied label appears the first time it is used,
-  colored `labelColor` from the config with its `labelDescriptions` text. A
-  label that is only *read* never auto-creates — **create those by hand**, or
-  the gate offers a bypass nobody can select. That is every `ci:*` except
-  `ci:keep-open` and `ci:skip-issue-link`, whose workflows create them on
-  demand (with their own hardcoded colors, not `labelColor`).
+  colored `labelColor` from the config with its `labelDescriptions` text.
+  **Both apply at creation only** — `ensureLabel` returns early when the label
+  already exists, so editing a description in the GitHub UI is safe and is not
+  reverted, and editing `labelDescriptions` does not update a label that is
+  already on the repo. The entries for existing labels are there so a deleted
+  label does not come back blank; keep them in step with the repo by hand. The
+  exception is `auto:release-tagged`, which `release.yml` rewrites on every
+  release via `gh label create --force`.
+- **A label that is only *read* never auto-creates** — **create those by
+  hand**, or the gate offers a bypass nobody can select. That is every `ci:*`
+  except `ci:keep-open` and `ci:skip-issue-link`, whose workflows create them
+  on demand (with their own hardcoded colors, not `labelColor`).
 - **A batch containing one nonexistent label 422s entirely.** `pr_labeler.yml`
   calls `ensureLabel` for every label in `toAdd` before a single `addLabels`.
   Keep that ordering.

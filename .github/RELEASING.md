@@ -311,6 +311,13 @@ Release-please uses labels to track the state of release PRs:
 | `auto:release-pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
 | `auto:release-tagged` | Release PR has been successfully tagged and released |
 
+Legacy `autorelease: pending` / `autorelease: tagged` labels remain readable
+during migration. Before release-please runs, open legacy pending PRs receive
+the canonical pending label automatically. The publish guard checks both pending
+names, and a successful publish removes both while applying `auto:release-tagged`.
+No manual rename or pending-label cleanup is required. Finish workflows using
+the old code before merging the migration.
+
 Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of using the one built into release-please), our `release.yml` workflow must update these labels manually for state management! After successfully creating the GitHub release and tag, the `mark-release` job updates the label from `pending` to `tagged`.
 
 This label transition signals to release-please that the merged PR has been fully processed, allowing it to create new release PRs for subsequent commits to `main`.

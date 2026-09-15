@@ -135,10 +135,14 @@ that list once no open item carries one.
 > `auto:release-pending` / `auto:release-tagged` are release-please's own
 > lifecycle labels, set via the `label` / `release-label` keys in
 > [`release-please-config.json`](../release-please-config.json). release-please
-> finds a pending release PR **by label name**, so the config change and the
-> label rename must land together: merge the code, then rename the label
-> immediately (a rename propagates to open release PRs, so no PR is orphaned).
-> Do it when no publish is mid-flight.
+> requires every configured pending label, so listing old and new names in
+> config would require both rather than accept either. Before release-please
+> runs, automation adds `auto:release-pending` to open PRs carrying the legacy
+> `autorelease: pending` label. The publish guard reads either pending name;
+> the publisher recognizes either pending/tagged name and removes both pending
+> labels when applying `auto:release-tagged`. No manual label rename or pending
+> label cleanup is needed. Let workflows running the old code finish before
+> merging the migration; an already-running workflow cannot adopt this handling.
 
 ### `triage:*` — maintainers and agents
 

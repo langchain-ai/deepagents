@@ -399,17 +399,24 @@ jobs:
             IS_RELEASE_COMMIT=true
           fi
 
-          # `auto:release-pending` is release-please-action's built-in label,
-          # applied to release PRs and cleared to `auto:release-tagged` by
-          # release.yml once the tag and GitHub release exist, so a merged PR
-          # still carrying it means a publish has not finished.
+          # Either pending label means a publish has not finished. Read both
+          # names during migration; the publisher clears both after tagging.
           #
           # --limit is explicit and generous: the default (30) could drop a
           # genuinely stuck pending PR past the window precisely in the backlog
           # scenario this guard exists to catch, silently reporting "none".
           list_pending_json() {
-            gh pr list --repo "$REPO" --state merged \
-              --label "auto:release-pending" --limit 100 --json number,title
+            local current legacy
+            current=$(gh pr list --repo "$REPO" --state merged \
+              --label "auto:release-pending" --limit 100 --json number,title) || return 1
+            legacy=$(gh pr list --repo "$REPO" --state merged \
+              --label "autorelease: pending" --limit 100 --json number,title) || return 1
+            # Separate queries implement OR; multiple --label flags mean AND.
+            printf '%s\n%s\n' "$current" "$legacy" | jq -se '
+              if length != 2 or any(.[]; type != "array")
+              then error("expected two arrays of PRs")
+              else add | unique_by(.number) end
+            '
           }
 
           # Exits non-zero on anything that is not the expected array of PRs, so
@@ -689,13 +696,20 @@ jobs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Normalize legacy release PR labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const normalize = require('./.github/scripts/release/normalize-release-labels.js');
+            await normalize(github, context.repo.owner, context.repo.repo);
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
         id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the

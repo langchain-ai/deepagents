@@ -1176,6 +1176,18 @@ def _content_from_message(message: object) -> str:
     return content.strip() if isinstance(content, str) else ""
 
 
+def _persisted_text_for_tool_calls(
+    messages: list[object], tool_call_ids: set[str]
+) -> str:
+    """Return text from the checkpointed AI message owning active tool calls."""
+    if not tool_call_ids:
+        return ""
+    for message in messages:
+        if _is_ai_message(message) and _message_tool_call_ids(message) & tool_call_ids:
+            return _content_from_message(message)
+    return ""
+
+
 def _build_interrupted_ai_message(
     pending_text_by_namespace: dict[tuple, str],
     current_tool_messages: dict[str, Any],
@@ -4327,7 +4339,7 @@ async def _handle_interrupt_cleanup(
         )
 
     # Proactively cancel server-side runs before persisting recovery state, so
-    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # the aupdate_state write below doesn't 409 against a still-busy thread. This
     # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
     # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
     # Absent on local agents, so this is a no-op for them.
@@ -4357,11 +4369,9 @@ async def _handle_interrupt_cleanup(
             state = await get_state(config)
             current_messages = _current_turn_messages(state)
             persisted_tool_call_ids = _tool_call_ids_from_current_turn(state)
-            persisted_text = "".join(
-                _content_from_message(message)
-                for message in reversed(current_messages)
-                if _is_ai_message(message)
-            ).strip()
+            persisted_text = _persisted_text_for_tool_calls(
+                current_messages, set(adapter._current_tool_messages)
+            )
         except Exception:
             logger.warning(
                 "Could not inspect interrupted state; preserving displayed output",
@@ -4385,7 +4395,7 @@ async def _handle_interrupt_cleanup(
     # (mirroring the HITL-reject branches). The turn does not resume from here,
     # so the returned ids need not be tracked for dedup.
     #
-    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # Dispatched *before* the `aupdate_state` write below (not alongside the
     # `set_rejected` loop after them): those writes await a possibly-slow remote
     # checkpointer, and on an interactive quit the graceful-exit drain in
     # `app.py` snapshots the in-flight hook tasks right after cancelling this
@@ -4416,19 +4426,17 @@ async def _handle_interrupt_cleanup(
         # This suppresses local UpdateState tracing without affecting the surrounding
         # turn. A remote server creates its trace after receiving the HTTP request,
         # outside this context; `_update_interrupted_state` marks those requests so
-        # server-side tracing policy can distinguish the recovery writes.
+        # server-side tracing policy can distinguish the recovery write.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                if interrupted_msg:
-                    await _update_interrupted_state(
-                        agent, config, {"messages": [interrupted_msg]}
-                    )
-
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                     "Previous operation was cancelled."
                 )
-                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                messages = [cancellation_msg]
+                if interrupted_msg:
+                    messages.insert(0, interrupted_msg)
+                cancellation_values: dict[str, Any] = {"messages": messages}
                 # Piggy-back the latest token count on this already-required
                 # write instead of issuing a separate `aupdate_state`.
                 # `after_model` never ran on the partial turn, so without this

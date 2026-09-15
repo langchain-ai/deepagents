@@ -64,6 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      # `ensureAndAddLabel` creates labels on demand, and label creation is an
+      # Issues-scoped endpoint that `pull-requests: write` does not cover.
+      issues: write
       pull-requests: write
 
     steps:

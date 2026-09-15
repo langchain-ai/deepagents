@@ -305,7 +305,10 @@ function labelerApi(title, labels) {
   };
   const github = { rest: { issues, pulls }, paginate: (method, options) => method(options) };
   const h = prLabeler.loadAndInit(github, 'owner', 'repo', core).h;
-  h.getContributorInfo = async () => ({ isExternal: false });
+  // `tierKnown` mirrors the real helper: an internal contributor has no tier
+  // to look up, so it is always known. Omitting it would make the backfill's
+  // unknown-tier guard fire and fail every run.
+  h.getContributorInfo = async () => ({ isExternal: false, tierKnown: true });
   return { assigned, known, pr, github, h };
 }
 

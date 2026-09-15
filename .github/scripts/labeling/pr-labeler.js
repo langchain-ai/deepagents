@@ -282,7 +282,12 @@ function init(github, owner, repo, config, core) {
       }
     }
 
-    const info = { isExternal, mergedCount };
+    // `tierKnown` is explicit because a null `mergedCount` means "the search
+    // failed", not "zero merged PRs". Callers that reconcile labels must not
+    // read the absence of a tier as an instruction to remove one — doing so
+    // strips `auto:trusted-contributor`, and `require_issue_link.yml` gates
+    // its whole enforcement path (label, comment, close) on that label.
+    const info = { isExternal, mergedCount, tierKnown: !isExternal || mergedCount != null };
     contributorCache.set(author, info);
     return info;
   }

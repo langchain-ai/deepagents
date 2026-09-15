@@ -87,6 +87,16 @@ jobs:
                 const labels = new Set();
 
                 labels.add(info.isExternal ? 'org:external' : 'org:internal');
+                // The merged-PR search failed, so we do not know this author's
+                // tier. Leave their tier labels alone rather than reconciling
+                // against an incomplete set, and count it as a failure so the
+                // run goes red instead of reporting a clean migration.
+                if (!info.tierKnown) {
+                  failures++;
+                  core.warning(
+                    `PR #${pr.number}: contributor tier unknown for ${author} — leaving tier labels untouched`,
+                  );
+                }
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
                   labels.add(h.tierLabelsByTier.trusted);
                 } else if (info.isExternal && info.mergedCount === 0) {
@@ -124,7 +134,9 @@ jobs:
                   { owner, repo, issue_number: pr.number, per_page: 100 },
                 )).map(l => l.name ?? '');
 
-                const managed = [...h.sizeLabels, ...h.tierLabels];
+                const managed = info.tierKnown
+                  ? [...h.sizeLabels, ...h.tierLabels]
+                  : [...h.sizeLabels];
                 const staleTitleLabels = h.getStaleTitleLabels(pr.title ?? '', currentLabels);
                 for (const name of currentLabels) {
                   if ((managed.includes(name) || staleTitleLabels.includes(name)) && !labels.has(name)) {

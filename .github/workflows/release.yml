@@ -1037,6 +1037,12 @@ jobs:
           mark_release_tagged() {
             local pr="$1" labels label
             local -a changes=(--add-label "auto:release-tagged")
+            # gh pr edit requires the repository label to exist. --force
+            # also succeeds when a previous release already created it.
+            gh label create "auto:release-tagged" --repo "${{ github.repository }}" \
+              --color "d9dce0" \
+              --description "The release has been tagged by the automated release workflow." \
+              --force || return 1
             labels=$(gh pr view "$pr" --json labels --jq '.labels[].name') || return 1
             for label in "auto:release-pending" "autorelease: pending"; do
               if printf '%s\n' "$labels" | grep -qFx "$label"; then

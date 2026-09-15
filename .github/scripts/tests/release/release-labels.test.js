@@ -29,6 +29,10 @@ function fakeGh() {
   if (state.fail === args[1] || state.fail === value('--label')) fail('GitHub unavailable');
   if (args[0] === 'api') {
     process.stdout.write(JSON.stringify(state.commitPr ? [{ number: state.commitPr }] : []));
+  } else if (args[0] === 'label' && args[1] === 'create') {
+    if (state.repoLabels.includes(args[2]) && !args.includes('--force')) fail('Label already exists');
+    state.repoLabels = [...new Set([...state.repoLabels, args[2]])];
+    fs.writeFileSync(process.env.RELEASE_TEST_STATE, JSON.stringify(state));
   } else if (args[1] === 'list') {
     if (state.malformed) {
       process.stdout.write('{}');
@@ -43,6 +47,9 @@ function fakeGh() {
     process.stdout.write(pr.labels.join('\n'));
   } else if (args[1] === 'edit') {
     const pr = state.prs.find(pr => pr.number === Number(args[2]));
+    for (const label of values('--add-label')) {
+      if (!state.repoLabels.includes(label)) fail('Label does not exist');
+    }
     for (const label of values('--remove-label')) {
       if (!pr.labels.includes(label)) fail('Label was not present');
       pr.labels = pr.labels.filter(name => name !== label);
@@ -58,7 +65,9 @@ function runShell(t, script, state) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-labels-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const statePath = path.join(directory, 'state.json');
-  fs.writeFileSync(statePath, JSON.stringify(state));
+  fs.writeFileSync(statePath, JSON.stringify({
+    repoLabels: [...new Set(state.prs.flatMap(pr => pr.labels))], ...state,
+  }));
   fs.writeFileSync(path.join(directory, 'gh'), `#!/usr/bin/env node\n(${fakeGh.toString()})();`, { mode: 0o755 });
   const result = spawnSync('bash', ['-c', script], {
     encoding: 'utf8',
@@ -103,6 +112,14 @@ for (const label of [TAGGED, OLD_TAGGED]) {
   }
 }
 
+test('publish succeeds when the repository already has the tagged label', t => {
+  const result = runShell(t, publisher, {
+    commitPr: 1, repoLabels: [PENDING, TAGGED], prs: [release(1, [PENDING])],
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.state.prs[0].labels, [TAGGED]);
+});
+
 test('fallback never updates another release version or an open PR', t => {
   const prs = [release(2, [LEGACY], { title: 'release(deepagents): 1.2.30' }),
     release(3, [PENDING], { state: 'open' })];
@@ -119,7 +136,7 @@ test('retry clears stale pending labels even when a tagged label is already pres
   assert.deepEqual(result.state.prs[0].labels.sort(), [OLD_TAGGED, TAGGED].sort());
 });
 
-for (const fail of ['list', 'view', 'edit']) {
+for (const fail of ['list', 'view', 'create', 'edit']) {
   test(`publisher fails when GitHub ${fail} fails`, t => {
     const prs = [release(1, [PENDING, LEGACY])];
     const result = runShell(t, publisher, { commitPr: fail === 'list' ? null : 1, prs, fail });

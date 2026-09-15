@@ -64,7 +64,7 @@ Package and integration labels are additive: title edits do not remove them. `pr
 | `org:internal` | author is a member, or a Bot |
 | `org:open-swe` | PR from an `open-swe/` branch (`branchRules`) |
 
-Applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token (org membership is private). A non-404 membership error fails the step rather than defaulting to external.
+`org:external` is applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token, because org membership is private. A non-404 membership error fails the step rather than defaulting to external. The other two come from the default-token step, so they fire no `labeled` event.
 
 ### `priority:*` — `sync_priority_labels.yml`
 
@@ -75,7 +75,7 @@ Applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token (org
 | Label | Applied by | Meaning |
 | --- | --- | --- |
 | `auto:pending-deletion` | `close_old_prs.yml` (day 14 warning) | PR closes at day 30 unless exempted |
-| `auto:waiting-on-author` | maintainer, cleared by `waiting_on_author_reply.yml` | closes the item 10 days later; `auto:*` because workflows own its removal and timeout |
+| `auto:waiting-on-author` | maintainer, cleared by `waiting_on_author_reply.yml` and by the `waiting_on_author.yml` sweep when it detects an author reply | closes the item 10 days later; `auto:*` because workflows own its removal and timeout |
 | `auto:missing-issue-link` | `require_issue_link.yml` | external PR had no approved, assigned issue link; PR was closed |
 | `auto:new-contributor` | `pr_labeler.yml` | external author, 0 merged PRs (PRs only) |
 | `auto:trusted-contributor` | `pr_labeler.yml`, `tag-external-issues.yml` | external author, ≥`trustedThreshold` (5) merged PRs **in this repo** |
@@ -111,7 +111,7 @@ For PRs, `typeToLabel` in `pr-labeler-config.json` maps the title's commit type:
 | `ci` | `type:ci` |
 | `chore` | `type:chore` |
 | `revert` | `type:revert` |
-| `release` | `auto:release-pr` |
+| `release` | `auto:release-pr` (from `releaseLabel`, not `typeToLabel` — see [`auto:*`](#auto---lifecycle-and-release-automation)) |
 
 The `!` marker immediately before `:` (for example, `feat(sdk)!:` or `feat!:`) adds `type:breaking` (`breakingLabel` in the config) alongside the work type. The label parser does not recognize `feat!(sdk):`. A recognized title edit replaces stale managed type labels and removes the breaking label when `!` is dropped; unrecognized titles preserve the previous classification. Live labeling, backfill, and release PR labeling share this behavior. Scope/file labels remain additive. Newly created type labels receive descriptions from `labelDescriptions` in the same config.
 
@@ -131,7 +131,7 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 | `ci:ack-release-deps` | `check_release_deps.yml`, `check_sdk_pin.yml` dependency freshness |
 | `ci:dcode-skip-sdk-pin` | `check_sdk_pin.yml` SDK pin check; `release-please.yml` then dispatches with `dangerous-skip-sdk-pin-check=true` (a workflow input, not a label) |
 | `ci:skip-curated-notes` | the curated release-notes gate (`release_notes_check.yml` via `scripts/release/release-notes.js`) |
-| `ci:skip-issue-link` | `require_issue_link.yml`; also added by `reopen_on_assignment.yml` when a maintainer assigns the issue |
+| `ci:skip-issue-link` | `require_issue_link.yml`, when a maintainer bypasses the gate; read (never applied) by `reopen_on_assignment.yml` |
 | `ci:skip-ripgrep` | strict ripgrep install failure on a release PR (`_test.yml`, surfaced by `ripgrep_timeout_comment.yml`) |
 | `ci:allow-warnings` | warnings-as-errors in `_test.yml` (runs pytest with `-W default`) |
 | `ci:bypass-fork-main` | `block_fork_main_prs.yml` |

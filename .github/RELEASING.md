@@ -690,7 +690,7 @@ Check these common causes first:
 - **The merged commit uses a hidden type.** `chore`, `refactor`, `ci`, `docs`, `style`, `test`, and `hotfix` do not create release PRs on their own. See [Releasable Commit Types and Version Bumping](#releasable-commit-types-and-version-bumping).
 - **The commit was not assigned to the package you expected.** release-please scopes commits by **changed file paths**, not just the Conventional Commit scope. For example, a `feat(code): ...` commit must touch files under `libs/code` to create or update the `deepagents-code` release PR.
 - **An [existing draft release PR](https://github.com/langchain-ai/deepagents/issues?q=is%3Apr+is%3Aopen+author%3Aapp%2Fgithub-actions) was updated instead.** Each package has at most one active release PR, on a branch named `release-please--branches--main--components--<package>`.
-- **A previous merged release PR [is still pending](https://github.com/langchain-ai/deepagents/issues?q=state%3Aopen%20label%3A%22autorelease%3A%20pending%22).** If a release PR still has `auto:release-pending` after the release workflow finished, see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
+- **A previous merged release PR [is still pending](https://github.com/langchain-ai/deepagents/issues?q=state%3Aopen%20label%3A%22auto%3Arelease-pending%22).** If a release PR still has `auto:release-pending` after the release workflow finished, see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 ### Empty commit fan-out
 

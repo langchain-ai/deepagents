@@ -9,9 +9,9 @@ module.exports = async function normalizeReleaseLabels(github, owner, repo) {
   });
   const pending = issues.filter(issue => issue.pull_request &&
     !issue.labels.some(label => (label.name ?? label) === canonical));
-  // Logged on every path: the step runs `continue-on-error`, so without this
-  // there is no way to tell a no-op run from a failed one when a later
-  // release misbehaves.
+  // Logged on every path so a no-op run is distinguishable from one that
+  // never ran, when a later release misbehaves. The step is blocking:
+  // normalization must succeed before release-please looks up open PRs.
   if (!pending.length) {
     console.log(`Nothing to normalize: no open PR carries '${legacy}' without '${canonical}'.`);
     return;

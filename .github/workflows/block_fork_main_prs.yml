@@ -31,6 +31,11 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'ci:bypass-fork-main')
     runs-on: ubuntu-latest
     permissions:
+      # `issues: write` is for POST /repos/{o}/{r}/labels, which GitHub gates
+      # on Issues, not Pull requests. Without it the label-create path below
+      # 403s before the guidance comment and the close, so the guard fails
+      # open and the contributor gets no explanation.
+      issues: write
       pull-requests: write
     steps:
       - name: Close PR and post guidance

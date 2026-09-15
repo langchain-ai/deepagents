@@ -1,0 +1,36 @@
+.github/scripts/release/normalize-release-labels.js
+  s_8988014629c1f7::t_d5a55e56d5f026 4-5,28
+.github/scripts/labeling/close-old-prs.js
+  s_8988014629c1f7::t_d5a55e56d5f026 3-16,862,870
+.github/scripts/tests/labeling/close-old-prs.test.js
+  s_8988014629c1f7::t_c487f63193734c 1560-1562,1566-1567
+.github/workflows/sync_priority_labels.yml
+  s_8988014629c1f7::t_ffc9c3007c5822 131-135,275-279,460-464
+.github/scripts/labeling/pr-labeler.js
+  s_8988014629c1f7::t_550660a7e9dad0 24,43,68-82,393,414
+.github/scripts/labeling/pr-labeler-config.json
+  s_8988014629c1f7::t_0c313c106c9931 5-16
+.github/workflows/require_issue_link.yml
+  s_8988014629c1f7::t_ffc9c3007c5822 170,214,325
+.github/LABELS.md
+  s_8988014629c1f7::t_eb3425a920afa0 142-143
+.github/scripts/tests/labeling/pr-labeler.test.js
+  s_8988014629c1f7::t_0576a9a1ffbbb9 367-393,416-420
+  s_8988014629c1f7::t_7d178bf4a36c22 394-415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8ccbf166f486406e8225377d5654f9fcbceefa9c",
+  "prompts": {},
+  "sessions": {
+    "s_8988014629c1f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ed68c6e-c124-44d7-8dbb-6561e4745a48",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

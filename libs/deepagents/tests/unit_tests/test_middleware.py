@@ -2153,6 +2153,40 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_call_id") is not None
 
+    def test_intercept_empty_tool_call_id_offloads_unique_files(self):
+        """Test that two large ToolMessages with empty tool_call_id don't collide on one offload path."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+
+        first = middleware._intercept_large_tool_result(ToolMessage(content="A" * 5000, tool_call_id=""))
+        second = middleware._intercept_large_tool_result(ToolMessage(content="B" * 5000, tool_call_id=""))
+
+        assert isinstance(first, ToolMessage)
+        assert isinstance(second, ToolMessage)
+        offloads = [i.key for i in mem_store.search(("filesystem",)) if i.key.startswith("/large_tool_results/unknown")]
+        assert len(offloads) == 2
+        assert first.content != second.content
+        assert "AAAA" not in second.content
+        assert "BBBB" not in first.content
+        first_file = mem_store.get(("filesystem",), offloads[0])
+        second_file = mem_store.get(("filesystem",), offloads[1])
+        assert first_file is not None and second_file is not None
+        assert {first_file.value["content"][:1], second_file.value["content"][:1]} == {"A", "B"}
+
+    async def test_aintercept_empty_tool_call_id_offloads_unique_files(self):
+        """Async empty-id offloads also get distinct paths."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+
+        first = await middleware._aintercept_large_tool_result(ToolMessage(content="A" * 5000, tool_call_id=""))
+        second = await middleware._aintercept_large_tool_result(ToolMessage(content="B" * 5000, tool_call_id=""))
+
+        assert isinstance(first, ToolMessage)
+        assert isinstance(second, ToolMessage)
+        offloads = [i.key for i in mem_store.search(("filesystem",)) if i.key.startswith("/large_tool_results/unknown")]
+        assert len(offloads) == 2
+        assert first.content != second.content
+
     def test_intercept_content_block_with_large_text(self):
         """Test that content blocks with large text get evicted and converted to string."""
         backend, mem_store = _make_backend()

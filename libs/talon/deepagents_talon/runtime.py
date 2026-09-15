@@ -168,8 +168,10 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "connection timed out",
     "read timeout",
     "timed out",
+    "timeout limit",
     "temporarily unavailable",
     "temporary failure",
+    "try again later",
 )
 
 _CONTINUATION_NUDGE = (

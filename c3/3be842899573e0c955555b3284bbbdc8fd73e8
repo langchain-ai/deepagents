@@ -1,0 +1,24 @@
+libs/evals/tests/evals/utils.py
+  s_497526b5066438::t_18a3c899f5ede2 1336,1344,1354,1365
+  s_497526b5066438::t_5e8c6da71b827c 1337-1343,1345-1353
+libs/evals/tests/unit_tests/test_assertions.py
+  s_497526b5066438::t_5e8c6da71b827c 221,226,250
+  s_497526b5066438::t_18a3c899f5ede2 15,22-23,199-220,222-225,227-249,251-254
+  s_497526b5066438::t_7ec011df0cfcd6 255-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c33be842899573e0c955555b3284bbbdc8fd73e8",
+  "prompts": {},
+  "sessions": {
+    "s_497526b5066438": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a090f2-d88f-7fa1-a692-a2fd6cd426ba",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

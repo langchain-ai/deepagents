@@ -5,6 +5,12 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const WORKFLOW = 'sync_priority_labels.yml';
+const REPO_ROOT = path.resolve(__dirname, '../../../..');
+
+// github-script resolves `require('./.github/...')` from the workspace root
+// (the workflow checks the repo out first). Mirror that inside the sandbox so
+// these tests exercise the real shared helper rather than a stub.
+const sandboxRequire = spec => require(path.join(REPO_ROOT, spec));
 
 function workflow() {
   return fs.readFileSync(path.join(__dirname, '../../../workflows', WORKFLOW), 'utf8');
@@ -234,7 +240,9 @@ function runDefaultPriorityStep(globals) {
   const lines = source.split('          script: |\n')[1].split('\n');
   const end = lines.findIndex(line => line.trim() && !line.startsWith('            '));
   const body = (end === -1 ? lines : lines.slice(0, end)).map(l => l.slice(12)).join('\n');
-  return vm.runInNewContext(`(async () => {\n${body}\n})()`, { console: { log() {} }, ...globals });
+  return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
+    console: { log() {} }, require: sandboxRequire, ...globals,
+  });
 }
 
 function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
@@ -244,6 +252,7 @@ function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
     calls,
     labels: () => [...present].sort(),
     globals: {
+      core: { info() {}, warning() {} },
       context: { repo: { owner: 'owner', repo: 'repo' },
                  payload: { issue: { number: 7, labels: labels.map(name => ({ name })) } } },
       github: { rest: { issues: {
@@ -281,4 +290,59 @@ test('the default priority label is created with the prefix color when absent', 
   await runDefaultPriorityStep(a.globals);
   assert.deepEqual(a.calls.created, [['priority:backlog', labelColors['priority:']]]);
   assert.deepEqual(a.calls.added, ['priority:backlog']);
+});
+
+// ── Topic labels on an issue (auto-label-by-package.yml) ─────────────────
+function runTopicStep(globals) {
+  const source = fs.readFileSync(
+    path.join(REPO_ROOT, '.github/workflows/auto-label-by-package.yml'), 'utf8',
+  ).split('- name: Apply topic labels\n')[1];
+  assert.ok(source, 'Missing step: Apply topic labels');
+  const lines = source.split('          script: |\n')[1].split('\n');
+  const end = lines.findIndex(line => line.trim() && !line.startsWith('            '));
+  const body = (end === -1 ? lines : lines.slice(0, end)).map(l => l.slice(12)).join('\n');
+  return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
+    console: { log() {} }, require: sandboxRequire, ...globals,
+  });
+}
+
+function topicApi({ title = '', body = '', labels = [] } = {}) {
+  const present = new Set(labels), added = [];
+  return {
+    added,
+    globals: {
+      core: { info() {}, warning() {} },
+      context: { repo: { owner: 'owner', repo: 'repo' },
+                 payload: { issue: { number: 42, title, body, labels: labels.map(name => ({ name })) } } },
+      github: { rest: { issues: {
+        getLabel: async () => ({}),
+        createLabel: async () => ({}),
+        addLabels: async ({ labels: names }) => { added.push(...names); names.forEach(n => present.add(n)); },
+      } } },
+    },
+  };
+}
+
+test('an issue naming a topic gets the matching topic label', async () => {
+  const a = topicApi({ title: 'async subagents hang on exit', body: 'repro below' });
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added.sort(), ['topic:async-subagents', 'topic:subagents']);
+});
+
+test('topic keywords read the issue body too', async () => {
+  const a = topicApi({ title: 'crash on startup', body: 'happens when the MCP server reconnects' });
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added, ['topic:mcp']);
+});
+
+test('a topic label already present is not re-applied', async () => {
+  const a = topicApi({ title: 'sandbox teardown leaks', labels: ['topic:sandboxes'] });
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added, [], 'no duplicate add, so a hand-applied topic survives an edit');
+});
+
+test('prose that merely mentions a common word earns no topic', async () => {
+  const a = topicApi({ title: 'the model is slow', body: 'streams of output look fine' });
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added, [], 'keywords must demand the phrase that names the topic');
 });

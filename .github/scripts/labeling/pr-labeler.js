@@ -23,6 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
+    'topicFileRules', 'topicKeywords',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
@@ -50,6 +51,8 @@ function init(github, owner, repo, config, core) {
     tierLabels,
     labelDescriptions,
     fileRules: fileRulesDef,
+    topicFileRules: topicFileRulesDef,
+    topicKeywords: topicKeywordsDef,
     branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
@@ -122,8 +125,8 @@ function init(github, owner, repo, config, core) {
 
   // ── File-based labels ─────────────────────────────────────────────
 
-  function buildFileRules() {
-    return fileRulesDef.map((rule, i) => {
+  function buildRules(defs, source = 'fileRules') {
+    return defs.map((rule, i) => {
       let test;
       if (rule.prefix) test = p => p.startsWith(rule.prefix);
       else if (rule.suffix) test = p => p.endsWith(rule.suffix);
@@ -133,12 +136,16 @@ function init(github, owner, repo, config, core) {
         test = p => re.test(p);
       } else {
         throw new Error(
-          `fileRules[${i}] (label: "${rule.label}") has no recognized matcher ` +
+          `${source}[${i}] (label: "${rule.label}") has no recognized matcher ` +
           `(expected one of: prefix, suffix, exact, pattern)`
         );
       }
       return { label: rule.label, test, skipExcluded: !!rule.skipExcludedFiles };
     });
+  }
+
+  function buildFileRules() {
+    return buildRules(fileRulesDef, 'fileRules');
   }
 
   function matchFileLabels(files, fileRules) {
@@ -155,6 +162,27 @@ function init(github, owner, repo, config, core) {
       if (candidates.some(f => rule.test(f.filename ?? ''))) {
         labels.add(rule.label);
       }
+    }
+    return labels;
+  }
+
+  // ── Topic labels ──────────────────────────────────────────────────
+  // `topic:*` spans packages, so it is derived from two signals: the modules a
+  // PR touched, and the words an issue uses. Both are additive and narrow on
+  // purpose — a topic label should mean the change or report is actually about
+  // that subject, so paths name a module rather than a package, and keywords
+  // demand the phrase that names the topic (a bare "model" or "stream" matches
+  // too much prose to be worth a label).
+  function matchTopicFileLabels(files) {
+    return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
+  }
+
+  function matchTopicKeywordLabels(...texts) {
+    const haystack = texts.filter(Boolean).join('\n');
+    const labels = new Set();
+    if (!haystack.trim()) return labels;
+    for (const rule of topicKeywordsDef) {
+      if (new RegExp(rule.pattern, 'i').test(haystack)) labels.add(rule.label);
     }
     return labels;
   }
@@ -394,7 +422,10 @@ function init(github, owner, repo, config, core) {
     getSizeLabel,
     computeSize,
     buildFileRules,
+    buildRules,
     matchFileLabels,
+    matchTopicFileLabels,
+    matchTopicKeywordLabels,
     matchBranchLabels,
     matchTitleLabels,
     getStaleTitleLabels,

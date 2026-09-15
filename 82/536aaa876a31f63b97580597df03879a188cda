@@ -1,0 +1,29 @@
+.github/scripts/tests/labeling/priority-labels.test.js
+  s_8988014629c1f7::t_42d3b7c5376a64 134-162,198,201,204-209
+  s_8988014629c1f7::t_b1665cca5bd680 225-284
+.github/LABELS.md
+  s_8988014629c1f7::t_f1f956fea00ca0 69,71-75
+.github/workflows/auto-label-by-package.yml
+  s_8988014629c1f7::t_727fdcf6b19111 2-3,21-64
+.github/workflows/sync_priority_labels.yml
+  s_8988014629c1f7::t_70ce34fb1ca4a2 72-76,182-183,220-224,378,414-418,509
+  s_8988014629c1f7::t_73f138a7573674 379,510
+.github/scripts/tests/labeling/pr-labeler.test.js
+  s_8988014629c1f7::t_def86d7d0804a9 403-404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "82536aaa876a31f63b97580597df03879a188cda",
+  "prompts": {},
+  "sessions": {
+    "s_8988014629c1f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ed68c6e-c124-44d7-8dbb-6561e4745a48",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

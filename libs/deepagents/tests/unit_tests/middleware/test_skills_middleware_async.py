@@ -4,18 +4,25 @@ This module contains async versions of skills middleware tests.
 """
 
 import logging
+import shutil
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -397,6 +404,111 @@ async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -
 
     # Should return None, not load new skills
     assert result is None
+
+
+async def test_abefore_agent_reloads_when_metadata_is_none(tmp_path: Path) -> None:
+    """A stored `None` means skills are not loaded, so `abefore_agent` loads them."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    backend.upload_files([(skill_path, make_skill_content("test-skill", "A test skill").encode("utf-8"))])
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    result = await middleware.abefore_agent({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["test-skill"]
+
+
+async def test_abefore_agent_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
+    """Every load rewrites `skills_load_errors`, so warnings from an earlier load are cleared."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skills_dir.mkdir(parents=True)
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    state = {"skills_metadata": None, "skills_load_errors": ["Cannot load skills from '/old': denied"]}
+    result = await middleware.abefore_agent(state, None, {})  # type: ignore[arg-type]
+
+    assert result == {"skills_metadata": [], "skills_load_errors": []}
+
+
+def _last_system_prompt(model: GenericFakeChatModel) -> str:
+    """Return the system prompt the fake model received on its most recent call."""
+    return model.call_history[-1]["messages"][0].text
+
+
+async def test_aupdate_state_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
+    """Setting `skills_metadata` to `None` between runs makes the next run see the current skills (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 3))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "reset"}}
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+
+    shutil.rmtree(skills_dir / "old-skill")
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 2")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+    assert "new-skill" not in _last_system_prompt(model)
+
+    await agent.aupdate_state(config, {"skills_metadata": None})
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 3")]}, config)
+
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+    assert "turn 1" in [message.text for message in model.call_history[-1]["messages"]]
+
+
+async def test_ainvoke_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
+    """Passing `skills_metadata=None` as `ainvoke()` input reloads skills for that run."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 2))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "invoke-reset"}}
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+
+    shutil.rmtree(skills_dir / "old-skill")
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="turn 2")], "skills_metadata": None}, config)
+
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+    assert "skills_metadata" not in result
+
+
+async def test_aupdate_state_reset_clears_fixed_skill_load_warnings(tmp_path: Path) -> None:
+    """A reload after fixing a broken source removes its warnings from the prompt and state (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"  # missing until turn 2, so the source fails to load
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 3))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "reset-warnings"}}
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "<skill_load_warnings>" in _last_system_prompt(model)
+
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 2")]}, config)
+    assert "<skill_load_warnings>" in _last_system_prompt(model)
+
+    await agent.aupdate_state(config, {"skills_metadata": None})
+    await agent.ainvoke({"messages": [HumanMessage(content="turn 3")]}, config)
+
+    assert "<skill_load_warnings>" not in _last_system_prompt(model)
+    assert "new-skill" in _last_system_prompt(model)
+    assert (await agent.aget_state(config)).values["skills_load_errors"] == []
 
 
 async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Path) -> None:

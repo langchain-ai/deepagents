@@ -107,7 +107,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated
 
 import yaml
-from langchain.agents.middleware.types import PrivateStateAttr
+from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -293,8 +293,12 @@ class SkillMetadata(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
-    """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
+    skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
+    """List of loaded skill metadata from configured sources. Not propagated to parent agents.
+
+    Missing or `None` means not loaded; set to `None` to request a reload on the next run.
+    An empty list means loaded with no skills found.
+    """
 
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
@@ -304,10 +308,10 @@ class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
     skills_metadata: list[SkillMetadata]
-    """List of loaded skill metadata to merge into state."""
+    """List of loaded skill metadata to write into state, replacing any previous list."""
 
-    skills_load_errors: NotRequired[list[str]]
-    """Skill source loading errors to merge into state."""
+    skills_load_errors: list[str]
+    """Skill source loading errors to write into state, empty when every source loaded."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -772,6 +776,16 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     Skills are loaded in source order with later sources overriding
     earlier ones.
 
+    Skills are loaded once per thread and cached in state. To pick up skills
+    added, edited, or deleted since then, set `skills_metadata` to `None`:
+
+    ```python
+    agent.invoke({"messages": messages, "skills_metadata": None}, config)
+
+    # or without a run
+    agent.update_state(config, {"skills_metadata": None})
+    ```
+
     Example:
         ```python
         from deepagents.backends.filesystem import FilesystemBackend
@@ -933,9 +947,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (synchronous).
 
-        Loads skills once per session from all configured sources. If
-        `skills_metadata` is already present in state (from a prior turn or
-        checkpointed session), the load is skipped and `None` is returned.
+        Loads skills from all configured sources when not yet loaded, meaning
+        `skills_metadata` is missing or `None` in state. If it holds a list
+        (from a prior turn or checkpointed session, even if empty), the load
+        is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -946,10 +961,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present.
+            State update with `skills_metadata` and `skills_load_errors`, or
+                `None` if skills are already loaded.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        # Skip if skills are already loaded (even if empty); `None` requests a reload
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend
@@ -965,22 +981,21 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
-        skills = list(all_skills.values())
-        update = SkillsStateUpdate(skills_metadata=skills)
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
-            update["skills_load_errors"] = skills_load_errors
-        return update
+        # Always write the errors so warnings from an earlier load are cleared
+        return SkillsStateUpdate(skills_metadata=list(all_skills.values()), skills_load_errors=skills_load_errors)
 
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (async).
 
-        Loads skills once per session from all configured sources. If
-        `skills_metadata` is already present in state (from a prior turn or
-        checkpointed session), the load is skipped and `None` is returned.
+        Loads skills from all configured sources when not yet loaded, meaning
+        `skills_metadata` is missing or `None` in state. If it holds a list
+        (from a prior turn or checkpointed session, even if empty), the load
+        is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -991,10 +1006,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present.
+            State update with `skills_metadata` and `skills_load_errors`, or
+                `None` if skills are already loaded.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        # Skip if skills are already loaded (even if empty); `None` requests a reload
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend
@@ -1010,15 +1026,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
-        skills = list(all_skills.values())
-        update = SkillsStateUpdate(skills_metadata=skills)
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
-            update["skills_load_errors"] = skills_load_errors
-        return update
+        # Always write the errors so warnings from an earlier load are cleared
+        return SkillsStateUpdate(skills_metadata=list(all_skills.values()), skills_load_errors=skills_load_errors)
 
     def wrap_model_call(
         self,

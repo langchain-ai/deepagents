@@ -419,3 +419,49 @@ test('label-creating scripts resolve colors from the config', () => {
     assert.deepEqual(hits, [], `${rel} hardcodes ${hits.join(', ')}`);
   }
 });
+
+test('topic labels come from the modules a PR touched', () => {
+  const h = helpers();
+  const f = filename => ({ filename, additions: 1, deletions: 0 });
+  const cases = [
+    ['libs/deepagents/deepagents/middleware/subagents.py', ['topic:middleware', 'topic:subagents']],
+    ['libs/deepagents/deepagents/middleware/async_subagents.py', ['topic:async-subagents', 'topic:middleware']],
+    ['libs/deepagents/deepagents/backends/sandbox.py', ['topic:backends', 'topic:sandboxes']],
+    ['libs/code/deepagents_code/mcp_tools.py', ['topic:mcp']],
+    ['libs/code/deepagents_code/skills/index.py', ['topic:skills']],
+    ['libs/deepagents/deepagents/profiles/harness/base.py', ['topic:harness']],
+    ['libs/code/deepagents_code/_tracing.py', ['topic:tracing']],
+    ['README.md', []],
+    ['libs/deepagents/pyproject.toml', []],
+  ];
+  for (const [file, expected] of cases) {
+    assert.deepEqual([...h.matchTopicFileLabels([f(file)])].sort(), expected, file);
+  }
+});
+
+test('topic keywords match the phrase that names the subject, not stray prose', () => {
+  const h = helpers();
+  assert.deepEqual([...h.matchTopicKeywordLabels('async subagents deadlock')].sort(),
+    ['topic:async-subagents', 'topic:subagents']);
+  assert.deepEqual([...h.matchTopicKeywordLabels('MCP oauth login loops')], ['topic:mcp']);
+  assert.deepEqual([...h.matchTopicKeywordLabels('system prompt is truncated')], ['topic:prompts']);
+  // Bare common words must not earn a label, or every issue gets one.
+  for (const text of ['the model is slow', 'streams of log output', 'file not found', '']) {
+    assert.deepEqual([...h.matchTopicKeywordLabels(text)], [], `"${text}" must not match`);
+  }
+  assert.deepEqual([...h.matchTopicKeywordLabels(undefined, null)], []);
+});
+
+test('every topic rule points at a real topic label and compiles', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const declared = new Set(Object.keys(config.labelColors));
+  for (const rule of [...config.topicFileRules, ...config.topicKeywords]) {
+    assert.match(rule.label, /^topic:/, `${rule.label} is not a topic label`);
+    assert.ok(declared.has('topic:'), 'topic: must have a prefix color');
+    assert.notEqual(h.colorFor(rule.label), config.labelColor,
+      `${rule.label} would be created off-palette`);
+  }
+  // A bad regex must fail here rather than at 2am in a workflow run.
+  for (const rule of config.topicKeywords) new RegExp(rule.pattern, 'i');
+  h.buildRules(config.topicFileRules, 'topicFileRules');
+});

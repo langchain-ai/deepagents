@@ -1,5 +1,6 @@
 # Applies `package:*` / `integration:*` labels from the issue form's
-# "Area" section, and gives every new issue a default `priority:backlog`.
+# "Area" section, `topic:*` from its words, and a default
+# `priority:backlog` on every new issue.
 # Taxonomy: .github/LABELS.md.
 
 name: Auto Label Issues by Package
@@ -18,6 +19,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checks out the default branch so
+      # `require('./.github/scripts/labeling/pr-labeler.js')` resolves. This
+      # workflow runs on `issues` events, which carry no PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       # Every new issue starts in the backlog; a maintainer escalates from
       # there. Runs before the Area sync so an issue opened without the form
       # (API, blank issue) is still prioritized even though that step fails on
@@ -39,28 +45,43 @@ jobs:
               return;
             }
 
-            try {
-              await github.rest.issues.getLabel({ owner, repo, name: DEFAULT_PRIORITY });
-            } catch (e) {
-              if (e.status !== 404) throw e;
-              try {
-                await github.rest.issues.createLabel({
-                  owner, repo, name: DEFAULT_PRIORITY,
-                  // Must match `labelColors['priority:']` in
-                  // .github/scripts/labeling/pr-labeler-config.json; asserted
-                  // by pr-labeler.test.js.
-                  color: 'eba58b',
-                  description: 'Prioritized backlog work affecting a limited feature or set of users.',
-                });
-              } catch (createErr) {
-                if (createErr.status !== 422) throw createErr;
-              }
-            }
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js')
+              .loadAndInit(github, owner, repo, core);
+            await h.ensureLabel(DEFAULT_PRIORITY);
 
             await github.rest.issues.addLabels({
               owner, repo, issue_number, labels: [DEFAULT_PRIORITY],
             });
             console.log(`Applied '${DEFAULT_PRIORITY}' to issue #${issue_number}`);
+
+      # `topic:*` from the issue's own words. Additive and never removed: an
+      # edit that drops a phrase does not mean the issue stopped being about
+      # the subject, and a maintainer's hand-applied topic must survive.
+      # Keywords live in `topicKeywords` in the labeler config.
+      - name: Apply topic labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js')
+              .loadAndInit(github, owner, repo, core);
+
+            const topics = h.matchTopicKeywordLabels(issue.title, issue.body);
+            const current = new Set((issue.labels ?? []).map(l => l.name ?? l));
+            const toAdd = [...topics].filter(name => !current.has(name));
+            if (!toAdd.length) {
+              console.log(`No new topic labels for issue #${issue.number}.`);
+              return;
+            }
+
+            // Every label must exist before the batch add: addLabels 422s the
+            // whole call if one is missing.
+            for (const name of toAdd) await h.ensureLabel(name);
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: issue.number, labels: toAdd,
+            });
+            console.log(`Applied [${toAdd.join(', ')}] to issue #${issue.number}`);
 
       - name: Sync package labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

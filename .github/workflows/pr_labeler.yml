@@ -177,6 +177,14 @@ jobs:
               for (const label of h.matchFileLabels(files)) {
                 toAdd.add(label);
               }
+
+              // `topic:*` from the modules the PR touched. Additive, like the
+              // package labels: a topic is never removed on edit, because a
+              // later push dropping the file does not mean the PR stopped
+              // being about the subject.
+              for (const label of h.matchTopicFileLabels(files)) {
+                toAdd.add(label);
+              }
             }
 
             // ── Branch-name-based labels ──
@@ -191,6 +199,13 @@ jobs:
             const title = process.env.RENAMED_TITLE || pr.title || '';
             const { labels: titleLabels } = h.matchTitleLabels(title);
             for (const label of titleLabels) {
+              toAdd.add(label);
+            }
+
+            // Topic keywords read the title only. A PR body is mostly template
+            // prose and linked-issue quotes, which produce topics the diff does
+            // not support.
+            for (const label of h.matchTopicKeywordLabels(title)) {
               toAdd.add(label);
             }
             for (const label of h.getStaleTitleLabels(title, currentLabels)) {

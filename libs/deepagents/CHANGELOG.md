@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.15](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.14...deepagents==0.7.15) (2026-09-15)
+
+
+### Bug Fixes
+
+* **sdk:** give id-less tool result offloads unique paths ([#6316](https://github.com/langchain-ai/deepagents/issues/6316)) ([a0c2ad0](https://github.com/langchain-ai/deepagents/commit/a0c2ad03c6dcd52340e91bea6483ee7750d5deee))
+* **sdk:** require a real Nemotron task transition ([#6296](https://github.com/langchain-ai/deepagents/issues/6296)) ([3d6392e](https://github.com/langchain-ai/deepagents/commit/3d6392e82408c1a5e24d0c1d32c53934552fd314))
+
 ## [0.7.14](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.13...deepagents==0.7.14) (2026-09-13)
 
 ### Features

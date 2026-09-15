@@ -81,7 +81,7 @@ on:
         description:
           "Tolerate a ripgrep install failure in pre-release checks
           (danger!) - the rg-gated artifact tests will skip. Passed automatically
-          when the merged release PR carries the bypass-ripgrep-check label"
+          when the merged release PR carries the ci:skip-ripgrep label"
 
 env:
   UV_NO_SYNC: "true"
@@ -764,7 +764,7 @@ jobs:
       # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
       # makes the rg-gated tests fail rather than skip if `rg` goes missing
       # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
-      # from the `bypass-ripgrep-check` label on the merged release PR)
+      # from the `ci:skip-ripgrep` label on the merged release PR)
       # tolerates an apt failure instead: the install still runs, but a failure
       # neither fails the job nor promises ripgrep, so the gated tests skip
       # rather than error.
@@ -1089,7 +1089,7 @@ jobs:
             if ! LIST_OUT=$(gh pr list --repo "${{ github.repository }}" \
               --state merged \
               --label "autorelease: pending" \
-              --label "release" \
+              --label "auto:release-pr" \
               --search "\"release($PKG_NAME)\" in:title" \
               --json number --jq '.[0].number // empty' 2>&1); then
               echo "::error::gh pr list failed: $LIST_OUT"
@@ -1110,7 +1110,7 @@ jobs:
               if ! TAGGED_PR=$(gh pr list --repo "${{ github.repository }}" \
                 --state merged \
                 --label "autorelease: tagged" \
-                --label "release" \
+                --label "auto:release-pr" \
                 --search "\"release($PKG_NAME): $VERSION\" in:title" \
                 --json number --jq '.[0].number // empty' 2>&1); then
                 echo "::error::gh pr list failed while checking already-tagged releases: $TAGGED_PR"

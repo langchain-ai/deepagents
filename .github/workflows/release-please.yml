@@ -995,8 +995,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
-      SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
-      RIPGREP_BYPASS_LABEL: "bypass-ripgrep-check"
+      SDK_PIN_BYPASS_LABEL: "ci:dcode-skip-sdk-pin"
+      RIPGREP_BYPASS_LABEL: "ci:skip-ripgrep"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}

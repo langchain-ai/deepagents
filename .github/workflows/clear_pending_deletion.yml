@@ -1,4 +1,4 @@
-# Remove the "pending-deletion" label as soon as a PR gains "do-not-close",
+# Remove the "auto:pending-deletion" label as soon as a PR gains "ci:keep-open",
 # and minimize the stale auto-close warning comment that was posted with it.
 # Only hand-applied labels reach this workflow: GitHub suppresses the
 # `labeled` event when the label was applied by the default GITHUB_TOKEN, so
@@ -11,7 +11,7 @@
 #
 # pull_request_target is required here: for PRs opened from forks, a plain
 # pull_request workflow receives a read-only GITHUB_TOKEN regardless of who
-# applied the label, so issues.removeLabel would 403 and pending-deletion
+# applied the label, so issues.removeLabel would 403 and auto:pending-deletion
 # would linger on exactly the external PRs this automation targets. (That
 # downgrade is the default behavior; it does not apply when "Send write tokens
 # to workflows from pull requests" is enabled for the org.)
@@ -27,7 +27,7 @@
 # `unlabeled` rather than trusting a list here. Swapping in an app token would
 # arm all of them at once.
 
-name: Clear pending-deletion on do-not-close
+name: Clear auto:pending-deletion on ci:keep-open
 
 on:
   # pull_request_target is safe here: we never check out or execute the PR's
@@ -47,10 +47,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  remove-pending-deletion:
+  remove-auto:pending-deletion:
     if: >-
-      github.event.label.name == 'do-not-close' &&
-      contains(github.event.pull_request.labels.*.name, 'pending-deletion')
+      github.event.label.name == 'ci:keep-open' &&
+      contains(github.event.pull_request.labels.*.name, 'auto:pending-deletion')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # A job-level `permissions` block replaces the workflow-level one outright
@@ -79,7 +79,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Remove pending-deletion label
+      - name: Remove auto:pending-deletion label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # `labeled` fires exactly once per label application, so unlike the
@@ -103,7 +103,7 @@ jobs:
             } = require('./.github/scripts/labeling/close-old-prs.js');
 
             console.log(
-              `PR #${issue_number} gained do-not-close — removing ${pendingDeletionLabel}`,
+              `PR #${issue_number} gained ci:keep-open — removing ${pendingDeletionLabel}`,
             );
 
             await clearPendingDeletion({ github, core, owner, repo, issueNumber: issue_number });

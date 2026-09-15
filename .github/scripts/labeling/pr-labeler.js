@@ -22,7 +22,7 @@ function loadConfig() {
   }
   const required = [
     'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
-    'typeToLabel', 'scopeToLabel', 'trustedThreshold',
+    'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
     'excludedFiles', 'excludedPaths',
   ];
   const missing = required.filter(k => !(k in config));
@@ -41,7 +41,8 @@ function init(github, owner, repo, config, core) {
     labelColor,
     sizeThresholds,
     scopeToLabel,
-    typeToLabel,
+    scopeAliases,
+    releaseLabel,
     fileRules: fileRulesDef,
     branchRules: branchRulesDef,
     excludedFiles,
@@ -49,8 +50,7 @@ function init(github, owner, repo, config, core) {
   } = config;
 
   const sizeLabels = sizeThresholds.map(t => t.label);
-  const allTypeLabels = [...new Set(Object.values(typeToLabel))];
-  const tierLabels = ['new-contributor', 'trusted-contributor'];
+  const tierLabels = ['auto:new-contributor', 'auto:trusted-contributor'];
 
   // ── Label management ──────────────────────────────────────────────
 
@@ -157,18 +157,17 @@ function init(github, owner, repo, config, core) {
 
   // ── Title-based labels ────────────────────────────────────────────
 
+  // Only `package:*` / `integration:*` labels come from a title. The change
+  // type (and whether it breaks) is carried by the Conventional Commit title
+  // itself — see the taxonomy in .github/LABELS.md.
   function matchTitleLabels(title) {
     const labels = new Set();
     const m = (title ?? '').match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
-    if (!m) return { labels, type: null, typeLabel: null, scopes: [], breaking: false };
+    if (!m) return { labels, type: null, scopes: [], breaking: false };
 
     const type = m[1].toLowerCase();
     const scopeStr = m[2] ?? '';
     const breaking = !!m[3];
-
-    const typeLabel = typeToLabel[type] || null;
-    if (typeLabel) labels.add(typeLabel);
-    if (breaking) labels.add('breaking');
 
     const scopes = scopeStr.split(',').map(s => s.trim()).filter(Boolean);
     for (const scope of scopes) {
@@ -176,7 +175,35 @@ function init(github, owner, repo, config, core) {
       if (sl) labels.add(sl);
     }
 
-    return { labels, type, typeLabel, scopes, breaking };
+    return { labels, type, scopes, breaking };
+  }
+
+  // ── Title scope canonicalization ──────────────────────────────────
+
+  // A scoped Conventional Commits title: `type(scope): subject`, with the `!`
+  // breaking marker allowed on either side of the parens.
+  const scopedTitlePattern = /^(\w+!?)\(([^)]+)\)(!?:\s*.*)$/;
+
+  // Rewrite package-component scopes (e.g. `deepagents-code`) to their
+  // canonical PR scope (`code`) per `scopeAliases`. Returns null when there is
+  // nothing to do: an unscoped title, a `release(...)` title (whose scope is a
+  // canonical version record and must not be touched), or scopes that are
+  // already canonical.
+  function canonicalizeTitleScopes(title) {
+    const match = (title ?? '').match(scopedTitlePattern);
+    if (!match) return null;
+
+    const type = match[1].replace('!', '').toLowerCase();
+    if (type === 'release') return null;
+
+    const scopeStr = match[2];
+    const newScopeStr = scopeStr
+      .split(',')
+      .map(s => scopeAliases[s.trim()] ?? s.trim())
+      .join(',');
+    if (newScopeStr === scopeStr) return null;
+
+    return { title: `${match[1]}(${newScopeStr})${match[3]}`, scopes: newScopeStr };
   }
 
   // ── Org membership ────────────────────────────────────────────────
@@ -260,8 +287,8 @@ function init(github, owner, repo, config, core) {
     }
 
     let tierLabel = null;
-    if (mergedCount >= trustedThreshold) tierLabel = 'trusted-contributor';
-    else if (mergedCount === 0 && !skipNewContributor) tierLabel = 'new-contributor';
+    if (mergedCount >= trustedThreshold) tierLabel = 'auto:trusted-contributor';
+    else if (mergedCount === 0 && !skipNewContributor) tierLabel = 'auto:new-contributor';
 
     if (tierLabel) {
       await ensureLabel(tierLabel);
@@ -289,7 +316,14 @@ function init(github, owner, repo, config, core) {
     })).data.title;
 
     // Title-based labels
-    for (const l of matchTitleLabels(prTitle).labels) toAdd.add(l);
+    const { labels: titleLabels, type } = matchTitleLabels(prTitle);
+    for (const l of titleLabels) toAdd.add(l);
+
+    // `release(<pkg>): <version>` titles get the release marker. This is the
+    // one change-type-shaped label that survives, because close-old-prs.js and
+    // release.yml both key off it — every other change type is read from the
+    // Conventional Commit title instead.
+    if (type === 'release') toAdd.add(releaseLabel);
 
     // File-based labels + size
     const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -316,13 +350,14 @@ function init(github, owner, repo, config, core) {
     matchFileLabels,
     matchBranchLabels,
     matchTitleLabels,
+    canonicalizeTitleScopes,
     labelPR,
-    allTypeLabels,
     checkMembership,
     getContributorInfo,
     applyTierLabel,
     sizeLabels,
     tierLabels,
+    releaseLabel,
     trustedThreshold,
     labelColor,
   };

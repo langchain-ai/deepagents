@@ -41,7 +41,7 @@ jobs:
               `is:pr`,
               `is:closed`,
               `author:${assignee}`,
-              `label:missing-issue-link`,
+              `label:auto:missing-issue-link`,
               `repo:${owner}/${repo}`,
             ].join(' ');
 
@@ -81,13 +81,13 @@ jobs:
 
               // Skip if already bypassed
               const labels = item.labels.map(l => l.name);
-              if (labels.includes('bypass-issue-check')) {
-                console.log(`PR #${prNumber} already has bypass-issue-check — skipping`);
+              if (labels.includes('ci:skip-issue-link')) {
+                console.log(`PR #${prNumber} already has ci:skip-issue-link — skipping`);
                 continue;
               }
 
               // Reopen first, remove label second — a closed PR that still has
-              // missing-issue-link is recoverable; a closed PR with the label
+              // auto:missing-issue-link is recoverable; a closed PR with the label
               // stripped is invisible to both workflows.
               try {
                 await github.rest.pulls.update({
@@ -124,15 +124,15 @@ jobs:
                 throw e;
               }
 
-              // Remove missing-issue-link label only after successful reopen
+              // Remove auto:missing-issue-link label only after successful reopen
               try {
                 await github.rest.issues.removeLabel({
                   owner,
                   repo,
                   issue_number: prNumber,
-                  name: 'missing-issue-link',
+                  name: 'auto:missing-issue-link',
                 });
-                console.log(`Removed missing-issue-link from PR #${prNumber}`);
+                console.log(`Removed auto:missing-issue-link from PR #${prNumber}`);
               } catch (e) {
                 if (e.status !== 404) throw e;
               }

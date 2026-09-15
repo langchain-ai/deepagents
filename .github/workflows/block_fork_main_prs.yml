@@ -10,7 +10,7 @@
 # read-only for forks). This also means the job MUST NOT check out PR code —
 # see the inline warning in the trigger block below.
 #
-# Maintainer bypass: add the `bypass-fork-main-check` label to the PR.
+# Maintainer bypass: add the `ci:bypass-fork-main` label to the PR.
 
 name: Block fork main PRs
 
@@ -28,7 +28,7 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.fork == true &&
       (github.event.pull_request.head.ref == 'main' || github.event.pull_request.head.ref == 'master') &&
-      !contains(github.event.pull_request.labels.*.name, 'bypass-fork-main-check')
+      !contains(github.event.pull_request.labels.*.name, 'ci:bypass-fork-main')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -82,7 +82,7 @@ jobs:
               '3. Push it: `git push -u origin feat/my-change`',
               '4. Open a new PR from `feat/my-change` → `langchain-ai/deepagents:main`',
               '',
-              '*Maintainers: add the `bypass-fork-main-check` label to override.*',
+              '*Maintainers: add the `ci:bypass-fork-main` label to override.*',
             ];
             const body = lines.join('\n');
 

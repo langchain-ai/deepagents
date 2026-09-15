@@ -70,11 +70,11 @@ jobs:
                 const info = await h.getContributorInfo(contributorCache, author, pr.user.type);
                 const labels = new Set();
 
-                labels.add(info.isExternal ? 'external' : 'internal');
+                labels.add(info.isExternal ? 'org:external' : 'org:internal');
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
-                  labels.add('trusted-contributor');
+                  labels.add('auto:trusted-contributor');
                 } else if (info.isExternal && info.mergedCount === 0) {
-                  labels.add('new-contributor');
+                  labels.add('auto:new-contributor');
                 }
 
                 // Size + file labels

@@ -1,4 +1,4 @@
-# Clear `waiting-on-author` after an author reply recorded by waiting_on_author.yml.
+# Clear `auto:waiting-on-author` after an author reply recorded by waiting_on_author.yml.
 #
 # `workflow_run` executes this definition from the default branch and receives
 # a write-capable token for fork-origin events. The artifact is untrusted input:
@@ -59,7 +59,7 @@ jobs:
               fs.readFileSync('response/author-response.json', 'utf8'),
             );
             const { owner, repo } = context.repo;
-            const waitingOnAuthorLabel = 'waiting-on-author';
+            const waitingOnAuthorLabel = 'auto:waiting-on-author';
 
             function numberFromUrl(url, resource) {
               const match = new URL(url).pathname.match(

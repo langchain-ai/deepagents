@@ -198,9 +198,9 @@ test('applyBypassLabel no-ops when the label is already present', async () => {
 });
 
 // clearPendingDeletion is the shared "PR is exempt now" cleanup behind both
-// clear_pending_deletion.yml (manual do-not-close) and keep_open_on_comment.yml
+// clear_pending_deletion.yml (manual ci:keep-open) and keep_open_on_comment.yml
 // (whose GITHUB_TOKEN-authored `labeled` event GitHub suppresses, so the
-// cleanup has to run inline). Its contract: remove pending-deletion, tolerate
+// cleanup has to run inline). Its contract: remove auto:pending-deletion, tolerate
 // its absence, and always attempt to minimize the stale warning.
 test('clearPendingDeletion removes the label and minimizes the warning', async () => {
   const { github, calls } = makeGithub({
@@ -228,7 +228,7 @@ test('clearPendingDeletion removes the label and minimizes the warning', async (
 });
 
 // keep_open_on_comment.yml reaches this branch routinely — a !keep-open PR
-// may never have carried pending-deletion. A 404 must not fail the run, and
+// may never have carried auto:pending-deletion. A 404 must not fail the run, and
 // the warning minimization must still happen: the label and the comment are
 // applied separately, so one can exist without the other.
 test('clearPendingDeletion tolerates an absent label and still minimizes', async () => {
@@ -353,7 +353,7 @@ function makeGithub({
   };
   // When labels are presumed present, unknown names still succeed so tests do
   // not have to seed every label the workflow may ensure.
-  const presentLabels = new Set(labelExists ? ['do-not-close', 'pending-deletion'] : []);
+  const presentLabels = new Set(labelExists ? ['ci:keep-open', 'auto:pending-deletion'] : []);
 
   const github = {
     rest: {
@@ -446,7 +446,7 @@ function makeGithub({
 
   github.paginate.iterator = async function* iterator(_method, params) {
     calls.queries.push(params);
-    // Primary open-PR scan vs pending-deletion sweep use different queries.
+    // Primary open-PR scan vs auto:pending-deletion sweep use different queries.
     const labeledQuery = typeof params.q === 'string' && params.q.includes('label:"');
     const source = labeledQuery ? labeledItems : items;
     const pages = [];
@@ -503,8 +503,8 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
     [102, [{ id: 77, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
   const live = new Map([
-    [102, { labels: ['pending-deletion'] }],
-    [103, { labels: ['do-not-close'] }],
+    [102, { labels: ['auto:pending-deletion'] }],
+    [103, { labels: ['ci:keep-open'] }],
     // Drafts get no exemption: #104 is warned like any other 30-day-old PR.
     [104, { draft: true }],
   ]);
@@ -535,7 +535,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   assert.match(calls.createComment[1].body, /open for at least 14 days/);
   assert.deepEqual(
     calls.addLabels.map(call => [call.issue_number, call.labels]),
-    [[101, ['pending-deletion']], [104, ['pending-deletion']]],
+    [[101, ['auto:pending-deletion']], [104, ['auto:pending-deletion']]],
   );
   assert.equal(calls.updateComment.length, 1);
   assert.equal(calls.updateComment[0].comment_id, 77);
@@ -545,7 +545,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 102,
-    name: 'pending-deletion',
+    name: 'auto:pending-deletion',
   }]);
   assert.equal(core.failed, null);
   // Ordinary contributor PRs must stay silent. Without this, dropping the
@@ -554,13 +554,13 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   assert.deepEqual(core.warnings, []);
 });
 
-test('does not add pending-deletion when do-not-close is applied during warning', async () => {
+test('does not add auto:pending-deletion when ci:keep-open is applied during warning', async () => {
   const live = new Map([[106, { labels: [] }]]);
   const { github, calls } = makeGithub({
     items: [{ number: 106, created_at: '2026-04-23T00:00:00Z' }],
     live,
     onCreateComment: ({ issue_number }) => {
-      live.set(issue_number, { labels: ['do-not-close'] });
+      live.set(issue_number, { labels: ['ci:keep-open'] });
     },
   });
   const core = makeCore();
@@ -574,12 +574,12 @@ test('does not add pending-deletion when do-not-close is applied during warning'
   assert.equal(summary.skippedRaced, 1);
   assert.deepEqual(calls.addLabels, []);
   assert.deepEqual(calls.get, [106, 106]);
-  // The mid-warning race leaves no pending-deletion behind, so the
+  // The mid-warning race leaves no auto:pending-deletion behind, so the
   // clear_pending_deletion workflow never fires for this PR. The daily bypass
   // branch would retry the minimization tomorrow; doing it here is what
   // retracts the just-posted warning promptly instead of a day late.
   assertMinimized(calls, ['node-new']);
-  assert.ok(core.infos.some(message => message.includes('gained do-not-close')));
+  assert.ok(core.infos.some(message => message.includes('gained ci:keep-open')));
   assert.equal(core.failed, null);
   // minimizeMarkerComment downgrades every failure to a warning or an error, so
   // without these a broken minimize path would look exactly like a healthy one.
@@ -605,18 +605,18 @@ function liveLabelSequence(...labelSets) {
 }
 
 // Same race as the warning path, one branch later: an already-warned PR (no
-// label yet, e.g. warned before the label existed) gains do-not-close between
+// label yet, e.g. warned before the label existed) gains ci:keep-open between
 // the initial live fetch and the backfill boundary. The label must stay off
 // and the stale warning must be minimized — the PR never carries
-// pending-deletion, so clear_pending_deletion.yml never fires for it.
-test('minimizes the warning when do-not-close lands before the label backfill', async () => {
+// auto:pending-deletion, so clear_pending_deletion.yml never fires for it.
+test('minimizes the warning when ci:keep-open lands before the label backfill', async () => {
   const comments = new Map([
     [107, [{ id: 92, node_id: 'node-92', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
   const { github, calls } = makeGithub({
     items: [{ number: 107, created_at: '2026-04-23T00:00:00Z' }],
     comments,
-    live: new Map([[107, liveLabelSequence([], ['do-not-close'])]]),
+    live: new Map([[107, liveLabelSequence([], ['ci:keep-open'])]]),
   });
   const core = makeCore();
 
@@ -636,8 +636,8 @@ test('minimizes the warning when do-not-close lands before the label backfill', 
 // The same boundary, but with the label already applied — so the removal arm of
 // refreshLabelsUnlessBypassed actually runs. Reachable in production whenever a
 // PR was warned and labeled on an earlier day, passes the initial bypass check,
-// and gains do-not-close mid-run.
-test('removes an already-applied pending-deletion at the label boundary', async () => {
+// and gains ci:keep-open mid-run.
+test('removes an already-applied auto:pending-deletion at the label boundary', async () => {
   const comments = new Map([
     [108, [{ id: 94, node_id: 'node-94', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
@@ -645,8 +645,8 @@ test('removes an already-applied pending-deletion at the label boundary', async 
     items: [{ number: 108, created_at: '2026-04-23T00:00:00Z' }],
     comments,
     live: new Map([[108, liveLabelSequence(
-      ['pending-deletion'],
-      ['pending-deletion', 'do-not-close'],
+      ['auto:pending-deletion'],
+      ['auto:pending-deletion', 'ci:keep-open'],
     )]]),
   });
   const core = makeCore();
@@ -657,17 +657,17 @@ test('removes an already-applied pending-deletion at the label boundary', async 
   assert.deepEqual(calls.addLabels, []);
   assert.deepEqual(
     calls.removeLabel.map(call => [call.issue_number, call.name]),
-    [[108, 'pending-deletion']],
+    [[108, 'auto:pending-deletion']],
   );
   assertMinimized(calls, ['node-94']);
   assert.equal(core.failed, null);
 });
 
 // The close is the widest and most consequential boundary: unlike a spurious
-// label it is never reverted. A maintainer applying do-not-close after the
+// label it is never reverted. A maintainer applying ci:keep-open after the
 // initial fetch but before the close must stop it, and must not leave the
 // warning rewritten into a close notice for a PR that stays open.
-test('does not close when do-not-close lands before the close boundary', async () => {
+test('does not close when ci:keep-open lands before the close boundary', async () => {
   const comments = new Map([
     [109, [{ id: 95, node_id: 'node-95', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
@@ -675,8 +675,8 @@ test('does not close when do-not-close lands before the close boundary', async (
     items: [{ number: 109, created_at: '2026-04-08T00:00:00Z' }],
     comments,
     live: new Map([[109, liveLabelSequence(
-      ['pending-deletion'],
-      ['pending-deletion', 'do-not-close'],
+      ['auto:pending-deletion'],
+      ['auto:pending-deletion', 'ci:keep-open'],
     )]]),
   });
   const core = makeCore();
@@ -690,10 +690,10 @@ test('does not close when do-not-close lands before the close boundary', async (
   assert.deepEqual(calls.updateComment, []);
   assert.deepEqual(
     calls.removeLabel.map(call => [call.issue_number, call.name]),
-    [[109, 'pending-deletion']],
+    [[109, 'auto:pending-deletion']],
   );
   assertMinimized(calls, ['node-95']);
-  assert.ok(core.infos.some(message => message.includes('gained do-not-close; skipping close')));
+  assert.ok(core.infos.some(message => message.includes('gained ci:keep-open; skipping close')));
   assert.equal(core.failed, null);
 });
 
@@ -732,7 +732,7 @@ test('minimizes the warning comment on an already-bypassed PR', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 123, created_at: '2026-04-08T00:00:00Z' }],
     comments,
-    live: new Map([[123, { labels: ['do-not-close'] }]]),
+    live: new Map([[123, { labels: ['ci:keep-open'] }]]),
   });
   const core = makeCore();
 
@@ -755,7 +755,7 @@ test('a fatal minimize failure is escalated but does not fail the run', async ()
   const { github, calls } = makeGithub({
     items: [{ number: 124, created_at: '2026-04-08T00:00:00Z' }],
     comments,
-    live: new Map([[124, { labels: ['do-not-close', 'pending-deletion'] }]]),
+    live: new Map([[124, { labels: ['ci:keep-open', 'auto:pending-deletion'] }]]),
     graphqlError: httpError('Resource not accessible by integration', 403),
   });
   const core = makeCore();
@@ -768,7 +768,7 @@ test('a fatal minimize failure is escalated but does not fail the run', async ()
   assert.equal(core.failed, null);
   assert.deepEqual(
     calls.removeLabel.map(call => [call.issue_number, call.name]),
-    [[124, 'pending-deletion']],
+    [[124, 'auto:pending-deletion']],
   );
   // 403 means the token lacks the scope: permanent, so it must not read as a
   // routine warning that will sort itself out tomorrow.
@@ -785,7 +785,7 @@ test('a transient minimize failure is only a warning', async () => {
   const { github } = makeGithub({
     items: [{ number: 125, created_at: '2026-04-08T00:00:00Z' }],
     comments,
-    live: new Map([[125, { labels: ['do-not-close'] }]]),
+    live: new Map([[125, { labels: ['ci:keep-open'] }]]),
     graphqlError: httpError('Bad gateway', 502),
   });
   const core = makeCore();
@@ -803,7 +803,7 @@ test('a transient minimize failure is only a warning', async () => {
 test('skips genuine release-please PRs without warning or closing', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 105, created_at: '2026-04-08T00:00:00Z' }],
-    live: new Map([[105, releasePleasePr(['release'])]]),
+    live: new Map([[105, releasePleasePr(['auto:release-pr'])]]),
   });
   const core = makeCore();
 
@@ -823,7 +823,7 @@ test('skips genuine release-please PRs without warning or closing', async () => 
 // The regression this exemption exists for: a release PR already past
 // closeDays *and* already carrying a bot warning from an earlier run is
 // close-eligible on every axis except the release check. Also the only
-// coverage for stripping pending-deletion via the processPr release branch,
+// coverage for stripping auto:pending-deletion via the processPr release branch,
 // and the only positive assertion that 'autorelease: pending' is exempting.
 test('does not close a release PR already past the close threshold', async () => {
   const comments = new Map([
@@ -832,7 +832,7 @@ test('does not close a release PR already past the close threshold', async () =>
   const { github, calls } = makeGithub({
     items: [{ number: 909, created_at: '2026-04-01T00:00:00Z' }],
     comments,
-    live: new Map([[909, releasePleasePr(['pending-deletion', 'autorelease: pending'])]]),
+    live: new Map([[909, releasePleasePr(['auto:pending-deletion', 'autorelease: pending'])]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -845,7 +845,7 @@ test('does not close a release PR already past the close threshold', async () =>
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 909,
-    name: 'pending-deletion',
+    name: 'auto:pending-deletion',
   }]);
 });
 
@@ -868,7 +868,7 @@ for (const [description, overrides, expectedReason] of provenanceDenials) {
   test(`denies the release exemption for ${description}`, async () => {
     const { github, calls } = makeGithub({
       items: [{ number: 106, created_at: '2026-04-08T00:00:00Z' }],
-      live: new Map([[106, releasePleasePr(['release'], overrides)]]),
+      live: new Map([[106, releasePleasePr(['auto:release-pr'], overrides)]]),
     });
     const core = makeCore();
 
@@ -881,7 +881,7 @@ for (const [description, overrides, expectedReason] of provenanceDenials) {
       owner: 'langchain-ai',
       repo: 'deepagents',
       issue_number: 106,
-      labels: ['pending-deletion'],
+      labels: ['auto:pending-deletion'],
     }]);
     assert.deepEqual(calls.close, []);
     // A release label without provenance is either spoofing or real drift;
@@ -897,7 +897,7 @@ for (const [description, overrides, expectedReason] of provenanceDenials) {
 test('matches the head repository case-insensitively', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 111, created_at: '2026-04-08T00:00:00Z' }],
-    live: new Map([[111, releasePleasePr(['release'], { headRepo: 'LangChain-AI/DeepAgents' })]]),
+    live: new Map([[111, releasePleasePr(['auto:release-pr'], { headRepo: 'LangChain-AI/DeepAgents' })]]),
   });
   const core = makeCore();
 
@@ -931,7 +931,7 @@ test('does not report drift for a label that only resembles a release label', as
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 107,
-    labels: ['pending-deletion'],
+    labels: ['auto:pending-deletion'],
   }]);
   assert.deepEqual(calls.close, []);
   assert.deepEqual(core.warnings, []);
@@ -972,7 +972,7 @@ test('exempts a release-please PR whose release labels are missing', async () =>
 test('denies the release exemption when the head repository is absent', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 119, created_at: '2026-04-08T00:00:00Z' }],
-    live: new Map([[119, releasePleasePr(['release'], { headRepo: null })]]),
+    live: new Map([[119, releasePleasePr(['auto:release-pr'], { headRepo: null })]]),
   });
   const core = makeCore();
 
@@ -988,10 +988,10 @@ test('denies the release exemption when the head repository is absent', async ()
   );
 });
 
-test('sweep clears pending-deletion from a release PR', async () => {
+test('sweep clears auto:pending-deletion from a release PR', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [{ number: 108, created_at: '2026-04-01T00:00:00Z' }],
-    live: new Map([[108, releasePleasePr(['pending-deletion', 'release'])]]),
+    live: new Map([[108, releasePleasePr(['auto:pending-deletion', 'auto:release-pr'])]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -1001,16 +1001,16 @@ test('sweep clears pending-deletion from a release PR', async () => {
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 108,
-    name: 'pending-deletion',
+    name: 'auto:pending-deletion',
   }]);
   assert.equal(calls.createComment.length, 0);
   assert.deepEqual(calls.close, []);
 });
 
-test('sweep keeps pending-deletion on a contributor PR labeled release', async () => {
+test('sweep keeps auto:pending-deletion on a contributor PR labeled release', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [{ number: 110, created_at: '2026-04-01T00:00:00Z' }],
-    live: new Map([[110, { labels: ['pending-deletion', 'release'] }]]),
+    live: new Map([[110, { labels: ['auto:pending-deletion', 'auto:release-pr'] }]]),
   });
   const core = makeCore();
 
@@ -1032,7 +1032,7 @@ test('does not double-report a PR returned by both searches', async () => {
   const { github } = makeGithub({
     items: [{ number: 120, created_at: '2026-04-08T00:00:00Z' }],
     labeledItems: [{ number: 120, created_at: '2026-04-08T00:00:00Z' }],
-    live: new Map([[120, { labels: ['release'] }]]),
+    live: new Map([[120, { labels: ['auto:release-pr'] }]]),
   });
   const core = makeCore();
 
@@ -1077,20 +1077,20 @@ test('sweep does not count a PR whose label is already gone', async () => {
 
   assert.equal(summary.staleCleared, 0);
   assert.equal(calls.removeLabel.length, 0);
-  assert.ok(!core.infos.some(message => message.includes('Cleared pending-deletion from PR #112')));
+  assert.ok(!core.infos.some(message => message.includes('Cleared auto:pending-deletion from PR #112')));
   assert.equal(core.failed, null);
 });
 
 // A sweep that dies partway must not look like a sweep with nothing to do.
-test('fails the run when the pending-deletion sweep errors', async () => {
+test('fails the run when the auto:pending-deletion sweep errors', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [
       { number: 113, created_at: '2026-04-01T00:00:00Z' },
       { number: 114, created_at: '2026-04-01T00:00:00Z' },
     ],
     live: new Map([
-      [113, { state: 'closed', labels: ['pending-deletion'] }],
-      [114, { state: 'closed', labels: ['pending-deletion'] }],
+      [113, { state: 'closed', labels: ['auto:pending-deletion'] }],
+      [114, { state: 'closed', labels: ['auto:pending-deletion'] }],
     ]),
     removeLabelErrors: new Map([[114, httpError('forbidden', 403)]]),
   });
@@ -1114,8 +1114,8 @@ test('hitting the sweep cap warns but does not fail the run', async () => {
       { number: 117, created_at: '2026-04-01T00:00:00Z' },
     ],
     live: new Map([
-      [116, { state: 'closed', labels: ['pending-deletion'] }],
-      [117, { state: 'closed', labels: ['pending-deletion'] }],
+      [116, { state: 'closed', labels: ['auto:pending-deletion'] }],
+      [117, { state: 'closed', labels: ['auto:pending-deletion'] }],
     ]),
   });
   const core = makeCore();
@@ -1135,7 +1135,7 @@ test('hitting the sweep cap warns but does not fail the run', async () => {
 test('sweeps oldest-first so the cap defers work instead of starving it', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [{ number: 122, created_at: '2026-04-01T00:00:00Z' }],
-    live: new Map([[122, { state: 'closed', labels: ['pending-deletion'] }]]),
+    live: new Map([[122, { state: 'closed', labels: ['auto:pending-deletion'] }]]),
   });
 
   await run({ github, context, core: makeCore(), options: { now } });
@@ -1148,7 +1148,7 @@ test('sweeps oldest-first so the cap defers work instead of starving it', async 
 test('a 404 on label removal is tolerated but not counted as cleared', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [{ number: 115, created_at: '2026-04-01T00:00:00Z' }],
-    live: new Map([[115, { state: 'closed', labels: ['pending-deletion'] }]]),
+    live: new Map([[115, { state: 'closed', labels: ['auto:pending-deletion'] }]]),
     removeLabelErrors: new Map([[115, httpError('label not found', 404)]]),
   });
   const core = makeCore();
@@ -1179,7 +1179,7 @@ test('warns an old PR that was never warned instead of closing it', async () => 
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 201,
-    labels: ['pending-deletion'],
+    labels: ['auto:pending-deletion'],
   }]);
   assert.deepEqual(calls.close, []);
 });
@@ -1221,7 +1221,7 @@ test('does not duplicate warning comments on daily runs', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 301, created_at: '2026-04-23T00:00:00Z' }],
     comments,
-    live: new Map([[301, { labels: ['pending-deletion'] }]]),
+    live: new Map([[301, { labels: ['auto:pending-deletion'] }]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -1233,7 +1233,7 @@ test('does not duplicate warning comments on daily runs', async () => {
   assert.deepEqual(calls.close, []);
 });
 
-test('backfills pending-deletion on already-warned PRs', async () => {
+test('backfills auto:pending-deletion on already-warned PRs', async () => {
   const comments = new Map([
     [305, [{ id: 91, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
@@ -1250,7 +1250,7 @@ test('backfills pending-deletion on already-warned PRs', async () => {
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 305,
-    labels: ['pending-deletion'],
+    labels: ['auto:pending-deletion'],
   }]);
 });
 
@@ -1353,7 +1353,7 @@ test('skips a PR that 404s on the live re-fetch', async () => {
 });
 
 test('does not rewrite an identical close comment', async () => {
-  const body = closeBody({ closeDays: 30, bypassLabel: 'do-not-close' });
+  const body = closeBody({ closeDays: 30, bypassLabel: 'ci:keep-open' });
   const comments = new Map([[601, [{ id: 5, body, user: workflowBot }]]]);
   const { github, calls } = makeGithub({
     items: [{ number: 601, created_at: '2026-04-01T00:00:00Z' }],
@@ -1458,10 +1458,10 @@ test('fails the run when every processed PR errors, even transiently', async () 
   assert.match(core.failed, /#721: outage/);
 });
 
-test('removes pending-deletion when a PR gains do-not-close', async () => {
+test('removes auto:pending-deletion when a PR gains ci:keep-open', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 321, created_at: '2026-04-23T00:00:00Z' }],
-    live: new Map([[321, { labels: ['pending-deletion', 'do-not-close'] }]]),
+    live: new Map([[321, { labels: ['auto:pending-deletion', 'ci:keep-open'] }]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -1471,7 +1471,7 @@ test('removes pending-deletion when a PR gains do-not-close', async () => {
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 321,
-    name: 'pending-deletion',
+    name: 'auto:pending-deletion',
   }]);
   assert.equal(calls.addLabels.length, 0);
   assert.deepEqual(calls.close, []);
@@ -1494,7 +1494,7 @@ test('warns a draft PR past the warning threshold', async () => {
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 322,
-    labels: ['pending-deletion'],
+    labels: ['auto:pending-deletion'],
   }]);
   assert.deepEqual(calls.close, []);
 });
@@ -1506,7 +1506,7 @@ test('closes a draft PR past the close threshold with an old-enough warning', as
   const { github, calls } = makeGithub({
     items: [{ number: 323, created_at: '2026-04-01T00:00:00Z' }],
     comments,
-    live: new Map([[323, { draft: true, labels: ['pending-deletion'] }]]),
+    live: new Map([[323, { draft: true, labels: ['auto:pending-deletion'] }]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -1519,11 +1519,11 @@ test('closes a draft PR past the close threshold with an old-enough warning', as
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 323,
-    name: 'pending-deletion',
+    name: 'auto:pending-deletion',
   }]);
 });
 
-test('sweep clears pending-deletion on closed PRs missed by open search', async () => {
+test('sweep clears auto:pending-deletion on closed PRs missed by open search', async () => {
   const { github, calls } = makeGithub({
     items: [],
     labeledItems: [
@@ -1532,10 +1532,10 @@ test('sweep clears pending-deletion on closed PRs missed by open search', async 
       { number: 332, created_at: '2026-04-01T00:00:00Z' },
     ],
     live: new Map([
-      [330, { state: 'closed', labels: ['pending-deletion'] }],
+      [330, { state: 'closed', labels: ['auto:pending-deletion'] }],
       // A draft is still a close candidate, so its label is not stale.
-      [331, { draft: true, labels: ['pending-deletion'] }],
-      [332, { labels: ['pending-deletion'] }],
+      [331, { draft: true, labels: ['auto:pending-deletion'] }],
+      [332, { labels: ['auto:pending-deletion'] }],
     ]),
   });
 
@@ -1551,7 +1551,7 @@ test('sweep clears pending-deletion on closed PRs missed by open search', async 
   assert.ok(!calls.removeLabel.some(call => call.issue_number === 332));
 });
 
-test('creates the bypass and pending-deletion labels when they do not exist', async () => {
+test('creates the bypass and auto:pending-deletion labels when they do not exist', async () => {
   const { github, calls } = makeGithub({ items: [], labelExists: false });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -1560,8 +1560,8 @@ test('creates the bypass and pending-deletion labels when they do not exist', as
   assert.deepEqual(
     calls.createLabel.map(call => [call.name, call.color]),
     [
-      ['do-not-close', '0e8a16'],
-      ['pending-deletion', 'fbca04'],
+      ['ci:keep-open', '0e8a16'],
+      ['auto:pending-deletion', 'fbca04'],
     ],
   );
   assert.equal(summary.checked, 0);

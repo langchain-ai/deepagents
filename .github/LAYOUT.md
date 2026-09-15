@@ -13,6 +13,7 @@ Quick map of CI/automation files in this folder.
 | `PULL_REQUEST_TEMPLATE.md` | Default PR body template |
 | `CODEOWNERS` | Review routing for paths in this tree |
 | `dependabot.yml` | Dependabot update groups |
+| `LABELS.md` | Label taxonomy: prefixes, who applies each label, what reads it |
 | `RELEASING.md` | Release-please / publish process |
 | `SECRETS.md` | Non-`GITHUB_TOKEN` CI credential inventory (names and scopes only) |
 | `images/` | Static assets referenced by workflows or docs |
@@ -29,10 +30,15 @@ Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring i
 
 ### Labeling workflows
 
-- `pr_labeler.yml` — unified PR labeler: size, file, title, external/internal, contributor tier.
+- `pr_labeler.yml` — unified PR labeler: size, package/integration, org provenance, contributor tier. Applies no change-type label; the Conventional Commit title is that record.
 - `pr_labeler_backfill.yml` — manual backfill of those labels on open PRs.
-- `auto-label-by-package.yml` — labels issues by the package they name.
-- `tag-external-issues.yml` — classifies issues as external or internal and applies the contributor tier.
+- `auto-label-by-package.yml` — applies `package:*`/`integration:*` to issues from the form's Area section.
+- `tag-external-issues.yml` — applies `org:external`/`org:internal` to issues, plus the contributor tier.
+- `sync_priority_labels.yml` — copies `priority:*` from linked issues onto PRs.
+
+The label taxonomy — the `type:`/`package:`/`topic:`/`integration:`/`org:`/
+`priority:`/`size:`/`triage:`/`auto:`/`ci:` prefixes, who applies each label and
+which gate reads it — is in [`LABELS.md`](./LABELS.md).
 
 The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because the release guardrails section lists every check a PR may hit; the labelers' output does not drive release gating. The two issue labelers are not release-gated either.
 
@@ -41,9 +47,9 @@ The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails
 Blocking pre-merge checks that read PR metadata and fail until it is fixed or a
 bypass label is applied. They consume labels rather than apply them.
 
-- `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `allow-scope-mismatch`.
-- `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `markdown-added: acknowledged`.
-- `project_readme_check.yml` — fails non-`docs` PRs that edit a project README; bypass with `readme: acknowledged`.
+- `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `ci:allow-scope-mismatch`.
+- `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `ci:ack-markdown`.
+- `project_readme_check.yml` — fails non-`docs` PRs that edit a project README; bypass with `ci:ack-readme`.
 
 None of these gate merges on their own — each must be added to the branch's
 required status checks.

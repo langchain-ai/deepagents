@@ -1,4 +1,4 @@
-# Automatically tag issues as "external" or "internal" based on whether
+# Automatically tag issues as "org:external" or "org:internal" based on whether
 # the author is a member of the langchain-ai GitHub organization, and
 # apply contributor tier labels to external contributors based on their
 # merged PR history.
@@ -87,7 +87,7 @@ jobs:
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const issue = context.payload.issue;
-            // new-contributor is only meaningful on PRs, not issues
+            // auto:new-contributor is only meaningful on PRs, not issues
             await h.applyTierLabel(issue.number, issue.user.login, { skipNewContributor: true });
 
       - name: Add external/internal label
@@ -102,7 +102,7 @@ jobs:
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const label = '${{ steps.check-membership.outputs.is-external }}' === 'true'
-              ? 'external' : 'internal';
+              ? 'org:external' : 'org:internal';
             await h.ensureLabel(label);
             await github.rest.issues.addLabels({
               owner, repo, issue_number, labels: [label],
@@ -141,7 +141,7 @@ jobs:
 
             const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
-            const tierLabels = ['trusted-contributor'];
+            const tierLabels = ['auto:trusted-contributor'];
             for (const name of tierLabels) {
               await h.ensureLabel(name);
             }
@@ -161,9 +161,9 @@ jobs:
                 const author = issue.user.login;
                 const info = await h.getContributorInfo(contributorCache, author, issue.user.type);
 
-                const labels = [info.isExternal ? 'external' : 'internal'];
+                const labels = [info.isExternal ? 'org:external' : 'org:internal'];
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
-                  labels.push('trusted-contributor');
+                  labels.push('auto:trusted-contributor');
                 }
 
                 // Ensure all labels exist before batch add

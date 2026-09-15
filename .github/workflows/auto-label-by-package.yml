@@ -1,3 +1,6 @@
+# Applies `package:*` / `integration:*` labels from the issue form's
+# "Area" section. Taxonomy: .github/LABELS.md.
+
 name: Auto Label Issues by Package
 
 on:
@@ -32,26 +35,31 @@ jobs:
 
             const packageSection = match[1].trim();
 
-            // Mapping table for package names to labels
+            // Maps the issue form's "Area" option labels to `package:*` /
+            // `integration:*` labels.
+            // Keys must match the `options:` in .github/ISSUE_TEMPLATE/*.yml
+            // verbatim; the labels must match `scopeToLabel` in
+            // .github/scripts/labeling/pr-labeler-config.json so issues and
+            // PRs for the same package land on the same label.
+            // "Other / not sure / general" is intentionally unmapped.
             const mapping = {
-              "deepagents (SDK)": "deepagents",
-              "cli": "cli",
-              "acp": "acp",
-              "code": "dcode",
-              "dcode": "dcode",
-              "talon": "talon",
-              "evals": "evals",
-              "harbor": "harbor",
-              "daytona": "daytona",
-              "modal": "modal",
-              "quickjs": "quickjs",
-              "runloop": "runloop",
-              "vercel": "vercel",
-              "langsmith-sandbox": "langsmith-sandbox",
+              "deepagents (SDK)": "package:deepagents",
+              "acp": "package:acp",
+              "dcode": "package:dcode",
+              "talon": "package:talon",
+              "evals": "package:evals",
+              "daytona": "integration:daytona",
+              "modal": "integration:modal",
+              "quickjs": "integration:quickjs",
+              "runloop": "integration:runloop",
+              "vercel": "integration:vercel",
+              "langsmith-sandbox": "integration:langsmith",
             };
 
-            // All possible package labels we manage
-            const allPackageLabels = Object.values(mapping);
+            // All package labels we manage. Only these are removed when a
+            // selection is cleared — a label outside this set (applied by
+            // hand) is left alone.
+            const allPackageLabels = [...new Set(Object.values(mapping))];
             const selectedLabels = [];
 
             // Check if this is checkbox format (multiple selection)

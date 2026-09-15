@@ -692,13 +692,22 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # `normalize-release-labels.js` reads open issues and can create
+      # `auto:release-pending`. Both are Issues-scoped endpoints; neither is
+      # covered by `pull-requests: write`.
+      issues: write
     outputs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # A migration shim, so it must not be able to block a release. The
+      # pending-label readers it feeds already accept both names on their own
+      # (`list_pending_json` below, and `release.yml`'s publish guard), which
+      # is what makes failing open safe here rather than merely convenient.
       - name: Normalize legacy release PR labels
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |

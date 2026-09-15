@@ -482,7 +482,15 @@ jobs:
                 const prLabels = await getPrLabelNames(pr.number);
                 const currentPriority = PRIORITY_LABELS.find(p => prLabels.includes(p)) || null;
 
-                if (currentPriority === targetLabel) {
+                // Stale names are checked separately from `currentPriority`,
+                // which only knows the current taxonomy. A PR carrying `p2`
+                // and nothing else made `currentPriority` and `targetLabel`
+                // both null, so the equality below skipped the removal loop
+                // and the retired label survived — in the one job whose
+                // purpose is to strip it.
+                const stale = STALE_PRIORITY_LABELS.filter(p => prLabels.includes(p));
+
+                if (currentPriority === targetLabel && !stale.length) {
                   console.log(`PR #${pr.number}: already correct (${targetLabel || 'none'})`);
                   continue;
                 }
@@ -502,13 +510,11 @@ jobs:
                   });
                 }
 
-                if (currentPriority && targetLabel) {
-                  console.log(`PR #${pr.number}: ${currentPriority} → ${targetLabel}`);
-                } else if (currentPriority) {
-                  console.log(`PR #${pr.number}: ${currentPriority} → (removed)`);
-                } else {
-                  console.log(`PR #${pr.number}: (none) → ${targetLabel}`);
-                }
+                // `stale` is reported on its own: in the retired-label case
+                // both `currentPriority` and `targetLabel` are null, which
+                // would otherwise log the misleading `(none) → null`.
+                const from = currentPriority ?? (stale.length ? stale.join(', ') : '(none)');
+                console.log(`PR #${pr.number}: ${from} → ${targetLabel ?? '(removed)'}`);
                 updated++;
               } catch (e) {
                 failures++;

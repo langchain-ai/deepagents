@@ -1,26 +1,20 @@
 ---
-type: concept
-title: Tool Surface, Filesystem, and Execution
-description: How Deep Agents and dcode compose the model-visible tool surface, route filesystem requests through backends, and separate capability checks from permissions and human approval.
+type: architecture concept
+title: Tools and Filesystem Semantics
+description: How Deep Agents assembles the model-visible tool surface, routes filesystem operations through backends, and separates capability, visibility, permissions, and approval.
 tags: [tools, filesystem, execution, middleware, backends, permissions, mcp]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
-  - id: openwiki-source-44654f7b6bdd46e6f9dd122c
-    resource: repo://libs/code/deepagents_code/_constants.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-f6d553e7afdf54acac36e7d3
     resource: repo://libs/code/deepagents_code/mcp_tools.py
-  - id: openwiki-source-3300d75e0c132882e2e3b4ce
-    resource: repo://libs/code/deepagents_code/tool_catalog.py
-  - id: openwiki-source-e7c7a0d6e6f2fa82362f1c56
-    resource: repo://libs/deepagents/deepagents/_tools.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
+    resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
@@ -29,14 +23,16 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-b3cc47a56b33bfe7f4304572
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_execute_route_prompt.py
   - id: openwiki-source-739ca0771331dc9b5a7d7fbc
     resource: repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
-# Tool Surface, Filesystem, and Execution
+# Tools and Filesystem Semantics
 
-A tool's presence is not one authorization decision. The system deliberately separates **assembly and visibility** (schemas bound for the model), **backend capability** (operations the resolved backend can perform), and **permission or approval** (whether a particular call may proceed). A visible tool can therefore still return a capability or permission error, or pause for review.
+A tool's presence is not one authorization decision. Deep Agents deliberately separates **assembly and visibility** (schemas bound for the model), **backend capability** (operations the resolved backend can perform), and **permission or approval** (whether a particular call may proceed). A visible tool can therefore still return a capability or permission error, or pause for review.
 
 ```mermaid
 flowchart TD
@@ -67,14 +63,14 @@ MCP discovery is a separate source of tools. dcode wraps each remote tool as an 
 
 ## Filesystem middleware and backend contract
 
-`FilesystemMiddleware` owns model-facing filesystem tools and accepts an initialized `BackendProtocol` instance, defaulting to ephemeral `StateBackend`. The backend owns storage and filesystem operations; middleware validates inputs, applies policy, formats `ToolMessage` output, and manages context eviction. A callable backend factory is rejected: callers must pass an initialized backend instance.
+`FilesystemMiddleware` owns model-facing filesystem tools. It accepts an initialized `BackendProtocol` instance and defaults to ephemeral `StateBackend`; backend factories are rejected. The backend owns storage and filesystem operations, while middleware validates inputs, applies policy, formats `ToolMessage` output, and manages context eviction. When the resolved backend uses state anywhere in its routing tree, the middleware contributes `FilesystemState`; a non-state backend uses the base agent state instead.
 
 The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`.
 
 | Tool | Role |
 | --- | --- |
 | `ls` | List directory entries. |
-| `read_file` | Read a paginated file window. |
+| `read_file` | Read a paginated file window, or return supported media as multimodal content. |
 | `write_file` | Create or replace a file. |
 | `edit_file` | Perform exact string replacements in an existing file. |
 | `delete` | Recursively delete a file, directory, or backend key prefix when supported. |
@@ -83,6 +79,12 @@ The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`,
 | `execute` | Run a command only when the backend provides shell execution. |
 
 Backends return structured results rather than preformatted text. `ReadResult` validates pagination at construction: window fields must occur together, bounds must be forward and within `total_lines`, and `next_offset` must be the line immediately after the returned window. Middleware, not the backend, adds line-number gutters and continuation rows for very long lines. `GrepResult` and `GlobResult` can carry valid but incomplete matches with `truncated=True`; callers must not interpret truncation as a hard failure or proof that no additional matches exist.
+
+### State-backed files: lifecycle and concurrency
+
+`StateBackend` stores its files in LangGraph's `files` state channel. It reads through `CONFIG_KEY_READ` and queues partial updates through `CONFIG_KEY_SEND`; pending writes are read with `fresh=True`, so tool work in the same superstep has read-your-writes behavior and is committed at the node boundary. State is checkpointed as part of the graph and persists within a conversation thread, not across threads. Consequently it must be used in graph execution: direct use without the required LangGraph configuration raises a descriptive `RuntimeError`; pre-population belongs in the `files` input to `agent.invoke`.
+
+The state channel uses a dictionary-merge reducer, so independent writes can merge. A delete queues `None` markers for the exact key and its descendants. This is useful for ephemeral agent workspaces, but it is not conflict control: concurrent edits to the same file can race.
 
 ### Allowlist, capabilities, and request lifecycle
 
@@ -100,7 +102,7 @@ Large results from tools outside the filesystem set can be evicted beneath the b
 
 Its default command timeout is 120 seconds and its output is capped at 100,000 bytes by default. It runs commands with `root_dir` as the working directory, combines stdout and stderr, reports nonzero exit codes, and marks capped output as truncated. Middleware additionally validates a requested command timeout against its positive `max_execute_timeout` limit, which defaults to one hour.
 
-In a `CompositeBackend`, file-tool paths can be virtual routes while `execute` runs only on the default backend's shell. The middleware does not rewrite a command: if the default is `LocalShellBackend`, it supplies the model prefix substitutions for local `FilesystemBackend` routes; routes on remote/sandbox defaults or store-backed routes have no shell mapping and must be accessed through file tools.
+In a `CompositeBackend`, file-tool paths can be virtual routes while `execute` runs only on the default backend's shell. The middleware does not rewrite a command: if the default is `LocalShellBackend`, it supplies the model prefix substitutions for local `FilesystemBackend` routes. Routes on remote/sandbox defaults or store-backed routes have no shell mapping and must be accessed through file tools.
 
 ## Permissions and HITL are separate from visibility
 
@@ -110,9 +112,11 @@ Exact-path tools (`read_file`, `write_file`, `edit_file`) test their one target.
 
 Permission patterns must start with `/` and cannot contain `..` or `~`. Permissions combined with an execution-capable backend are rejected unless every rule is scoped to routes, because arbitrary shell commands cannot be governed by tool-level filesystem permissions. This protects against mistaking path policy for a shell sandbox.
 
-## Focused behavioral tests and operational guidance
+## Focused behavioral tests and operations
 
-The state-backend integration tests demonstrate that two parallel `write_file` calls merge file updates correctly, ordinary edits replace one or all matching occurrences, and invalid edit or traversal inputs become tool errors rather than crashing the graph. They also document an intentional unresolved boundary: parallel `edit_file` calls to the same file are marked `xfail` because reducers and backends can race; prompt or application logic should avoid them until explicit rejection/serialization exists.
+The state-backend integration tests demonstrate that two parallel `write_file` calls merge file updates correctly, ordinary edits replace one or all matching occurrences, and invalid edit or traversal inputs become tool errors rather than crashing the graph. They also document an intentional unresolved boundary: parallel `edit_file` calls to the same file are marked `xfail` because reducers and backends can race; prompt or application logic should avoid them until explicit rejection or serialization exists.
+
+Initialization tests cover the state-schema boundary: default and routed state backends add the `files` channel, while an all-store configuration does not. They also enforce the instance-only backend contract. Route-prompt tests cover the mapping matrix, including virtual and non-virtual local routes, store routes, and a remote sandbox default that cannot reach local routes.
 
 When troubleshooting, first identify the layer:
 
@@ -120,11 +124,11 @@ When troubleshooting, first identify the layer:
 2. **`execute` or `delete` absent:** inspect backend capability. An allowlist cannot manufacture a missing implementation.
 3. **Visible but rejected or paused:** distinguish exclusion, backend error, filesystem denial, and HITL interruption; they have different owners.
 4. **Search seems incomplete:** inspect `truncated`, then narrow the path or pattern.
-5. **Shell can’t see a file-tool path:** inspect composite route guidance; use file tools for mounts without a host mapping.
+5. **Shell cannot see a file-tool path:** inspect composite route guidance; use file tools for mounts without a host mapping.
 
 ## Related pages
 
 - [Backends](backends.md) — backend implementations, routing, and sandbox capability.
 - [Middleware catalog](middleware-catalog.md) — middleware responsibilities and ordering.
 - [Permissions & HITL](permissions-hitl.md) — approval policy and interrupts.
-- [Sandbox partners](../integrations/sandbox-partners.md) — execution-capable backend integrations.
+- [Security](../operations/security.md) — operational safeguards for tools and execution.

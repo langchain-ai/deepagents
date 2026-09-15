@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7bc5aa038f775f018ca5f517a658fba6c93748124e59db6c6782b9814debb3be",
+  "pageVersion": "sha256:497c1fa3366173d16a51854a04a1cf5d19fbdfc64c245ccfc49dbba2681c197e",
   "claims": [
     {
       "id": "claim_ac9d07f5c6064ef7a2a64d3bca27ae9e",
@@ -88,11 +88,23 @@
     },
     {
       "id": "claim_2f0c9b26da374820a7830da50e3c945b",
-      "statement": "The generated glob script bounds its walk over an untrusted tree with MAX_EXPANSIONS = 1000, MAX_MATCHES = 10000, and TIME_BUDGET = 5.0 seconds, and exceeding any bound sets a truncated warning on the result rather than failing so a partial result is never mistaken for an exhaustive one.",
+      "statement": "The generated glob script rejects brace expansion beyond MAX_EXPANSIONS = 1000 as pattern_too_broad; its walk uses MAX_MATCHES = 10000 and TIME_BUDGET = 5.0 seconds, reporting a truncated warning for those partial-result bounds and a separate walk_errors warning for unreadable subtrees.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L328-L367",
-          "version": "repo-lines-v1:sha256:83e1d8f766c9ec3d6cc238b01df5528795afc944298c0b9a24e1933813a72f99:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlY2I2YWU4Y2ZkYmQ1ZjNkZTA5ZjIxMzk4Yjg5MzcyNjA5OWFkN2EyZDI3YTUxNWYzYTk5YjE2ZWRmN2EzYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjOWUwODkzZWM1N2ZmZmIwNTlkOWRhYzJjNTIzMjY2ZDMxNzJkOGVlYWIxMWIxZDdlZDcxODViNDBmNTM4OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmODMzMGViMzEyNzk3YTc2MzIzY2RkMDE2OWUxOWZkNzZlODZjZWM4ZDBkNGI2YzJlNmQ0ZDVmYmZhMWYzOGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzMDUwNTVmNzQzYTU1MzBhOTcxMGIzNzk1NTEyYmJhMmNlYmJiODkzMWI3NmZiMGY3YTc1ZDUwNWUyN2E1NmEifQ"
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L106-L135",
+          "version": "repo-lines-v1:sha256:481e4c1a3d9a9a422fd7ac67513644c2cc65d44dcd5bb93d1ac8f7ca6ece25ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMGY4NGRmNjUzYmVkZmE3MDdjMGQxZjlhMGI1ZTk1MTBhYTQyZDJiNzkzZGIyYjhlOTQ3ODhhNTA0YWUyN2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0NTI2YWZkNzhlMmJiZGM0N2QwODZmNjliOTdhZjYwZTQ5MjAzZDNjNDlhMTAwMDNmNTQxNzEyODlmOTYxZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwYTJhY2Q4OWNhZjlmYjUwZmM5NDAwNjc4ODU5ZWMwODNlZjBmMmJlODRlZDYyYTI1MTkxMGYwMDljODc3NmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmMzU0YTNkYWEwOTg4ODFmODhlZmM1NTQxNjExMTZlMThiNWViNTdlNWM1NmQ0NDlmNDMwMTU2ZTBiMTYwN2QifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L249-L273",
+          "version": "repo-lines-v1:sha256:20799bdc77312c7242abd255fc042cec9a57a0da9e67b2b2f11f5d6d81d95a98:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhYjUyZDlmOWQ0YWRhOTM5OWIxNmVhNzJhNjk0NThlNmM1OTkyYjE2OGNhN2Y5ZTNhZGQxMDUzYzg5NjBlMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4NTg3MjlhM2NjZTBhNzA3ODM2ZWFjMzk5OTA4OTdjOGMwNGIzNGMzN2E0ZGQyYmRmNDk2MWQzZDZmMWUzNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3NGY2YmJkMGM1ZGNlOGIxZTQyNDg3MDc5NmZiYzhjOGEyYWNlNjVmMzczMDIxMWZlMTI4NGFlZDllNmYzMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjODgxYTFmY2E0MGQwMzdkMDIxZTUyM2U1YWVmY2YyYzY5OWU2ODdjYjc2Yjk3YzQ1YzNjYWExODMxNDMxYTQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L312-L352",
+          "version": "repo-lines-v1:sha256:b5ae55ed54f87a70184b89fb6f0c9a7c0b44c1ac09f750db89c4da2c55fb03df:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwNDlkOWYyZGY1NzM5YTU2OTE2Mzg4YWFmZjVkODI3NDdiYzE1MTE5NDc1ZjQzOWE2MTdiZGY2NDA3NjE1NWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmNGRjNTM5NWMyNmEyNDg5ZGFkZTRjN2E4MjVjYWUzZjI3ZmJjNTU0YjY5NTgwNGNiNDY3MzUwMGEyMmU0MGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlODUxOWExYjM3YzZlMTRjZmUzNjQ0MjUzNmI3NTI4ZjIwNjZjY2ViZjY2MjA1NjgzMDVlNjNkNjYyNjVlOTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZDgyOTViODI4NmRjNzZhZDg2MzQ4ZmU4MTVmODVlOWYxYzIxOWJkYmY1NDkyY2JjNTQyOTNkYTQzMGVmMjEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L62-L69",
+          "version": "repo-lines-v1:sha256:a0042edc079b74cbf0b32cb1ca10dd33d2d11e4c8a748522b980ccffc29b99d8:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTk3N2NmNjBiODMyMTNiMjFmZWJkYTRiNDNiMGVkODJmNmRhYmMzMTkwZWM0OGM0NWU3MjY5ZGY4ZjFiMmM2ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTE2YzdlOWE1NWRlMjVlZDM2Y2RkMGU3MzgyOWQzNzA4ZDg2ZmJhOGVkNDQwMDNjNTRiOWNmOWYxYTliYjMyNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTY4ZDNmYjhiMGFlNzQ5NjM0OTk5YTIxYTZlNWIxOTMwYmI5YzI4YmQ0Y2RiNDY3ZDA3OTE3OWM5NmU0NzY4YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTJiMGRjNmExOTY0ZmQzYmZiN2VjNDk2MWI0NWMxOTAwYmE3ZjRhOWFmMzgzMGZiYWE5YjAxMzFlNmNiOTFiMiJ9"
         }
       ]
     },
@@ -335,10 +347,38 @@
           "version": "repo-lines-v1:sha256:508a7607ae135e31ee57183aec56d71c3f5196a28a0d51b06c7f64ca7d48565e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNWFjZDcyYTMxZGJiMWM3MWUxOGVkMTM0MGVjOWJlYjcxNDM4ODIxMDlhNmNhMzlhZTc1OThhMmMxZTNjYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzM2EyZDRjOGI2YjQ4MjAzYWRiNmVlYWJhMTkwZGY2YjBmNThhYTZjMmYzYWYxMzlhNjQyYzlkOTk1NTEyMWEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_daa78aa823844db086084f8e3d18dba2",
+      "statement": "VercelSandbox executes a detached `bash -lc` command and applies a local wait timeout; it returns exit code 124 after a best-effort kill on timeout, preserves a completed command's exit code if log retrieval fails, caps combined output at 100,000 bytes, and surfaces unrecognized filesystem-provider errors instead of misreporting them as missing files.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py#L133-L232",
+          "version": "repo-lines-v1:sha256:42608cc0a7fadfe367b6c68cda2fbfa30a4c8f57952f7c1e3c116cf4a3597b2d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxMjZlODgzNGE3MTg2NDgzZDUwMDkxOGNkMjVhNTU2ZjlmMzc1MzI5Y2Q2MjBiODc1NmNiOGRhYzBhNGNiNzNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5ZmRmMjIxZGIzMmVmZDgyZWM3YWYyZmJlZjIwMDFmYmFiNzJjNGY2MGIyNmM5NDI3MTNlMWYxYzBlNjU0ZmZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYTk4NGQ1ZGIyMjBkZDk3NDhjYzFkYmI3MjIzYzc3MjljNzE4ZWQyNjIxMWFiM2Q3ZmIzNjAyZjdjOWFkZjIwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNzYyMmJiOTE2NjJlY2Y4NzkyYmZmNjljMWU3ZmFlNGUxOTc2YWU0ZjIwZWUxYjI5NmMwZDkwYTg0YjVkMmUzIn0"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py#L235-L270",
+          "version": "repo-lines-v1:sha256:27517bae546983fa2c7e40d523db967859d63a68ec90cdfb71a15a9200a25082:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4MmU1ZDRlNzc0OGRmYWI3ODI1YjQ3YzQ5NzAyZDhkY2RhNWM1YTVkOTNlZTVlNjQwYjY4ZTliNzA0Y2IxNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmNmU1NTEyNWQxMDhkYWYyZmZiMjIyYWY5OTNhYjQ2YTI0NGI5NTZkYTMwNDU2OGVjZmNiNjkwM2IzNzkxNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0YmQwYTdjMGQyMjE1YjI1OTg0ZmQyMzgwZjk1NjM4OTZiMTRiMTkxYzg3M2MyZWQwZWY3MzAzM2I3ZWMyNWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlNWQ1NWE3ZjE3YmNhMTIyMzc2MTM1Y2IzMDIwZjVhNGIyN2VkNjIzYThkOTBlODg0MjczMzkyNzZlYmZjNjQifQ"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py#L62-L131",
+          "version": "repo-lines-v1:sha256:d6f158fe84fb3d0377d20dd530d3ed1b956f1072af457a21b1cfd84f5ecd611e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMWRlNzZkY2FlNGQ1NmVmYTJmNmE1YTY1NzhlYzFlY2ZjZDk1NmQwN2UwMTQ4OWIwNWU5MTcyZjE1MDIyYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmMTkyMjdjYzgwY2QyYmZiYzdlMzI3ZTZhYWJkNDMxOGNjNGM4MWQ0NjJjNmFhNThmZTBiOTFlMDE4ZWYzNWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlZjJhMDRlYTY4Mjc3ZTAyNTk5MTYwYjJkZDZiMWM4MTdhMWE1ZDFhZDBjY2JiMmYyOTdlOGU3MzU5ODA5OWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ad538b7c020347ffb017eb0ce10a5000",
+      "statement": "The AgentCore provider validates a complete workspace AWS credential set before session construction and rejects a workspace-specific invalid configuration rather than silently substituting server credentials; it does not support reconnection by sandbox ID and tracks created interpreters for stop-on-delete.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L761-L981",
+          "version": "repo-lines-v1:sha256:0d7bf32ce590592023ab6a7265237511e3b400307c9b1e84db24a771f5fbf32b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNWM4ZDQ3ZTMwYjU1ZTY4ZDBjMGQ0YmYwYTdlZThiNGQxZjU3MWQ5N2Y3YmUwYzdkZWZkOWY4M2RmNjBmNmNjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2OWM0OGIzY2EzZDllNzI5YjI4YTQzOTY5OGMwNDczMzg3MWRkYWM2NDQ1ZmE5ZTBkNTI5NWEyOGM1NzY1NDA3In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

@@ -5,7 +5,7 @@ description: Run a bounded, non-interactive dcode task from a GitHub Actions job
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -13,7 +13,9 @@ sources:
     resource: repo://action.yml
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # GitHub Action Integration
@@ -40,7 +42,7 @@ jobs:
       - uses: langchain-ai/deepagents@main
         with:
           prompt: "Review this repository and summarize the highest-risk issues."
-          model: "openai:gpt-5.5"
+          model: "openai:gpt-6-astra"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           shell_allow_list: "recommended,git,gh"
           max_turns: "8"
@@ -124,6 +126,8 @@ The action forwards these dcode integration controls unchanged:
 - **Sandbox:** `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, and `sandbox_setup`. An empty `sandbox` means local execution on the GitHub runner, not isolation. Provider capabilities and lifecycle—including whether an existing ID can be attached—remain dcode concerns; see [Sandbox & Partner Integrations](/openwiki/integrations/sandbox-partners.md).
 
 The action does not replace dcode configuration precedence. Environment values and forwarded CLI flags participate in its normal configuration resolution, so use explicit action inputs for per-run overrides and repository/user configuration only where its trust boundary is appropriate. See [dcode Configuration Layering](/openwiki/concepts/config-layering.md).
+
+The wrapper is deliberately narrower than the root dcode parser. In particular, it has no inputs for `--trust-project-hooks`, `--trust-project-extensions`, or `--extension`. A headless action run therefore does not opt into repository hooks or project-authored Python extensions through the action contract; do not assume that checking out a repository enables those executable extension paths. If a workflow needs such a capability, treat it as a separate, reviewed action-contract change rather than injecting an unsupported flag into a prompt or input.
 
 ## Outputs and downstream use
 

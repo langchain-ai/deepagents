@@ -1,5 +1,5 @@
 # Files
 
-- [Build and Customize a Deep Agent](build-a-deep-agent.md) - Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
-- [Run a dcode Session](run-dcode-session.md) - Trace an interactive or headless dcode session from CLI policy and startup through its workspace-bound LangGraph server, streaming and approvals, persistence and offload, to recovery and cleanup.
-- [Run and Extend Evaluations](run-evals.md) - Run, interpret, and extend the real-model Deep Agents behavioral eval suite, multi-trial reporting, Harbor benchmarks, and the unified cross-model battery.
+- [Build and Customize a Deep Agent](build-a-deep-agent.md) - Maintainer workflow for constructing a Deep Agents LangGraph application, choosing its backend and persistence boundary, extending delegation and middleware safely, and verifying graph assembly and tool loops.
+- [Run a dcode Session](run-dcode-session.md) - Run dcode interactively, headlessly, or as an ACP server, and understand the startup, workspace-binding, approval, persistence, offload, and diagnostic boundaries that govern each mode.
+- [Run Evals and Harbor Benchmarks](run-evals.md) - Run deterministic eval-harness tests separately from real-model behavioral trials and Harbor sandbox benchmarks. Interpret generated reports, preserve comparable configurations, and escalate infrastructure failures correctly.

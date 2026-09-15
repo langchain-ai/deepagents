@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:40a133aafbb9930191df4b3b855305a8d42fe995bae09dc0bc76bd25d4fc7755",
+  "pageVersion": "sha256:98bb6147c49e7f16cc412374046b84611804d42662c8f6cab4c9f05f824d2c4c",
   "claims": [
     {
       "id": "claim_57467a4a05b54e5ea875422c516c790b",
@@ -94,7 +94,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/configurable_model.py#L757-L824",
-          "version": "repo-lines-v1:sha256:e14d0fe2750586864fd6cafd7b7196cbd1e2b4fd07cea6d8fbe0192ca6275605:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiOTJiYjYyYzZiZDUzNTQwNDU1ZTllZWI5NDcxYWJjMGI3MmM4YmNkZjhlOThmYTRkZmJkOGIyNTU0ZGQwZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViMjE0MGE4MGI1ODg1Y2M0YThiMmY4YzVkZjFiZWI0ODFkOTMyMTRhMWI1MGNjYzc3YmNlM2Y0NjE4MGZiYTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0NDIzNTliZWJjYjVmYmZkMzc4NTA5MDdkNDgzMTQ2ZDk0ZjczNTQ4ZjVkMGVmNzVmZWI2YmVmMWVhNmRlMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY5Y2U2MDQzYzFhMDE5NDU0MjA2YmI1MzM4MzExYTNiMjczY2IwODZhNjBjNjI3MDM2MjcxMWViZGUyMGUyMDYifQ"
+          "version": "repo-lines-v1:sha256:e7969ca72f3073b5e5cf262000f5fea880a4d05efd73010cbef4265302f6a9a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiOTJiYjYyYzZiZDUzNTQwNDU1ZTllZWI5NDcxYWJjMGI3MmM4YmNkZjhlOThmYTRkZmJkOGIyNTU0ZGQwZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViMjE0MGE4MGI1ODg1Y2M0YThiMmY4YzVkZjFiZWI0ODFkOTMyMTRhMWI1MGNjYzc3YmNlM2Y0NjE4MGZiYTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0NDIzNTliZWJjYjVmYmZkMzc4NTA5MDdkNDgzMTQ2ZDk0ZjczNTQ4ZjVkMGVmNzVmZWI2YmVmMWVhNmRlMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY5Y2U2MDQzYzFhMDE5NDU0MjA2YmI1MzM4MzExYTNiMjczY2IwODZhNjBjNjI3MDM2MjcxMWViZGUyMGUyMDYifQ"
         },
         {
           "resource": "repo://libs/code/deepagents_code/configurable_model.py#L827-L980",
@@ -139,10 +139,52 @@
           "version": "repo-lines-v1:sha256:2650e68068066d6efc9ec46eaf637322ead71e03901201e94b2481c12966fa6f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMmE3NTgxYjFkODY4NDJhYjg2OTM5MDM1N2U0MjMyYzJiOWZkZDE4YjIxODJjMTllMDY5YTJjZjM1YjI0MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1YmM0NzExZWNjYTA0NTBhZmM4MzI3NzlhODg2NzZhN2M2OTYwZmEzZGE1YWY0MTBlZTAyZDFlMDE1MTU5MWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkNzhmMjZkZWExNDhlNDE0ZTVkYTFhNTYyZTAyMzM0MDQwZGI0OGU5ZTkxMjg5MjA4NTkzNjFkMDNjOTI0ZTYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_62aa2cc019f7449b8ac2ea5eaec0683f",
+      "statement": "HarnessProfile adapts the resolved Deep Agents runtime rather than model construction, while HarnessProfileConfig represents only its declarative fields and refuses to export a profile with runtime-only extra_middleware.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L438-L467",
+          "version": "repo-lines-v1:sha256:630ed114e8fc02a5d4406d7c63a27a5ab35da0fe802ca9207257322b5de0e1fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMGI0NTNmNWUwYzkyZDVmNmMyNTFhNWVhMTk2MGQ3MmYzYmQwNzk1NmFlODU3ZGEyMGUzMWE4OGM1NTk2OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1YWJhNDI4N2NkYjk1NjFkNGUxYjIyNDUzOGUyNTJhYWI0MDc0ZDE0MjI4Yjc2NDQ5MjBmZWQ1NTg5N2M1NDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxNmEzYTU4ZGYwNGQ3ZTVjYjA1OWIzNzBjMGM4NDMyMWI0OGQxZDJiN2E2OTk3ZjBlMDcwMDhlODE0OTRlMTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzNDc1YzMzNWJkZmIyOWFiZWRlODJhZWY0NWY4YjU3YzQ2NzljODc3YTcwZWMwMzcyY2JlMzM1Y2JiM2U3ZWUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L482-L500",
+          "version": "repo-lines-v1:sha256:cc205c7c71baa8107ff6c7ad784dba84b56f7c3d4f914af9b0ba34f8bff354de:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5ZGZmNjMwMDk0OTMwOWJlODY2MDJjNDlkMzk1N2Q0YmY4ZTM3ZTE5ODkxODJkNWU2OTJkZDAwMjNhYWZkOGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgyZGI0N2JkM2JiZjgwZTQzNjBhNTg0MTMyMTcwMmExODNiYjNiMDk0YzkzNDBlZjllZTNkMDQ1ODExMDI1ZmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f91d5c22255a4f05bee773a0b898259f",
+      "statement": "Harness profile exclusions are assembly controls: required filesystem and subagent middleware cannot be removed, and tool-exclusion middleware is appended after custom middleware so excluded tools cannot be restored by a custom wrapper.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L922-L950",
+          "version": "repo-lines-v1:sha256:7ef3c866a98c3f824d138117f1e5bed66cb8a5fbb1ba31ef8af5d4ba4e12e78c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZGYwMDNiMDJlNTk3ODlkZDE0ZjZjYjU1YjEzNjNjMmFkNzhiYWY0OGI2MmNhZjA3ZGEzMzhiZDYxZGViZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMzZkZWYwNjkzZDQzNzE4MTFhMmIyODJlYzY5NTBiMGQ3MDJiODFlOGE0NTI5Yjc4NzgxNGU1YjI3N2Y2MTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0NjQ0YTQxZTQ2M2RjZjkzODA5NDJiYzE0NzZhMmIyYjAwZTFhMmFhNTkyOTM1YzBkNDJhMDQzNGRlZDQyYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjNDc3ODcxYjU0OTUxZWU0NzI0NjJlNmJlOTQ3NTZkZWIwY2YzYTJmNGM0N2NhN2I0Mzg3YTI4Yjg2NTUxZmYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L284-L318",
+          "version": "repo-lines-v1:sha256:c62da68c533b7c0a8820b7d060382d8c148a63f1731b7b4f2f7fae2729e725cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5Nzk1MGM4YmY1MGFmMDFjMTZhNjdlNDFlNDQ2OGUxYjk0OTE2MmI0YzE3MDFlYTc4NjVhYjhiZTVjYmIxZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhZWQyM2VmNTMyYzFmNzRkZGQ2YmQzZTk5NTIzNmM0MTU1NmE5NzRiZWMwOTRkZWE2N2NiNTQ0YzBlMzRkNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2NWIyZmZhNDAzN2YzNTEwODA1NGViMWUwMjI4OTg5NjZmZmM3OWVhNjBlYjA1MDJiMjEwYzMyOGNkNjQ2OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2MTQ1OTE4NDg0ZWJmM2RlZWFiOWIwZTZhNTQzMzU2OTQ4ODk0NDU0NzFhM2JhOGI1YjY0YTI2NjVkNGNiN2UifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9664fb5f99e84f9b914033cb31981fea",
+      "statement": "CodeModelRetryMiddleware emits correlated attempt lifecycle and retry events for each model call, including whether visible streaming output may have started, so clients can identify a partial response superseded by a retry.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L1031-L1132",
+          "version": "repo-lines-v1:sha256:dcfb5313b0f0d0b2cbc1175513a530657a02f9cc6775d942d5a8b12b7d87829d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNTE0OTQzN2Y5Y2Y0YzM0ZDc0YmI0NTVhZDA3OTQ0Njc0OTRlMjFiNTkwZDkyYzcxM2Q0MDVkMjg3ODkxZjRkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2YTQzY2Q5ZDM5NGFmOWQwYzhlZmZkYzU5Y2M2ZDkwZmVjYjQzMGFlY2E4ZTAzNjgwNzkxMzFhOWQwZTI0NTliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZmJkMDA5MzE0YmMyNzA4NDE2NzM0YTAyYWU1ZmYzOWExZTQ4YTA1MGJlOTFmNDNiMmZhYTkyMDAyYzYyYmZjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmE5NjYxZDhmNWY1Yjg1ODkxYzRjZDQ4N2ZhMjM4ZDBmNGM3ZjA5NmQ3NjkwMGUyZGRiMzk2NzdjMzQxNzY4In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L890-L956",
+          "version": "repo-lines-v1:sha256:be27844cd2c0f8c2e81db74e3ec50a3b2278ee32ba8ae1b2813a9fef8fbb93c3:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1NjkwMTEwYzc5ZjQ4NzQzMTAwY2FkMDRiOGM0ZDExY2YwYzBlOTRkODVmMjdlZDZhMWIyZDVmZWI4ZjFmNTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlY2Q3MWY3M2M0OWNlOTMwZDdkYzlmZTVjYmFmMjJiYTdhNWE0ZGYzMmM2NTkwYmI2NDFmYzdjY2E2YmI4NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyZTVmNmQ1MDQwM2MxMjgyOTNiY2ZiNWQ4YmU5MjEwNDI5NTdlY2IyNzdhMThiNzE0ZjMxNThlZGY1ZTUzZmUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

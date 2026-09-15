@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f5638ab2b317aae0a2ce7a32c33597b416fe81278c4f7bd8931c206e2b83c1a3",
+  "pageVersion": "sha256:0912aa1a3cfcad5880548a534384953282b1f45f0d44d78d65f182790a7110df",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -199,10 +199,86 @@
           "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
         }
       ]
+    },
+    {
+      "id": "claim_ca78caf61f684a7fbf448ed46da9a83c",
+      "statement": "The built-in server configuration registers `/offload` as an authenticated custom HTTP application rather than a graph, while a custom graph reference does not receive that operation route.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py#L198-L252",
+          "version": "repo-lines-v1:sha256:95413b4726c7a0238e08f2ea164fab96d5304416f8a0393aa77168057546a073:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMmRiNzQ5ZDI2ZWI1NGM2YTAxZjlhZWE1M2JkZjNjMGUzOTRmN2I2MWU5ZTU2YTVmMmZlNTAzMDM4ZjJkYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmNDY5ZDU3NDkwZDAxM2ZlODg3MjcxNzBmMzAyMmM1NDRmYmE3M2U3MjQ0MjNiOGFhZTE3Yzk5Mjg2ZDc5MDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhYzM5ZDU1YjFjNDA5YWVlN2MzMThhZThmZWU0ZjEyOWVlODM1OWViMjczNjU3NWJlYmI4MDcxN2E1Mzk2OWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eb478bbe4e6f42798ca89833dbc08f1e",
+      "statement": "The offload API serializes each thread, refuses active or pending work, validates the durable workspace binding, reruns the operation only through the binding-specific server runtime, and rejects a changed checkpoint before committing an offload result.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L959-L1122",
+          "version": "repo-lines-v1:sha256:ffcfd0b0daa0f3b754cbee2348f8f904da31d0aff62dc2dabe337e64b850f89c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NDQzODM3MjgzMTU3ZTIyNmVkYWI0MjkwZjYyMDE2ZjA4MTVlYmY5ZDg5MmRmMTY0NzVkZmMyYWJiMTYzNGE2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NTIyMDI4Y2ExZWY1M2VkMDkyYTliZGZkYmFkNjljN2YwZmM0MjhjMDQ0N2IzZmY3ZjMwNGU3ZmEzYTNkN2MzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNDZkZjRiZGRlMmE3MGQ4MDc4M2MxMDhjNTU4M2ZhMmE0ZWYyZTlmZGI0ZWZiZGUxZmI2NzEwMWQ2NGFmMWQ2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b151039dbf15488ea01573b275e17cf2",
+      "statement": "The offload HTTP boundary hydrates checkpoint messages, replaces client model selection with checkpointed model settings, strips client transport parameters, and allows only declared OffloadStateUpdate channels so the operation cannot write conversation messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1083-L1107",
+          "version": "repo-lines-v1:sha256:219392f6ec4e229ca4c5281c9a1214076ed720e5c1c6ce4789d80cd8380bde3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNTc5Zjc0YjRhODlhNDQ3YTQ5NjM2MDRmNGYyYzg0MjBiZjQ4NjRkYmE1YzI4MzM4NTIzZGE0ZWNkNGE4MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxY2Q5NDJjMTVjODI3NGQ2OGQ5ZTM4MTUzMjc1NzFhMDU0OGUyNmEzODExOTQ3MTRiMmY4MDZiZTliOWEyNDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OWExYmRhODA3NjEyMDcyZTY3YjUzOWRlODM1MTQ0NjBkNmM4NmY3OTM1Zjc4NmI0Mjk5NjcxY2Q0ZjMxNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5NzIxZWUyZjAyMTk1NWNmMDNlMDNmODU1OWUxZWVjOWJjZDljNjVlNjlkYWRhNzA4MmUwNWU4Y2Q0YmI2YTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L522-L550",
+          "version": "repo-lines-v1:sha256:448ba0076ad608c027a6e08beacf18aec567bba0f73352fe71b117e60cd85ff0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3MDAxNGVhMzJlZjNiN2I4NTExYmYzMmQ1NGEzNmE0N2Q4NjkxZTE4ZTQ0ZDM3Y2I1MDYzNzhmZTYxZDUwM2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OWRjM2I5Yzk5ZTA4OTc3YmI2YjRkOTIwY2ExZGQ3NmI1YTMxNGM4ZTE4MzU3ZDFiMjNkNGY1MmFmMDYxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OTQ4MWQ0ZTU0NTZjOGU2NzlhMjY2ZDIyMjI5YThjOTBmYzE2YTAwMWRlZjJiNzU3Zjc2NDgxZTBkZGE5YzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L647-L721",
+          "version": "repo-lines-v1:sha256:f2441e2a2421cea74c5de59c11b6df0e0087f9f30e279f59e22668296e63a662:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiYWQ1ZWEzMzQ1NTNkZjBjMjAyYThjNjMyNjIzNjE0Yjg0Y2EyYmUzYzdmZGI1ZTIyYmVmMWNmZjRjYjdiNGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_643950df19b8402dbd0b61a9f5001be3",
+      "statement": "RemoteAgent offload establishes the live thread row, forwards workspace context, repeatedly fulfills server hook interrupts with one stable operation ID up to 32 rounds, validates completion payloads, and confirms server cancellation before propagating local cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L356-L480",
+          "version": "repo-lines-v1:sha256:12ed34671981a43c2563b53cee12b8f600249d3e38dba49d1ceed598a1861ee5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTViMTA1ZmYxYmZmZTI5YjQ4ZWE1ZTk1YzVjMjBiZDc2MDVmYzVjMmEwODhkMTk0ZDU4YzVkMTY2NzA2MzA0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L62-L149",
+          "version": "repo-lines-v1:sha256:ad32b49d48483de156cbfcbd3ea3ae8af9fe8d8d93810962aca243f40b22f1e7:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkM2MyMzcwN2ZjOTc1ZGVlZjEzOWI2OWQ1MmM5NjBjMTU1ZjJmOGM1ZjYwMDYxYTM0YmUyNjYzZjNhMzcyMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhY2Q5M2ExMWUyOWNhYmYzYzA3NGM3M2ZjZjdlNDdlNTFlYzhlMDdiOWIxMGM1N2VlMmQ4NzNiNmI3ZmJmOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5ZTVjNzU3YmVjYzlkZTllNTRlNWJlYWZiZjlmMWRjOGVjMzdmNmM1MTkzYjA3YmFkMGIxMWY3ZGQ0MGU1MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhYzJjYzhjZDkwMDYxOWZmMzY4MzY0ZjE2YzhkMmMwZDYzNTRiNjdlZGVhYzU0NzdlODI4ODAzMTk2YzEyOTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3aa6c564c9124e74875dc4da66bd698b",
+      "statement": "Offload reports malformed requests as 422, conflicts with no commit as 409, unavailable runtime as 503, and indeterminate or unexpected server failures as 500; a failed state write retains drained cost records when readback advanced or is unreadable to avoid double charging.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1125-L1200",
+          "version": "repo-lines-v1:sha256:30a5a7938ca2a49b83a088c3ba0eb20a12491f296cade1f6347c25c75cc3752f:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhOWRiMDk1OTFlMjEwNzQzOTFlODAwYmJlZDAyZjY5YzkxOGI3YTVkNDFiYTcwNmY3MWNiZGVlNzY1OWU1YjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjZmVhNzIxM2M5ZDQ1ODAzNWJmNDNmYzdiNDQyZTVkMmViYmUxZDI2ZmM2ZmNiMTkyNzViMmY2MjI2Mjc4NGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2OTE5MzQ2ZmRkMWU1ODE0MTZhOTQ0NGNkYzczZmVhODNhMGU2YzNjNWU0MzFlM2RmMWMyYzg2MTk1YzE2YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkODY1ZGQxMzBjN2QzNTk2NDA3N2EwZDk1MjEyYzJkYjlmYjY2YTJlMDFlNjVjMmI0NGRmNmNlNjkwZTVkYzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L800-L860",
+          "version": "repo-lines-v1:sha256:76e415fed1913e380f53766177ff80a65803b05995a2833737fec01d163effc7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZjMwM2FkY2JjNmEwMGM5YTYzNjVhY2YwN2FiYzdlODZkMzRiZjhhZmMxOGZiODI4M2YwMmQyN2E1ZjYxNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0YjU5OTIwNmNlYTM5MjE0NTlmYzhlNjZjMDgyNTFmNmU5MDhkMjQ4MWI4OTc0ZDRiY2E5MDM2NmQ1Nzk0M2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUyOWViMWRkYzNmN2M2NzE2YzUzNDNiZDk0N2FlY2VjYmU4NDE0NDQxNzA2ZGZhYWE1ZGEwODkyNjhkNjFhNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExNjE0Zjk3MDIzNzU0N2Q4YTA5OTdkODcxZWQ3MTdiYjcyMjczMzJhNTUwYzhlNTkxZWVkNzBlNDUyZTI4NTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b50e44cdf42c406aa20bcf64a05a8c6f",
+      "statement": "On server application shutdown, the offload API shuts down server extensions and makes a bounded asynchronous LangSmith trace flush; trace-flush failures or timeout are logged rather than blocking shutdown indefinitely.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L101-L183",
+          "version": "repo-lines-v1:sha256:5a9d47f73a976d5e865e02b983c971c5ea7100ee64255832ac745b128f6f7188:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzZDliYjc0Njc0ZDE3YTM1OTgyNzVhY2NhNjExNzJhYWI1MzA0NzA0NDhiMTA5MjliYTEwNzVmYjZmMjU3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkNTg1MzM3YmU0MTc5OGNjOTEyNDczZGFmOWY5ZTM2M2Q4NzZiYjU4MTZmYWUyMGMzNWQ0YzAyNGI4ODNkM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3ZTQ1MTgwY2ViMjI1MDEyYjhhYzc1YzI5N2FhODA0OWM3MGY4MDdhMTg4Yzc4ZDMzYWNhZTkzYWJlMzJhNjMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

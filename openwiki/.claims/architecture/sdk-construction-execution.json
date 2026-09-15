@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:35f502611310db4144b45573df631abdadd85bbd2f7d883002195ca4bfe62183",
+  "pageVersion": "sha256:37f130fa89f95a37db5c04ddc5305531a9a8e5d74bf929754693048452dd5e52",
   "claims": [
     {
       "id": "claim_c399b6f76b1b4806b54942f95ea0f31f",
@@ -347,10 +347,66 @@
           "version": "repo-lines-v1:sha256:4bc09ef1f0037ca25c55e72d9e707662954f281a68f323c2582355b1739804c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MDI4YzkxYzk1ZjkyYTNjYjczOWQ4ODIwYzY2YzAwNWQ3OTk2ZGNiMDYzZDI0YzllOTM4NjQ0MDhkNGM0N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMzA2ZmNmYWNlZDFiNTkzYjA5MDRkODU2MTZlZDdmOGE3ZDI2NTNhMWYwNWFhZThiOTQ2YTA1ZTE3YmQ0MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3OWQyMGYxZGExNzNjZWExYWM5NTIxYmVhYTRhMGU5MjQwMjI0YzRjZDhmODc4Y2RkMWE4NmM0MzgzNmNlNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_b3ec2300de8a4dd98a55d909f9b0cdd6",
+      "statement": "StateBackend stores files in the LangGraph files state channel, making them checkpointed within a conversation thread but not shared across threads; it requires an active graph configuration and raises RuntimeError when called outside graph execution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/state.py#L38-L48",
+          "version": "repo-lines-v1:sha256:141daa465ed35a2510acc65ab7712e321a347cef5bb23c723b2c106833249f8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3MzQ1YWM2NzZhMGQzMjY3MTcxNTQwNmE5YjgyYzE2NzNkNTg0YTdmZjU2MmJjMjJiNWMwMjg2ZmJiODUxN2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0MjlhNjk0MzM1OWE5MDY1MTBjYjI4ZjQ4NjE0YzBkNWIxMWIxMWNmOTZhMjNjNDdjOTNmY2JlNTg5ZWY2NjIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/state.py#L57-L119",
+          "version": "repo-lines-v1:sha256:ed7c71e31c052f9e1d838291d8dc20cb67bd490f1a44fe9f583589ac1df171a7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyYjdlYjk1ZjY2YzJmMTc5NjFjNTZhNmJmOTBlYWIyZDU1MzdmZDBiZTJlZWE1MDFlYmI2ODA2YjczODE3YjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMjc5YmFkYzZkNjI5OGUwMjZlNjFjM2IzNGQzMzcyMjcxZmI1NDJiMDc3MzhmY2JjOThmMDBhOTlmZDg4YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0NjMxMjlkMzIxM2RiMDc1ZGE0ZjIyMWI3OTVkZTk4ZWJmN2RhZDQ1ODE3MTIxZTRiYzI2Mzk1MjRiYzMxYjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAzYTdjMDdiNzhkMThiOTI1YmNkODBjYjdhZDBhMGVkYTlhNWM0MDNmZjc0YjI1NDljNDdmYTk5Nzc1ZmMyZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5b50388e8b234d1cb96f7d4c43a93c3e",
+      "statement": "Prompt-caching assembly always adds Anthropic caching in ignore-unsupported mode, conditionally adds Bedrock and Fireworks caching when their middleware packages are installed, and propagates unrelated import errors rather than hiding them.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_prompt_caching.py#L13-L49",
+          "version": "repo-lines-v1:sha256:330a7b0f2bd5819f01bfda1811c040fb2885cec5be7ca4f84ea13c61c45a8080:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkNzNjYjJkOGIxM2YzMDFhOTRhZDQyMDc4YjA3ODZmZGEzZDZlMTE0MjliMWQwZTk2NTFjNjY1OTk2YTg2NTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYWU3ZDg5YWRmYWFhMTk1Y2NhZjk5MjQwZmY2NzNhNjhjMGZmZmE0NGJkYTI5NjQwNjNhOTEzNmU1ZGRjMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py#L439-L467",
+          "version": "repo-lines-v1:sha256:b01f1ecc83b8e0a7a642f82e23bdf2cea9bcd340b052569b7e735c37b73c4d98:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1MmM2ODcwM2NkNTUzOTM1ZTM2ZDI0NGI4ZTUwZDNlMTlmNzY4NDQ3MWZjNTJhMDc2NzQzMjQwM2YxZGNmY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4YWY4OTM0YzgxM2FjMTk2N2FhNzk3YjNmNjRiZjI0YTZmZGU2NjljNGUyODY5MzYwNjc5MWU4NTU2MzI1ODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyN2Y4MDk1MDQ3OTkyMDFlZTRhZjg1MzZkZjJmOGI2Zjg3MzkxZWZmMWIwOWM4NDFiYzRlZTY3ODY2MDAwYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiMDUyMTJkMjY4NDFhNTMxODAyZTU2YjA0OTZhMTE4MDAyMjE0YzAwMTFhOWY1YTlhODhhOWE5OTA3YjJlYmEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py#L519-L546",
+          "version": "repo-lines-v1:sha256:caeaac5c2172c579d17d56c11d99a7b0fc08dc1abbfb836eb584a38324b1eaf5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjYzQ1NTg3YjI4MGZkZjE5NGRjMzU3NTQ4Y2U4OWNjMGQxOWM3NjgxNDc5YjllOGNhYWM3NWYyZGQxMzllZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhMDVhYzllY2ExNDZmNTNhZWY5MjA3YmM0ZTllZTRlYjI1ODVlM2M5M2Q0YTA1ZGFmODgzMDkxYjg0Y2YwODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5YzlhMGM3MmJkZTllNDlhYzU5YTQzOTI4YmQ2MDk3ODk0Mzk5ODJkOGQ2NWI0YmUwODlkMDRhZDQ5ODUyMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkZTU1ODI1MTE2OGQ5MmJiMmJlNjZhYTU1YTMzMGRjOTAxMTIzNWVmZmUyM2RjOGY4NzNiOTI4YjgxMjI2OTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dfc622d38db5486c96cc7ee7b59573b2",
+      "statement": "Async subagents launch background Agent Protocol runs through the LangGraph SDK and return a task ID immediately; when URL is omitted for local ASGI transport, the parent must use an asynchronous entrypoint.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L2-L10",
+          "version": "repo-lines-v1:sha256:9d2fb529b964bdb34ba74572e412243c3d7a270ca862c28ea4bfba36c163a2cc:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjIwZGIwOGE0MTQ2NmYzMmExOWU5NzNjZTY4ZWY5MjcxNDQwZGI3YTNlNzU1ZDIyNGMxN2U0NDU3ZmY3ODgyYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmQxYmVmZjgxOGU4Y2QxYmIwMTUyNDk3NmVlOTk1NDUzODU5MWUyZmFhNzJkMzM2M2U3ZTc4NmY1OWVkNzVlYSJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L34-L55",
+          "version": "repo-lines-v1:sha256:a5bb911e5da1d9fd2b803f1d391e8b213fc46a3bca52bd3d7ebf0483bdb6966e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5YWQwNWMxZGNjZDQ5OWU3OTgzYTI3OWQxMjQzMDg5NGE2MTgzMjViMzNlNGNmNjRhZWJmZWYxMjRkMmZmZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1YjRiMDA0ZDBkODUwZjYwMTJiNWMzNzg5MGMwYWQ0NTZkY2UxZjhmNzViM2MyY2NhZTA2Mjc2YmUyODM1YWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c7ece449e1dd459dba394827e90ca99d",
+      "statement": "If private-state annotations cannot be resolved at runtime, private_state_field_names logs a warning and skips that schema, so its intended private fields can be forwarded to and merged back from subagents.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_state.py#L13-L39",
+          "version": "repo-lines-v1:sha256:c3c5a34da25259d7ca8618ac9e3bb9c3d36c9215f45c9c939a0b038395bf29bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYmRjZmU3OTA4ZGE3NjRhYWM3OTI0YjAwNTExMWI5OGJlNTI0ZTIzNjA0ZDNkMzBmYzIwNzg2MzQ0NGIzYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MjJkNGE1NzFmODdjMTUyM2I5ZWJhODE1ZTRjOTcwNmExODc0OGY0NTM2NDFhNDg2ZWY2OWQ4ZmRjNDNlZWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4NzMzZTNmMmJlNDQwYWMwYTYyNGYyNWRiZWE5MTlhNTRhZWEyNWMxNWYzZjUxOGRiMTE1YjllZDE0MjQ4NDUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-15T08:05:27.526Z"
   }
 }

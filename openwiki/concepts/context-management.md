@@ -5,7 +5,7 @@ description: How deepagents and dcode control model-visible context through resu
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-15T08:05:27.526Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -33,7 +33,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-15T08:05:27.526Z" }
 ---
 
 # Context Management and Offload
@@ -71,6 +71,10 @@ The summarizer derives history and large-result prefixes from its backend. A `Co
 
 If automatic summarization is not indicated, the middleware first tries the ordinary model request. A `ContextOverflowError` changes to the same compaction path. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive.
 
+### Budgets and terminal failure
+
+A model profile with `max_input_tokens` supplies default threshold policies: summarize and truncate old arguments at 85% of the window and retain 10%. Without profile information, defaults are a 170,000-token summarization trigger, six retained messages, and argument truncation at 20 messages. Before retrying after compaction, the middleware additionally calculates an input budget from 95% of the advertised input window minus the largest configured output-token setting. It refuses to resend an unchanged rejected request or a request still over that budget; recovery permits at most one strictly smaller retry and otherwise raises `ContextOverflowError` with remediation guidance.
+
 ### Conversation archive lifecycle
 
 A session uses one markdown archive at `{artifacts_root}/conversation_history/{session_id}.md`; each compaction appends a timestamped `## Summarized at` XML-rendered section rather than replacing earlier material. Previous summary messages are filtered out because they summarize data already archived. `_summarization_session_id` is reused from state, or a UUID-derived `session_...` id is generated and persisted for later turns.
@@ -79,7 +83,7 @@ Before archival, inline base64 media is uploaded under the history media prefix 
 
 ### Overflow tail clipping
 
-Only after overflow-triggered compaction, `_clip_overflow_tail` examines a **trailing consecutive** `ToolMessage` batch in the retained suffix. It acts when the batch reaches the keep-derived token threshold: the explicit token budget, a known model-limit fraction, or `5,000` tokens for message-based keep or an unknown limit. Generic results use the normal offload helper. A `read_file` result instead retains roughly 4,000 leading characters and points at the original file, avoiding a redundant write. Replacement ids let the messages reducer overwrite the checkpoint entries; failed writes leave messages unchanged.
+Only in overflow recovery, `_clip_overflow_tail` examines a **trailing consecutive** `ToolMessage` batch in the retained suffix. The helper can derive a threshold from a token or fractional `keep` policy (or use 5,000 tokens for message-based/unknown-limit policies); the SDK recovery call deliberately passes a one-token keep value, so a terminal batch with content is eligible to be reduced. Generic results use the normal offload helper. A `read_file` result instead retains roughly 4,000 leading characters and points at the original file, avoiding a redundant write. Replacement ids let the messages reducer overwrite the checkpoint entries; failed writes leave messages unchanged.
 
 ## dcode compaction and server-owned `/offload`
 

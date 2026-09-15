@@ -48,6 +48,7 @@ Use a **plain tool** when:
 """
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.blob_storage import BlobStorageMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -82,6 +83,7 @@ __all__ = [
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "BlobStorageMiddleware",
     "CompiledSubAgent",
     "CriterionEval",
     "CriterionFail",

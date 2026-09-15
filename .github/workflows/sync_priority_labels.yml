@@ -69,6 +69,11 @@ jobs:
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
             // Retired names, stripped from PRs but never applied: backlog is
             // the absence of a priority label. Remove once no open item has one.
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
             const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
@@ -174,7 +179,8 @@ jobs:
 
             const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
             const best = highestPriority(labelSets);
-            const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+            const winner = best !== null ? PRIORITY_LABELS[best] : null;
+            const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
 
             if (targetLabel) {
               console.log(`Highest priority across linked issues: ${targetLabel}`);
@@ -211,6 +217,11 @@ jobs:
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
             // Retired names, stripped from PRs but never applied: backlog is
             // the absence of a priority label. Remove once no open item has one.
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
             const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
@@ -364,7 +375,8 @@ jobs:
                 );
 
                 const best = highestPriority(labelSets);
-                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+                const winner = best !== null ? PRIORITY_LABELS[best] : null;
+                const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
                 await syncPrLabels(pr.number, targetLabel);
               } catch (e) {
                 failures++;
@@ -399,6 +411,11 @@ jobs:
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
             // Retired names, stripped from PRs but never applied: backlog is
             // the absence of a priority label. Remove once no open item has one.
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
             const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
@@ -489,7 +506,8 @@ jobs:
 
                 const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
                 const best = highestPriority(labelSets);
-                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+                const winner = best !== null ? PRIORITY_LABELS[best] : null;
+                const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
 
                 const prLabels = await getPrLabelNames(pr.number);
                 const currentPriority = PRIORITY_LABELS.find(p => prLabels.includes(p)) || null;

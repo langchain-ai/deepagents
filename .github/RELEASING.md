@@ -257,7 +257,7 @@ Both must be true. release-please always satisfies both when merging a release P
 Publishing starts immediately. Housekeeping on the *other* open release PRs happens afterwards, in the same workflow run:
 
 1. **Your package publishes first.** `trigger-releases` fires as soon as the release commit is detected and never waits on anything else. It comments on the merged PR with a direct link to each package's release run — that link is where you watch the actual publish.
-2. **The run waits for publishing to settle.** `guard-pending-release` polls until no merged release PR is still labeled `autorelease: pending`.
+2. **The run waits for publishing to settle.** `guard-pending-release` polls until no merged release PR is still labeled `auto:release-pending`.
 3. **Then the remaining release PRs are refreshed.** release-please updates shared files (notably `.release-please-manifest.json`) on the still-open release PRs, and `update-lockfiles` regenerates their lockfiles.
 
 In the normal case you do not need to think about any of this. Step 3 is the only part that can be quietly skipped — if the other release PRs look stale afterwards, expand *If the other release PRs were not refreshed* below.
@@ -280,7 +280,7 @@ Step 3 can be skipped in the situations below. Skipping it holds up only the ref
 
 | Situation | What you will see | What to do | When the refresh happens |
 | --- | --- | --- | --- |
-| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label) | Next push to `main` |
+| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "auto:release-pending"](#release-pr-stuck-with-autorelease-pending-label) | Next push to `main` |
 | A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release — this package has **not** published | Next push to `main`, once the failed release is recovered |
 | GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state | When the re-run succeeds |
 | You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group | Already done: the surviving (newest) run recomputes every component, covering the cancelled jobs' work |
@@ -308,8 +308,8 @@ Release-please uses labels to track the state of release PRs:
 
 | Label | Meaning |
 | ----- | ------- |
-| `autorelease: pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
-| `autorelease: tagged` | Release PR has been successfully tagged and released |
+| `auto:release-pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
+| `auto:release-tagged` | Release PR has been successfully tagged and released |
 
 Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of using the one built into release-please), our `release.yml` workflow must update these labels manually for state management! After successfully creating the GitHub release and tag, the `mark-release` job updates the label from `pending` to `tagged`.
 
@@ -370,7 +370,7 @@ Because nothing was published, you still get to decide what eventually goes out 
 2. **Open a PR with the fix.** Use a `hotfix(<scope>): <description>` title so it doesn't trigger another release PR update. Merge it to `main`.
    - Important: leave `pyproject.toml`'s version exactly as the release-please PR set it. The hotfix should only fix the problem that broke the release.
 3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = the SHA of your hotfix commit — the one that fixed the release *and* still declares the target version. Right after you merge it, that's the tip of `main`, but pin the explicit SHA rather than relying on `HEAD` (e.g. `gh pr view <hotfix-pr-number> --json mergeCommit --jq .mergeCommit.oid`), since `main` can advance if another PR lands first. The workflow checks out, builds, publishes, and tags that exact commit.
-4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `autorelease: pending` label to `autorelease: tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
+4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `auto:release-pending` label to `auto:release-tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 > [!NOTE]
 > The git tag for the version ends up on the hotfix commit, not on the earlier release-please commit. That is okay: the hotfix commit is the code that actually shipped.
@@ -690,7 +690,7 @@ Check these common causes first:
 - **The merged commit uses a hidden type.** `chore`, `refactor`, `ci`, `docs`, `style`, `test`, and `hotfix` do not create release PRs on their own. See [Releasable Commit Types and Version Bumping](#releasable-commit-types-and-version-bumping).
 - **The commit was not assigned to the package you expected.** release-please scopes commits by **changed file paths**, not just the Conventional Commit scope. For example, a `feat(code): ...` commit must touch files under `libs/code` to create or update the `deepagents-code` release PR.
 - **An [existing draft release PR](https://github.com/langchain-ai/deepagents/issues?q=is%3Apr+is%3Aopen+author%3Aapp%2Fgithub-actions) was updated instead.** Each package has at most one active release PR, on a branch named `release-please--branches--main--components--<package>`.
-- **A previous merged release PR [is still pending](https://github.com/langchain-ai/deepagents/issues?q=state%3Aopen%20label%3A%22autorelease%3A%20pending%22).** If a release PR still has `autorelease: pending` after the release workflow finished, see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
+- **A previous merged release PR [is still pending](https://github.com/langchain-ai/deepagents/issues?q=state%3Aopen%20label%3A%22autorelease%3A%20pending%22).** If a release PR still has `auto:release-pending` after the release workflow finished, see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 ### Empty commit fan-out
 
@@ -860,9 +860,9 @@ git push origin --delete "<PACKAGE>==<VERSION>"
 
 Edit `.release-please-manifest.json` to the last good version for the affected package, and update the corresponding `pyproject.toml` and `_version.py` to match.
 
-### Release PR Stuck with "autorelease: pending" Label
+### Release PR Stuck with "auto:release-pending" Label
 
-If a release PR shows `autorelease: pending` after the release workflow ran, the label update step may have failed — on the mainline path `mark-release` will be red. This can block release-please from creating new release PRs.
+If a release PR shows `auto:release-pending` after the release workflow ran, the label update step may have failed — on the mainline path `mark-release` will be red. This can block release-please from creating new release PRs.
 
 **To fix manually:**
 
@@ -871,7 +871,7 @@ If a release PR shows `autorelease: pending` after the release workflow ran, the
 gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 
 # Update the label
-gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+gh pr edit <PR_NUMBER> --remove-label "auto:release-pending" --add-label "auto:release-tagged"
 ```
 
 On the normal mainline publish path, a failed label swap fails `mark-release`
@@ -952,7 +952,7 @@ The `pre-release-checks` job runs after the package is built but before anything
 
    The workflow will build, test, publish, and tag that commit.
 
-4. **Confirm the label swap.** The `mark-release` job should change the original release-please PR from `autorelease: pending` to `autorelease: tagged`. If the swap didn't happen, fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
+4. **Confirm the label swap.** The `mark-release` job should change the original release-please PR from `auto:release-pending` to `auto:release-tagged`. If the swap didn't happen, fix it manually — see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 > [!TIP]
 > Pre-release checks run against the *built wheel*, not against your editable working copy. That means failures here often point at missing files in the wheel or undeclared dependencies — things that worked locally because they were sitting in your venv but didn't get packaged. If the failure is an import error rather than a test assertion, check the `packages` config in `pyproject.toml` and the declared dependencies first.
@@ -1023,7 +1023,7 @@ If the older pin is intentional, add the `ci:dcode-skip-sdk-pin` label to the re
    - Click **Run workflow**
    - Select `main` branch and `deepagents-code` package
 
-3. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
+3. **Verify the `auto:release-pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
 
 ### Release Failed: Ripgrep Install
 

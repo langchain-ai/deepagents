@@ -276,7 +276,7 @@ jobs:
   # Wait out an in-flight publish instead of recomputing against half-updated state.
   #
   # release.yml (the PyPI publisher) creates the git tag and flips the release
-  # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
+  # PR's `auto:release-pending` -> `auto:release-tagged` label minutes *after*
   # the release PR merges, in a separate dispatched run. In that window the
   # manifest already names the new version but the tag does not exist yet. A
   # push that runs release-please against this half-updated state finds no tag,
@@ -301,7 +301,7 @@ jobs:
   # jobs are otherwise independent.
   #
   # The wait is deliberately repo-wide (every merged PR still labeled
-  # `autorelease: pending`, not just this run's). release-please recomputes *all*
+  # `auto:release-pending`, not just this run's). release-please recomputes *all*
   # components on every run, so any one component sitting in the half-updated
   # state above is enough to trigger the downgrade — scoping the wait to the PR
   # this run merged would not be safe.
@@ -399,8 +399,8 @@ jobs:
             IS_RELEASE_COMMIT=true
           fi
 
-          # `autorelease: pending` is release-please-action's built-in label,
-          # applied to release PRs and cleared to `autorelease: tagged` by
+          # `auto:release-pending` is release-please-action's built-in label,
+          # applied to release PRs and cleared to `auto:release-tagged` by
           # release.yml once the tag and GitHub release exist, so a merged PR
           # still carrying it means a publish has not finished.
           #
@@ -409,7 +409,7 @@ jobs:
           # scenario this guard exists to catch, silently reporting "none".
           list_pending_json() {
             gh pr list --repo "$REPO" --state merged \
-              --label "autorelease: pending" --limit 100 --json number,title
+              --label "auto:release-pending" --limit 100 --json number,title
           }
 
           # Exits non-zero on anything that is not the expected array of PRs, so
@@ -510,7 +510,7 @@ jobs:
               {
                 echo "## release-please deferred ($defer_reason)"
                 echo ""
-                echo "$defer_detail The following merged release PR(s) are still labeled \`autorelease: pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
+                echo "$defer_detail The following merged release PR(s) are still labeled \`auto:release-pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
                 echo ""
                 printf '%s\n' "$FAILED_RELEASES"
                 echo ""
@@ -520,7 +520,7 @@ jobs:
               exit 0
             fi
 
-            echo "::error::Merged release PR(s) are still labeled 'autorelease: pending', but their matching package release run did not finish successfully:"
+            echo "::error::Merged release PR(s) are still labeled 'auto:release-pending', but their matching package release run did not finish successfully:"
             printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
@@ -528,7 +528,7 @@ jobs:
             {
               echo "## release-please blocked by failed release"
               echo ""
-              echo "The following merged release PR(s) are still labeled \`autorelease: pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
+              echo "The following merged release PR(s) are still labeled \`auto:release-pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
               echo ""
               printf '%s\n' "$FAILED_RELEASES"
               echo ""
@@ -628,7 +628,7 @@ jobs:
             {
               echo "## release-please proceeding after wait"
               echo ""
-              echo "A publish was in flight; release-please waited ${WAITED}s for the \`autorelease: pending\` label(s) to clear, then ran normally against the now-consistent state."
+              echo "A publish was in flight; release-please waited ${WAITED}s for the \`auto:release-pending\` label(s) to clear, then ran normally against the now-consistent state."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -641,13 +641,13 @@ jobs:
           {
             echo "## release-please deferred"
             echo ""
-            echo "A publish was still in flight (or GitHub's release state stayed unverifiable) after waiting $((MAX_WAIT / 60))m — these merged release PR(s) are still labeled \`autorelease: pending\`:"
+            echo "A publish was still in flight (or GitHub's release state stayed unverifiable) after waiting $((MAX_WAIT / 60))m — these merged release PR(s) are still labeled \`auto:release-pending\`:"
             echo ""
             echo "$PENDING"
             echo ""
-            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`autorelease: tagged\`."
+            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`auto:release-tagged\`."
             echo ""
-            echo "If a publish is genuinely **stuck** on \`autorelease: pending\`, clear it per [Release PR Stuck with \"autorelease: pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
+            echo "If a publish is genuinely **stuck** on \`auto:release-pending\`, clear it per [Release PR Stuck with \"auto:release-pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   release-please:

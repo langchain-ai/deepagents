@@ -25,14 +25,14 @@ const DEFAULT_PENDING_DELETION_LABEL = 'auto:pending-deletion';
 //     type via .github/scripts/labeling/pr-labeler-config.json (typeToLabel).
 //     On release-please's own PRs it is applied by a `continue-on-error` step
 //     in release-please.yml, so it can silently fail to appear.
-//   * `autorelease: pending` is release-please-action's built-in label,
+//   * `auto:release-pending` is release-please-action's built-in label,
 //     applied by release-please itself as part of opening the PR (a failure
 //     there fails the action, unlike the `continue-on-error` step above). See
 //     release-please.yml:330-333 for the authoritative description — the
 //     label table in RELEASING.md describes only its post-merge meaning.
-// `autorelease: tagged` is deliberately absent: release.yml only flips
+// `auto:release-tagged` is deliberately absent: release.yml only flips
 // pending -> tagged in the post-merge job, so an open PR never carries it.
-const RELEASE_LABELS = new Set(['auto:release-pr', 'autorelease: pending']);
+const RELEASE_LABELS = new Set(['auto:release-pr', 'auto:release-pending']);
 const DEFAULT_WARNING_DAYS = 14;
 const DEFAULT_CLOSE_DAYS = 30;
 const DEFAULT_MAX_ITEMS = 1000;

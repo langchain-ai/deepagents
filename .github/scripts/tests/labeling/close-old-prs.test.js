@@ -824,7 +824,7 @@ test('skips genuine release-please PRs without warning or closing', async () => 
 // closeDays *and* already carrying a bot warning from an earlier run is
 // close-eligible on every axis except the release check. Also the only
 // coverage for stripping auto:pending-deletion via the processPr release branch,
-// and the only positive assertion that 'autorelease: pending' is exempting.
+// and the only positive assertion that 'auto:release-pending' is exempting.
 test('does not close a release PR already past the close threshold', async () => {
   const comments = new Map([
     [909, [{ id: 95, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
@@ -832,7 +832,7 @@ test('does not close a release PR already past the close threshold', async () =>
   const { github, calls } = makeGithub({
     items: [{ number: 909, created_at: '2026-04-01T00:00:00Z' }],
     comments,
-    live: new Map([[909, releasePleasePr(['auto:pending-deletion', 'autorelease: pending'])]]),
+    live: new Map([[909, releasePleasePr(['auto:pending-deletion', 'auto:release-pending'])]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -939,7 +939,7 @@ test('does not report drift for a label that only resembles a release label', as
 
 // The bug the provenance-only exemption exists to prevent. `release` is
 // applied by a continue-on-error step in release-please.yml and RELEASING.md
-// documents hand-editing `autorelease: pending`, so a genuine release PR can
+// documents hand-editing `auto:release-pending`, so a genuine release PR can
 // hold neither label. Gating the exemption on labels would warn it, then close
 // it 16 days later on a green run.
 test('exempts a release-please PR whose release labels are missing', async () => {
@@ -958,7 +958,7 @@ test('exempts a release-please PR whose release labels are missing', async () =>
   assert.deepEqual(calls.close, []);
   assert.equal(core.failed, null);
   // Exempt, but the missing label is itself a problem: per RELEASING.md a
-  // stuck/absent `autorelease: pending` blocks future release PRs.
+  // stuck/absent `auto:release-pending` blocks future release PRs.
   assert.ok(
     core.warnings.some(message =>
       message.includes('provenance but no release label')),

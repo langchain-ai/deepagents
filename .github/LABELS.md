@@ -124,20 +124,21 @@ that list once no open item carries one.
 | `auto:new-contributor` | `pr_labeler.yml` | external author, 0 merged PRs (PRs only) |
 | `auto:trusted-contributor` | `pr_labeler.yml`, `tag-external-issues.yml` | external author, ≥`trustedThreshold` (5) merged PRs **in this repo** |
 | `auto:release-pr` | `release-please.yml` via `h.labelPR()` | package release PR (`releaseLabel` in the config) |
-| `autorelease: pending` | release-please itself | release PR open, not yet tagged |
-| `autorelease: tagged` | `release.yml` after tagging | release tagged |
+| `auto:release-pending` | release-please itself | release PR open, not yet tagged |
+| `auto:release-tagged` | `release.yml` after tagging | release tagged |
 
 `clear_pending_deletion.yml` drops `auto:pending-deletion` the moment
 `ci:keep-open` lands. Thresholds (14/30 days) and the release exemption
 (`RELEASE_LABELS`) live in
 [`scripts/labeling/close-old-prs.js`](./scripts/labeling/close-old-prs.js).
 
-> `autorelease: pending` / `autorelease: tagged` keep their names: they are
-> release-please's own lifecycle labels, matched by name when it looks for a
-> pending release PR. Renaming them to `auto:release-pending` /
-> `auto:release-tagged` needs the `label` / `release-label` keys in
-> `release-please-config.json` **and** a window with no open release PR, so it
-> is deliberately not part of the taxonomy migration.
+> `auto:release-pending` / `auto:release-tagged` are release-please's own
+> lifecycle labels, set via the `label` / `release-label` keys in
+> [`release-please-config.json`](../release-please-config.json). release-please
+> finds a pending release PR **by label name**, so the config change and the
+> label rename must land together: merge the code, then rename the label
+> immediately (a rename propagates to open release PRs, so no PR is orphaned).
+> Do it when no publish is mid-flight.
 
 ### `triage:*` — maintainers and agents
 

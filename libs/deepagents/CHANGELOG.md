@@ -2,6 +2,16 @@
 
 # Deep Agents Changelog
 
+## [0.7.15](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.14...deepagents==0.7.15) (2026-09-16)
+
+
+### Bug Fixes
+
+* **sdk:** allow colons in profile model keys ([#6334](https://github.com/langchain-ai/deepagents/issues/6334)) ([257872e](https://github.com/langchain-ai/deepagents/commit/257872eea59368a0c3aac003f71d3c83ce44c833))
+* **sdk:** give id-less tool result offloads unique paths ([#6316](https://github.com/langchain-ai/deepagents/issues/6316)) ([a0c2ad0](https://github.com/langchain-ai/deepagents/commit/a0c2ad03c6dcd52340e91bea6483ee7750d5deee))
+* **sdk:** propagate subagent state keys for provided subagent middleware ([#5553](https://github.com/langchain-ai/deepagents/issues/5553)) ([ff8dda9](https://github.com/langchain-ai/deepagents/commit/ff8dda912b0d1651f234b9d49cec06e79b7c1b6b))
+* **sdk:** require a real Nemotron task transition ([#6296](https://github.com/langchain-ai/deepagents/issues/6296)) ([3d6392e](https://github.com/langchain-ai/deepagents/commit/3d6392e82408c1a5e24d0c1d32c53934552fd314))
+
 ## [0.7.14](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.13...deepagents==0.7.14) (2026-09-13)
 
 ### Features

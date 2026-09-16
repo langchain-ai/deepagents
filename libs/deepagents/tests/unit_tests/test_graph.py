@@ -155,21 +155,57 @@ class TestProfileForModel:
             _HARNESS_PROFILES.update(original)
 
     @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
-    def test_matches_combined_provider_model_key_for_prebuilt(self, identifier_attr: str) -> None:
-        """Colon-containing identifiers combine with providers for exact lookup."""
+    @pytest.mark.parametrize("identifier", ["my-model", "model:version"])
+    def test_matches_combined_provider_model_key_for_prebuilt(self, identifier_attr: str, identifier: str) -> None:
+        """Bare and colon-containing identifiers combine with providers for exact lookup."""
         original = dict(_HARNESS_PROFILES)
         try:
             provider_profile = HarnessProfile(system_prompt_suffix="provider level")
             model_profile = HarnessProfile(system_prompt_suffix="model level")
             register_harness_profile("fakeprov", provider_profile)
-            register_harness_profile("fakeprov:model:version", model_profile)
-            model = _make_model({identifier_attr: "model:version"})
+            register_harness_profile(f"fakeprov:{identifier}", model_profile)
+            model = _make_model({identifier_attr: identifier})
             model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
             result = _harness_profile_for_model(model, None)
+            # Model-level wins on merge; suffix reflects model-level registration.
             assert result.system_prompt_suffix == "model level"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    @pytest.mark.parametrize("combined_exact", [False, True])
+    def test_exact_candidates_precede_provider_defaults(
+        self, identifier_attr: str, caplog: pytest.LogCaptureFixture, *, combined_exact: bool
+    ) -> None:
+        """Qualified identifiers retain exact overrides and inherit provider fields."""
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("myprov", HarnessProfile(base_system_prompt="provider base", system_prompt_suffix="provider suffix"))
+            register_harness_profile("myprov:my-model", HarnessProfile(system_prompt_suffix="identifier suffix"))
+            if combined_exact:
+                register_harness_profile("myprov:myprov:my-model", HarnessProfile(system_prompt_suffix="combined suffix"))
+            model = _make_model({identifier_attr: "myprov:my-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
+                result = _harness_profile_for_model(model, None)
+            assert result.base_system_prompt == "provider base"
+            assert result.system_prompt_suffix == ("combined suffix" if combined_exact else "identifier suffix")
+            key = "myprov:myprov:my-model" if combined_exact else "myprov:my-model"
+            assert any(r.levelno == logging.DEBUG and f"Using exact HarnessProfile {key!r}" in r.getMessage() for r in caplog.records)
+            assert "using provider defaults" not in caplog.text
+
+    def test_qualified_identifier_provider_fallback_logs_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Provider defaults remain available when neither exact candidate exists."""
+        with patch.dict(_HARNESS_PROFILES):
+            profile = HarnessProfile(system_prompt_suffix="provider suffix")
+            register_harness_profile("myprov", profile)
+            model = _make_model({"model_name": "myprov:my-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
+                result = _harness_profile_for_model(model, None)
+            assert result is profile
+            assert any(r.levelno == logging.DEBUG and "using provider defaults" in r.getMessage() for r in caplog.records)
+            assert "identifier='myprov:my-model', provider='myprov'" in caplog.text
 
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})

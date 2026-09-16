@@ -1265,7 +1265,8 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     registered under the canonical `provider:model` shape still resolve when
     the caller hands in a pre-built model. The identifier may itself contain
     colons; they remain part of the model identifier. The combined lookup is
-    followed by an identifier-only lookup and a provider-only fallback.
+    followed by an identifier-only lookup. Both exact keys are checked before
+    accepting provider defaults.
 
     A *bare* identifier (no `:`) is deliberately not consulted against the
     registry. If it were, a pre-built model whose `model_name` happened to
@@ -1290,25 +1291,39 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         return _get_harness_profile(spec) or HarnessProfile()
     identifier = get_model_identifier(model)
     provider = get_model_provider(model)
-    # Try the canonical `provider:model` key first so user registrations under
-    # that shape match. `_get_harness_profile` internally falls back from the
-    # exact key to the provider prefix, which also subsumes the pure
-    # provider-only case below when both pieces are known. Colons in the
-    # identifier remain part of the model component.
+    candidates: list[str] = []
     if provider and identifier:
-        profile = _get_harness_profile(f"{provider}:{identifier}")
-        if profile is not None:
-            return profile
+        candidates.append(f"{provider}:{identifier}")
     # Only consult identifier-only lookup when the identifier itself is in
     # `provider:model` shape — otherwise a bare identifier could accidentally
     # match a provider-wide registration (see docstring).
     if identifier is not None and ":" in identifier:
-        profile = _get_harness_profile(identifier)
-        if profile is not None:
-            return profile
+        candidates.append(identifier)
+    # The identifier may already be provider-qualified. Check both exact keys
+    # before allowing `_get_harness_profile` to fall back to provider defaults.
+    _ensure_harness_profiles_loaded()
+    for candidate in candidates:
+        if candidate in _HARNESS_PROFILES:
+            profile = _get_harness_profile(candidate)
+            if profile is not None:
+                logger.debug(
+                    "Using exact HarnessProfile %r for pre-built model (identifier=%r, provider=%r).",
+                    candidate,
+                    identifier,
+                    provider,
+                )
+                return profile
     if provider is not None:
-        profile = _get_harness_profile(provider)
+        candidates.append(provider)
+    for candidate in candidates:
+        profile = _get_harness_profile(candidate)
         if profile is not None:
+            logger.debug(
+                "No exact HarnessProfile for pre-built model (identifier=%r, provider=%r); using provider defaults via %r.",
+                identifier,
+                provider,
+                candidate,
+            )
             return profile
     # Surface at warning when the user has registered profiles but none
     # matched — a common "my profile isn't applying" failure mode where the

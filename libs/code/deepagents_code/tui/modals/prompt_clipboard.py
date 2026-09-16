@@ -12,7 +12,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.tui.widgets.prompt_search import filter_prompts, prompt_title
+from deepagents_code.tui.widgets.prompt_search import (
+    PromptFilterInput,
+    filter_prompts,
+    prompt_title,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -66,20 +70,6 @@ class PromptRow(Static):
         return Content.styled(prompt_title(prompt), "bold")
 
 
-class _PromptFilterInput(Input):
-    """Search field with standard modified-Backspace word deletion."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(
-            "ctrl+backspace,alt+backspace",
-            "delete_left_word",
-            "Delete word left",
-            show=False,
-            priority=True,
-        )
-    ]
-
-
 class PromptClipboardScreen(ModalScreen[str | None]):
     """Filter, preview, copy, or select a previously submitted prompt."""
 
@@ -129,7 +119,7 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         """
         with Vertical():
             yield Static("Prompt Clipboard", classes="prompt-title")
-            yield _PromptFilterInput(
+            yield PromptFilterInput(
                 placeholder="Search submitted prompts", id="prompt-filter"
             )
             # Rows mount directly into the scroll container: a nested

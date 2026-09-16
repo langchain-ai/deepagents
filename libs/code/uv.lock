@@ -1210,7 +1210,7 @@ requires-dist = [
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
     { name = "filelock", specifier = ">=3.29.7,<3.30" },
-    { name = "genai-prices", specifier = ">=0.1.6,<0.2.0" },
+    { name = "genai-prices", specifier = ">=0.1.7,<0.2.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.5,<1.0.0" },
@@ -1576,15 +1576,15 @@ wheels = [
 
 [[package]]
 name = "genai-prices"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx2" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/16/e5a507d42c0eb629b48ebe6c278f2d8c3f929bb6b28f18108bdd66d8ae12/genai_prices-0.1.6.tar.gz", hash = "sha256:802c1e4cc3ed5e70a09083b83af441a58d91f62e12768f7f1b6b26c98a33fcac", size = 111810, upload-time = "2026-09-02T14:53:54.895Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/62/5f294af24a7ae407e6fa1a7ff36d310bed36b89ea6cea7eb7cfac5c305ff/genai_prices-0.1.7.tar.gz", hash = "sha256:4305395c5891796860c697cc3a49ab50b751ed62c8ff1911e291ea8da77f3a91", size = 114996, upload-time = "2026-09-15T11:24:10.852Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/a1/43fa2a4c5557cd977e83eecec265b0b77b726b0c7b9f2f180b46c6fdb458/genai_prices-0.1.6-py3-none-any.whl", hash = "sha256:35ac8043dbcf2958488129413bfecba7304fe12a68ad4a78c5b0d15281e82814", size = 118834, upload-time = "2026-09-02T14:53:53.758Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/4a/9e04f3dca5ffe74133779ab5e9925ffb6411afbeac55d26fa0e148722599/genai_prices-0.1.7-py3-none-any.whl", hash = "sha256:090ba285549e0d2ea3187d05f091a5f0ae722e652143fa844ac809205aecd023", size = 121970, upload-time = "2026-09-15T11:24:09.54Z" },
 ]
 
 [[package]]

@@ -326,38 +326,31 @@ def _communicate(
         BaseException: Anything raised while output was collected, after cleanup.
     """
     collect = WindowsProcessReader(process).communicate if _IS_WINDOWS else process.communicate
-    if cancellation_event is None:
-        try:
-            return collect(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            terminated = _kill_and_reap(process, process_group)
-            raise _timeout_with_partial_output(process, timeout, error, terminated=terminated) from None
-        except BaseException:
-            _kill_and_reap(process, process_group)
-            raise
-
     deadline = time.monotonic() + timeout
     # Each attempt keeps the bytes already read, so the newest `TimeoutExpired`
     # carries everything the command has printed so far.
     partial: subprocess.TimeoutExpired | None = None
-    while not cancellation_event.is_set():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            terminated = _kill_and_reap(process, process_group)
-            raise _timeout_with_partial_output(process, timeout, partial, terminated=terminated)
-        try:
-            output = collect(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
-        except subprocess.TimeoutExpired as error:
-            partial = error
-            continue
-        except BaseException:
-            _kill_and_reap(process, process_group)
-            raise
-        if cancellation_event.is_set():
-            break
-        return output
-    _kill_and_reap(process, process_group)
-    raise _CommandCancelled
+    try:
+        while cancellation_event is None or not cancellation_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)  # noqa: TRY301  # Route deadline expiry through shared process cleanup.
+            try:
+                output = collect(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
+            except subprocess.TimeoutExpired as error:
+                partial = error
+                if cancellation_event is None:
+                    raise
+                continue
+            if cancellation_event is not None and cancellation_event.is_set():
+                break
+            return output
+        raise _CommandCancelled  # noqa: TRY301  # Route cancellation through shared process cleanup.
+    except BaseException as error:
+        terminated = _kill_and_reap(process, process_group)
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise _timeout_with_partial_output(process, timeout, partial, terminated=terminated) from None
+        raise
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):

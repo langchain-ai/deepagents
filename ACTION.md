@@ -20,7 +20,7 @@ jobs:
       - uses: langchain-ai/deepagents@main
         with:
           prompt: "Review this repository and summarize the highest-risk issues."
-          model: "openai:gpt-5.5"
+          model: "openai:gpt-6-astra"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           shell_allow_list: "recommended,git,gh"
           max_turns: "8"
@@ -32,7 +32,7 @@ For production workflows, pin `langchain-ai/deepagents` to a reviewed commit SHA
 ## Common inputs
 
 - `prompt`: Task text passed to `dcode`.
-- `model`: Model as `provider:model` (e.g. `openai:gpt-5.5`) or a bare name (`claude-*`, `gpt-*`, `gemini-*`) with the provider auto-detected.
+- `model`: Model as `provider:model` (e.g. `openai:gpt-6-astra`) or a bare name (`claude-*`, `gpt-*`, `gemini-*`) with the provider auto-detected.
 - `*_api_key`: Provider API keys (`openai_api_key`, `anthropic_api_key`, `google_api_key`).
 - `shell_allow_list`: Commands allowed for headless shell execution, such as `recommended,git,gh`.
 - `max_turns`: Maximum agentic turns before stopping.

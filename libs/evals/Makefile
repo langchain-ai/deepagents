@@ -15,7 +15,7 @@ test: ## Run unit tests
 
 evals: ## Run evals (set MODEL=<id>; required)
 	@if [ -z "$(MODEL)" ]; then \
-		echo "ERROR: MODEL is required. Example: make evals MODEL=claude-opus-4-7" >&2; \
+		echo "ERROR: MODEL is required. Example: make evals MODEL=claude-opus-5" >&2; \
 		exit 1; \
 	fi
 	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short --model $(MODEL) $(PYTEST_EXTRA)
@@ -26,11 +26,11 @@ TRIALS ?=
 TRIAL_ARGS ?=
 evals-trials: ## Run evals N times (set MODEL=<id> TRIALS=<n>; both required)
 	@if [ -z "$(MODEL)" ]; then \
-		echo "ERROR: MODEL is required. Example: make evals-trials MODEL=openai:gpt-5.5 TRIALS=5" >&2; \
+		echo "ERROR: MODEL is required. Example: make evals-trials MODEL=openai:gpt-6-astra TRIALS=5" >&2; \
 		exit 1; \
 	fi
 	@if [ -z "$(TRIALS)" ]; then \
-		echo "ERROR: TRIALS is required. Example: make evals-trials MODEL=openai:gpt-5.5 TRIALS=5" >&2; \
+		echo "ERROR: TRIALS is required. Example: make evals-trials MODEL=openai:gpt-6-astra TRIALS=5" >&2; \
 		exit 1; \
 	fi
 	uv run --group test python scripts/run_trials.py --model $(MODEL) --trials $(TRIALS) $(TRIAL_ARGS)
@@ -81,7 +81,7 @@ run-terminal-bench-runloop: stage-harbor-local-deps ## Run terminal-bench on Run
 
 run-terminal-bench-langsmith: stage-harbor-local-deps ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=$(HARBOR_TERMINAL_BENCH_DATASET) --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) --model $(or $(MODEL),anthropic:claude-opus-5) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=$(HARBOR_TERMINAL_BENCH_DATASET) --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
 
 ######################
 # CHARTS

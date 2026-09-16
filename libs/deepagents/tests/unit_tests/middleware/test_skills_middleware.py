@@ -989,7 +989,7 @@ def test_format_skills_locations_builtin_leaf() -> None:
     """`built_in_skills` collapses to `Built-in Skills` rather than the raw leaf."""
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore[arg-type]
-        sources=["/pkg/deepagents_cli/built_in_skills"],
+        sources=["/pkg/deepagents_code/built_in_skills"],
     )
 
     result = middleware._format_skills_locations()
@@ -1837,6 +1837,59 @@ def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) ->
     # Verify invocation succeeded
     assert "messages" in result
     assert len(result["messages"]) > 0
+
+
+def test_forked_subagent_replays_skills_injected_system_prompt(tmp_path: Path) -> None:
+    """Test that a fork replays the parent's skills-injected system message verbatim."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for deep agents")
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    parent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "continue", "subagent_type": "worker"},
+                            "id": "call_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="parent done"),
+            ]
+        )
+    )
+    worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+
+    agent = create_deep_agent(
+        model=parent_model,
+        backend=backend,
+        skills=[str(skills_dir)],
+        subagents=[
+            {
+                "name": "worker",
+                "description": "Continues with the parent's context.",
+                "model": worker_model,
+                "mode": "fork",
+            }
+        ],
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="delegate this")]})
+
+    parent_system_message = parent_model.call_history[0]["messages"][0]
+    worker_system_message = worker_model.call_history[0]["messages"][0]
+
+    assert isinstance(parent_system_message, SystemMessage)
+    assert "test-skill" in parent_system_message.text
+    assert worker_system_message == parent_system_message
+    assert parent_system_message.text.count("## Skills System") == 1
 
 
 def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:

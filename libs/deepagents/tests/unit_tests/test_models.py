@@ -377,6 +377,44 @@ class TestModelMatchesSpec:
         model = _make_model({"model_name": "gpt-5"})
         assert model_matches_spec(model, "gpt-5.5") is False
 
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "glm-5.2:cloud",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_bare_spec_matches_colon_containing_identifier(self, identifier: str) -> None:
+        """A bare spec equal to the identifier matches even when it holds colons.
+
+        The spec is not provider-qualified, so it must be compared whole. A
+        partition-first implementation would read the leading segment as a
+        provider and fail these.
+        """
+        model = _make_model({"model_name": identifier})
+        assert model_matches_spec(model, identifier) is True
+
+    def test_qualified_spec_matches_colon_containing_identifier(self) -> None:
+        """Only the first colon separates; the rest belongs to the identifier."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "ollama:glm-5.2:cloud") is True
+
+    def test_qualified_spec_checks_provider_on_colon_containing_identifier(self) -> None:
+        """A matching multi-colon identifier is still refused on provider mismatch."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "openai:glm-5.2:cloud") is False
+
+    def test_qualified_spec_matches_bedrock_arn_identifier(self) -> None:
+        """Bedrock ARNs carry colons throughout, including an empty account field."""
+        arn = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+        model = _make_model({"model_name": arn})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "bedrock_converse"})
+        assert model_matches_spec(model, f"bedrock_converse:{arn}") is True
+        assert model_matches_spec(model, f"openai:{arn}") is False
+
 
 class TestCheckOpenRouterVersion:
     """Tests for `check_openrouter_version`."""
@@ -553,15 +591,68 @@ class TestProviderProfileRegistry:
         assert get_provider_profile("") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd model spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = ProviderProfile(init_kwargs={"a": 1})
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("fbprov", base)
-            assert get_provider_profile("fbprov:missing-model") is base
+            assert get_provider_profile("fbprov:missing:model") is base
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = ProviderProfile(init_kwargs={"priority": "provider"})
+        exact = ProviderProfile(init_kwargs={"priority": "model"})
+        provider = key.partition(":")[0]
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(provider, base)
+            register_provider_profile(key, exact)
+            assert get_provider_profile(key).init_kwargs["priority"] == "model"
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestProviderProfileMissLogging:
+    """Optional provider profiles leave misses traceable at debug level."""
+
+    @pytest.mark.parametrize("registered", [False, True])
+    def test_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture, *, registered: bool) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            if registered:
+                register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile("acmee:thing") == {}
+            records = [r for r in caplog.records if "No provider profile matched" in r.getMessage()]
+            assert records, "Expected a provider-profile-miss log record"
+            assert all(r.levelno == logging.DEBUG for r in records)
+            assert any("acmee:thing" in r.getMessage() for r in records)
+
+    def test_successful_lookup_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile("acme:thing") == {"base_url": "http://acme"}
+            assert not [r for r in caplog.records if "No provider profile matched" in r.getMessage()]
+
+    @pytest.mark.parametrize("spec", ["acme:", ":thing", ""])
+    def test_malformed_spec_records_the_reason(self, spec: str, caplog: pytest.LogCaptureFixture) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile(spec) == {}
+            assert any("no ProviderProfile lookup performed" in r.getMessage() for r in caplog.records)
 
 
 class TestApplyProviderProfile:
@@ -872,12 +963,34 @@ class TestHarnessProfileRegistry:
         assert _get_harness_profile("claude-sonnet-4-6") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = HarnessProfile(system_prompt_suffix="provider suffix")
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile("fbharness", base)
-            assert _get_harness_profile("fbharness:missing-model") is base
+            assert _get_harness_profile("fbharness:missing:model") is base
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = HarnessProfile(system_prompt_suffix="provider")
+        exact = HarnessProfile(system_prompt_suffix="model")
+        provider = key.partition(":")[0]
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(provider, base)
+            register_harness_profile(key, exact)
+            assert _get_harness_profile(key).system_prompt_suffix == "model"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -1721,7 +1834,7 @@ class TestLazyBootstrap:
 
     The bootstrap runs on first registry access rather than at
     `deepagents.profiles` import to keep cold-importing
-    `deepagents._models` (and therefore `deepagents_cli` startup) cheap
+    `deepagents._models` (and therefore `dcode` startup) cheap
     when the caller never reads the registry. Each test here spawns a
     subprocess to get a clean interpreter — once the in-process bootstrap
     has run for any earlier test, `_loaded` cannot be observed as `False`
@@ -1889,14 +2002,6 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="non-empty"):
             register_harness_profile("", HarnessProfile())
 
-    def test_multiple_colons_rejected_provider(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_provider_profile("a:b:c", ProviderProfile())
-
-    def test_multiple_colons_rejected_harness(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_harness_profile("a:b:c", HarnessProfile())
-
     def test_empty_provider_half_rejected(self) -> None:
         with pytest.raises(ValueError, match="empty provider"):
             register_provider_profile(":model", ProviderProfile())
@@ -1942,6 +2047,25 @@ class TestRegisterProfileKeyValidation:
         """
         with pytest.raises(ValueError, match="whitespace"):
             register_harness_profile(key, HarnessProfile())
+
+    @pytest.mark.parametrize("key", ["::", ":::", ":model", "openai:"])
+    def test_empty_provider_or_model_rejected(self, key: str) -> None:
+        """Both registries require a provider and a complete model identifier."""
+        with pytest.raises(ValueError, match="empty provider"):
+            register_provider_profile(key, ProviderProfile())
+        with pytest.raises(ValueError, match="empty provider"):
+            register_harness_profile(key, HarnessProfile())
+
+    @pytest.mark.parametrize("key", ["a:b:", "a::", "a:::", "a::b", "a:b :c", "a:b: c", "a:b\t:c"])
+    def test_model_remainder_preserved(self, key: str) -> None:
+        """Provider-specific model syntax survives registration and exact lookup."""
+        with patch.dict(_PROVIDER_PROFILES), patch.dict(_HARNESS_PROFILES):
+            provider_profile = ProviderProfile()
+            harness_profile = HarnessProfile()
+            register_provider_profile(key, provider_profile)
+            register_harness_profile(key, harness_profile)
+            assert get_provider_profile(key) is provider_profile
+            assert _get_harness_profile(key) is harness_profile
 
     def test_valid_provider_key_accepted(self) -> None:
         original = dict(_PROVIDER_PROFILES)
@@ -2114,9 +2238,6 @@ class TestProfileLookupKeyValidation:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_harness_lookup_rejects_double_colon(self) -> None:
-        assert _get_harness_profile("a:b:c") is None
-
     def test_harness_lookup_rejects_empty_string(self) -> None:
         assert _get_harness_profile("") is None
 
@@ -2137,9 +2258,6 @@ class TestProfileLookupKeyValidation:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
-
-    def test_provider_lookup_rejects_double_colon(self) -> None:
-        assert get_provider_profile("a:b:c") is None
 
 
 class TestOpenRouterEmptyEnvVar:

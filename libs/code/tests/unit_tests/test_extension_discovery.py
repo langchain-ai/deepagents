@@ -1,0 +1,74 @@
+"""Tests for extension source resolution and provenance."""
+
+from pathlib import Path
+
+import pytest
+
+from deepagents_code.extensions.discovery import discover_extensions
+from deepagents_code.extensions.registry import SourceScope
+
+
+@pytest.fixture(autouse=True)
+def _experimental(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "1")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.importlib.metadata.entry_points",
+        lambda **_: (),
+    )
+
+
+def _extension(directory: Path, name: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text("async def extension(d):\n    pass\n", encoding="utf-8")
+    return path
+
+
+def test_sources_resolve_in_authority_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """User, config, CLI, and trusted project sources retain stable order."""
+    user = _extension(tmp_path / "user", "a.py")
+    configured = _extension(tmp_path / "configured", "b.py")
+    temporary = _extension(tmp_path / "temporary", "c.py")
+    project = _extension(tmp_path / "project", "d.py")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: user.parent,
+    )
+
+    result = discover_extensions(
+        config_paths=(configured, user),
+        cli_paths=(temporary,),
+        project_dir=project.parent,
+    )
+
+    assert [source.path for source in result.sources] == [
+        user.resolve(),
+        configured.resolve(),
+        temporary.resolve(),
+        project.resolve(),
+    ]
+    assert [source.scope for source in result.sources] == [
+        SourceScope.USER,
+        SourceScope.USER,
+        SourceScope.TEMPORARY,
+        SourceScope.PROJECT,
+    ]
+
+
+def test_invalid_explicit_path_is_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing CLI source reports an error without blocking valid files."""
+    valid = _extension(tmp_path, "valid.py")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: tmp_path / "absent-user-dir",
+    )
+
+    result = discover_extensions(cli_paths=(tmp_path / "missing.py", valid))
+
+    assert [source.path for source in result.sources] == [valid.resolve()]
+    assert len(result.errors) == 1
+    assert "missing.py" in result.errors[0]

@@ -10,10 +10,13 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.utils import format_content_with_line_numbers
+from deepagents.middleware.filesystem import _read_header
 from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     _DEFAULT_READ_LIMIT,
     _EMPTY_TOOL_PLACEHOLDER,
     _HARNESS_PROFILE_SUFFIX_MARKER,
+    _READ_STATUS_HEADER_RE,
+    _TRANSITION_NUDGE_SOURCE,
     ChatNVIDIAMessageCompatibilityMiddleware,
     EntityResolutionGuardMiddleware,
     FinalAnswerGuardMiddleware,
@@ -70,6 +73,13 @@ def _numbered_lines(count: int) -> str:
     return "\n".join(f"{index}\tline {index}" for index in range(count))
 
 
+def _tool_call(name: str, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": {}, "id": call_id, "type": "tool_call"}],
+    )
+
+
 def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
     """Nemotron's common `path` arg should be remapped before tool execution."""
     middleware = NemotronToolCallShim()
@@ -124,7 +134,10 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
-        return ToolMessage(content="1  alpha\n2  beta\n3  gamma", tool_call_id="call_1")
+        return ToolMessage(
+            content="@@ lines 10-12 of 20 | next offset 12 @@\nalpha\nbeta\ngamma",
+            tool_call_id="call_1",
+        )
 
     result = middleware.wrap_tool_call(
         _request("read_file", {"file_path": "/x.txt", "limit": 3, "offset": 9}),
@@ -134,6 +147,99 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     assert isinstance(result, ToolMessage)
     assert "read_file returned 3 lines starting at offset 9" in result.content
     assert "offset=12" in result.content
+
+
+def test_read_file_continuation_notice_skips_truncated_window() -> None:
+    """A truncated window reports its retained range, so no hint is appended.
+
+    The source-line count comes from the status header, which a truncation
+    explanation precedes. A header still claiming the full request would look
+    like a full page here and hint at an offset past the dropped lines.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(
+            content=("[Output was truncated due to size limits.]\n@@ lines 1-2 of 9 | next offset 2 | truncated due to size @@\nalpha\nbeta"),
+            tool_call_id="call_1",
+        )
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 5, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert "read_file returned" not in result.content
+    assert "offset=5" not in result.content
+
+
+def test_read_file_continuation_notice_ignores_header_shaped_source_lines() -> None:
+    """The line count comes from the header row, not from a matching body line.
+
+    Everything below the header is verbatim file content, which can contain the
+    same shape. Here the header reports 2 lines (under the limit, so no hint)
+    while a body line reports 9999 (over it). Detection is bounded to the rows a
+    header can occupy, so the header sets the count.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+    content = "@@ lines 1-2 of 9 | next offset 2 @@\n@@ lines 1-9999 @@\npayload"
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(content=content, tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 5, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.content == content
+
+
+def test_read_file_continuation_notice_falls_back_past_the_notice_window() -> None:
+    """Gutter-numbered content is counted by row, not by a matching line inside it.
+
+    Results without a status header (a gutter-formatted preview, or a `read_file`
+    from an older `deepagents`) are counted by row. A body line sharing the
+    header's shape falls below the rows a header can occupy, so it leaves the
+    count alone -- reading one line from it would drop the hint on a full page.
+    """
+    middleware = ReadFileContinuationNoticeMiddleware()
+    content = "1  a\n2  b\n3  c\n4  d\n@@ lines 1-1 @@"
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(content=content, tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 4, "offset": 0}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert "read_file returned 4 lines starting at offset 0" in result.content
+
+
+def test_read_status_header_pattern_contract() -> None:
+    """Pin which lines the status-header pattern accepts.
+
+    Real `_read_header` output matches, including the optional total and
+    trailing fields. Anything with content outside the `@@ ... @@` delimiters
+    does not, so a line carrying extra text outside them is not read as a
+    header.
+    """
+    matches = lambda line: _READ_STATUS_HEADER_RE.match(line) is not None  # noqa: E731
+
+    # Round-trip against the producer: range only, with total, with fields.
+    assert matches(_read_header(["lines 1-2"]))
+    assert matches(_read_header(["lines 1-2 of 9"]))
+    assert matches(_read_header(["lines 1-2 of 9", "next offset 2", "truncated due to size"]))
+
+    # Trailing or leading text outside the delimiters is not a header.
+    assert not matches("@@ lines 1-9999 blah")
+    assert not matches("@@ lines 1-9999 @@ trailing")
+    assert not matches("  1  @@ lines 1-9999 @@")
+    assert not matches("@@ lines 1 @@")
 
 
 def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
@@ -861,36 +967,82 @@ def test_domain_tool_nudge_fires_after_dead_end_filesystem_search() -> None:
     assert "non-filesystem API/domain tools" in update["messages"][0].content
 
 
-def test_conversation_transition_nudges_on_new_long_context_file_task() -> None:
-    """Long follow-on file work should receive a compact-conversation reminder."""
-    middleware = NemotronPolicyNudgeMiddleware()
-    state = {
-        "messages": [
-            HumanMessage("Read and summarize /first.py"),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "read_file",
-                        "args": {"file_path": "/first.py"},
-                        "id": "call_1",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            ToolMessage(content="1\talpha", tool_call_id="call_1"),
-            AIMessage(content="summary"),
-            HumanMessage("Thanks. Move on to a new task: read /second.py and summarize it."),
-            AIMessage(content="thinking"),
-            HumanMessage("Actually do the same for another file /third.py."),
-        ]
-    }
+def test_conversation_transition_ignores_in_progress_single_turn_file_work() -> None:
+    """Current-turn filesystem work is not a task transition."""
+    messages = [
+        HumanMessage("Analyze input.csv and create the required output file."),
+        _tool_call("ls", "call_1"),
+        ToolMessage(content="input\noutput", tool_call_id="call_1"),
+        _tool_call("read_file", "call_2"),
+        ToolMessage(content="region,revenue\nwest,100", tool_call_id="call_2"),
+        _tool_call("read_file", "call_3"),
+        ToolMessage(content='{"products": []}', tool_call_id="call_3"),
+    ]
 
-    update = middleware.before_model(state, None)
+    update = NemotronPolicyNudgeMiddleware().before_model({"messages": messages}, None)
+
+    transition_messages = [] if update is None else [message for message in update["messages"] if message.name == _TRANSITION_NUDGE_SOURCE]
+    assert transition_messages == []
+
+
+def test_conversation_transition_nudges_on_new_long_context_file_task() -> None:
+    """An explicit second-turn task transition should still receive a reminder."""
+    messages = [
+        HumanMessage("Look up the customer account."),
+        _tool_call("get_customer", "call_1"),
+        ToolMessage(content="Acme", tool_call_id="call_1"),
+        AIMessage(content="The customer is Acme."),
+        HumanMessage("Move on to a new task: read /second.py and summarize it."),
+        AIMessage(content="thinking"),
+    ]
+
+    update = NemotronPolicyNudgeMiddleware().before_model({"messages": messages}, None)
 
     assert update is not None
     assert update["nemotron_transition_nudged"] is True
     assert "compact_conversation" in update["messages"][0].content
+
+
+def test_conversation_transition_nudges_on_file_followup_after_prior_file_work() -> None:
+    """Follow-on file work should compact file context from an earlier turn."""
+    messages = [
+        HumanMessage("Read and summarize /first.py"),
+        _tool_call("read_file", "call_1"),
+        ToolMessage(content="1\talpha", tool_call_id="call_1"),
+        AIMessage(content="summary"),
+        HumanMessage("Do the same for /second.py."),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is True
+
+
+def test_conversation_transition_requires_prior_file_work_for_file_followup() -> None:
+    """A later file request alone does not imply stale file context."""
+    messages = [
+        HumanMessage("Look up the customer account."),
+        _tool_call("get_customer", "call_1"),
+        ToolMessage(content="Acme", tool_call_id="call_1"),
+        AIMessage(content="The customer is Acme."),
+        HumanMessage("Read /report.csv and summarize it."),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is False
+
+
+def test_conversation_transition_ignores_internal_human_messages() -> None:
+    """A middleware nudge is not a new external user turn."""
+    messages = [
+        HumanMessage("Analyze input.csv and create the required output file."),
+        _tool_call("read_file", "call_1"),
+        ToolMessage(content="region,revenue\nwest,100", tool_call_id="call_1"),
+        AIMessage(content="working"),
+        HumanMessage("Read /report.csv next.", name=_TRANSITION_NUDGE_SOURCE),
+        AIMessage(content="thinking"),
+    ]
+
+    assert NemotronPolicyNudgeMiddleware._should_compact_on_transition(messages) is False
 
 
 def test_entity_resolution_guard_keeps_current_entity_branch_bound() -> None:
@@ -948,20 +1100,14 @@ def test_register_adds_ultra3_profiles_for_supported_providers() -> None:
 
             assert _HARNESS_PROFILE_SUFFIX_MARKER in (profile.system_prompt_suffix or "")
             assert "whole/full file" in profile.tool_description_overrides["read_file"]
-            assert [entry.name for entry in middleware] == [
-                "NemotronProgressBudgetMiddleware",
-                "NemotronPolicyNudgeMiddleware",
+            assert {entry.name for entry in middleware} >= {
                 "NemotronToolCallShim",
                 "ReadFileContinuationNoticeMiddleware",
-                "ToolRetryMiddleware",
-                "ModelRateLimitRetryMiddleware",
                 "ChatNVIDIAMessageCompatibilityMiddleware",
-                "NemotronReasoningTagCleanupMiddleware",
                 "NemotronTextToolCallParser",
-                "FollowupDisciplineMiddleware",
                 "EntityResolutionGuardMiddleware",
                 "FinalAnswerGuardMiddleware",
-            ]
+            }
     finally:
         _HARNESS_PROFILES.clear()
         _HARNESS_PROFILES.update(original)

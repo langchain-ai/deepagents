@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -67,6 +67,9 @@ class ToolEntry:
 
     description: str
     """First non-empty line of the tool's description, whitespace-collapsed."""
+
+    schema: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    """Provider-facing function definition used for context-cost estimates."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,13 +228,13 @@ def collect_built_in_tools(
         RuntimeError: If the compiled graph does not expose its bound tools.
     """
     from deepagents_code.agent import create_cli_agent
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     # Keep in sync with `server_graph._build_tools`: web_search is bound only
     # when Tavily is configured, so it appears here only under the same gate.
     custom_tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if credentials.has_tavily:
         custom_tools.append(web_search)
 
     agent, _backend = create_cli_agent(
@@ -243,6 +246,10 @@ def collect_built_in_tools(
         enable_shell=True,
         enable_interpreter=enable_interpreter,
         fs_tools=fs_tools,
+        # Enumeration only -- this graph is never invoked. Enforcing
+        # `models.allowed` here would make a subagent that names a blocked
+        # model break `dcode tools list` instead of just being unusable.
+        enforce_model_policy=False,
     )
     tools = collect_tools_from_agent(agent)
     if tools is None:
@@ -317,17 +324,27 @@ def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
             type(tool_node),
         )
         return None
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
     tools: list[ToolEntry] = []
     for name, tool in tools_by_name.items():
         if not isinstance(name, str):
             continue
         description = getattr(tool, "description", None)
+        try:
+            schema = convert_to_openai_tool(tool)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Could not serialize tool schema for %s", name, exc_info=True
+            )
+            schema = None
         tools.append(
             ToolEntry(
                 name=name,
                 description=_first_line(
                     description if isinstance(description, str) else None
                 ),
+                schema=schema,
             )
         )
     return tools

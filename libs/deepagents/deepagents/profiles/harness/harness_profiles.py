@@ -621,6 +621,9 @@ class HarnessProfile:
     each other. For example, if a provider profile excludes `execute` and an
     exact-model profile excludes `grep`, the resolved profile excludes both
     tools.
+
+    Exclusions are model-facing calibration resolved per model; they are not a
+    security surface.
     """
 
     excluded_middleware: frozenset[type[AgentMiddleware] | str] = frozenset()
@@ -983,43 +986,93 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    Accepts either a runtime `HarnessProfile` or a declarative
-    `HarnessProfileConfig`. Config objects are converted to runtime profiles
-    at registration time so YAML/JSON-backed callers do not need a separate
-    manual conversion step.
+    Accepts a runtime `HarnessProfile` or converts a declarative
+    `HarnessProfileConfig` at registration time.
 
-    Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded during lazy bootstrap), the new
-    profile is merged on top rather than replacing it. The incoming profile's
-    fields win on conflicts; unspecified fields inherit from the existing
-    profile. Excluded-tool sets union, middleware sequences merge by type, and
-    `general_purpose_subagent` settings merge field-wise.
+    Register under a provider name to set defaults for its models, or under
+    `provider:model` to customize one model. Model-specific settings inherit
+    provider defaults, with explicit fields replacing or extending them.
 
-    To extend an existing registration, call `register_harness_profile` again
-    under the same key:
+    For example, exclude a tool for a hypothetical provider's models, then
+    customize the response length for one model:
 
     ```python
     from deepagents import HarnessProfile, register_harness_profile
 
-    # Layer a system-prompt suffix on top of the previous registration.
     register_harness_profile(
-        "openai:gpt-5.4",
+        "my_provider",
+        HarnessProfile(
+            excluded_tools=frozenset({"execute"}),
+            system_prompt_suffix="Respond in under 500 words.",
+        ),
+    )
+    register_harness_profile(
+        "my_provider:my-model:tag",
         HarnessProfile(system_prompt_suffix="Respond in under 100 words."),
     )
     ```
 
+    An agent using `my_provider:my-model:tag` excludes `execute` and receives
+    the 100-word prompt suffix. Other models from `my_provider` exclude
+    `execute` and receive the 500-word suffix.
+
+    Register profiles before calling `create_deep_agent`. Using the hypothetical
+    provider above, you can pass a model string or construct the model yourself:
+
+    ```python
+    from langchain.chat_models import init_chat_model
+
+    from deepagents import create_deep_agent
+
+    # Deep Agents constructs the model from a string.
+    agent = create_deep_agent(model="my_provider:my-model:tag")
+
+    # Or construct a model object first, then pass it to Deep Agents.
+    model = init_chat_model("my-model:tag", model_provider="my_provider")
+    agent = create_deep_agent(model=model)
+    ```
+
+    For the model object, Deep Agents looks up the harness profile using the
+    provider and model identifier reported by that object. If it reports
+    `my_provider` and `my-model:tag`, it matches the same registration above.
+
+    Re-registering merges with the existing profile: new values override
+    conflicts and unspecified fields remain. Continuing the example, exclude
+    one more tool:
+
+    ```python
+    register_harness_profile(
+        "my_provider:my-model:tag",
+        HarnessProfile(excluded_tools=frozenset({"grep"})),
+    )
+    ```
+
+    An agent created afterward with this model excludes both `execute` and
+    `grep` and still receives the 100-word prompt suffix.
+
+    Deep Agents also ships **built-in profiles**: default harness settings
+    registered automatically for selected models. Registering under one of
+    those keys customizes the shipped settings using the same merge rules.
+
+    Excluded-tool sets union, middleware sequences merge
+    by type, and `general_purpose_subagent` settings merge field-wise.
+
+    See the [Profiles guide](https://docs.langchain.com/oss/python/deepagents/profiles)
+    for registration workflows and configuration files.
+
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,
-            or a full `provider:model` spec for a per-model override. Valid
-            shapes:
+            or a full `provider:model` spec for a per-model override. Only the
+            first colon separates the provider from the model identifier:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
+            - `"ollama:glm-5.2:cloud"` — model identifier containing a colon
         profile: The runtime harness profile or declarative config to register.
 
     Raises:
-        ValueError: If `key` is empty, contains more than one `:`, or has an
-            empty provider/model half.
+        ValueError: If `key` is malformed. See `validate_profile_key` for the
+            exact conditions.
     """
     _ensure_harness_profiles_loaded()
     _register_harness_profile_impl(key, profile)
@@ -1063,19 +1116,14 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
-    Malformed specs (empty string, more than one `:`, or a `:` with an empty
-    provider/model half) return `None` without consulting the registry. This
-    prevents a spec like `"openai:"` from silently matching the provider-wide
-    `"openai"` registration.
-
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
+            identifier. Only the first colon is a separator.
 
     Returns:
         The matching `HarnessProfile`, or `None` when no registered profile matches.
     """
-    if not spec or spec.count(":") > 1:
+    if not spec:
         return None
 
     provider, sep, model = spec.partition(":")
@@ -1249,24 +1297,41 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     )
 
 
+def _log_harness_profile_miss(subject: str) -> None:
+    """Report an unmatched harness profile at debug level.
+
+    Profiles are optional: registering one for a model does not imply that
+    other models need one. Keep misses available for troubleshooting without
+    warning about normal fallback to defaults.
+
+    Args:
+        subject: What was looked up, as a phrase to slot into the message
+            (e.g. `"spec 'openai:gpt-5.4'"`).
+    """
+    logger.debug(
+        "No harness profile matched %s; using defaults. "
+        "If you registered a profile for this model, ensure the key matches the model's "
+        "resolved provider and identifier.",
+        subject,
+    )
+
+
 def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
     """Look up the `HarnessProfile` for an already-resolved model.
 
-    If `spec` is provided (the original string the caller passed), it is used
-    for registry lookup. Otherwise both the model identifier (via `model_dump`)
-    and provider (via `_get_ls_params`) are extracted from the model instance
-    and combined into a `provider:identifier` key so that model-level profiles
-    registered under the canonical `provider:model` shape still resolve when
-    the caller hands in a pre-built model. The combined lookup is followed by
-    an identifier-only lookup (when the identifier is already in
-    `provider:model` shape) and a provider-only fallback.
+    Use `spec` directly when provided. Otherwise resolve the model's provider
+    and identifier, and try:
 
-    A *bare* identifier (no `:`) is deliberately not consulted against the
-    registry. If it were, a pre-built model whose `model_name` happened to
-    coincide with a registered provider key (e.g. an in-house proxy whose
-    identifier is `"openai"`) would silently pick up that provider's profile.
-    Registering under a bare key is supported via the `spec` path, not
-    inferred from a model's identifier.
+    1. The combined `provider:identifier` key, as an exact match.
+    2. The model identifier alone, as an exact match, when it contains a colon.
+        This supports models that already report a `provider:model` identifier.
+        Without a colon, the key denotes provider-wide defaults, so looking up
+        a bare model name here could apply an unrelated provider's profile.
+    3. The reported provider's defaults, or the identifier prefix's defaults
+        if the provider is unknown.
+
+    Both exact candidates take precedence over provider fallback. An exact
+    match inherits defaults from the provider prefix of its registered key.
 
     Args:
         model: Resolved chat model instance.
@@ -1281,42 +1346,42 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     from deepagents._models import get_model_identifier, get_model_provider  # noqa: PLC0415
 
     if spec is not None:
-        return _get_harness_profile(spec) or HarnessProfile()
+        profile = _get_harness_profile(spec)
+        if profile is not None:
+            return profile
+        _log_harness_profile_miss(f"spec {spec!r}")
+        return HarnessProfile()
     identifier = get_model_identifier(model)
     provider = get_model_provider(model)
-    # Try the canonical `provider:model` key first so user registrations under
-    # that shape match. `_get_harness_profile` internally falls back from the
-    # exact key to the provider prefix, which also subsumes the pure
-    # provider-only case below when both pieces are known. Skip when the
-    # identifier already contains a colon to avoid producing a malformed
-    # double-colon key.
-    if provider and identifier and ":" not in identifier:
-        profile = _get_harness_profile(f"{provider}:{identifier}")
-        if profile is not None:
-            return profile
-    # Only consult identifier-only lookup when the identifier itself is in
-    # `provider:model` shape — otherwise a bare identifier could accidentally
-    # match a provider-wide registration (see docstring).
+    candidates: list[str] = []
+    if provider and identifier:
+        candidates.append(f"{provider}:{identifier}")
+    # Compatibility with provider-qualified identifiers; bare keys are providers.
     if identifier is not None and ":" in identifier:
-        profile = _get_harness_profile(identifier)
+        candidates.append(identifier)
+    # Check exact keys before allowing `_get_harness_profile` to fall back.
+    _ensure_harness_profiles_loaded()
+    for candidate in candidates:
+        if candidate in _HARNESS_PROFILES:
+            profile = _get_harness_profile(candidate)
+            if profile is not None:
+                logger.debug(
+                    "Using exact HarnessProfile %r for pre-built model (identifier=%r, provider=%r).",
+                    candidate,
+                    identifier,
+                    provider,
+                )
+                return profile
+    # A known provider is authoritative for fallback.
+    fallback_keys = [provider] if provider is not None else candidates
+    for key in fallback_keys:
+        profile = _get_harness_profile(key)
         if profile is not None:
+            logger.debug(
+                "No exact HarnessProfile for pre-built model (identifier=%r, provider=%r); using provider defaults.",
+                identifier,
+                provider,
+            )
             return profile
-    if provider is not None:
-        profile = _get_harness_profile(provider)
-        if profile is not None:
-            return profile
-    # Surface at warning when the user has registered profiles but none
-    # matched — a common "my profile isn't applying" failure mode where the
-    # pre-built model's identifier/provider couldn't be derived. With an
-    # empty registry, no profile was ever going to apply, so the miss is
-    # unsurprising and stays at debug.
-    level = logging.WARNING if _has_any_harness_profile() else logging.DEBUG
-    logger.log(
-        level,
-        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults. "
-        "If you registered a profile for this model, ensure the key matches the model's resolved provider and identifier.",
-        type(model).__name__,
-        identifier,
-        provider,
-    )
+    _log_harness_profile_miss(f"pre-built model {type(model).__name__} (identifier={identifier!r}, provider={provider!r})")
     return HarnessProfile()

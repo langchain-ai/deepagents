@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const prLabeler = require('../../labeling/pr-labeler.js');
-const topicClassifier = require('../../labeling/topic-classifier.js');
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 const PR_LABELER_YML = path.join(REPO_ROOT, '.github/workflows/pr_labeler.yml');
@@ -320,15 +319,8 @@ function workflowScript(filename, stepName) {
     .map(line => line.slice(12)).join('\n').replace('${{ inputs.max_items }}', '100');
 }
 
-function topicResponse(labels) {
-  return { ok: true, json: async () => ({
-    choices: [{ message: { content: JSON.stringify({ labels }) } }],
-  }) };
-}
-
 async function runLabeler(mode, api, {
   action = 'edited', renamedTitle = '',
-  fetchImpl = async () => topicResponse([]),
   warning = message => { throw new Error(message); },
 } = {}) {
   if (mode === 'release helper') return api.h.labelPR(api.pr.number);
@@ -342,12 +334,6 @@ async function runLabeler(mode, api, {
     context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action } },
     require: spec => {
       if (spec.endsWith('/pr-labeler.js')) return { loadAndInit: () => ({ h: api.h }) };
-      if (spec.endsWith('/topic-classifier.js')) return {
-        loadTopicLabels: topicClassifier.loadTopicLabels,
-        classifyTopicLabels: (text, labels) => topicClassifier.classifyTopicLabels(
-          text, labels, { apiKey: 'test-key', fetchImpl },
-        ),
-      };
       throw new Error(`Unexpected module: ${spec}`);
     },
     core: { ...core, warning, setFailed(message) { throw new Error(message); } },
@@ -356,60 +342,31 @@ async function runLabeler(mode, api, {
 }
 
 for (const action of ['opened', 'synchronize', 'reopened', 'edited']) {
-  test(`live ${action} applies model topics from the title and preserves existing topics`, async () => {
+  test(`live ${action} does not infer topics from PR text and preserves existing topics`, async () => {
     const api = labelerApi('fix(code): reconnect MCP servers', ['topic:skills']);
-    api.pr.body = 'Unrelated template prose that must not reach the model';
-    await runLabeler('live', api, { action, fetchImpl: async (_url, options) => {
-      const request = JSON.parse(options.body);
-      assert.ok(request.messages[1].content.endsWith(`GitHub item:\n${api.pr.title}`));
-      assert.ok(!request.messages[1].content.includes(api.pr.body));
-      return topicResponse(['topic:mcp', 'topic:invented']);
-    } });
-    assert.ok(api.assigned.has('topic:mcp'), 'the model topic must reach the PR');
-    assert.ok(api.known.has('topic:mcp'), 'new topics must be created before applying');
-    assert.ok(api.assigned.has('topic:skills'), 'existing topics survive');
-    assert.ok(!api.assigned.has('topic:invented'), 'unknown topics are filtered out');
+    api.pr.body = 'Fix memory and sandbox issues';
+    await runLabeler('live', api, { action });
+    assert.deepEqual([...api.assigned].filter(name => name.startsWith('topic:')), ['topic:skills']);
+    assert.ok(api.assigned.has('type:bug'));
+    assert.ok(api.assigned.has('package:dcode'));
   });
 }
 
-test('live topic classification uses the corrected title from scope renaming', async () => {
-  const api = labelerApi('fix(deepagents-code): reconnect MCP servers', []);
-  const renamedTitle = 'fix(code): reconnect MCP servers';
-  await runLabeler('live', api, { renamedTitle, fetchImpl: async (_url, options) => {
-    assert.ok(JSON.parse(options.body).messages[1].content.endsWith(`GitHub item:\n${renamedTitle}`));
-    return topicResponse(['topic:mcp']);
-  } });
-  assert.ok(api.assigned.has('topic:mcp'));
+test('live title labels use the corrected title from scope renaming', async () => {
+  const api = labelerApi('fix: reconnect MCP servers', []);
+  await runLabeler('live', api, { renamedTitle: 'fix(code): reconnect MCP servers' });
+  assert.ok(api.assigned.has('package:dcode'));
+  assert.ok(api.assigned.has('type:bug'));
 });
 
 // `edited` skips the file block, so the path signal needs a push-like action.
-test('live topics come from the changed modules even when the model returns none', async () => {
+test('live topics come from the changed modules', async () => {
   const api = labelerApi('fix(code): correct behavior', [], [
     { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
   ]);
   await runLabeler('live', api, { action: 'synchronize' });
   assert.ok(api.assigned.has('topic:mcp'), 'a touched module must contribute its topic');
   assert.ok(api.known.has('topic:mcp'), 'a path topic is created before it is applied');
-  assert.ok(api.assigned.has('package:dcode'));
-});
-
-test('live empty classification preserves existing topics and applies other labels', async () => {
-  const api = labelerApi('fix(code): correct behavior', ['topic:skills']);
-  await runLabeler('live', api);
-  assert.deepEqual([...api.assigned].filter(name => name.startsWith('topic:')), ['topic:skills']);
-  assert.ok(api.assigned.has('type:bug'));
-});
-
-test('live classifier failure warns while preserving topic and package labeling', async () => {
-  const api = labelerApi('fix(code): correct behavior', ['topic:skills']);
-  const warnings = [];
-  await runLabeler('live', api, {
-    fetchImpl: async () => ({ ok: false, status: 503 }),
-    warning: message => warnings.push(message),
-  });
-  assert.deepEqual(warnings, ['Topic classification failed: Topic classifier returned HTTP 503']);
-  assert.ok(api.assigned.has('topic:skills'));
-  assert.ok(api.assigned.has('type:bug'));
   assert.ok(api.assigned.has('package:dcode'));
 });
 

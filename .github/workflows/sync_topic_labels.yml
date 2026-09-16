@@ -70,5 +70,5 @@ jobs:
           if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
             gh pr create --base "$BASE" --head "$BRANCH" \
               --title "chore(infra): sync topic label manifest" \
-              --body "Updates the cached topic-label choices used by issue and PR classification."
+              --body "Updates the cached topic-label choices used by issue classification."
           fi

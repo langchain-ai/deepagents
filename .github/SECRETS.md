@@ -48,20 +48,18 @@ Use separate workspace-scoped service keys for tracing and Gateway invocation. T
 
 ### `labeling`
 
-Create this environment for the `label` job in `pr_labeler.yml` and the
-`label-by-package` job in `auto-label-by-package.yml`.
+Create this environment for the `label-by-package` job in
+`auto-label-by-package.yml`.
 
 | Secret | Purpose |
 | --- | --- |
-| `GROQ_API_KEY` | Classify issue text and PR titles into topic labels. |
+| `GROQ_API_KEY` | Classify issue titles and bodies into topic labels. |
 
 Provision a dedicated Groq inference key for labeling, separate from the evals
 credential, with model and spending limits where supported. Store it only in
-this environment; both workflows inject it only into their classification step.
-Do not require reviewers, so automatic labeling can run unattended. Allow the
-default branch and trusted PR base branches supported by this repository;
-`pull_request_target` uses the base branch, and the issue workflow uses the
-default branch. Never check out PR head code in these credentialed jobs.
+this environment; the issue workflow injects it only into its classification step.
+Do not require reviewers, so automatic labeling can run unattended. Restrict
+deployments to the default branch, which the issue workflow uses.
 
 ### `evals`
 

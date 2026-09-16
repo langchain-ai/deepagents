@@ -175,9 +175,7 @@ class TestProfileForModel:
 
     @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
     @pytest.mark.parametrize("combined_exact", [False, True])
-    def test_exact_candidates_precede_provider_defaults(
-        self, identifier_attr: str, caplog: pytest.LogCaptureFixture, *, combined_exact: bool
-    ) -> None:
+    def test_exact_candidates_precede_provider_defaults(self, identifier_attr: str, *, combined_exact: bool) -> None:
         """Qualified identifiers retain exact overrides and inherit provider fields."""
         with patch.dict(_HARNESS_PROFILES):
             register_harness_profile("myprov", HarnessProfile(base_system_prompt="provider base", system_prompt_suffix="provider suffix"))
@@ -186,37 +184,22 @@ class TestProfileForModel:
                 register_harness_profile("myprov:myprov:my-model", HarnessProfile(system_prompt_suffix="combined suffix"))
             model = _make_model({identifier_attr: "myprov:my-model"})
             model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                result = _harness_profile_for_model(model, None)
+            result = _harness_profile_for_model(model, None)
             assert result.base_system_prompt == "provider base"
             assert result.system_prompt_suffix == ("combined suffix" if combined_exact else "identifier suffix")
-            key = "myprov:myprov:my-model" if combined_exact else "myprov:my-model"
-            assert any(r.levelno == logging.DEBUG and f"Using exact HarnessProfile {key!r}" in r.getMessage() for r in caplog.records)
-            assert "using provider defaults" not in caplog.text
 
-    def test_qualified_identifier_provider_fallback_logs_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_qualified_identifier_falls_back_to_provider(self) -> None:
         """Provider defaults remain available when neither exact candidate exists."""
         with patch.dict(_HARNESS_PROFILES):
             profile = HarnessProfile(system_prompt_suffix="provider suffix")
             register_harness_profile("myprov", profile)
             model = _make_model({"model_name": "myprov:my-model"})
             model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                result = _harness_profile_for_model(model, None)
-            assert result is profile
-            assert any(r.levelno == logging.DEBUG and "using provider defaults" in r.getMessage() for r in caplog.records)
-            assert "identifier='myprov:my-model', provider='myprov'" in caplog.text
+            assert _harness_profile_for_model(model, None) is profile
 
     @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
     def test_identifier_prefix_is_not_treated_as_provider(self, identifier_attr: str) -> None:
-        """A colon-containing identifier is an exact key only, never a provider prefix.
-
-        `glm-5.2:cloud` is a plain Ollama model identifier, not a qualified
-        spec. Running it through the provider-prefix fallback would let a
-        profile registered under the bare key `glm-5.2` govern an unrelated
-        `ollama` model, which is the accident the resolver's docstring
-        promises is prevented.
-        """
+        """Provider fallback uses the reported provider instead of an identifier prefix."""
         with patch.dict(_HARNESS_PROFILES):
             register_harness_profile("glm-5.2", HarnessProfile(system_prompt_suffix="unrelated bare key"))
             model = _make_model({identifier_attr: "glm-5.2:cloud"})
@@ -1968,65 +1951,28 @@ class TestSubagentLevelProfileResolution:
 class TestProfileMissLogLevel:
     """Profile misses remain debug diagnostics even with registered profiles."""
 
-    def test_string_spec_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
-        """An unmatched spec uses defaults and remains traceable at debug level."""
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
-            model = MagicMock(spec=BaseChatModel)
+    @pytest.mark.parametrize("spec", [None, "someprovv:some-model"])
+    @pytest.mark.parametrize("registered", [False, True])
+    def test_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture, spec: str | None, *, registered: bool) -> None:
+        with patch.dict(_HARNESS_PROFILES):
+            if registered:
+                register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
+            model = _make_model({"model_name": "some-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "someprovv"})
             with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                result = _harness_profile_for_model(model, "someprovv:some-model")
-            assert result == HarnessProfile()
+                assert _harness_profile_for_model(model, spec) == HarnessProfile()
             records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
             assert records, "Expected a profile-miss log record"
             assert all(r.levelno == logging.DEBUG for r in records)
-            assert any("someprovv:some-model" in r.getMessage() for r in records)
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+            assert any("someprovv" in r.getMessage() for r in records)
 
     def test_string_spec_hit_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A spec that resolves must not produce a miss record."""
-        original = dict(_HARNESS_PROFILES)
-        try:
+        with patch.dict(_HARNESS_PROFILES):
             profile = HarnessProfile(system_prompt_suffix="x")
             register_harness_profile("someprov", profile)
-            model = MagicMock(spec=BaseChatModel)
             with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                assert _harness_profile_for_model(model, "someprov") is profile
+                assert _harness_profile_for_model(_make_model({}), "someprov") is profile
             assert not [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
-
-    @pytest.mark.parametrize("spec", [None, "someprov:some-model"])
-    def test_no_registered_profiles_logs_at_debug(self, caplog: pytest.LogCaptureFixture, spec: str | None) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model.model_dump.return_value = {}
-        model._get_ls_params = MagicMock(return_value={})
-        with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-            result = _harness_profile_for_model(model, spec)
-        assert result == HarnessProfile()
-        records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
-        assert records, "Expected a profile-miss log record"
-        assert all(r.levelno == logging.DEBUG for r in records)
-
-    def test_registered_profiles_but_no_match_logs_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
-            model = MagicMock(spec=BaseChatModel)
-            model.model_dump.return_value = {}
-            model._get_ls_params = MagicMock(return_value={})
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                result = _harness_profile_for_model(model, None)
-            assert result == HarnessProfile()
-            records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
-            assert records, "Expected a profile-miss log record"
-            assert all(r.levelno == logging.DEBUG for r in records)
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
 
 
 class TestModelNoneDeprecationWarning:

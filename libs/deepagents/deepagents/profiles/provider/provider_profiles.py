@@ -250,23 +250,6 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     _register_provider_profile_impl(key, profile)
 
 
-def _has_any_provider_profile() -> bool:
-    """Return `True` when a user has registered any provider profile.
-
-    Provider-side counterpart of `_has_any_harness_profile`. Registrations
-    made during the `_ensure_builtin_profiles_loaded` bootstrap are excluded:
-    with only bootstrap-provided defaults in play, a "no match" miss is
-    unsurprising and should stay at debug.
-
-    Exists so callers do not have to import the private `_PROVIDER_PROFILES`
-    registry directly.
-    """
-    from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
-
-    _ensure_provider_profiles_loaded()
-    return bool(_PROVIDER_PROFILES.keys() - _builtin_profiles._BOOTSTRAP_PROVIDER_KEYS)
-
-
 def get_provider_profile(spec: str) -> ProviderProfile | None:
     """Look up the `ProviderProfile` for a model spec.
 
@@ -372,10 +355,8 @@ def apply_provider_profile(
     silently replaced.
 
     When no profile is registered for `spec`, returns a copy of `kwargs`
-    unchanged. This keeps the helper safe to call unconditionally. The miss is
-    logged — at `WARNING` when the user has registered provider profiles, at
-    `DEBUG` when the registry holds only bootstrap defaults — because a missed
-    profile silently drops `init_kwargs` and skips `pre_init`.
+    unchanged and logs the miss at `DEBUG`. Profiles are optional, so this
+    helper is safe to call unconditionally.
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
@@ -399,15 +380,7 @@ def apply_provider_profile(
     base: dict[str, Any] = dict(kwargs) if kwargs else {}
     profile = get_provider_profile(spec)
     if profile is None:
-        # Surface at warning when the user has registered profiles but none
-        # matched. A missed provider profile drops `init_kwargs` and skips
-        # `pre_init`, so the model is built without its `base_url`, headers or
-        # auth wiring and the failure surfaces much later as an SDK connection
-        # or authorization error. With only bootstrap defaults in the registry,
-        # no profile was ever going to apply, so the miss stays at debug.
-        level = logging.WARNING if _has_any_provider_profile() else logging.DEBUG
-        logger.log(
-            level,
+        logger.debug(
             "No provider profile matched spec %r; building the model with caller kwargs only. "
             "Registry keys are matched exactly, so check the provider and model identifier.",
             spec,

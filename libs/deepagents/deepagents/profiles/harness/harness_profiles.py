@@ -1279,46 +1279,21 @@ def _log_harness_profile_miss(subject: str) -> None:
 def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
     """Look up the `HarnessProfile` for an already-resolved model.
 
-    If `spec` is provided (the original string the caller passed), it is used
-    for registry lookup. Otherwise the model identifier (via
-    `get_model_identifier`) and provider (via `_get_ls_params`) are extracted
-    from the model instance and combined into a `provider:identifier` key so
-    that model-level profiles registered under the canonical `provider:model`
-    shape still resolve when the caller hands in a pre-built model. The
-    identifier may itself contain colons; they remain part of the model
-    identifier.
-
-    Resolution order:
+    Use `spec` directly when provided. Otherwise resolve the model's provider
+    and identifier, preserving any colons in the identifier, and try:
 
     1. The combined `provider:identifier` key, as an exact match.
     2. The identifier alone, as an exact match, when it contains a colon.
     3. Provider-wide defaults.
 
-    Both exact keys are tried before provider-wide defaults, so an exact
-    registration takes precedence field-by-field. Unset fields still inherit
-    provider defaults through the merge in `_get_harness_profile`.
+    Exact matches inherit unset fields from the matched key's provider prefix
+    via `_get_harness_profile`. For compatibility, step 2 can therefore inherit
+    defaults from a prefix different from the model's reported provider.
+    Step 3 uses the reported provider, falling back to the identifier's prefix
+    only when the provider is unknown.
 
-    Step 3 uses the provider when the model exposes one. Otherwise it uses a
-    colon-containing identifier's leading segment, which is then the only
-    provider signal available (an identifier of `"colprov:some-model"` resolves
-    the `"colprov"` profile).
-
-    A *bare* identifier (no `:`) is never consulted against the registry. If it
-    were, a pre-built model whose `model_name` happened to coincide with a
-    registered provider key (e.g. an in-house proxy whose identifier is
-    `"openai"`) would silently pick up that provider's profile. Registering
-    under a bare key is supported via the `spec` path, not inferred from a
-    model's identifier.
-
-    A colon-containing identifier carries no such guard, because it cannot be
-    told apart from a provider-qualified key. Step 2 matches it exactly, and
-    `_get_harness_profile` then merges in whatever is registered under its
-    leading segment — so a proxy reporting `identifier="anthropic:claude-x"`
-    and `provider="openai"` resolves the `anthropic` profiles, not `openai`.
-    Step 3 is narrower and does prefer the real provider. This asymmetry
-    predates colon-bearing model identifiers; it is recorded here rather than
-    changed, since tightening it would alter resolution for existing
-    registrations.
+    Bare identifiers are never looked up alone: a model named `"openai"` must
+    not accidentally match that provider's defaults.
 
     Args:
         model: Resolved chat model instance.
@@ -1343,14 +1318,9 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     candidates: list[str] = []
     if provider and identifier:
         candidates.append(f"{provider}:{identifier}")
-    # Consult the identifier alone only when it contains a colon, i.e. it may
-    # already be provider-qualified. A bare identifier is never used as a key,
-    # so it cannot accidentally match a provider-wide registration (see
-    # docstring).
     if identifier is not None and ":" in identifier:
         candidates.append(identifier)
-    # Exact keys first, so a `provider:model` registration is never shadowed by
-    # provider-wide defaults.
+    # Check exact keys before allowing `_get_harness_profile` to fall back.
     _ensure_harness_profiles_loaded()
     for candidate in candidates:
         if candidate in _HARNESS_PROFILES:
@@ -1363,10 +1333,7 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
                     provider,
                 )
                 return profile
-    # Provider defaults. A known provider is authoritative here; the
-    # identifier's leading segment is consulted only when the model exposes no
-    # provider of its own. See the docstring for why step 2 does not hold the
-    # same line.
+    # A known provider is authoritative for fallback.
     fallback_keys = [provider] if provider is not None else candidates
     for key in fallback_keys:
         profile = _get_harness_profile(key)

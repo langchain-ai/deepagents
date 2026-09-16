@@ -23609,8 +23609,8 @@ class DeepAgentsApp(App):
     async def action_open_effort_selector(self) -> None:
         """Open the reasoning effort picker via `/effort`.
 
-        `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
-        place behind any pending input instead of jumping an in-flight turn.
+        The bare form is `IMMEDIATE_UI`, so it opens while the agent is busy;
+        argument forms still wait for idle because they mutate model settings.
         """
         await self._submit_footer_picker("/effort")
 

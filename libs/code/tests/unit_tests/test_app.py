@@ -16997,17 +16997,20 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["second"]
 
-    async def test_repeated_footer_effort_click_queues_once(self) -> None:
-        """Repeated effort clicks during a turn keep one queued picker request."""
+    async def test_repeated_footer_effort_click_bypasses_queue(self) -> None:
+        """Effort opens during a turn without leaving queued picker requests."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
 
-            await app.action_open_effort_selector()
-            await app.action_open_effort_selector()
+            with patch.object(
+                app, "_show_effort_selector", new_callable=AsyncMock
+            ) as show_selector:
+                await app.action_open_effort_selector()
 
-            assert [message.text for message in app._pending_messages] == ["/effort"]
+            show_selector.assert_awaited_once_with("/effort")
+            assert not app._pending_messages
 
     async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
         """Clicking the model label again does not stack another selector."""

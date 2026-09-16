@@ -2,6 +2,18 @@
   "org": "langchain-ai",
   "trustedThreshold": 5,
   "labelColor": "b76e79",
+  "labelColors": {
+    "type:": "a8c8e8",
+    "package:": "b5d6b2",
+    "topic:": "cbbfe6",
+    "integration:": "a9d3d8",
+    "org:": "ddc9b4",
+    "priority:": "eba58b",
+    "size: ": "dedbd5",
+    "triage:": "f0d79a",
+    "auto:": "d9dce0",
+    "ci:": "e3c3cc"
+  },
   "sizeThresholds": [
     {
       "label": "size: XS",
@@ -183,6 +195,84 @@
       "label": "integration:vercel",
       "prefix": "libs/partners/vercel/",
       "skipExcludedFiles": true
+    }
+  ],
+  "topicFileRules": [
+    {
+      "label": "topic:middleware",
+      "prefix": "libs/deepagents/deepagents/middleware/"
+    },
+    {
+      "label": "topic:subagents",
+      "pattern": "(?:^|/)subagents\\.py$"
+    },
+    {
+      "label": "topic:async-subagents",
+      "pattern": "(?:^|/)async_subagents\\.py$"
+    },
+    {
+      "label": "topic:memory",
+      "pattern": "(?:^|/)(?:memory|memory_guard)\\.py$"
+    },
+    {
+      "label": "topic:filesystem",
+      "pattern": "(?:^|/)(?:filesystem|file_ops|_fs_interrupt)\\.py$"
+    },
+    {
+      "label": "topic:backends",
+      "prefix": "libs/deepagents/deepagents/backends/"
+    },
+    {
+      "label": "topic:sandboxes",
+      "pattern": "(?:^|/)(?:sandbox|local_shell)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "pattern": "(?:^|/)(?:skills|skill_providers)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/skills/"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/built_in_skills/"
+    },
+    {
+      "label": "topic:mcp",
+      "pattern": "(?:^|/)mcp_[^/]+\\.py$"
+    },
+    {
+      "label": "topic:mcp",
+      "prefix": "libs/code/deepagents_code/mcp_providers/"
+    },
+    {
+      "label": "topic:models",
+      "pattern": "(?:^|/)(?:_models|model_config|configurable_model|model_retry)\\.py$"
+    },
+    {
+      "label": "topic:tracing",
+      "pattern": "(?:^|/)_tracing\\.py$"
+    },
+    {
+      "label": "topic:prompts",
+      "pattern": "(?:^|/)(?:system_prompt\\.md|default_agent_prompt\\.md|_prompt_caching\\.py)$"
+    },
+    {
+      "label": "topic:harness",
+      "prefix": "libs/deepagents/deepagents/profiles/"
+    },
+    {
+      "label": "topic:multimodal",
+      "pattern": "(?:^|/)(?:_video|media_utils)\\.py$"
+    },
+    {
+      "label": "topic:streaming",
+      "pattern": "(?:^|/)_tool_stream\\.py$"
+    },
+    {
+      "label": "topic:performance",
+      "pattern": "(?:^|/)(?:cost_tracking|cold_cache)\\.py$"
     }
   ]
 }

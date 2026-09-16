@@ -121,3 +121,17 @@ def test_release_keeps_disabled_package_scoped_integration_wiring() -> None:
 def test_openwiki_uses_dedicated_environment() -> None:
     workflow = _load_workflow("openwiki-update.yml")
     assert workflow["jobs"]["update"]["environment"] == "openwiki"
+
+
+def test_issue_topic_classifier_uses_dedicated_environment() -> None:
+    workflow = _load_workflow("auto-label-by-package.yml")
+    job = workflow["jobs"]["label-by-package"]
+    assert job["environment"] == "labeling"
+    assert "GROQ_API_KEY" not in workflow.get("env", {})
+    assert "GROQ_API_KEY" not in job.get("env", {})
+    for step in job["steps"]:
+        credential = step.get("env", {}).get("GROQ_API_KEY")
+        if step.get("name") == "Apply topic labels":
+            assert credential == "${{ secrets.GROQ_API_KEY }}"
+        else:
+            assert credential is None

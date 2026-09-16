@@ -1557,11 +1557,14 @@ test('creates the bypass and auto:pending-deletion labels when they do not exist
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
   assert.equal(calls.createLabel.length, 2);
+  // Colors come from `labelColors` in pr-labeler-config.json, not from a hex
+  // pinned here, so the palette has exactly one source of truth.
+  const { labelColors } = require('../../labeling/pr-labeler.js').loadConfig();
   assert.deepEqual(
     calls.createLabel.map(call => [call.name, call.color]),
     [
-      ['ci:keep-open', '0e8a16'],
-      ['auto:pending-deletion', 'fbca04'],
+      ['ci:keep-open', labelColors['ci:']],
+      ['auto:pending-deletion', labelColors['auto:']],
     ],
   );
   assert.equal(summary.checked, 0);

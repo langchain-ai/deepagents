@@ -49,6 +49,7 @@ from deepagents.profiles.provider.provider_profiles import (
     _merge_provider_profiles,
     apply_provider_profile,
     get_provider_profile,
+    logger as _provider_profiles_logger,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -581,6 +582,72 @@ class TestProviderProfileRegistry:
             register_provider_profile(provider, base)
             register_provider_profile(key, exact)
             assert get_provider_profile(key).init_kwargs["priority"] == "model"
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestProviderProfileMissLogging:
+    """Tests that `apply_provider_profile` reports a miss instead of silently no-opping.
+
+    A missed provider profile drops `init_kwargs` and skips `pre_init`, so the
+    model is built without its `base_url`, headers or auth wiring. Without a log
+    line the user's first signal is an SDK connection or authorization error far
+    from the cause, so the miss must be traceable.
+    """
+
+    LOGGER = _provider_profiles_logger.name
+
+    @staticmethod
+    def _miss_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "No provider profile matched" in r.getMessage()]
+
+    def test_bootstrap_only_registry_logs_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        """With only bootstrap defaults registered, a miss was always going to happen."""
+        with caplog.at_level(logging.DEBUG, logger=self.LOGGER):
+            assert apply_provider_profile("acme:thing") == {}
+        records = self._miss_records(caplog)
+        assert records, "Expected a provider-profile-miss log record"
+        assert all(r.levelno == logging.DEBUG for r in records)
+
+    def test_registered_profiles_but_no_match_logs_at_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A user registration in play makes a miss worth a warning."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger=self.LOGGER):
+                # Typo'd provider: close enough to be a plausible mistake.
+                assert apply_provider_profile("acmee:thing") == {}
+            records = self._miss_records(caplog)
+            assert records, "Expected a provider-profile-miss log record"
+            assert all(r.levelno == logging.WARNING for r in records)
+            assert any("acmee:thing" in r.getMessage() for r in records)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_successful_lookup_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A profile that applies must not produce a miss record."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger=self.LOGGER):
+                assert apply_provider_profile("acme:thing") == {"base_url": "http://acme"}
+            assert not self._miss_records(caplog)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    @pytest.mark.parametrize("spec", ["acme:", ":thing", ""])
+    def test_malformed_spec_records_the_reason(self, spec: str, caplog: pytest.LogCaptureFixture) -> None:
+        """A spec that can never be a registration key explains why it was skipped."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger=self.LOGGER):
+                # Notably `"acme:"` must not pick up the provider-wide `"acme"`.
+                assert apply_provider_profile(spec) == {}
+            assert any("no ProviderProfile lookup performed" in r.getMessage() for r in caplog.records)
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)

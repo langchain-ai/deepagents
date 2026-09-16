@@ -72,6 +72,15 @@ this set from the live registry to distinguish those defaults from
 profiles the user registers explicitly after import.
 """
 
+_BOOTSTRAP_PROVIDER_KEYS: frozenset[str] = frozenset()
+"""Snapshot of provider-profile keys registered during bootstrap.
+
+The provider-side counterpart of `_BOOTSTRAP_HARNESS_KEYS`, captured at
+the same point and used by `_has_any_provider_profile` for the same
+purpose: telling user registrations apart from the defaults that are
+always present.
+"""
+
 _loaded: bool = False
 """Guards `_ensure_builtin_profiles_loaded` against re-running.
 
@@ -118,9 +127,9 @@ def _ensure_builtin_profiles_loaded() -> None:
     same key layer on top via additive merge semantics in
     `register_*_profile`.
 
-    After both phases complete, snapshots the harness registry so
-    downstream callers can distinguish bootstrap-registered profiles
-    from profiles registered later via user code.
+    After both phases complete, snapshots both registries so downstream
+    callers can distinguish bootstrap-registered profiles from profiles
+    registered later via user code.
 
     The function is invoked lazily from `register_*_profile` and
     `get_*_profile` entry points; importing `deepagents.profiles` itself
@@ -130,7 +139,7 @@ def _ensure_builtin_profiles_loaded() -> None:
     threads block until bootstrap completes so they never observe a
     partially populated registry.
     """
-    global _loaded, _BOOTSTRAP_HARNESS_KEYS, _loading_thread_id  # noqa: PLW0603
+    global _loaded, _BOOTSTRAP_HARNESS_KEYS, _BOOTSTRAP_PROVIDER_KEYS, _loading_thread_id  # noqa: PLW0603
     thread_id = threading.get_ident()
     with _BOOTSTRAP_CONDITION:
         if _loaded:
@@ -145,6 +154,7 @@ def _ensure_builtin_profiles_loaded() -> None:
     saved_provider_profiles = dict(_PROVIDER_PROFILES)
     saved_harness_profiles = dict(_HARNESS_PROFILES)
     saved_bootstrap_harness_keys = _BOOTSTRAP_HARNESS_KEYS
+    saved_bootstrap_provider_keys = _BOOTSTRAP_PROVIDER_KEYS
     try:
         _nvidia.register()
         _openai.register()
@@ -157,6 +167,7 @@ def _ensure_builtin_profiles_loaded() -> None:
         _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
         _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
         bootstrap_harness_keys = frozenset(_HARNESS_PROFILES)
+        bootstrap_provider_keys = frozenset(_PROVIDER_PROFILES)
     except Exception:
         logger.exception("Built-in profile bootstrap failed; restoring pre-bootstrap registry state.")
         # Restore in place so modules holding registry references keep seeing
@@ -167,11 +178,13 @@ def _ensure_builtin_profiles_loaded() -> None:
         _HARNESS_PROFILES.update(saved_harness_profiles)
         with _BOOTSTRAP_CONDITION:
             _BOOTSTRAP_HARNESS_KEYS = saved_bootstrap_harness_keys
+            _BOOTSTRAP_PROVIDER_KEYS = saved_bootstrap_provider_keys
             _loading_thread_id = None
             _BOOTSTRAP_CONDITION.notify_all()
         raise
     with _BOOTSTRAP_CONDITION:
         _BOOTSTRAP_HARNESS_KEYS = bootstrap_harness_keys
+        _BOOTSTRAP_PROVIDER_KEYS = bootstrap_provider_keys
         _loaded = True
         _loading_thread_id = None
         _BOOTSTRAP_CONDITION.notify_all()

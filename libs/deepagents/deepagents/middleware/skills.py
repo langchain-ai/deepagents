@@ -1073,4 +1073,4 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware"]
+__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsState"]

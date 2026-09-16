@@ -26,6 +26,123 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def run_uninstall_command(args: argparse.Namespace) -> int:
+    """Dispatch `dcode uninstall <name>`.
+
+    Args:
+        args: Parsed CLI namespace; `uninstall_target` names the extra.
+
+    Returns:
+        Process exit code. `2` when no extra was named.
+    """
+    name = getattr(args, "uninstall_target", None)
+    if not isinstance(name, str) or not name:
+        from deepagents_code import ui
+
+        ui.show_uninstall_help()
+        return 2
+    return run_uninstall_request(name=name)
+
+
+def run_uninstall_request(*, name: str) -> int:
+    """Remove one selected optional extra from the dcode tool environment.
+
+    Shared by `dcode uninstall NAME` and the `dcode --uninstall NAME` alias.
+
+    Args:
+        name: Extra name to remove, as the user typed it.
+
+    Returns:
+        Process exit code: `0` on success and when the extra was already absent
+            (removal is idempotent, so a script re-running it does not fail),
+            `2` for an invalid extra name, `130` on `Ctrl+C`, and `1` for a
+            refused or failed removal — including a protected base-provider
+            extra, which is a refusal rather than a no-op.
+    """
+    from rich.markup import escape
+
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.config import console
+    from deepagents_code.update_check import (
+        create_update_log_file,
+        format_log_follow_command,
+        is_valid_extra_name,
+        perform_uninstall_extra,
+        uninstall_extra_method_error,
+    )
+
+    if not is_valid_extra_name(name):
+        console.print(
+            f"[bold red]Error:[/bold red] Invalid extra name '{escape(name)}'.",
+            highlight=False,
+        )
+        return 2
+    method_error = uninstall_extra_method_error(name)
+    if method_error is not None:
+        console.print(
+            f"[bold red]Error:[/bold red] {escape(method_error)}", highlight=False
+        )
+        return 1
+
+    log_path = create_update_log_file()
+    log_line = f"\nLog: {escape(str(log_path))}" if log_path is not None else ""
+    console.print(f"Uninstalling extra '{name}'...")
+    if log_path is not None:
+        console.print(
+            f"Uninstall log: {format_log_follow_command(log_path)}",
+            style="dim",
+            highlight=False,
+            markup=False,
+        )
+    try:
+        outcome = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
+    except KeyboardInterrupt:
+        console.print(f"\nAborted.{log_line}", highlight=False)
+        return 130
+    except OSError as exc:
+        logger.warning("uninstall failed", exc_info=True)
+        console.print(
+            f"[bold red]Error:[/bold red] {type(exc).__name__}: "
+            f"{escape(str(exc))}{log_line}",
+            highlight=False,
+        )
+        return 1
+    if outcome.interrupted:
+        recovery = (
+            "\nRun manually to repair: "
+            f"[cyan]{escape(outcome.manual_recovery_command)}[/cyan]"
+            if outcome.manual_recovery_command is not None
+            else ""
+        )
+        console.print(
+            "\nAborted. The tool environment may be partially rebuilt."
+            f"{log_line}{recovery}",
+            highlight=False,
+        )
+        return 130
+    if outcome.extra_was_absent:
+        console.print(escape(outcome.output), highlight=False)
+        return 0
+    if outcome.success:
+        console.print(
+            f"[green]Uninstalled extra '{name}'.[/green] Its packages are already "
+            f"gone from this environment. Relaunch {escape(invoked_name())} to "
+            f"pick up the change."
+        )
+        return 0
+    detail = f": {outcome.output[-200:]}" if outcome.output else ""
+    recovery = (
+        f"\nRun manually: [cyan]{escape(outcome.manual_recovery_command)}[/cyan]"
+        if outcome.manual_recovery_safe and outcome.manual_recovery_command is not None
+        else ""
+    )
+    console.print(
+        f"[bold red]Uninstall failed[/bold red]{escape(detail)}{log_line}{recovery}",
+        highlight=False,
+    )
+    return 1
+
+
 def run_install_command(args: argparse.Namespace) -> int:
     """Dispatch `dcode install <name>`.
 
@@ -255,22 +372,24 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
             highlight=False,
             markup=False,
         )
-        success, output = asyncio.run(perform_install_extra(extra, log_path=log_path))
-        if success:
+        outcome = asyncio.run(perform_install_extra(extra, log_path=log_path))
+        if outcome.success:
             console.print(f"[green]Installed extra '{extra}'.[/green]")
             return 0
         # Tail the last 200 chars — uv resolver prints the resolved error at
         # the end, not the beginning.
-        detail = f": {output[-200:]}" if output else ""
+        detail = f": {outcome.output[-200:]}" if outcome.output else ""
         # Best-effort upgrade of `manual_cmd` (set above via
         # `install_extra_command`) to the install-method-specific recovery
         # command. On failure, keep that already-bound install-script command
         # so the hint is never empty.
-        manual_cmd = safe_install_extra_recovery_command(extra, fallback=manual_cmd)
+        recovery = ""
+        if outcome.manual_recovery_safe:
+            manual_cmd = safe_install_extra_recovery_command(extra, fallback=manual_cmd)
+            recovery = f"\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]"
         console.print(
             f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-            f"Log: {log_path}\n"
-            f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
+            f"Log: {log_path}{recovery}",
             markup=True,
             highlight=False,
         )

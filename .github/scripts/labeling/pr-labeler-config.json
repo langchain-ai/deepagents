@@ -2,6 +2,18 @@
   "org": "langchain-ai",
   "trustedThreshold": 5,
   "labelColor": "b76e79",
+  "labelColors": {
+    "type:": "a8c8e8",
+    "package:": "b5d6b2",
+    "topic:": "cbbfe6",
+    "integration:": "a9d3d8",
+    "org:": "ddc9b4",
+    "priority:": "eba58b",
+    "size: ": "dedbd5",
+    "triage:": "f0d79a",
+    "auto:": "d9dce0",
+    "ci:": "e3c3cc"
+  },
   "sizeThresholds": [
     {
       "label": "size: XS",
@@ -29,147 +41,238 @@
   "excludedPaths": [
     "docs/"
   ],
+  "releaseLabel": "auto:release-pr",
+  "tierLabels": {
+    "new": "auto:new-contributor",
+    "trusted": "auto:trusted-contributor"
+  },
   "typeToLabel": {
-    "feat": "feature",
-    "fix": "fix",
-    "docs": "documentation",
-    "hotfix": "hotfix",
-    "style": "linting",
-    "refactor": "refactor",
-    "perf": "performance",
-    "test": "tests",
-    "build": "infra",
-    "ci": "infra",
-    "chore": "infra",
-    "revert": "revert",
-    "release": "release",
-    "breaking": "breaking"
+    "feat": "type:feature",
+    "fix": "type:bug",
+    "docs": "type:docs",
+    "hotfix": "type:hotfix",
+    "style": "type:style",
+    "refactor": "type:refactor",
+    "perf": "type:performance",
+    "test": "type:test",
+    "build": "type:build",
+    "ci": "type:ci",
+    "chore": "type:chore",
+    "revert": "type:revert"
+  },
+  "breakingLabel": "type:breaking",
+  "labelDescriptions": {
+    "type:feature": "A request, idea, or new user-facing functionality or behavior.",
+    "type:bug": "An unexpected problem or incorrect behavior.",
+    "type:docs": "Documentation additions, improvements, or fixes.",
+    "type:hotfix": "An urgent fix using the manual release path.",
+    "type:style": "Formatting or style changes without behavior changes.",
+    "type:refactor": "Code restructuring with no behavioral changes, feature additions, or bug fixes.",
+    "type:performance": "Performance problems or improvements.",
+    "type:test": "New or updated tests.",
+    "type:build": "Changes to the build system or external dependencies.",
+    "type:ci": "Changes to continuous integration workflows.",
+    "type:chore": "Concrete maintenance or operational work that is not a bug, feature, documentation change, or spike.",
+    "type:revert": "Reverts a previous change.",
+    "type:breaking": "The PR title declares a breaking change with !.",
+    "auto:release-pr": "Pull request created or managed as a package release.",
+    "auto:new-contributor": "Author is a first-time contributor to this repository.",
+    "auto:trusted-contributor": "Author satisfies the repository's trusted-contributor criteria.",
+    "org:external": "Issue or pull request created by someone outside the `langchain-ai` GitHub organization.",
+    "org:internal": "Issue or pull request created by a member of the `langchain-ai` GitHub organization.",
+    "org:open-swe": "Pull request created from an `open-swe/` branch.",
+    "package:deepagents": "Changes related to the `deepagents` SDK and agent harness.",
+    "package:dcode": "Changes related to the `deepagents-code` terminal coding agent.",
+    "package:acp": "Changes related to the Agent Client Protocol package.",
+    "package:talon": "Changes related to the Talon package.",
+    "package:evals": "Changes related to the evaluation suite, benchmarks, and Harbor integration.",
+    "package:examples": "Changes to example code or tutorials.",
+    "integration:daytona": "Integration with the Daytona sandbox service.",
+    "integration:modal": "Integration with the Modal sandbox service.",
+    "integration:quickjs": "Integration with the QuickJS sandbox package.",
+    "integration:runloop": "Integration with the Runloop sandbox service.",
+    "integration:vercel": "Integration with Vercel sandbox services.",
+    "integration:langsmith": "Integration with LangSmith sandbox and related LangSmith services.",
+    "size: XS": "Pull request with an extra-small diff.",
+    "size: S": "Pull request with a small diff.",
+    "size: M": "Pull request with a medium diff.",
+    "size: L": "Pull request with a large diff.",
+    "size: XL": "Pull request with an extra-large diff."
   },
   "scopeToLabel": {
-    "acp": "acp",
-    "ci": "infra",
-    "cli": "cli",
-    "cli-gha": "github_actions",
-    "code": "dcode",
-    "daytona": "daytona",
-    "deepagents": "deepagents",
+    "acp": "package:acp",
+    "code": "package:dcode",
+    "daytona": "integration:daytona",
+    "deepagents": "package:deepagents",
+    "deepagents-acp": "package:acp",
+    "deepagents-code": "package:dcode",
+    "deepagents-talon": "package:talon",
+    "evals": "package:evals",
+    "examples": "package:examples",
+    "harbor": "package:evals",
+    "langchain-daytona": "integration:daytona",
+    "langchain-modal": "integration:modal",
+    "langchain-quickjs": "integration:quickjs",
+    "langchain-runloop": "integration:runloop",
+    "langchain-vercel-sandbox": "integration:vercel",
+    "langsmith-sandbox": "integration:langsmith",
+    "modal": "integration:modal",
+    "quickjs": "integration:quickjs",
+    "runloop": "integration:runloop",
+    "sdk": "package:deepagents",
+    "talon": "package:talon",
+    "vercel": "integration:vercel"
+  },
+  "scopeAliases": {
+    "deepagents": "sdk",
     "deepagents-acp": "acp",
-    "deepagents-cli": "cli",
-    "deepagents-code": "dcode",
-    "deepagents-talon": "talon",
-    "deps": "dependencies",
-    "docs": "documentation",
-    "evals": "evals",
-    "examples": "examples",
-    "harbor": "harbor",
-    "infra": "infra",
-    "langchain-daytona": "daytona",
-    "langchain-modal": "modal",
-    "langchain-quickjs": "quickjs",
-    "langchain-runloop": "runloop",
-    "langchain-vercel-sandbox": "vercel",
-    "langsmith-sandbox": "langsmith-sandbox",
-    "modal": "modal",
-    "quickjs": "quickjs",
-    "runloop": "runloop",
-    "sdk": "deepagents",
-    "talon": "talon",
-    "vercel": "vercel"
+    "deepagents-code": "code",
+    "deepagents-talon": "talon"
   },
   "branchRules": [
     {
-      "label": "open-swe",
+      "label": "org:open-swe",
       "prefix": "open-swe/"
     }
   ],
   "fileRules": [
     {
-      "label": "deepagents",
+      "label": "package:deepagents",
       "prefix": "libs/deepagents/",
       "skipExcludedFiles": true
     },
     {
-      "label": "cli",
-      "prefix": "libs/cli/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "acp",
+      "label": "package:acp",
       "prefix": "libs/acp/",
       "skipExcludedFiles": true
     },
     {
-      "label": "dcode",
+      "label": "package:dcode",
       "prefix": "libs/code/",
       "skipExcludedFiles": true
     },
     {
-      "label": "talon",
+      "label": "package:talon",
       "prefix": "libs/talon/",
       "skipExcludedFiles": true
     },
     {
-      "label": "evals",
+      "label": "package:evals",
       "prefix": "libs/evals/",
       "skipExcludedFiles": true
     },
     {
-      "label": "daytona",
-      "prefix": "libs/partners/daytona/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "modal",
-      "prefix": "libs/partners/modal/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "quickjs",
-      "prefix": "libs/partners/quickjs/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "runloop",
-      "prefix": "libs/partners/runloop/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "vercel",
-      "prefix": "libs/partners/vercel/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "harbor",
+      "label": "package:evals",
       "prefix": "libs/harbor/",
       "skipExcludedFiles": true
     },
     {
-      "label": "cli",
-      "exact": "action.yml"
+      "label": "package:examples",
+      "prefix": "examples/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "github_actions",
-      "exact": "action.yml"
+      "label": "integration:daytona",
+      "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "github_actions",
-      "prefix": ".github/workflows/"
+      "label": "integration:modal",
+      "prefix": "libs/partners/modal/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "github_actions",
-      "prefix": ".github/actions/"
+      "label": "integration:quickjs",
+      "prefix": "libs/partners/quickjs/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "dependencies",
-      "suffix": "pyproject.toml"
+      "label": "integration:runloop",
+      "prefix": "libs/partners/runloop/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "dependencies",
-      "exact": "uv.lock"
+      "label": "integration:vercel",
+      "prefix": "libs/partners/vercel/",
+      "skipExcludedFiles": true
+    }
+  ],
+  "topicFileRules": [
+    {
+      "label": "topic:middleware",
+      "prefix": "libs/deepagents/deepagents/middleware/"
     },
     {
-      "label": "dependencies",
-      "pattern": "(?:^|/)requirements[^/]*\\.txt$"
+      "label": "topic:subagents",
+      "pattern": "(?:^|/)subagents\\.py$"
+    },
+    {
+      "label": "topic:async-subagents",
+      "pattern": "(?:^|/)async_subagents\\.py$"
+    },
+    {
+      "label": "topic:memory",
+      "pattern": "(?:^|/)(?:memory|memory_guard)\\.py$"
+    },
+    {
+      "label": "topic:filesystem",
+      "pattern": "(?:^|/)(?:filesystem|file_ops|_fs_interrupt)\\.py$"
+    },
+    {
+      "label": "topic:backends",
+      "prefix": "libs/deepagents/deepagents/backends/"
+    },
+    {
+      "label": "topic:sandboxes",
+      "pattern": "(?:^|/)(?:sandbox|local_shell)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "pattern": "(?:^|/)(?:skills|skill_providers)\\.py$"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/skills/"
+    },
+    {
+      "label": "topic:skills",
+      "prefix": "libs/code/deepagents_code/built_in_skills/"
+    },
+    {
+      "label": "topic:mcp",
+      "pattern": "(?:^|/)mcp_[^/]+\\.py$"
+    },
+    {
+      "label": "topic:mcp",
+      "prefix": "libs/code/deepagents_code/mcp_providers/"
+    },
+    {
+      "label": "topic:models",
+      "pattern": "(?:^|/)(?:_models|model_config|configurable_model|model_retry)\\.py$"
+    },
+    {
+      "label": "topic:tracing",
+      "pattern": "(?:^|/)_tracing\\.py$"
+    },
+    {
+      "label": "topic:prompts",
+      "pattern": "(?:^|/)(?:system_prompt\\.md|default_agent_prompt\\.md|_prompt_caching\\.py)$"
+    },
+    {
+      "label": "topic:harness",
+      "prefix": "libs/deepagents/deepagents/profiles/"
+    },
+    {
+      "label": "topic:multimodal",
+      "pattern": "(?:^|/)(?:_video|media_utils)\\.py$"
+    },
+    {
+      "label": "topic:streaming",
+      "pattern": "(?:^|/)_tool_stream\\.py$"
+    },
+    {
+      "label": "topic:performance",
+      "pattern": "(?:^|/)(?:cost_tracking|cold_cache)\\.py$"
     }
   ]
 }

@@ -38,6 +38,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    InvalidGlobPatternError,
     compile_grep_include_glob,
     create_file_data,
     perform_string_replacement,
@@ -599,6 +600,11 @@ class ContextHubBackend(BackendProtocol):
     ) -> GrepResult:
         """Search contents for `pattern` (optional `path` / `glob` filters).
 
+        The `glob` filter uses `fnmatch` semantics and does *not* follow the
+        shared include-glob contract that `glob()` on this class uses: `*`
+        crosses `/`, and matching is case-normalized. Do not assume the two
+        agree on a given pattern.
+
         When `max_count` is set, at most that many matches are returned; if more
         exist the search stops and the result is flagged `truncated=True`.
         Exactly `max_count` matches with none dropped is reported complete
@@ -647,8 +653,9 @@ class ContextHubBackend(BackendProtocol):
             return GlobResult(error=f"Hub unavailable: {exc}")
         try:
             matcher = compile_grep_include_glob(pattern)
-        except ValueError as exc:
-            return GlobResult(error=f"Invalid glob pattern: {exc}")
+        except InvalidGlobPatternError as exc:
+            logger.warning("Refused glob pattern %r for %r: %s", pattern, self._identifier, exc)
+            return GlobResult(error=str(exc))
         results: list[FileInfo] = [FileInfo(path=f"/{file_path}", is_dir=False) for file_path in cache if matcher(file_path)]
         return GlobResult(matches=results)
 

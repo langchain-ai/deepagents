@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 
 class EffortSelectorScreen(ModalScreen[str | None]):
@@ -64,6 +65,7 @@ class EffortSelectorScreen(ModalScreen[str | None]):
     }
 
     EffortSelectorScreen .effort-selector-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;
@@ -110,13 +112,16 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         except ValueError:
             highlighted = 0
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+            f"{modal_navigation_hint(glyphs)}"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Esc cancel"
         )
+        subtitle = self._model_spec
+        if self._current_effort is None and self._default_effort is None:
+            subtitle = "Provider default unknown — select an explicit effort"
         with Vertical():
             yield Static("Select Reasoning Effort", classes="effort-selector-title")
-            yield Static(self._model_spec, classes="effort-selector-subtitle")
+            yield Static(subtitle, classes="effort-selector-subtitle")
             option_list = OptionList(*options, id="effort-options")
             option_list.highlighted = highlighted
             yield option_list

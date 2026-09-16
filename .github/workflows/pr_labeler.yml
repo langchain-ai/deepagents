@@ -1,5 +1,6 @@
-# Unified PR labeler — applies size, file-based, title-based, and
+# Unified PR labeler — applies size, change-type, package/integration, and
 # contributor classification labels in a single sequential workflow.
+# Taxonomy: .github/LABELS.md.
 #
 # Consolidates pr_size_labeler.yml, pr_labeler_file.yml,
 # pr_labeler_title.yml, and PR-handling from tag-external-issues.yml
@@ -8,7 +9,8 @@
 # labeling. Backfill lives in pr_labeler_backfill.yml.
 #
 # Config and shared logic live in .github/scripts/labeling/pr-labeler-config.json
-# and .github/scripts/labeling/pr-labeler.js — update those when adding partners.
+# and .github/scripts/labeling/pr-labeler.js — update those when adding
+# partners. Nothing in this file hardcodes a scope, label, or threshold.
 #
 # Setup Requirements:
 # 1. Create a GitHub App with permissions:
@@ -86,16 +88,20 @@ jobs:
             core.setOutput('is-external', isExternal ? 'true' : 'false');
 
       # Rename package-component scopes to their canonical PR scopes for
-      # non-release PRs. Release PRs (e.g. `release(deepagents): 1.2.0` or
-      # `release(deepagents-code): 1.2.0`) are left untouched since their titles
-      # are canonical version records. Runs before labeling so title-based labels
-      # read the corrected title.
+      # non-release PRs. The alias map lives in
+      # .github/scripts/labeling/pr-labeler-config.json ("scopeAliases");
+      # release PRs (e.g. `release(deepagents): 1.2.0`) are left untouched
+      # since their titles are canonical version records. Runs before labeling
+      # so title-based labels read the corrected title.
       - name: Rename package component scopes
         id: rename-scope
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
+
             const pr = context.payload.pull_request;
             if (!pr) {
               console.log('No pull_request in payload; skipping scope rename');
@@ -103,42 +109,17 @@ jobs:
             }
 
             const title = pr.title ?? '';
-            const match = title.match(/^(\w+!?)\(([^)]+)\)(!?:\s*.*)$/);
-            if (!match) {
-              console.log(`Title has no scoped format; skipping rename: "${title}"`);
+            const renamed = h.canonicalizeTitleScopes(title);
+            if (!renamed) {
+              console.log(`Nothing to rename for title: "${title}"`);
               return;
             }
 
-            const type = match[1].replace('!', '').toLowerCase();
-            if (type === 'release') {
-              console.log(`Skipping release PR: ${title}`);
-              return;
-            }
-
-            const scopeAliases = new Map([
-              ['deepagents', 'sdk'],
-              ['deepagents-acp', 'acp'],
-              ['deepagents-cli', 'cli'],
-              ['deepagents-code', 'code'],
-              ['deepagents-talon', 'talon'],
-            ]);
-            const scopeStr = match[2];
-            const newScope = scopeStr
-              .split(',')
-              .map(s => scopeAliases.get(s.trim()) ?? s.trim())
-              .join(',');
-
-            if (newScope === scopeStr) return;
-
-            const newTitle = `${match[1]}(${newScope})${match[3]}`;
-            console.log(`Renaming: "${title}" → "${newTitle}"`);
+            console.log(`Renaming: "${title}" → "${renamed.title}"`);
 
             try {
               await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number,
-                title: newTitle,
+                owner, repo, pull_number: pr.number, title: renamed.title,
               });
             } catch (error) {
               core.warning(
@@ -152,7 +133,7 @@ jobs:
             // Pass corrected title to the labeling step via output;
             // context.payload.pull_request.title is frozen from the
             // webhook event and won't reflect the API update.
-            core.setOutput('title', newTitle);
+            core.setOutput('title', renamed.title);
 
       - name: Apply PR labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -196,6 +177,14 @@ jobs:
               for (const label of h.matchFileLabels(files)) {
                 toAdd.add(label);
               }
+
+              // `topic:*` from the modules the PR touched. Additive, like the
+              // package labels: a topic is never removed on edit, because a
+              // later push dropping the file does not mean the PR stopped
+              // being about the subject.
+              for (const label of h.matchTopicFileLabels(files)) {
+                toAdd.add(label);
+              }
             }
 
             // ── Branch-name-based labels ──
@@ -204,26 +193,23 @@ jobs:
               toAdd.add(label);
             }
 
-            // ── Title-based labels ──
+            // ── Title-based type, breaking, package, and integration labels ──
             // Use renamed title if the scope-rename step rewrote it,
             // since pr.title still reflects the pre-update value.
             const title = process.env.RENAMED_TITLE || pr.title || '';
-            const { labels: titleLabels, typeLabel } = h.matchTitleLabels(title);
+            const { labels: titleLabels } = h.matchTitleLabels(title);
             for (const label of titleLabels) {
               toAdd.add(label);
             }
-            // Remove stale type labels only when a type was detected
-            if (typeLabel) {
-              for (const tl of h.allTypeLabels) {
-                if (currentLabels.includes(tl) && !titleLabels.has(tl)) toRemove.add(tl);
-              }
+            for (const label of h.getStaleTitleLabels(title, currentLabels)) {
+              toRemove.add(label);
             }
 
             // ── Internal label (only on open, non-external contributors) ──
             // IS_EXTERNAL is empty string on non-opened events (step didn't
             // run), so this guard is only true for opened + internal.
             if (action === 'opened' && process.env.IS_EXTERNAL === 'false') {
-              toAdd.add('internal');
+              toAdd.add('org:internal');
             }
 
             // ── Apply changes ──
@@ -280,10 +266,10 @@ jobs:
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const prNumber = context.payload.pull_request.number;
-            await h.ensureLabel('external');
+            await h.ensureLabel('org:external');
             await github.rest.issues.addLabels({
               owner, repo,
               issue_number: prNumber,
-              labels: ['external'],
+              labels: ['org:external'],
             });
-            console.log(`Added 'external' label to PR #${prNumber}`);
+            console.log(`Added 'org:external' label to PR #${prNumber}`);

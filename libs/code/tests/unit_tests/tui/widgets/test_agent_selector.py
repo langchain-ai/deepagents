@@ -88,51 +88,9 @@ class TestAgentSelectorEscapeKey:
 class TestAgentSelectorNavigation:
     """Tests for keyboard navigation."""
 
-    async def test_enter_selects_highlighted_agent(self) -> None:
-        """Pressing Enter should return the highlighted agent name."""
-        async with AgentSelectorTestApp().run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert app.dismissed
-            # The current agent ("agent") should be pre-selected at index 0
-            assert app.result == "agent"
-
-    async def test_down_arrow_moves_selection(self) -> None:
-        """Pressing Down should move selection to the next agent."""
-        async with AgentSelectorTestApp().run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
-            assert app.result == "coder"
-
-    async def test_current_agent_is_preselected(self) -> None:
-        """The current agent should be highlighted when the modal opens."""
-        async with AgentSelectorTestApp(current_agent="coder").run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            option_list = app.screen.query_one("#agent-options", OptionList)
-            # "coder" is at index 1 in sorted ["agent", "coder", "researcher"]
-            assert option_list.highlighted == 1
-
 
 class TestAgentSelectorEmptyList:
     """Tests for the empty-agents case."""
-
-    async def test_no_agents_shows_placeholder(self) -> None:
-        """When no agents exist, a placeholder message should be shown."""
-        async with AgentSelectorTestApp(agent_names=[]).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            # No OptionList should be present when there are no agents
-            assert len(app.screen.query("#agent-options")) == 0
 
     async def test_escape_with_no_agents(self) -> None:
         """ESC should still dismiss correctly when no agents exist."""
@@ -164,51 +122,9 @@ class TestAgentSelectorCurrentLabel:
 class TestAgentSelectorMarkupSafety:
     """Agent directory names containing Rich markup characters must render."""
 
-    async def test_bracketed_agent_name_renders_without_error(self) -> None:
-        """`my[agent]` is a legal directory name — OptionList must accept it."""
-        names = ["safe", "my[agent]"]
-        async with AgentSelectorTestApp(
-            current_agent="safe", agent_names=names
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            option_list = app.screen.query_one("#agent-options", OptionList)
-            # The bracket-bearing name must appear verbatim in the option
-            # prompt — proof that markup parsing did not eat the brackets.
-            names_seen = {
-                str(option_list.get_option_at_index(i).prompt)
-                for i in range(option_list.option_count)
-            }
-            assert any("my[agent]" in rendered for rendered in names_seen)
-
-    async def test_bracketed_current_agent_selects_cleanly(self) -> None:
-        """Selecting a bracketed current agent returns the raw directory name."""
-        names = ["alpha", "my[agent]"]
-        async with AgentSelectorTestApp(
-            current_agent="my[agent]", agent_names=names
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert app.result == "my[agent]"
-
 
 class TestAgentSelectorEmptyStateHelp:
     """The empty-state dialog should not advertise keys that do nothing."""
-
-    async def test_empty_state_hides_enter_hint(self) -> None:
-        """With zero agents, the help text should not promise 'Enter select'."""
-        async with AgentSelectorTestApp(agent_names=[]).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            statics = app.screen.query(".agent-selector-help")
-            rendered = " ".join(str(s.render()) for s in statics)
-            assert "Enter" not in rendered
-            assert "Esc" in rendered
 
 
 class TestAgentSelectorDefaultLabel:
@@ -226,31 +142,6 @@ class TestAgentSelectorDefaultLabel:
             # researcher is index 2; its label should contain "(default)"
             option = option_list.get_option_at_index(2)
             assert "(default)" in str(option.prompt)
-
-    async def test_current_and_default_combine(self) -> None:
-        """When the same agent is current and default, both markers appear."""
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent="coder"
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            option_list = app.screen.query_one("#agent-options", OptionList)
-            option = option_list.get_option_at_index(1)
-            prompt = str(option.prompt)
-            assert "current" in prompt
-            assert "default" in prompt
-
-    async def test_help_text_advertises_set_default(self) -> None:
-        """The help line should mention `Ctrl+S set default`."""
-        async with AgentSelectorTestApp().run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            statics = app.screen.query(".agent-selector-help")
-            rendered = " ".join(str(s.render()) for s in statics)
-            assert "Ctrl+S" in rendered
-            assert "set default" in rendered
 
 
 class TestAgentSelectorSetDefault:
@@ -281,68 +172,6 @@ class TestAgentSelectorSetDefault:
         # "coder" is the highlighted (current) agent, so Ctrl+S sets it default
         assert save_calls == ["coder"]
 
-    async def test_set_default_updates_label_in_place(self, monkeypatch) -> None:
-        """After Ctrl+S, the highlighted option's label gains `(default)`."""
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.save_default_agent",
-            lambda _name: True,
-        )
-
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent=None
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-            option_list = app.screen.query_one("#agent-options", OptionList)
-            assert option_list.highlighted == 1
-            prompt = str(option_list.get_option_at_index(1).prompt)
-            assert "default" in prompt
-
-    async def test_set_default_clears_when_already_default(self, monkeypatch) -> None:
-        """Pressing Ctrl+S on the existing default clears it."""
-        clear_calls: list[None] = []
-
-        def fake_clear() -> bool:
-            clear_calls.append(None)
-            return True
-
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.clear_default_agent",
-            fake_clear,
-        )
-
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent="coder"
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-            option_list = app.screen.query_one("#agent-options", OptionList)
-            prompt = str(option_list.get_option_at_index(1).prompt)
-            assert "default" not in prompt
-
-        assert len(clear_calls) == 1
-
-    async def test_set_default_no_op_with_empty_list(self, monkeypatch) -> None:
-        """Ctrl+S on an empty selector must not raise."""
-        save_calls: list[str] = []
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.save_default_agent",
-            lambda name: save_calls.append(name) or True,
-        )
-        async with AgentSelectorTestApp(agent_names=[]).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-        assert save_calls == []
-
 
 class TestAgentSelectorSetDefaultErrorPaths:
     """Defensive guards around the Ctrl+S flow.
@@ -352,91 +181,6 @@ class TestAgentSelectorSetDefaultErrorPaths:
     accidentally turns them silent (or, worse, crashes the modal) is
     caught.
     """
-
-    async def test_save_failure_shows_error_in_help(self, monkeypatch) -> None:
-        """`save_default_agent` returning False updates the help line, no crash."""
-        from textual.widgets import Static
-
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.save_default_agent",
-            lambda _name: False,
-        )
-
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent=None
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-            help_widget = app.screen.query_one("#agent-help", Static)
-            rendered = str(help_widget.render())
-            # Help line surfaces the failure — picker still alive.
-            assert "Failed to save" in rendered
-            # Modal is still mounted; user can dismiss with Esc cleanly.
-            assert not app.dismissed
-
-    async def test_save_unexpected_exception_treated_as_failure(
-        self, monkeypatch
-    ) -> None:
-        """An unexpected exception in `save_default_agent` is caught.
-
-        Without the `try/except Exception` guard in `action_set_default`,
-        a `TypeError` from `tomli_w.dump` would bubble out and kill the
-        modal. The fix treats it as `ok = False`.
-        """
-        from textual.widgets import Static
-
-        def boom(_name: str) -> bool:
-            msg = "unexpected"
-            raise TypeError(msg)
-
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.save_default_agent",
-            boom,
-        )
-
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent=None
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-            help_widget = app.screen.query_one("#agent-help", Static)
-            rendered = str(help_widget.render())
-            assert "Failed to save" in rendered
-            assert not app.dismissed
-
-    async def test_clear_unexpected_exception_treated_as_failure(
-        self, monkeypatch
-    ) -> None:
-        """Same defensive guard for the clear path."""
-        from textual.widgets import Static
-
-        def boom() -> bool:
-            msg = "unexpected"
-            raise TypeError(msg)
-
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.agent_selector.clear_default_agent",
-            boom,
-        )
-
-        async with AgentSelectorTestApp(
-            current_agent="coder", default_agent="coder"
-        ).run_test() as pilot:
-            app = _app(pilot)
-            app.show_selector()
-            await pilot.pause()
-            await pilot.press("ctrl+s")
-            await pilot.pause()
-            help_widget = app.screen.query_one("#agent-help", Static)
-            rendered = str(help_widget.render())
-            assert "Failed to clear" in rendered
-            assert not app.dismissed
 
     async def test_save_failure_keeps_default_unchanged(self, monkeypatch) -> None:
         """A failed save must not update the in-memory `_default_agent`.

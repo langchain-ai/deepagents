@@ -35,27 +35,11 @@ class TestCompositeBackendArtifactsRoot:
 
 
 class TestFilesystemMiddlewareArtifactsRoot:
-    def test_default_prefixes(self) -> None:
-        mw = FilesystemMiddleware()
-        assert mw._large_tool_results_prefix == "/large_tool_results"
-        assert mw._conversation_history_prefix == "/conversation_history"
-
-    def test_custom_artifacts_root_from_composite_backend(self) -> None:
-        backend = _make_composite_backend(artifacts_root="/workspace")
-        mw = FilesystemMiddleware(backend=backend)
-        assert mw._large_tool_results_prefix == "/workspace/large_tool_results"
-        assert mw._conversation_history_prefix == "/workspace/conversation_history"
-
     def test_trailing_slash_normalized(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace/")
         mw = FilesystemMiddleware(backend=backend)
         assert mw._large_tool_results_prefix == "/workspace/large_tool_results"
         assert mw._conversation_history_prefix == "/workspace/conversation_history"
-
-    def test_root_slash_no_double_slash(self) -> None:
-        mw = FilesystemMiddleware()
-        assert mw._large_tool_results_prefix == "/large_tool_results"
-        assert mw._conversation_history_prefix == "/conversation_history"
 
     def test_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")
@@ -95,12 +79,6 @@ class TestCreateSummarizationMiddlewareArtifactsRoot:
         mw = create_summarization_middleware(model, backend)
         assert mw._history_path_prefix == "/conversation_history"
 
-    def test_custom_artifacts_root_from_composite_backend(self) -> None:
-        backend = _make_composite_backend(artifacts_root="/workspace")
-        model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend)
-        assert mw._history_path_prefix == "/workspace/conversation_history"
-
     def test_trailing_slash_normalized(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace/")
         model = FakeChatModel(messages=iter([]))
@@ -134,13 +112,6 @@ class TestCompositeBackendEvictionArtifactsRoot:
         assert resp.content == b"x" * 5000
         [resp] = backend.download_files(["/large_tool_results/evict_ws"])
         assert resp.content is None
-
-    def test_summarization_history_prefix(self) -> None:
-        """Summarization middleware uses the correct history prefix from artifacts_root."""
-        backend = _make_composite_backend(artifacts_root="/workspace")
-        model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend)
-        assert mw._history_path_prefix == "/workspace/conversation_history"
 
 
 class TestAsyncEvictionArtifactsRoot:

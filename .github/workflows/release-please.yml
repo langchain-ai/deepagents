@@ -124,7 +124,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
-      cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
@@ -188,14 +187,6 @@ jobs:
           # none can fail loudly instead of producing a green no-op run (see the
           # check after the last package below).
           ANY_PACKAGE=false
-
-          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
-            echo "cli-release=true" >> "$GITHUB_OUTPUT"
-            ANY_PACKAGE=true
-            echo "CLI release detected: $COMMIT_MSG"
-          else
-            echo "cli-release=false" >> "$GITHUB_OUTPUT"
-          fi
 
           if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
             echo "sdk-release=true" >> "$GITHUB_OUTPUT"
@@ -285,7 +276,7 @@ jobs:
   # Wait out an in-flight publish instead of recomputing against half-updated state.
   #
   # release.yml (the PyPI publisher) creates the git tag and flips the release
-  # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
+  # PR's `auto:release-pending` -> `auto:release-tagged` label minutes *after*
   # the release PR merges, in a separate dispatched run. In that window the
   # manifest already names the new version but the tag does not exist yet. A
   # push that runs release-please against this half-updated state finds no tag,
@@ -310,7 +301,7 @@ jobs:
   # jobs are otherwise independent.
   #
   # The wait is deliberately repo-wide (every merged PR still labeled
-  # `autorelease: pending`, not just this run's). release-please recomputes *all*
+  # `auto:release-pending`, not just this run's). release-please recomputes *all*
   # components on every run, so any one component sitting in the half-updated
   # state above is enough to trigger the downgrade — scoping the wait to the PR
   # this run merged would not be safe.
@@ -408,17 +399,24 @@ jobs:
             IS_RELEASE_COMMIT=true
           fi
 
-          # `autorelease: pending` is release-please-action's built-in label,
-          # applied to release PRs and cleared to `autorelease: tagged` by
-          # release.yml once the tag and GitHub release exist, so a merged PR
-          # still carrying it means a publish has not finished.
+          # Either pending label means a publish has not finished. Read both
+          # names during migration; the publisher clears both after tagging.
           #
           # --limit is explicit and generous: the default (30) could drop a
           # genuinely stuck pending PR past the window precisely in the backlog
           # scenario this guard exists to catch, silently reporting "none".
           list_pending_json() {
-            gh pr list --repo "$REPO" --state merged \
-              --label "autorelease: pending" --limit 100 --json number,title
+            local current legacy
+            current=$(gh pr list --repo "$REPO" --state merged \
+              --label "auto:release-pending" --limit 100 --json number,title) || return 1
+            legacy=$(gh pr list --repo "$REPO" --state merged \
+              --label "autorelease: pending" --limit 100 --json number,title) || return 1
+            # Separate queries implement OR; multiple --label flags mean AND.
+            printf '%s\n%s\n' "$current" "$legacy" | jq -se '
+              if length != 2 or any(.[]; type != "array")
+              then error("expected two arrays of PRs")
+              else add | unique_by(.number) end
+            '
           }
 
           # Exits non-zero on anything that is not the expected array of PRs, so
@@ -519,7 +517,7 @@ jobs:
               {
                 echo "## release-please deferred ($defer_reason)"
                 echo ""
-                echo "$defer_detail The following merged release PR(s) are still labeled \`autorelease: pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
+                echo "$defer_detail The following merged release PR(s) are still labeled \`auto:release-pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
                 echo ""
                 printf '%s\n' "$FAILED_RELEASES"
                 echo ""
@@ -529,7 +527,7 @@ jobs:
               exit 0
             fi
 
-            echo "::error::Merged release PR(s) are still labeled 'autorelease: pending', but their matching package release run did not finish successfully:"
+            echo "::error::Merged release PR(s) are still labeled 'auto:release-pending', but their matching package release run did not finish successfully:"
             printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
@@ -537,7 +535,7 @@ jobs:
             {
               echo "## release-please blocked by failed release"
               echo ""
-              echo "The following merged release PR(s) are still labeled \`autorelease: pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
+              echo "The following merged release PR(s) are still labeled \`auto:release-pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
               echo ""
               printf '%s\n' "$FAILED_RELEASES"
               echo ""
@@ -637,7 +635,7 @@ jobs:
             {
               echo "## release-please proceeding after wait"
               echo ""
-              echo "A publish was in flight; release-please waited ${WAITED}s for the \`autorelease: pending\` label(s) to clear, then ran normally against the now-consistent state."
+              echo "A publish was in flight; release-please waited ${WAITED}s for the \`auto:release-pending\` label(s) to clear, then ran normally against the now-consistent state."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -650,13 +648,13 @@ jobs:
           {
             echo "## release-please deferred"
             echo ""
-            echo "A publish was still in flight (or GitHub's release state stayed unverifiable) after waiting $((MAX_WAIT / 60))m — these merged release PR(s) are still labeled \`autorelease: pending\`:"
+            echo "A publish was still in flight (or GitHub's release state stayed unverifiable) after waiting $((MAX_WAIT / 60))m — these merged release PR(s) are still labeled \`auto:release-pending\`:"
             echo ""
             echo "$PENDING"
             echo ""
-            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`autorelease: tagged\`."
+            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`auto:release-tagged\`."
             echo ""
-            echo "If a publish is genuinely **stuck** on \`autorelease: pending\`, clear it per [Release PR Stuck with \"autorelease: pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
+            echo "If a publish is genuinely **stuck** on \`auto:release-pending\`, clear it per [Release PR Stuck with \"auto:release-pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   release-please:
@@ -694,17 +692,31 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # `normalize-release-labels.js` reads open issues and can create
+      # `auto:release-pending`. Both are Issues-scoped endpoints; neither is
+      # covered by `pull-requests: write`.
+      issues: write
     outputs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Release-please only discovers PRs with the canonical pending label.
+      # Normalization must succeed before it runs, or it can update an existing
+      # release branch without refreshing that PR's title and release notes.
+      - name: Normalize legacy release PR labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const normalize = require('./.github/scripts/release/normalize-release-labels.js');
+            await normalize(github, context.repo.owner, context.repo.repo);
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
         id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -986,7 +998,6 @@ jobs:
   trigger-releases:
     needs: detect-release-commit
     if: |
-      needs.detect-release-commit.outputs.cli-release == 'true' ||
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
@@ -1005,11 +1016,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
-      SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
-      RIPGREP_BYPASS_LABEL: "bypass-ripgrep-check"
+      SDK_PIN_BYPASS_LABEL: "ci:dcode-skip-sdk-pin"
+      RIPGREP_BYPASS_LABEL: "ci:skip-ripgrep"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
-      CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
@@ -1256,7 +1266,6 @@ jobs:
 
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
           # surfaces a warning if the value is something other than "true"/"false".
-          CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
@@ -1309,7 +1318,6 @@ jobs:
           # a graceful miss (still best-effort — no job failure).
           DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
 
-          if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi

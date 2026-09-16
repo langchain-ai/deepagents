@@ -157,6 +157,12 @@ raise), so a hook consumer still sees the result rather than a dropped event."""
 MAX_JSON_CONTAINER_DEPTH = sys.getrecursionlimit()
 """Maximum JSON container nesting accepted for streamed tool-call args."""
 
+INVALID_ARGS_PREVIEW_LIMIT = 200
+"""Characters of an unparseable tool-call payload included in its warning.
+
+Bounds the log line: a streamed payload can be arbitrarily large, and the
+preview exists to identify the call, not to reproduce it."""
+
 
 def normalize_tool_status(raw_status: object, tool_name: str) -> ToolStatus:
     """Map a raw `ToolMessage.status` to the two-value hook domain, fail-closed.
@@ -258,77 +264,6 @@ def tool_call_buffer_key(
     return f"unknown-{count}"
 
 
-def _exceeds_json_container_depth(s: str) -> bool:
-    """Return whether `s` exceeds the safe nesting depth for JSON args."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for ch in s:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch in "{[":
-            depth += 1
-            if depth > MAX_JSON_CONTAINER_DEPTH:
-                return True
-        elif ch in "}]":
-            depth -= 1
-    return False
-
-
-def _looks_structurally_complete(s: str) -> bool:
-    """Return whether `s` is a balanced JSON container, string-state aware.
-
-    Scans for bracket balance while tracking whether the cursor is inside a
-    string literal (honoring backslash escapes), so a value is "complete" only
-    when every `{`/`[` is matched and the text does not end mid-string. Used
-    solely to decide whether a `json.loads` failure is worth warning about: a
-    balanced-but-unparseable value is malformed, whereas a partial stream — e.g.
-    a chunk boundary landing right after an inner `}` in `{"edits": [{"a": 1}` —
-    leaves an outer container open and returns `False`, so no false warning fires
-    on a healthy mid-stream fragment. A stray closer (`depth < 0`) is unbalanced
-    and can never be completed by more input, so it is reported complete
-    (malformed) too. Iterative, so it never raises `RecursionError` on
-    pathologically nested input.
-
-    Args:
-        s: The accumulated, stripped tool-call argument text.
-
-    Returns:
-        `True` if the brackets are matched (or over-closed) and the text does not
-            end inside a string; `False` while a container is still open.
-    """
-    depth = 0
-    in_string = False
-    escaped = False
-    for ch in s:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch in "{[":
-            depth += 1
-        elif ch in "}]":
-            depth -= 1
-            if depth < 0:
-                # More closers than openers: unbalanced, not a partial stream.
-                return True
-    return depth == 0 and not in_string
-
-
 @dataclass
 class ToolCallBuffer:
     """In-progress state for a single streamed tool call.
@@ -336,6 +271,14 @@ class ToolCallBuffer:
     `args` and `args_parts` are two representations of the arguments used one at
     a time, depending on whether the provider delivers the value whole or in
     JSON string fragments.
+
+    Fragments are scanned incrementally as they arrive: the private `_args_*`
+    fields hold a JSON lexer folded over everything scanned so far, so
+    `parse_args` can tell "still streaming" from "complete" without re-reading
+    the accumulated prefix on every chunk. That makes the fragment path linear
+    over a stream, at the cost of a second invariant — the lexer state must stay
+    in step with `args_parts`. Mutate `args_parts` only by appending or by
+    rebinding it wholesale (see its docstring).
     """
 
     name: str | None = None
@@ -352,16 +295,77 @@ class ToolCallBuffer:
     args_parts: list[str] = field(default_factory=list)
     """JSON string fragments accumulated across chunks, reassembled by
     `parse_args` once the payload looks complete. Mutually exclusive with
-    `args` (see `__post_init__` and `ingest`)."""
+    `args` (see `__post_init__` and `ingest`).
+
+    Append to this list or rebind it wholesale; do not mutate entries in place.
+    The `_args_*` fields hold a JSON lexer folded over the fragments scanned so
+    far, and `_sync_args_fragment_state` detects a rebind or a truncation but
+    cannot detect an edit that leaves the list's identity and length unchanged
+    (e.g. `pop()` then `append()`), which would leave the scan stale and yield
+    another payload's args. Detecting that would cost a per-chunk rescan, which
+    is the quadratic behavior this state exists to remove."""
 
     displayed: bool = False
     """One-shot latch guarding the single "Calling tool" console line (used only
     by the headless surface)."""
 
     warned: bool = False
-    """One-shot latch so a malformed-but-complete payload is logged at most once,
-    even though `parse_args` re-runs on every later chunk for the retained
-    buffer."""
+    """One-shot latch for an irrecoverably invalid payload.
+
+    Serves two roles. It keeps the warning to one line per payload, even though
+    `parse_args` re-runs on every later chunk for the retained buffer. It also
+    short-circuits `parse_args` itself: every condition that sets it is
+    permanent (see `_warn_invalid_args`), so re-running `json.loads` per
+    fragment could only fail again — which is what made the pre-incremental
+    version quadratic on a malformed payload.
+
+    That second role means the latch now gates data, not just logging: keep it
+    private to `_warn_invalid_args`, since setting it for any other reason would
+    silently drop a valid tool call. Its lifetime must match the payload whose
+    parse it blocks, so `_reset_args_fragment_state` clears it alongside the
+    fragment state."""
+
+    # Incremental JSON lexer state plus join/parse memos, folded over
+    # `args_parts[:_args_parts_scanned]` and reset as a unit by
+    # `_reset_args_fragment_state`. Deferring the join and the `json.loads` until
+    # the payload is structurally complete is what keeps accumulation linear
+    # across a stream instead of re-scanning the whole prefix per chunk. All are
+    # `compare=False`, so `__eq__` stays a comparison of the public streaming
+    # fields; note that two buffers can therefore be equal while answering
+    # `parse_args` differently, so never use `==` as a proxy for "same state".
+    _args_parts_ref: list[str] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    """The list the lexer state was reset against, held to notice a rebind.
+
+    An identity sentinel, not data: see the `args_parts` docstring for what this
+    can and cannot detect."""
+
+    _args_parts_scanned: int = field(default=0, init=False, repr=False, compare=False)
+    _args_first_non_whitespace: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _args_last_non_whitespace: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _args_container_depth: int = field(default=0, init=False, repr=False, compare=False)
+    _args_max_container_depth: int = field(
+        default=0, init=False, repr=False, compare=False
+    )
+    _args_in_string: bool = field(default=False, init=False, repr=False, compare=False)
+    _args_escaped: bool = field(default=False, init=False, repr=False, compare=False)
+    _args_overclosed: bool = field(default=False, init=False, repr=False, compare=False)
+    """Whether a closer appeared at depth 0 outside a string.
+
+    Latched, and treated as *complete* rather than still-open: a stray closer
+    can never be repaired by more input, so the payload is malformed now."""
+
+    _materialized_args: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _parsed_args: dict[str, Any] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Enforce the `args` XOR `args_parts` invariant at construction time.
@@ -380,6 +384,141 @@ class ToolCallBuffer:
         if self.args is not None and self.args_parts:
             msg = "ToolCallBuffer cannot hold both args and args_parts"
             raise ValueError(msg)
+        self._reset_args_fragment_state()
+        self._sync_args_fragment_state()
+
+    def _reset_args_fragment_state(self) -> None:
+        """Reset incremental state for the current fragment list.
+
+        Clears `warned` too. Since `parse_args` short-circuits on the latch, a
+        reset that left it set would strand the *next* payload accumulated in
+        this buffer — a valid one would return `None` forever. `warned` belongs
+        to the payload being scanned, not to the buffer.
+        """
+        self.warned = False
+        self._args_parts_ref = self.args_parts
+        self._args_parts_scanned = 0
+        self._args_first_non_whitespace = None
+        self._args_last_non_whitespace = None
+        self._args_container_depth = 0
+        self._args_max_container_depth = 0
+        self._args_in_string = False
+        self._args_escaped = False
+        self._args_overclosed = False
+        self._materialized_args = None
+        self._parsed_args = None
+
+    def _sync_args_fragment_state(self) -> None:
+        """Scan each newly appended argument fragment exactly once.
+
+        Starts over when the fragment list was rebound or has shrunk, since the
+        accumulated lexer state no longer describes it. See the `args_parts`
+        docstring for the in-place edit this deliberately does not detect.
+        """
+        if (
+            self._args_parts_ref is not self.args_parts
+            or self._args_parts_scanned > len(self.args_parts)
+        ):
+            self._reset_args_fragment_state()
+
+        while self._args_parts_scanned < len(self.args_parts):
+            fragment = self.args_parts[self._args_parts_scanned]
+            self._scan_args_fragment(fragment)
+            self._args_parts_scanned += 1
+            self._materialized_args = None
+            self._parsed_args = None
+
+    def _scan_args_fragment(self, fragment: str) -> None:
+        """Advance JSON lexical state through one new fragment.
+
+        String and escape state carry across fragment boundaries, so a payload
+        split mid-literal — or mid-escape, on a fragment ending in a lone
+        backslash — resumes correctly on the next chunk.
+
+        Args:
+            fragment: The newly appended argument text, scanned exactly once.
+        """
+        for char in fragment:
+            if not char.isspace():
+                if self._args_first_non_whitespace is None:
+                    self._args_first_non_whitespace = char
+                self._args_last_non_whitespace = char
+
+            if self._args_in_string:
+                if self._args_escaped:
+                    self._args_escaped = False
+                elif char == "\\":
+                    self._args_escaped = True
+                elif char == '"':
+                    self._args_in_string = False
+                continue
+
+            if char == '"':
+                self._args_in_string = True
+            elif char in "{[":
+                self._args_container_depth += 1
+                self._args_max_container_depth = max(
+                    self._args_max_container_depth, self._args_container_depth
+                )
+            elif char in "}]":
+                self._args_container_depth -= 1
+                if self._args_container_depth < 0:
+                    self._args_overclosed = True
+
+    def _materialize_args(self) -> str:
+        """Join fragments once for the current accumulated prefix.
+
+        Returns:
+            The full accumulated argument text.
+        """
+        if self._materialized_args is None:
+            self._materialized_args = "".join(self.args_parts)
+        return self._materialized_args
+
+    def _args_preview(self, limit: int = INVALID_ARGS_PREVIEW_LIMIT) -> str:
+        """Return a bounded prefix of the accumulated args.
+
+        Walks fragments only until `limit` is reached, so the depth-guard path
+        can log a preview without joining a pathologically nested payload just
+        to slice 200 characters off it. Once the join has already happened the
+        cached string is sliced directly.
+
+        Args:
+            limit: Maximum characters to return.
+
+        Returns:
+            At most `limit` leading characters of the accumulated argument text.
+        """
+        if self._materialized_args is not None:
+            return self._materialized_args[:limit]
+        remaining = limit
+        preview: list[str] = []
+        for fragment in self.args_parts:
+            if remaining <= 0:
+                break
+            preview.append(fragment[:remaining])
+            remaining -= len(preview[-1])
+        return "".join(preview)
+
+    def _warn_invalid_args(self) -> None:
+        """Log one bounded warning for an irrecoverably invalid payload.
+
+        Only called for payloads that no further input can repair: depth
+        exceeded (the running max never falls), over-closed (a closer at depth 0
+        cannot be undone), or balanced-but-unparseable (the top-level value has
+        already closed, so any suffix is trailing junk). `parse_args` relies on
+        that permanence to short-circuit on `warned`.
+
+        `%r` escapes any control characters in the model-generated fragment
+        rather than letting a raw newline or BEL through into the log.
+        """
+        if self.warned:
+            return
+        self.warned = True
+        logger.warning(
+            "Tool-call args are unparseable and cannot be completed: %r",
+            self._args_preview(),
+        )
 
     def _reset_for_new_call(self) -> None:
         """Discard retained state before this buffer is reused for another call."""
@@ -387,6 +526,7 @@ class ToolCallBuffer:
         self.tool_id = None
         self.args = None
         self.args_parts = []
+        self._reset_args_fragment_state()
         self.displayed = False
         self.warned = False
 
@@ -460,6 +600,7 @@ class ToolCallBuffer:
         if isinstance(args, dict):
             self.args = args
             self.args_parts = []
+            self._reset_args_fragment_state()
         elif isinstance(args, str):
             # Append every non-empty fragment unconditionally. An earlier
             # TUI-only version skipped a fragment equal to the immediately
@@ -472,9 +613,11 @@ class ToolCallBuffer:
             if args:
                 self.args = None
                 self.args_parts.append(args)
+                self._sync_args_fragment_state()
         elif args is not None:
             self.args = args
             self.args_parts = []
+            self._reset_args_fragment_state()
 
     def parse_args(self) -> dict[str, Any] | None:
         """Return the tool-call args once enough data has arrived, else `None`.
@@ -483,12 +626,15 @@ class ToolCallBuffer:
         wrapped as `{"value": ...}` so a caller's `tool_args` is always an
         object.
 
+        The returned dict is cached and handed back by identity on a re-run, so
+        callers must treat it as read-only.
+
         Returns:
             Parsed tool-call arguments, or `None` when the args are not yet
                 complete (still streaming), empty, or structurally complete but
-                unparseable — malformed or too deeply nested (the
-                structurally-complete malformed case is logged once via
-                `warned`).
+                unparseable — malformed or too deeply nested. An unparseable
+                *container* is logged once via `warned`; an unparseable bare
+                scalar is not (see the `is_container` guard below).
 
         Raises:
             ValueError: If both `args` and `args_parts` are populated, violating
@@ -510,73 +656,82 @@ class ToolCallBuffer:
 
         if not self.args_parts:
             return None
-        joined = "".join(self.args_parts)
-        stripped = joined.strip()
-        if not stripped:
+
+        self._sync_args_fragment_state()
+        first = self._args_first_non_whitespace
+        if first is None:
             return None
-        # Cheap structural pre-check: bail while a JSON object/array is still
-        # open so we don't attempt to parse a partial streamed fragment. A
-        # well-formed object's closing brace is always its last char. The
-        # `"".join` still runs per fragment (so accumulation stays O(n^2) across
-        # the stream); the win is deferring the costlier `json.loads` until the
-        # value looks complete, rather than re-parsing the whole prefix on every
-        # fragment.
-        #
-        # A bracketed value with trailing junk after its close (e.g.
-        # `{"a": 1} x`) also returns here and is treated as still-streaming, so
-        # it never reaches the malformed warning below — the same deliberate
-        # trade as the non-bracketed-scalar exclusion documented at the end of
-        # this method. Real provider arg streams are pure JSON, so this shape
-        # does not occur in practice; if such a call still executes, its
-        # `tool.result` logs the correlation miss.
-        if stripped[0] in "{[":
-            if not stripped.endswith(("}", "]")):
+        if self._parsed_args is not None:
+            return self._parsed_args
+
+        is_container = first in "{["
+        if is_container:
+            # A well-formed container's closing bracket is always its last
+            # character. A bracketed value with trailing junk after its close
+            # (e.g. `{"a": 1} x`) therefore lands here and is treated as
+            # still-streaming, so it never reaches the malformed warning — the
+            # same deliberate trade as the bare-scalar exclusion below. Real
+            # provider arg streams are pure JSON, so this shape does not occur
+            # in practice; if such a call still executes, its `tool.result` logs
+            # the correlation miss.
+            last = self._args_last_non_whitespace
+            if last is None or last not in "}]":
                 return None
-            if _exceeds_json_container_depth(stripped):
-                if not self.warned:
-                    self.warned = True
-                    logger.warning(
-                        "Tool-call args look complete but failed to parse: %r",
-                        joined[:200],
-                    )
+            # Balance check, not just the cheap last-character test above: a
+            # chunk boundary landing right after an inner `}` (e.g.
+            # `{"edits": [{"a": 1}`) ends in `}` while the outer container is
+            # still open, and a `}` inside an unterminated string is not a real
+            # close at all. Warning on either would fire on a perfectly healthy
+            # mid-stream fragment. Covered by
+            # `test_midstream_nested_json_does_not_warn` and
+            # `test_trailing_brace_inside_open_string_not_warned`; over-closing
+            # skips this check because a stray closer can never be repaired by
+            # more input, so it is complete (malformed), not partial.
+            if not self._args_overclosed and (
+                self._args_container_depth != 0 or self._args_in_string
+            ):
                 return None
+            # Every condition that sets `warned` is permanent, so the payload
+            # can never parse later. Short-circuit rather than re-failing
+            # `json.loads` on every subsequent fragment.
+            if self.warned:
+                return None
+            if self._args_max_container_depth > MAX_JSON_CONTAINER_DEPTH:
+                self._warn_invalid_args()
+                return None
+        elif first == '"' and self._args_in_string:
+            # A string scalar whose closing quote has not arrived yet.
+            return None
+
+        # Containers and string scalars reach here only once complete, so the
+        # join and the parse happen once per payload. A bare non-string scalar
+        # (a number or literal) has no closing token to wait for, so it still
+        # re-joins per chunk; tool args are never that shape, and adding state to
+        # cover it would not pay for itself.
+        joined = self._materialize_args()
         try:
             parsed = json.loads(joined)
         except (json.JSONDecodeError, RecursionError):
-            # Args that are structurally balanced (all brackets matched, not
-            # ending mid-string) but still fail to parse are malformed, not
-            # mid-stream — surface them rather than silently dropping the
-            # tool.use hook. `_looks_structurally_complete` does a string-aware
-            # balance check rather than the cheaper "starts with {/[ and ends
-            # with }/]" heuristic, which false-positives on a normal chunk
-            # boundary inside nested args (e.g. `{"edits": [{"a": 1}`) and would
-            # warn on a perfectly healthy stream. `RecursionError` is caught
-            # alongside the decode error: pathologically nested model output
-            # makes `json.loads` exceed the interpreter recursion limit, and that
-            # is one malformed call to skip, not a reason to let the exception
-            # escape and abort the whole turn. `%r` escapes any control
-            # characters in the model-generated fragment. The `warned` latch
-            # keeps this to one line per call, since the buffer is retained and
-            # parse_args re-runs on every later chunk for the same call.
-            if (
-                stripped[0] in "{["
-                and _looks_structurally_complete(stripped)
-                and not self.warned
-            ):
-                self.warned = True
-                logger.warning(
-                    "Tool-call args look complete but failed to parse: %r",
-                    joined[:200],
-                )
-            # A non-bracketed complete-but-malformed value is deliberately not
-            # warned here: it is indistinguishable from a still-streaming scalar
+            # `RecursionError` is caught alongside the decode error because
+            # pathologically nested model output can make `json.loads` exceed
+            # the interpreter recursion limit, and that is one malformed call to
+            # skip rather than a reason to let the exception escape and abort the
+            # whole turn. The depth guard above pre-empts it by a wide margin
+            # with CPython's C scanner (which does not consume a Python frame per
+            # level), so this arm is defense-in-depth for a pure-Python-scanner
+            # build — not dead code.
+            #
+            # A non-container complete-but-malformed value is deliberately not
+            # warned: it is indistinguishable from a still-streaming scalar
             # fragment, so warning would be noisy. If such a call still executes,
             # its `tool.result` logs the correlation miss at info; if it never
             # executes there is no result to audit, so nothing is lost.
+            if is_container:
+                self._warn_invalid_args()
             return None
-        if not isinstance(parsed, dict):
-            return {"value": parsed}
-        return parsed
+
+        self._parsed_args = parsed if isinstance(parsed, dict) else {"value": parsed}
+        return self._parsed_args
 
 
 class UnemittedToolCalls(NamedTuple):
@@ -602,8 +757,13 @@ def count_unemitted_tool_calls(buffers: Iterable[ToolCallBuffer]) -> UnemittedTo
     their buffer map when the stream ends: those whose args never parsed, and
     those whose args parsed but whose `tool_id` stayed `None` (so `tool.use` was
     gated out). Sharing the classification here keeps the two diagnostics from
-    drifting; each surface still emits its own log lines. `parse_args` is safe to
-    re-run (idempotent bar its one-shot `warned` latch).
+    drifting; each surface still emits its own log lines.
+
+    `parse_args` is safe to re-run: a re-run populates the incremental scan and
+    the join/parse memos but returns the same value, and its one-shot `warned`
+    latch fires at most once per payload. Only the log line is suppressed on a
+    repeat; the classification below is unaffected either way, since a warned
+    payload counts as `unparsed` however often it is re-read.
 
     Args:
         buffers: The in-progress tool-call buffers remaining at stream end.

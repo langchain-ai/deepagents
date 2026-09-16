@@ -16,18 +16,18 @@ def validate_profile_key(key: str) -> None:
     for example, `ollama:glm-5.2:cloud` identifies provider `ollama` and model
     `glm-5.2:cloud`.
 
-    Only the first colon is structural, but every colon-delimited segment is
-    still validated. A key like `"openai:gpt-5.4:"` has an empty trailing
-    segment and is rejected: it would otherwise register under a key no model
-    spec can reproduce, leaving the registration silently inert.
+    Only the first colon is structural. The complete model identifier must be
+    nonempty and have no surrounding whitespace; its internal syntax belongs
+    to the provider. In particular, Bedrock foundation-model ARNs can contain
+    `::` because their account component is empty.
 
     Args:
         key: The registry key to check.
 
     Raises:
         ValueError: If `key` is empty, contains leading/trailing whitespace,
-            has whitespace adjacent to any `:`, or has an empty provider or
-            model segment.
+            has whitespace adjacent to the first `:`, or has an empty provider
+            or model identifier.
     """
     if not key:
         msg = "Profile key must be a non-empty string."
@@ -40,14 +40,6 @@ def validate_profile_key(key: str) -> None:
         if not provider or not model:
             msg = f"Profile key {key!r} has an empty provider or model half; expected 'provider:model'."
             raise ValueError(msg)
-        # Only the first colon is structural, so `model` is the whole remainder
-        # and is nonempty as soon as it holds any character — including another
-        # colon. Validate each segment so a stray colon or space deeper in the
-        # key cannot register an unreachable entry.
-        segments = [provider, *model.split(":")]
-        if any(not segment for segment in segments):
-            msg = f"Profile key {key!r} has an empty provider or model segment between colons; expected no empty colon-delimited segments."
-            raise ValueError(msg)
-        if any(segment != segment.strip() for segment in segments):
-            msg = f"Profile key {key!r} has whitespace adjacent to ':'; expected 'provider:model' with no spaces around any ':'."
+        if provider != provider.strip() or model != model.strip():
+            msg = f"Profile key {key!r} has whitespace adjacent to ':'; expected 'provider:model' with no spaces around the first ':'."
             raise ValueError(msg)

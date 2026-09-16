@@ -569,6 +569,7 @@ class TestProviderProfileRegistry:
             "ollama:glm-5.2:cloud",
             "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
         ],
     )
     def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
@@ -909,6 +910,7 @@ class TestHarnessProfileRegistry:
             "ollama:glm-5.2:cloud",
             "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
         ],
     )
     def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
@@ -1997,46 +1999,24 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="whitespace"):
             register_harness_profile(key, HarnessProfile())
 
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "openai:gpt-5:",  # trailing colon
-            "a:b:",
-            "openai::",
-            "a:::",
-            "a::b",  # empty middle segment
-            "::",
-            ":::",
-        ],
-    )
-    def test_empty_segment_between_colons_rejected(self, key: str) -> None:
-        """Every colon-delimited segment must be nonempty, not just the two halves.
-
-        Only the first colon is structural, so the model half is "everything
-        after it" and reads as nonempty as soon as it holds a bare colon.
-        Without per-segment validation these keys register under a string no
-        model spec can reproduce, leaving the registration silently inert.
-        """
+    @pytest.mark.parametrize("key", ["::", ":::", ":model", "openai:"])
+    def test_empty_provider_or_model_rejected(self, key: str) -> None:
+        """Both registries require a provider and a complete model identifier."""
+        with pytest.raises(ValueError, match="empty provider"):
+            register_provider_profile(key, ProviderProfile())
         with pytest.raises(ValueError, match="empty provider"):
             register_harness_profile(key, HarnessProfile())
 
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "ollama:glm-5.2 :cloud",
-            "ollama:glm-5.2: cloud",
-            "a:b\t:c",
-        ],
-    )
-    def test_whitespace_around_later_colon_rejected(self, key: str) -> None:
-        """Whitespace adjacent to *any* colon is rejected, not just the first.
-
-        Symmetric with `test_whitespace_around_colon_rejected`: a stray space
-        deeper in a copy-pasted Ollama or Bedrock key would otherwise produce
-        a silently unreachable registration.
-        """
-        with pytest.raises(ValueError, match="whitespace"):
-            register_harness_profile(key, HarnessProfile())
+    @pytest.mark.parametrize("key", ["a:b:", "a::", "a:::", "a::b", "a:b :c", "a:b: c", "a:b\t:c"])
+    def test_model_remainder_preserved(self, key: str) -> None:
+        """Provider-specific model syntax survives registration and exact lookup."""
+        with patch.dict(_PROVIDER_PROFILES), patch.dict(_HARNESS_PROFILES):
+            provider_profile = ProviderProfile()
+            harness_profile = HarnessProfile()
+            register_provider_profile(key, provider_profile)
+            register_harness_profile(key, harness_profile)
+            assert get_provider_profile(key) is provider_profile
+            assert _get_harness_profile(key) is harness_profile
 
     @pytest.mark.parametrize(
         "key",
@@ -2047,7 +2027,7 @@ class TestRegisterProfileKeyValidation:
         ],
     )
     def test_real_multi_colon_keys_accepted(self, key: str) -> None:
-        """Per-segment validation still admits the keys this shape exists for."""
+        """The complete model identifier is available for exact lookup."""
         with patch.dict(_HARNESS_PROFILES):
             profile = HarnessProfile()
             register_harness_profile(key, profile)

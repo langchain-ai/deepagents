@@ -1025,7 +1025,7 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
     Raises:
         ValueError: If `key` is malformed. See `validate_profile_key` for the
             exact conditions: empty key, leading/trailing whitespace,
-            whitespace adjacent to a `:`, or an empty provider/model segment.
+            whitespace adjacent to the first `:`, or an empty provider/model half.
     """
     _ensure_harness_profiles_loaded()
     _register_harness_profile_impl(key, profile)

@@ -244,7 +244,7 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     Raises:
         ValueError: If `key` is malformed. See `validate_profile_key` for the
             exact conditions: empty key, leading/trailing whitespace,
-            whitespace adjacent to a `:`, or an empty provider/model segment.
+            whitespace adjacent to the first `:`, or an empty provider/model half.
     """
     _ensure_provider_profiles_loaded()
     _register_provider_profile_impl(key, profile)

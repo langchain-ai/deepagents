@@ -114,7 +114,21 @@ def filter_prompts(prompts: tuple[str, ...], query: str) -> list[str]:
     return [prompt for prompt in prompts if needle in prompt.casefold()]
 
 
-class PromptSearchInput(Input):
+class PromptFilterInput(Input):
+    """Prompt filter with standard modified-Backspace word deletion."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_left_word",
+            "Delete word left",
+            show=False,
+            priority=True,
+        )
+    ]
+
+
+class PromptSearchInput(PromptFilterInput):
     """Query field for the inline prompt search panel.
 
     Plain `Input` apart from the class name, which lets `ChatInput` filter
@@ -334,7 +348,9 @@ class PromptSearchPanel(Vertical):
             Widgets for the prompt search panel.
         """
         yield PromptSearchInput(
-            placeholder="Search submitted prompts", id="prompt-search-input"
+            placeholder="Search submitted prompts",
+            id="prompt-search-input",
+            select_on_focus=False,
         )
         yield VerticalScroll(id="prompt-search-results")
         yield Static(prompt_search_hint(), classes="prompt-search-hint")

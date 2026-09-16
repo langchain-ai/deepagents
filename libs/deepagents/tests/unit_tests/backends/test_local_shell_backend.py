@@ -132,7 +132,7 @@ def test_local_shell_backend_execute_configures_session_for_platform() -> None:
     process.communicate.return_value = ("hello\n", "")
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir)
-        with patch("subprocess.Popen", return_value=process) as popen:
+        with patch.object(local_shell_module, "WindowsProcessReader", return_value=process), patch("subprocess.Popen", return_value=process) as popen:
             backend.execute("echo hello")
 
     assert popen.call_args.kwargs["start_new_session"] == (sys.platform != "win32")
@@ -172,6 +172,7 @@ def test_local_shell_backend_interrupt_cleans_up_platform_process_scope() -> Non
     process.communicate.side_effect = KeyboardInterrupt
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
         pytest.raises(KeyboardInterrupt),
@@ -186,6 +187,7 @@ def test_local_shell_backend_polling_interrupt_kills_process_group() -> None:
     process = MagicMock(pid=1234)
     process.communicate.side_effect = KeyboardInterrupt
     with (
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
         pytest.raises(KeyboardInterrupt),
     ):
@@ -204,6 +206,7 @@ def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
     process = MagicMock(pid=1234)
     with (
         patch.object(local_shell_module.time, "monotonic", side_effect=[0, 2]),
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
         pytest.raises(subprocess.TimeoutExpired),
     ):
@@ -273,6 +276,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     process.stderr.close.side_effect = OSError
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch("os.killpg", side_effect=PermissionError),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
@@ -297,6 +301,7 @@ def test_local_shell_backend_timeout_cleans_up_platform_process_scope() -> None:
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
     ):
@@ -313,6 +318,7 @@ def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module.sys, "platform", "win32"),
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process) as popen,
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
     ):
@@ -332,6 +338,7 @@ def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCa
     process.wait.side_effect = subprocess.TimeoutExpired("sleep 10", 5)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
@@ -675,6 +682,7 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
     process.communicate.side_effect = block_communication
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
     ):
@@ -793,6 +801,7 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
     process.communicate.side_effect = block_communication
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module, "_kill_and_reap"),
     ):

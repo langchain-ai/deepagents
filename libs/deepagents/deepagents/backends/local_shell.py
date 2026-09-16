@@ -20,6 +20,7 @@ from contextlib import suppress
 from contextvars import ContextVar, copy_context
 from typing import IO, TYPE_CHECKING
 
+from deepagents.backends._windows_process import WindowsProcessReader
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, execute_accepts_timeout
 
@@ -84,7 +85,7 @@ def _terminate_process(process: subprocess.Popen[str], process_group: int | None
     """Best-effort termination of a shell process or its POSIX group."""
     target = f"process group {process_group}" if process_group is not None else f"process {process.pid}"
     try:
-        if process_group is None:
+        if sys.platform == "win32" or process_group is None:
             process.kill()
         else:
             os.killpg(process_group, signal.SIGKILL)
@@ -139,9 +140,10 @@ def _communicate(
     process_group: int | None = None,
 ) -> tuple[str, str]:
     """Collect output with best-effort cleanup when execution is interrupted."""
+    communicate = WindowsProcessReader(process).communicate if sys.platform == "win32" else process.communicate
     if cancellation_event is None:
         try:
-            return process.communicate(timeout=timeout)
+            return communicate(timeout=timeout)
         except BaseException:
             _kill_and_reap(process, process_group)
             raise
@@ -153,7 +155,7 @@ def _communicate(
             _kill_and_reap(process, process_group)
             raise subprocess.TimeoutExpired(process.args, timeout)
         try:
-            output = process.communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
+            output = communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
         except subprocess.TimeoutExpired:
             continue
         except BaseException:
@@ -404,6 +406,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             Cancellation allows synchronous execution one second for cleanup.
             An overridden `execute` method that does not cooperate may continue
             running in a background thread after cancellation is raised.
+            The one-second bound applies to this await, not application shutdown:
+            shutting down the default executor still waits for running threads.
         """
         cancellation_event = threading.Event()
         execution_started = threading.Event()

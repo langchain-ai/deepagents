@@ -74,7 +74,7 @@ jobs:
             let topics;
             try {
               topics = await classifyTopicLabels(
-                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, await h.getTopicLabels(),
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, h.topicLabels,
               );
             } catch (error) {
               core.warning(`Topic classification failed: ${error.message}`);

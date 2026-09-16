@@ -23,7 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
-    'topicFileRules',
+    'topicFileRules', 'topicLabels',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
@@ -52,6 +52,7 @@ function init(github, owner, repo, config, core) {
     labelDescriptions,
     fileRules: fileRulesDef,
     topicFileRules: topicFileRulesDef,
+    topicLabels,
     branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
@@ -177,12 +178,7 @@ function init(github, owner, repo, config, core) {
   }
 
 
-  async function getTopicLabels() {
-    const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
-      owner, repo, per_page: 100,
-    });
-    return labels.map(label => label.name).filter(name => name.startsWith('topic:'));
-  }
+
 
   // ── Branch-name-based labels ──────────────────────────────────────
 
@@ -422,7 +418,6 @@ function init(github, owner, repo, config, core) {
     buildRules,
     matchFileLabels,
     matchTopicFileLabels,
-    getTopicLabels,
     matchBranchLabels,
     matchTitleLabels,
     getStaleTitleLabels,
@@ -440,6 +435,7 @@ function init(github, owner, repo, config, core) {
     trustedThreshold,
     labelColor,
     labelColors,
+    topicLabels,
   };
 }
 

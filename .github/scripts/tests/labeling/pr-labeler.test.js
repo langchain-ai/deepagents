@@ -420,16 +420,10 @@ test('label-creating scripts resolve colors from the config', () => {
   }
 });
 
-test('topic classifier choices come from live repository labels', async () => {
-  const github = {
-    rest: { issues: { listLabelsForRepo: async () => [
-      { name: 'topic:mcp' }, { name: 'priority:high' }, { name: 'topic:new-area' },
-    ] } },
-    paginate: method => method(),
-  };
-  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
-  const h = prLabeler.init(github, 'o', 'r', config, core);
-  assert.deepEqual(await h.getTopicLabels(), ['topic:mcp', 'topic:new-area']);
+test('topic classifier choices come from the shared config', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  assert.deepEqual(h.topicLabels, config.topicLabels);
+  assert.ok(h.topicLabels.every(label => label.startsWith('topic:')));
 });
 
 test('topic labels come from the modules a PR touched', () => {

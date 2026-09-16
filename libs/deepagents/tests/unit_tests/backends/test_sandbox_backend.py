@@ -2699,6 +2699,8 @@ class TestCaptureWrapperNotices:
     def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
         """The surplus the wrapper reports is relative to these two constants."""
         assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd
+
+
 class _HangingSandbox(MockSandbox):
     """Sandbox whose async execute never returns, standing in for a wedged host."""
 

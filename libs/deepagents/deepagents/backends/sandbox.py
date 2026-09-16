@@ -1484,6 +1484,7 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
+
     def _unoffloaded() -> ExecuteOffloadResult:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
 

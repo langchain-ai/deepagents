@@ -151,12 +151,15 @@ def _communicate(
             _kill_and_reap(process, process_group)
             raise subprocess.TimeoutExpired(process.args, timeout)
         try:
-            return process.communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
+            output = process.communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
         except subprocess.TimeoutExpired:
             continue
         except BaseException:
             _kill_and_reap(process, process_group)
             raise
+        if cancellation_event.is_set():
+            break
+        return output
     _kill_and_reap(process, process_group)
     raise _CommandCancelled
 

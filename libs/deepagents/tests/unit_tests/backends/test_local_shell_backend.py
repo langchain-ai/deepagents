@@ -660,6 +660,38 @@ async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path:
         _stop_test_descendant(pid_file)
 
 
+@_POSIX_SHELL_ONLY
+def test_local_shell_backend_cancellation_after_output_stops_descendant(tmp_path: Path) -> None:
+    heartbeat = tmp_path / "heartbeat"
+    command = (
+        f'i=0; while :; do i=$((i + 1)); printf "%s" "$i" > {shlex.quote(str(heartbeat))}; '
+        "sleep 0.02; done >/dev/null 2>&1 & "
+        f"while ! test -s {shlex.quote(str(heartbeat))}; do sleep 0.01; done"
+    )
+    cancellation_event = threading.Event()
+    process = subprocess.Popen(  # noqa: S602  # Fixed shell probe with a quoted pytest temporary path.
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    communicate = process.communicate
+
+    def cancel_before_return(*, timeout: float) -> tuple[str, str]:
+        output = communicate(timeout=timeout)
+        cancellation_event.set()
+        return output
+
+    try:
+        with patch.object(process, "communicate", side_effect=cancel_before_return), pytest.raises(local_shell_module._CommandCancelled):
+            local_shell_module._communicate(process, 5, cancellation_event, process_group=process.pid)
+        assert process.returncode == 0
+        assert process.stdout is not None and process.stdout.closed
+        assert process.stderr is not None and process.stderr.closed
+        _assert_heartbeat_stopped(heartbeat)
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=5)
+
+
 def test_local_shell_backend_async_start_race_skips_execution() -> None:
     """Test a worker observing cancellation before start skips execution."""
     with tempfile.TemporaryDirectory() as tmpdir:

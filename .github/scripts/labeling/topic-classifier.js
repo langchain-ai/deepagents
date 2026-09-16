@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const MODEL = 'llama-3.1-8b-instant';
+const MODEL = 'openai/gpt-oss-20b';
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 
 function loadTopicLabels() {

@@ -16,6 +16,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets._links import open_checked_url_async
 
 if TYPE_CHECKING:
@@ -45,8 +46,8 @@ YOLO_MODE_NOTICE_BODY = (
     "You are about to enable **YOLO mode**. The agent may run shell commands, "
     "edit files, make network calls, and use other tools on this machine "
     "**without asking you first**.\n\n"
-    "Only continue if you're comfortable letting it act unsupervised. Leave "
-    "YOLO any time with **Shift+Tab**.\n\n"
+    "Only continue if you're comfortable letting it act unsupervised.\n\n"
+    "Leave YOLO any time with **Shift+Tab**.\n\n"
     "This notice appears **once** on this machine.\n\n"
     f"[Learn more about approval modes]({YOLO_MODE_DOCS_URL})"
 )
@@ -153,7 +154,8 @@ class YoloModeNoticeScreen(ModalScreen[YoloModeNoticeResult]):
                 open_links=False,
             )
             yield Static(
-                "Enter to enable YOLO · m for Manual · Esc to keep current mode",
+                f"Enter to enable YOLO {get_glyphs().separator} m for Manual "
+                f"{get_glyphs().separator} Esc to keep current mode",
                 classes="yolo-mode-notice-help",
                 markup=False,
             )

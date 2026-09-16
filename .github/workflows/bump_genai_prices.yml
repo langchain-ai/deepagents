@@ -279,18 +279,26 @@ jobs:
           manifest="libs/code/pyproject.toml"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          # Scope to head branches in this repository: `gh pr list --head`
-          # matches by branch *name*, so a fork PR that happens to use the
-          # same name would otherwise make this workflow think its own PR is
-          # already open and never file one again.
-          existing_json=$(gh pr list --head "$BRANCH" --state open \
-            --json number,url,headRepositoryOwner)
-          pr_number=$(printf '%s' "$existing_json" \
-            | jq -r --arg owner "$REPO_OWNER" \
-              'map(select(.headRepositoryOwner.login == $owner)) | .[0].number // ""')
-          pr_url=$(printf '%s' "$existing_json" \
-            | jq -r --arg owner "$REPO_OWNER" \
-              'map(select(.headRepositoryOwner.login == $owner)) | .[0].url // ""')
+          # Query the REST endpoint directly instead of `gh pr list`, whose
+          # GraphQL request can fail transiently. The owner-qualified head
+          # excludes fork PRs that happen to use the same branch name.
+          existing_json=""
+          for attempt in 1 2 3; do
+            if existing_json=$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f state=open \
+              -f head="${REPO_OWNER}:${BRANCH}" \
+              -F per_page=1); then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Could not look up an existing bump PR after $attempt attempts."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          pr_number=$(printf '%s' "$existing_json" | jq -r '.[0].number // ""')
+          pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].html_url // ""')
 
           remote_sha=$(git ls-remote --heads "$remote" "$BRANCH" | cut -f1)
 
@@ -340,7 +348,7 @@ jobs:
             git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git checkout -b "$BRANCH"
             git add "$lockfile" "$manifest"
-            git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
+            git commit -m "chore(deps): bump "'`genai-prices`'" in "'`deepagents-code`'" to $LATEST"
 
             # The bump branch is rebuilt on top of `main` every run, so there
             # is no shared history worth preserving and the push must be
@@ -358,9 +366,9 @@ jobs:
           fi
 
           body_file="$(mktemp)"
-          printf 'Bumps `genai-prices` from `%s` to `%s`.\n\nOpened automatically by `bump_genai_prices.yml`.\n' "$LOCKED" "$LATEST" > "$body_file"
+          printf 'Bumps %s from `%s` to `%s`.\n\nOpened automatically by %s.\n' '`genai-prices`' "$LOCKED" "$LATEST" '`bump_genai_prices.yml`' > "$body_file"
 
-          title="chore(deps): bump genai-prices in deepagents-code to $LATEST"
+          title="chore(deps): bump "'`genai-prices`'" in "'`deepagents-code`'" to $LATEST"
 
           if [ -n "$pr_number" ]; then
             # Retitle and rewrite the body: the branch just moved to a newer

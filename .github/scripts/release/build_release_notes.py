@@ -46,7 +46,6 @@ from typing import NamedTuple
 # the convenience path for local runs that only supply --package.
 PACKAGE_MAP = {
     "deepagents": "libs/deepagents",
-    "deepagents-cli": "libs/cli",
     "deepagents-acp": "libs/acp",
     "deepagents-code": "libs/code",
     "deepagents-talon": "libs/talon",
@@ -655,6 +654,13 @@ MAX_CONTRIBUTOR_COMMITS = 100
 # cannot stall on a large closing-reference payload or rate-limit retries.
 MAX_ISSUE_AUTHOR_LOOKUPS = 100
 
+# Both spellings are matched on purpose. `org:internal` is the current name
+# (see .github/LABELS.md), but release notes walk historical merged PRs, and
+# every PR merged before the label-taxonomy migration carries the retired
+# `internal`. Dropping the old name would republish past maintainers as
+# community contributors, so this pair outlives the migration window.
+INTERNAL_LABELS = frozenset({"org:internal", "internal"})
+
 
 def generate_git_log(
     repo: Path,
@@ -1123,7 +1129,7 @@ def collect_contributors(
 
         # `is None` rather than `not in`: a present-but-null labels field is
         # swallowed by the `or []` below just as an absent one is, so both must
-        # warn or an `internal` maintainer lands in the community shoutouts.
+        # warn or an `org:internal` maintainer lands in the community shoutouts.
         if pr_data.get("labels") is None:
             warnings.append(
                 f"contributor lookup: PR #{pr_num} returned no labels field;"
@@ -1135,7 +1141,7 @@ def collect_contributors(
             if isinstance(label, dict)
         ]
 
-        if "internal" in labels:
+        if INTERNAL_LABELS.intersection(labels):
             if gh_user:
                 internal_users.add(gh_user)
             else:

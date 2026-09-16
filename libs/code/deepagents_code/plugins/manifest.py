@@ -7,6 +7,7 @@ import logging
 import re
 from pathlib import Path, PureWindowsPath
 
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.models import (
     ComponentInventory,
@@ -23,6 +24,7 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".codex-plugin") / "plugin.json",
 )
 _PATH_COMPONENT_FIELDS = {"skills", "mcpServers", "hooks"}
+_PYTHON_EXTENSIONS_FIELD = "pythonExtensions"
 _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "agents",
     "commands",
@@ -84,39 +86,64 @@ def _is_windows_absolute(path: str) -> bool:
     return bool(PureWindowsPath(path).drive or PureWindowsPath(path).root)
 
 
+def resolve_relative_path(
+    declaration: str,
+    plugin_root: Path,
+    *,
+    require_dot_prefix: bool = True,
+) -> tuple[Path | None, str | None]:
+    """Resolve one path declared relative to `plugin_root`.
+
+    Plugin manifest component fields must start with `./`. Marketplace source
+    paths must not, because the marketplace format also accepts a bare relative
+    path such as `tools/my-plugin`; those callers pass
+    `require_dot_prefix=False`. Both forms stay inside `plugin_root`.
+
+    Returns:
+        `(path, None)` when the declaration resolves, or `(None, reason)`
+        naming why it was rejected.
+    """
+    if declaration.startswith("./"):
+        relative = declaration[2:]
+    elif require_dot_prefix:
+        return None, "path must start with './' relative to plugin root"
+    else:
+        relative = declaration
+    if not relative:
+        return None, "path must not be empty"
+    path = Path(relative)
+    if any(part == ".." for part in path.parts):
+        return None, "path must not contain '..'"
+    if path.is_absolute() or _is_windows_absolute(relative):
+        return None, "path must stay within the plugin root"
+    try:
+        root_resolved = plugin_root.resolve()
+        resolved = (plugin_root / path).resolve()
+    except (OSError, RuntimeError) as exc:
+        return None, f"could not resolve {declaration!r}: {exc}"
+    if not resolved.is_relative_to(root_resolved):
+        return None, "path escapes plugin root"
+    return resolved, None
+
+
 def _resolve_component_path(
     declaration: str,
     plugin_root: Path,
     field_name: str,
     warnings: list[str],
+    *,
+    require_dot_prefix: bool = True,
 ) -> Path | None:
-    if not declaration.startswith("./"):
-        warnings.append(
-            f"ignoring {field_name}: path must start with './' relative to plugin root"
-        )
-        return None
-    relative = declaration[2:]
-    if not relative:
-        warnings.append(f"ignoring {field_name}: path must not be './'")
-        return None
-    path = Path(relative)
-    if any(part == ".." for part in path.parts):
-        warnings.append(f"ignoring {field_name}: path must not contain '..'")
-        return None
-    if path.is_absolute() or _is_windows_absolute(relative):
-        warnings.append(f"ignoring {field_name}: path must stay within the plugin root")
-        return None
-    try:
-        root_resolved = plugin_root.resolve()
-        resolved = (plugin_root / path).resolve()
-    except OSError as exc:
-        warnings.append(
-            f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
-        )
-        return None
-    if not resolved.is_relative_to(root_resolved):
-        warnings.append(f"ignoring {field_name}: path escapes plugin root")
-        return None
+    """Resolve one plugin-relative path, warning when it is not usable.
+
+    Returns:
+        The resolved path, or `None` when the declaration is rejected.
+    """
+    resolved, reason = resolve_relative_path(
+        declaration, plugin_root, require_dot_prefix=require_dot_prefix
+    )
+    if reason is not None:
+        warnings.append(f"ignoring {field_name}: {reason}")
     return resolved
 
 
@@ -186,6 +213,46 @@ def _inline_hooks(value: object) -> JsonObject:
     return {"hooks": normalized}
 
 
+def _python_extensions(
+    settings: object,
+    plugin_root: Path,
+    warnings: list[str],
+) -> tuple[Path, ...]:
+    if not is_env_truthy(EXPERIMENTAL):
+        return ()
+    if not isinstance(settings, dict):
+        return ()
+    declaration = settings.get(_PYTHON_EXTENSIONS_FIELD)
+    if declaration is None:
+        return ()
+    paths = _resolve_component_paths(
+        declaration,
+        plugin_root,
+        _PYTHON_EXTENSIONS_FIELD,
+        warnings,
+    )
+    entries: list[Path] = []
+    for path in paths:
+        try:
+            is_file = path.is_file()
+        except (OSError, RuntimeError):
+            logger.debug(
+                "Could not inspect Python extension path %s", path, exc_info=True
+            )
+            warnings.append(
+                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: could not inspect declared path"
+            )
+            continue
+        if path.suffix != ".py" or not is_file:
+            warnings.append(
+                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
+                f"{path} must be an existing Python file"
+            )
+            continue
+        entries.append(path)
+    return tuple(entries)
+
+
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
@@ -233,21 +300,29 @@ def load_manifest(
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
-    auto_update_settings = raw.get("extensions")
-    if isinstance(auto_update_settings, dict):
-        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
+    extension_settings = raw.get("extensions")
+    if isinstance(extension_settings, dict):
+        extension_settings = extension_settings.get("com.langchain.deepagents.code")
+    python_extensions = _python_extensions(extension_settings, root, warnings)
+    if python_extensions and not version:
+        warnings.append(
+            f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
+            "Python extensions require a non-empty plugin version"
+        )
+        python_extensions = ()
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
         inline_hooks=_inline_hooks(raw.get("hooks")),
+        python_extensions=python_extensions,
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
         auto_update=(
-            isinstance(auto_update_settings, dict)
-            and auto_update_settings.get("autoUpdate") is True
+            isinstance(extension_settings, dict)
+            and extension_settings.get("autoUpdate") is True
         ),
     )
     return manifest, manifest_path, tuple(warnings)

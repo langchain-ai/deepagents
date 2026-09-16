@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from textual.content import Content
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalStatus
 
@@ -40,7 +42,8 @@ class GoalStatusPanel(Static):
         current = status or "active"
         label = "completed" if current == "complete" else current
         content = Content.from_markup(
-            "[bold]Goal · $status[/bold]\n$objective",
+            "[bold]Goal $separator $status[/bold]\n$objective",
+            separator=get_glyphs().separator,
             status=label,
             objective=objective,
         )

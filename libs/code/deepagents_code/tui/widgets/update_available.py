@@ -28,6 +28,7 @@ from deepagents_code import theme
 from deepagents_code._version import CHANGELOG_URL
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.notifications import ActionId
+from deepagents_code.tui.key_hints import modal_navigation_hint
 from deepagents_code.tui.widgets._links import open_url_async
 
 
@@ -188,7 +189,8 @@ class UpdateAvailableScreen(ModalScreen[ActionId | None]):
     }
 
     UpdateAvailableScreen .ua-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -229,7 +231,7 @@ class UpdateAvailableScreen(ModalScreen[ActionId | None]):
                 self._options.append(option)
                 yield option
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate "
+                f"{modal_navigation_hint(glyphs)} "
                 f"{glyphs.bullet} Enter select "
                 f"{glyphs.bullet} Esc close"
             )

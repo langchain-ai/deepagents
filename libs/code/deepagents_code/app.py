@@ -4081,6 +4081,9 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._footer_picker_requests: set[str] = set()
+        """Footer picker commands currently being submitted."""
+
         self._agent_reconciling = False
         """True while turn-end checkpoint state is being synchronized."""
 
@@ -23572,6 +23575,26 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def _submit_footer_picker(self, command: str) -> None:
+        """Submit a footer picker unless the same request is open or queued."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        screen_type = (
+            ModelSelectorScreen if command == "/model" else EffortSelectorScreen
+        )
+        if (
+            command in self._footer_picker_requests
+            or isinstance(self.screen, screen_type)
+            or any(message.text == command for message in self._pending_messages)
+        ):
+            return
+        self._footer_picker_requests.add(command)
+        try:
+            await self._submit_input(command, "command")
+        finally:
+            self._footer_picker_requests.discard(command)
+
     async def action_open_model_selector(self) -> None:
         """Open the model selector via `/model`.
 
@@ -23581,7 +23604,7 @@ class DeepAgentsApp(App):
         tip is dismissed. The bare form is `IMMEDIATE_UI`, so it still bypasses
         the queue and opens while the agent is busy.
         """
-        await self._submit_input("/model", "command")
+        await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
         """Open the reasoning effort picker via `/effort`.
@@ -23589,7 +23612,7 @@ class DeepAgentsApp(App):
         `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
         place behind any pending input instead of jumping an in-flight turn.
         """
-        await self._submit_input("/effort", "command")
+        await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(
         self,

@@ -1664,7 +1664,7 @@ class TestPromptSearchPanel:
         for prompt in prompts:
             chat._history.add(prompt)
 
-    async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
+    async def test_ctrl_r_replaces_input_with_search(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import (
             PromptSearchInput,
             PromptSearchPanel,
@@ -1688,6 +1688,8 @@ class TestPromptSearchPanel:
             panel = app.query_one(PromptSearchPanel)
             assert panel.styles.display == "block"
             assert chat._prompt_search_active is True
+            assert not chat.query_one(".input-row").display
+            assert app.focused is app.query_one(PromptSearchInput)
             assert app.query_one(PromptSearchInput).value == "second"
             assert chat._prompt_search_filtered == ["second prompt"]
             # Seeding the filter does not consume or change the draft.
@@ -1717,6 +1719,29 @@ class TestPromptSearchPanel:
             panel = app.query_one(PromptSearchPanel)
             assert panel.styles.display == "block"
 
+    async def test_queued_query_edits_keep_latest_text(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["fix tests", "first prompt"])
+            chat.open_prompt_search()
+            await pilot.pause()
+            query = app.query_one(PromptSearchInput)
+
+            for value in ("f", "fi", "fix", "fi", "fix tests"):
+                query.value = value
+            await pilot.pause()
+
+            assert query.value == "fix tests"
+            assert chat._prompt_search_filtered == ["fix tests"]
+            await pilot.press("enter")
+            assert chat.value == "fix tests"
+            assert chat.query_one(".input-row").display
+            assert app.focused is chat._text_area
+
     async def test_escape_restores_draft(self, tmp_path) -> None:
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -1741,6 +1766,8 @@ class TestPromptSearchPanel:
 
             assert chat._prompt_search_active is False
             assert chat._text_area.text == "my draft"
+            assert chat.query_one(".input-row").display
+            assert app.focused is chat._text_area
 
     async def test_escape_preserves_concurrently_updated_draft(self, tmp_path) -> None:
         """Cancel should not replace a draft changed outside prompt search."""

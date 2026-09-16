@@ -1,6 +1,6 @@
 ---
 name: deepagents-thread-inspector
-description: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse ~/.deepagents/.state/sessions.db and a thread UUID or prefix.
+description: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix.
 license: MIT
 compatibility: designed for deepagents-code
 ---
@@ -32,7 +32,7 @@ If the user does not know the ID, list recent threads first:
 python3 "$SKILL_DIR/scripts/inspect_sessions.py" --list 20
 ```
 
-Pass `--db PATH` only for a non-default session store. The default is `~/.deepagents/.state/sessions.db`; `DEEPAGENTS_SESSIONS_DB` can override it.
+Pass `--db PATH` only for a non-default session store. The default is `$DEEPAGENTS_HOME/.state/sessions.db`, or `~/.deepagents/.state/sessions.db` when that variable is unset. `DEEPAGENTS_SESSIONS_DB` overrides both. The script applies the same rules dcode does, so a relative or `~user` value is rejected rather than resolved to a database dcode never writes.
 
 ## Explain the result
 

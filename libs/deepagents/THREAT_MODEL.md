@@ -15,7 +15,6 @@
 
 ### Out of Scope
 
-- `libs/cli/` — CLI product (separate threat model; CLI and SDK are treated as independent product stories)
 - `libs/acp/`, `libs/evals/`, `libs/partners/`, `libs/harbor/` — separate packages
 - `examples/`, `tests/`, `scripts/` — not shipped code; tests are read for context only
 - User application code, prompt construction, model selection, and model behavior — user-controlled

@@ -44,21 +44,21 @@ deepagents-evals list evals --category memory     # eval functions in a category
 
 ```sh
 # Single trial against one model.
-deepagents-evals run --model claude-opus-4-7
+deepagents-evals run --model claude-opus-5
 
 # Restrict to a category and tier, and write a JSON report.
 deepagents-evals run \
-    --model openai:gpt-5.5 \
+    --model openai:gpt-6-astra \
     --eval-category memory \
     --eval-tier baseline \
     --report evals_report.json
 
 # Three trials with stats aggregation.
-deepagents-evals trials --model openai:gpt-5.5 --trials 3
+deepagents-evals trials --model openai:gpt-6-astra --trials 3
 
 # Re-run only the failures from a prior trial sweep.
 deepagents-evals trials \
-    --model openai:gpt-5.5 \
+    --model openai:gpt-6-astra \
     --trials 1 \
     --retry-failed trial_runs/trials_summary.json
 
@@ -71,7 +71,7 @@ deepagents-evals aggregate ./downloaded-artifacts --summary-out summary.json
 Set `DEEPAGENTS_EVALS_MODEL` once and omit `--model`:
 
 ```sh
-export DEEPAGENTS_EVALS_MODEL=claude-sonnet-4-6
+export DEEPAGENTS_EVALS_MODEL=claude-sonnet-5
 deepagents-evals run
 deepagents-evals trials --trials 3
 ```
@@ -111,7 +111,7 @@ file with this shape:
 ```jsonc
 {
   "n_trials": 3,
-  "model": "openai:gpt-5.5",
+  "model": "openai:gpt-6-astra",
   "sdk_version": "0.5.7",
   "metrics": {
     "correctness":       {"n": 3, "mean": 0.84, "median": 0.85, "stdev": 0.02, "min": 0.82, "max": 0.86},
@@ -165,13 +165,17 @@ Per-trial `evals_report_trial_NNN.json` files written by `pytest_reporter` conta
 {
   "failures": [
     {
-      "test_name": "tests/evals/test_memory.py::test_memory_recall[claude-sonnet-4-6]",
+      "test_name": "tests/evals/test_memory.py::test_memory_recall[claude-sonnet-5]",
       "category": "memory",
       "failure_message": "AssertionError: ..."
     }
   ]
 }
 ```
+
+## Vendored data
+
+Files under `tests/evals/tau2_airline/data/` are vendored from [tau-bench](https://github.com/sierra-research/tau-bench) and must remain byte-identical to upstream. Do not reformat them or remove their exclusions from `.pre-commit-config.yaml`.
 
 ## Harbor LangGraph agent deps
 

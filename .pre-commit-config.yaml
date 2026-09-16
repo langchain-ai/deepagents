@@ -62,12 +62,6 @@ repos:
         entry: make -C libs/deepagents format lint
         files: ^libs/deepagents/
         pass_filenames: false
-      - id: deepagents-cli
-        name: format and lint deepagents-cli
-        language: system
-        entry: make -C libs/cli format lint
-        files: ^libs/cli/
-        pass_filenames: false
       - id: deepagents-code
         name: format and lint deepagents-code
         language: system
@@ -106,7 +100,7 @@ repos:
         name: check pyproject.toml and _version.py match
         language: system
         entry: python3 .github/scripts/checks/check_version_equality.py
-        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
+        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/code/pyproject\.toml|^libs/code/deepagents_code/_version\.py)$
         pass_filenames: false
       - id: branch-scopes-sync
         name: check branch-name rules match across hook, CI and pr_lint

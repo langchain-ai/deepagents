@@ -28,7 +28,6 @@ on:
           set)"
         options:
           - deepagents
-          - deepagents-cli
           - deepagents-acp
           - deepagents-code
           - deepagents-talon
@@ -82,7 +81,7 @@ on:
         description:
           "Tolerate a ripgrep install failure in pre-release checks
           (danger!) - the rg-gated artifact tests will skip. Passed automatically
-          when the merged release PR carries the bypass-ripgrep-check label"
+          when the merged release PR carries the ci:skip-ripgrep label"
 
 env:
   UV_NO_SYNC: "true"
@@ -102,7 +101,8 @@ jobs:
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
-      python-version: ${{ steps.parse.outputs.python-version }}
+      python-version: ${{ steps.python-matrix.outputs.python-version }}
+      python-versions: ${{ steps.python-matrix.outputs.python-versions }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
@@ -119,24 +119,10 @@ jobs:
           fi
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
 
-          # deepagents-code requires Python 3.12 or newer, and deepagents-talon
-          # depends on it. Other packages keep the baseline interpreter.
-          case "$PACKAGE" in
-            deepagents-code|deepagents-talon)
-              echo "python-version=3.12" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "python-version=3.11" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-
           # Map package name to working directory
           case "$PACKAGE" in
             deepagents)
               echo "working-dir=libs/deepagents" >> $GITHUB_OUTPUT
-              ;;
-            deepagents-cli)
-              echo "working-dir=libs/cli" >> $GITHUB_OUTPUT
               ;;
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
@@ -167,7 +153,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
+              echo "Valid packages are: deepagents, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac
@@ -352,6 +338,17 @@ jobs:
             echo "| Resolution | ${RELEASE_SHA_SOURCE} |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+
+      - name: Resolve Python matrix
+        id: python-matrix
+        env:
+          RELEASE_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          WORKING_DIR: ${{ steps.parse.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          git show "${RELEASE_SHA}:${WORKING_DIR}/pyproject.toml" \
+            | python .github/scripts/release/resolve_python_matrix.py \
+            >> "$GITHUB_OUTPUT"
 
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
@@ -614,7 +611,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
-    name: ✅ Pre-release checks
+    name: ✅ Pre-release checks (Python ${{ matrix.python-version }})
     needs:
       - setup
       - build
@@ -623,6 +620,10 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
@@ -647,8 +648,14 @@ jobs:
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ matrix.python-version }}
           enable-cache: "false"
+
+      - name: Set up Node for Talon
+        if: needs.build.outputs.pkg-name == 'deepagents-talon'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -757,7 +764,7 @@ jobs:
       # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
       # makes the rg-gated tests fail rather than skip if `rg` goes missing
       # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
-      # from the `bypass-ripgrep-check` label on the merged release PR)
+      # from the `ci:skip-ripgrep` label on the merged release PR)
       # tolerates an apt failure instead: the install still runs, but a failure
       # neither fails the job nor promises ripgrep, so the gated tests skip
       # rather than error.
@@ -910,6 +917,12 @@ jobs:
       contents: write
       # This permission is needed to update release PR labels
       pull-requests: write
+      # `mark_release_tagged` creates `auto:release-tagged` if it is missing.
+      # Label creation is POST /repos/{o}/{r}/labels, which GitHub gates on
+      # Issues, not Pull requests. Without this the publish succeeds but the
+      # PR keeps `auto:release-pending`, and `guard-pending-release` then
+      # blocks every later release-please run.
+      issues: write
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
@@ -1007,6 +1020,44 @@ jobs:
 
           UPDATED=false
 
+          # Query aliases separately: repeating --label would require BOTH.
+          find_release_pr() {
+            local label candidates number
+            for label in "$@"; do
+              candidates=$(gh pr list --repo "${{ github.repository }}" \
+                --state merged --label "$label" --limit 100 \
+                --search "\"release($PKG_NAME): $VERSION\" in:title" \
+                --json number,title) || return 1
+              number=$(printf '%s' "$candidates" | jq -r \
+                --arg title "release($PKG_NAME): $VERSION" \
+                '[.[] | select(.title == $title)] | .[0].number // empty') || return 1
+              if [ -n "$number" ]; then
+                printf '%s\n' "$number"
+                return 0
+              fi
+            done
+          }
+
+          # Read live labels so a retry can finish a partial transition. Only
+          # remove names actually present; preserve unrelated labels.
+          mark_release_tagged() {
+            local pr="$1" labels label
+            local -a changes=(--add-label "auto:release-tagged")
+            # gh pr edit requires the repository label to exist. --force
+            # also succeeds when a previous release already created it.
+            gh label create "auto:release-tagged" --repo "${{ github.repository }}" \
+              --color "d9dce0" \
+              --description "The release has been tagged by the automated release workflow." \
+              --force || return 1
+            labels=$(gh pr view "$pr" --json labels --jq '.labels[].name') || return 1
+            for label in "auto:release-pending" "autorelease: pending"; do
+              if printf '%s\n' "$labels" | grep -qFx "$label"; then
+                changes+=(--remove-label "$label")
+              fi
+            done
+            gh pr edit "$pr" "${changes[@]}"
+          }
+
           # Surface a manual-fix instruction on the run summary so a human reviewer
           # sees it without scrolling through step logs.
           fail_summary() {
@@ -1019,14 +1070,12 @@ jobs:
               if [ -n "$pr" ]; then
                 echo "PR: #$pr"
                 echo ""
-                echo "Manual fix:"
+                echo "Recovery:"
                 echo ""
-                echo "\`\`\`"
-                echo "gh pr edit $pr --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
-                echo "\`\`\`"
+                echo "Re-run this job to clear both pending-label names, or remove any pending labels on PR #$pr and apply auto:release-tagged after confirming the release exists."
               else
                 echo ""
-                echo "No release PR was found. Inspect open PRs with the \`autorelease: pending\` label."
+                echo "No release PR was found. Inspect release PRs with either pending-label name."
               fi
             } >> "$GITHUB_STEP_SUMMARY"
           }
@@ -1047,15 +1096,15 @@ jobs:
             if ! LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>&1); then
               echo "::warning::gh pr view #$PR_NUMBER failed: $LABELS"
               echo "Falling through to label search."
-            elif printf '%s\n' "$LABELS" | grep -qFx "autorelease: pending"; then
-              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
-              if EDIT_ERR=$(gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" 2>&1); then
+            elif printf '%s\n' "$LABELS" | grep -qFx -e "auto:release-pending" -e "autorelease: pending"; then
+              echo "Found release PR #$PR_NUMBER with a pending release label, updating labels..."
+              if EDIT_ERR=$(mark_release_tagged "$PR_NUMBER" 2>&1); then
                 UPDATED=true
               else
                 echo "::warning::gh pr edit #$PR_NUMBER failed: $EDIT_ERR"
                 echo "Falling through to label search."
               fi
-            elif printf '%s\n' "$LABELS" | grep -qFx "autorelease: tagged"; then
+            elif printf '%s\n' "$LABELS" | grep -qFx -e "auto:release-tagged" -e "autorelease: tagged"; then
               echo "::notice::Release PR #$PR_NUMBER is already tagged."
               UPDATED=true
             else
@@ -1069,7 +1118,7 @@ jobs:
               # so it stays in the step log for debugging without raising a
               # run-level annotation. The annotation-worthy outcomes below
               # (no release PR found, edit failure) use ::warning::/::error::.
-              echo "PR #$PR_NUMBER lacks 'autorelease: pending'. Falling through to label search."
+              echo "PR #$PR_NUMBER lacks a pending release label. Falling through to label search."
             fi
           else
             echo "No PR found via commit ${RELEASE_SHA}."
@@ -1079,12 +1128,7 @@ jobs:
           # releases (release-sha falls back to github.sha, no merge PR) or fresh
           # merges where GitHub's commit-to-PR index hasn't caught up yet.
           if [ "$UPDATED" = "false" ]; then
-            if ! LIST_OUT=$(gh pr list --repo "${{ github.repository }}" \
-              --state merged \
-              --label "autorelease: pending" \
-              --label "release" \
-              --search "\"release($PKG_NAME)\" in:title" \
-              --json number --jq '.[0].number // empty' 2>&1); then
+            if ! LIST_OUT=$(find_release_pr "auto:release-pending" "autorelease: pending" 2>&1); then
               echo "::error::gh pr list failed: $LIST_OUT"
               fail_summary ""
               exit 1
@@ -1092,7 +1136,7 @@ jobs:
             PR_NUMBER="$LIST_OUT"
             if [ -n "$PR_NUMBER" ]; then
               echo "Found release PR #$PR_NUMBER via label search, updating labels..."
-              if EDIT_ERR=$(gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" 2>&1); then
+              if EDIT_ERR=$(mark_release_tagged "$PR_NUMBER" 2>&1); then
                 UPDATED=true
               else
                 echo "::error::gh pr edit #$PR_NUMBER failed: $EDIT_ERR"
@@ -1100,12 +1144,7 @@ jobs:
                 exit 1
               fi
             else
-              if ! TAGGED_PR=$(gh pr list --repo "${{ github.repository }}" \
-                --state merged \
-                --label "autorelease: tagged" \
-                --label "release" \
-                --search "\"release($PKG_NAME): $VERSION\" in:title" \
-                --json number --jq '.[0].number // empty' 2>&1); then
+              if ! TAGGED_PR=$(find_release_pr "auto:release-tagged" "autorelease: tagged" 2>&1); then
                 echo "::error::gh pr list failed while checking already-tagged releases: $TAGGED_PR"
                 fail_summary ""
                 exit 1
@@ -1114,10 +1153,10 @@ jobs:
                 echo "::notice::Release PR #$TAGGED_PR is already tagged."
                 UPDATED=true
               elif [ "$IS_DANGEROUS" = "true" ]; then
-                echo "::warning::No release PR with 'autorelease: pending' found for $PKG_NAME."
+                echo "::warning::No pending release PR found for $PKG_NAME."
                 fail_summary ""
               else
-                echo "::error::No release PR with 'autorelease: pending' found for $PKG_NAME."
+                echo "::error::No pending release PR found for $PKG_NAME."
                 fail_summary ""
                 exit 1
               fi

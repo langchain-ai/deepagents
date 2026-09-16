@@ -11,7 +11,6 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,
@@ -474,27 +473,25 @@ class TestMalformedEvent:
 class TestCompactBackendUsage:
     """Test backend use for compact offloading."""
 
-    def test_static_backend_is_passed_to_offload(self) -> None:
-        """Should pass the configured backend instance to offload."""
-        backend = StateBackend()
-        mw = _make_middleware(backend=backend)
-        messages = _make_messages(10)
-        runtime = _make_runtime(messages)
+    def test_compact_writes_history_to_configured_backend(self) -> None:
+        """Compacted history is written through the configured backend."""
+        backend = _make_mock_backend()
+        summarization = SummarizationMiddleware(
+            model=_make_mock_model(),
+            backend=backend,
+            trigger=("fraction", 0.85),
+            keep=("messages", 2),
+        )
+        middleware = SummarizationToolMiddleware(summarization)
+        messages = [HumanMessage(content=f"Message {index}") for index in range(9)]
+        messages.append(_ai_message_with_usage(120_000))
+        result = middleware._run_compact(_make_runtime(messages))
 
-        with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
-            patch.object(
-                mw._summarization,
-                "_partition_messages",
-                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
-            ),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None) as offload,
-        ):
-            mw._run_compact(runtime)
-
-        offload.assert_called_once()
-        assert offload.call_args.args[0] is backend
+        event = result.update["_summarization_event"]
+        backend.write.assert_called_once()
+        path, content = backend.write.call_args.args
+        assert path == event["file_path"]
+        assert "Message 0" in content
 
 
 class TestComputeStateCutoff:
@@ -649,11 +646,6 @@ class TestIsEligibleForCompaction:
         ):
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
-
-    def test_dict_trigger_constructs_langchain_trigger_clauses(self) -> None:
-        """Dict trigger input should populate LangChain's canonical trigger clauses."""
-        mw = _make_middleware_with_trigger({"tokens": 100_000, "messages": 6})
-        assert mw._summarization._lc_helper._trigger_clauses == [{"tokens": 100_000, "messages": 6}]
 
     def test_dict_clause_list_uses_or_semantics(self) -> None:
         """Multiple dict trigger clauses use OR semantics for compact eligibility."""

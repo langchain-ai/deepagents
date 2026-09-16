@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware import AgentMiddleware, AgentState, TracePolicy, omit_payload
 from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
@@ -10,6 +10,9 @@ from langgraph.runtime import Runtime
 
 class PatchToolCallsMiddleware(AgentMiddleware):
     """Middleware to patch dangling tool calls in the messages history."""
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
         """Before the agent runs, handle dangling tool calls from any AIMessage."""
@@ -40,7 +43,10 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                 if tool_call.get("type") == "invalid_tool_call":
                     content = f"Tool call {name} with id {tool_call_id} could not be executed - arguments were malformed or truncated."
                 else:
-                    content = f"Tool call {name} with id {tool_call_id} was cancelled - another message came in before it could be completed."
-                patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id))
+                    content = (
+                        f"Tool call {name} with id {tool_call_id} did not complete - no result was recorded. "
+                        "It may have been cancelled or interrupted."
+                    )
+                patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error"))
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}

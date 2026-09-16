@@ -230,7 +230,7 @@ ToolCallMessage.-ascii {
     border-left: ascii $panel;
 }
 
-ToolCallMessage.-ascii:hover {
+ToolCallMessage.-ascii.-row-actionable:hover {
     border-left: ascii $secondary;
 }
 

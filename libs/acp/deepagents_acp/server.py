@@ -32,6 +32,7 @@ from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
+    AgentThoughtChunk,
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
@@ -132,24 +133,83 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
-def _replay_content_blocks(
+def _content_block(
+    block: Mapping[str, Any],
+) -> TextContentBlock | ImageContentBlock | AudioContentBlock | None:
+    """Convert one normalized LangChain content block into an ACP block.
+
+    Returns `None` when the block has no ACP equivalent, so callers skip it.
+    Empty text is dropped because it renders nothing.
+    """
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text")
+        return text_block(text) if isinstance(text, str) and text else None
+    data = block.get("base64")
+    mime_type = block.get("mime_type")
+    if not (isinstance(data, str) and isinstance(mime_type, str)):
+        return None
+    if block_type == "image":
+        return image_block(data, mime_type, uri=block.get("url"))
+    if block_type == "audio":
+        return audio_block(data, mime_type)
+    return None
+
+
+def _content_blocks(
     message: Any,
 ) -> list[TextContentBlock | ImageContentBlock | AudioContentBlock]:
-    """Convert persisted LangChain content into replayable ACP blocks."""
-    replay_blocks: list[TextContentBlock | ImageContentBlock | AudioContentBlock] = []
+    """Convert normalized user-message content into ACP blocks.
+
+    Reasoning blocks are not expected on user messages. They have no ACP
+    equivalent here and are dropped.
+    """
+    return [block for item in message.content_blocks if (block := _content_block(item))]
+
+
+def _visible_reasoning(block: Mapping[str, Any]) -> str | None:
+    """Return reasoning text a provider exposed in plaintext, or `None`.
+
+    Redacted or encrypted reasoning arrives as a `non_standard` block with no
+    `reasoning` string, so it never returns here. Whitespace is kept: reasoning
+    streams one delta at a time, and a delta that holds only a space or a line
+    break carries the word and paragraph breaks of the finished thought.
+    """
+    reasoning = block.get("reasoning")
+    if block.get("type") != "reasoning" or not isinstance(reasoning, str):
+        return None
+    return reasoning or None
+
+
+def _content_updates(
+    message: Any,
+    message_id: str | None = None,
+) -> list[AgentMessageChunk | AgentThoughtChunk]:
+    """Convert normalized assistant content into ordered ACP updates.
+
+    Both the live stream and session replay project through this function, so
+    block ordering and block-type support cannot drift between them. Live
+    chunks carry no message ID; replay passes the persisted one.
+    """
+    updates: list[AgentMessageChunk | AgentThoughtChunk] = []
     for block in message.content_blocks:
-        block_type = block.get("type")
-        data = block.get("base64")
-        mime_type = block.get("mime_type")
-        if block_type == "text":
-            replay_blocks.append(text_block(block["text"]))
-        elif not (isinstance(data, str) and isinstance(mime_type, str)):
-            continue
-        elif block_type == "image":
-            replay_blocks.append(image_block(data, mime_type, uri=block.get("url")))
-        elif block_type == "audio":
-            replay_blocks.append(audio_block(data, mime_type))
-    return replay_blocks
+        if reasoning := _visible_reasoning(block):
+            updates.append(
+                AgentThoughtChunk(
+                    session_update="agent_thought_chunk",
+                    content=text_block(reasoning),
+                    message_id=message_id,
+                )
+            )
+        elif content := _content_block(block):
+            updates.append(
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=content,
+                    message_id=message_id,
+                )
+            )
+    return updates
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +267,7 @@ class AgentServerACP(ACPAgent):
         self._session_modes: dict[str, str] = {}
         self._session_mode_states: dict[str, SessionModeState] = {}
         self._session_models: dict[str, str] = {}  # Track current model per session
-        self._cancelled = False
+        self._cancelled_sessions: set[str] = set()  # Session ids with a pending cancel
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
         self._session_mcp_servers: dict[str, list[McpServer]] = {}
@@ -446,8 +506,8 @@ class AgentServerACP(ACPAgent):
         return SetSessionConfigOptionResponse(config_options=config_options)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # ACP protocol interface parameters
-        """Cancel the current execution."""
-        self._cancelled = True
+        """Cancel the current execution for the given session."""
+        self._cancelled_sessions.add(session_id)
 
     async def _log_text(self, session_id: str, text: str) -> None:
         """Send a text message update to the client."""
@@ -786,7 +846,7 @@ class AgentServerACP(ACPAgent):
         message: Any,
     ) -> None:
         """Replay one persisted user message."""
-        for block in _replay_content_blocks(message):
+        for block in _content_blocks(message):
             await self._conn.session_update(
                 session_id=session_id,
                 update=UserMessageChunk(
@@ -805,14 +865,10 @@ class AgentServerACP(ACPAgent):
         active_tool_calls: dict[str, dict[str, Any]],
     ) -> None:
         """Replay one persisted assistant message and its tool calls."""
-        for block in _replay_content_blocks(message):
+        for update in _content_updates(message, message_id):
             await self._conn.session_update(
                 session_id=session_id,
-                update=AgentMessageChunk(
-                    session_update="agent_message_chunk",
-                    content=block,
-                    message_id=message_id,
-                ),
+                update=update,
                 source="DeepAgent",
             )
         for tool_call in message.tool_calls:
@@ -914,7 +970,7 @@ class AgentServerACP(ACPAgent):
         agent = self._agent
 
         # Reset cancellation flag for new prompt
-        self._cancelled = False
+        self._cancelled_sessions.discard(session_id)
 
         # Convert ACP content blocks to LangChain multimodal content format
         content_blocks = []
@@ -944,8 +1000,8 @@ class AgentServerACP(ACPAgent):
 
         while current_state is None or current_state.interrupts:
             # Check for cancellation
-            if self._cancelled:
-                self._cancelled = False  # Reset for next prompt
+            if session_id in self._cancelled_sessions:
+                self._cancelled_sessions.discard(session_id)  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
             pending_interrupts: Sequence[Interrupt] = ()
@@ -963,8 +1019,8 @@ class AgentServerACP(ACPAgent):
 
                 _namespace, stream_mode, data = stream_chunk
                 # Check for cancellation during streaming
-                if self._cancelled:
-                    self._cancelled = False  # Reset for next prompt
+                if session_id in self._cancelled_sessions:
+                    self._cancelled_sessions.discard(session_id)  # Reset for next prompt
                     return PromptResponse(stop_reason="cancelled")
 
                 if stream_mode == "updates":
@@ -1010,14 +1066,6 @@ class AgentServerACP(ACPAgent):
 
                 message_chunk, _metadata = data
 
-                # Process tool call chunks
-                await self._process_tool_call_chunks(
-                    session_id,
-                    message_chunk,
-                    active_tool_calls,
-                    tool_call_accumulator,
-                )
-
                 if isinstance(message_chunk, str):
                     if not _namespace:
                         await self._log_text(text=message_chunk, session_id=session_id)
@@ -1053,26 +1101,27 @@ class AgentServerACP(ACPAgent):
                             session_id=session_id, update=update, source="DeepAgent"
                         )
 
-                elif message_chunk.content:
-                    # content can be a string or a list of content blocks
-                    if isinstance(message_chunk.content, str):
-                        text = message_chunk.content
-                    elif isinstance(message_chunk.content, list):
-                        # Extract text from content blocks
-                        text = ""
-                        for block in message_chunk.content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text += block.get("text", "")
-                            elif isinstance(block, str):
-                                text += block
-                    else:
-                        text = str(message_chunk.content)
+                # Only the top-level graph reports to the client. Subagent text
+                # and reasoning stay internal.
+                elif not _namespace:
+                    for update in _content_updates(message_chunk):
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update,
+                            source="DeepAgent",
+                        )
 
-                    if text and not _namespace:
-                        await self._log_text(text=text, session_id=session_id)
+                # Emitted after the content above so a chunk that carries both
+                # keeps the block order that session replay uses.
+                await self._process_tool_call_chunks(
+                    session_id,
+                    message_chunk,
+                    active_tool_calls,
+                    tool_call_accumulator,
+                )
 
             # After streaming completes, check if we need to exit the loop
-            # The loop continues while there are interrupts (line 467)
+            # The loop continues while there are interrupts
             # We get the current state to check the loop condition
             current_state = await agent.aget_state(config)
             if pending_interrupts:

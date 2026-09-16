@@ -21,6 +21,8 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import AIMessage
 
@@ -154,6 +156,9 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
         so only `_FIREWORKS_GLM_5P2_SPEC` recovers. The output cap that produces
         the stall was measured only there; OpenRouter and Baseten are excluded.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     @staticmethod
     def _is_terminal_stall(response: ModelResponse) -> bool:

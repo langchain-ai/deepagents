@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from deepagents_code._env_vars import DEBUG
 from deepagents_code.mcp_auth import FileTokenStorage
 
 if TYPE_CHECKING:
@@ -131,6 +132,7 @@ class TestLoginWithoutStdio:
 
         from deepagents_code.mcp_auth import login
 
+        monkeypatch.delenv(DEBUG, raising=False)
         monkeypatch.setattr("webbrowser.open", lambda _url: False)
 
         captured: list[str] = []
@@ -175,8 +177,39 @@ class TestLoginWithoutStdio:
         shown_url, opened = ui.authorize_urls[0]
         assert "team=T01234567" in shown_url
         assert opened is False
-        assert ui.successes, "login() must report success via the UI"
-        assert "Logged in to MCP server 'slack'" in ui.successes[-1]
+        assert ui.successes == ["Logged in to MCP server 'slack'."]
+
+    @pytest.mark.usefixtures("fake_home")
+    async def test_success_message_includes_token_location_in_debug_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode includes the token location in the success message."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_providers import LoginResult
+
+        monkeypatch.setenv(DEBUG, "1")
+        ui = RecordingOAuthInteraction()
+
+        with patch(
+            "deepagents_code.mcp_providers.GenericProvider.run_login",
+            AsyncMock(return_value=LoginResult(completed=True)),
+        ):
+            await login(
+                server_name="langsmith",
+                server_config={
+                    "type": "http",
+                    "url": "https://api.smith.langchain.com/mcp",
+                    "auth": "oauth",
+                },
+                ui=ui,
+            )
+
+        token_path = FileTokenStorage(
+            "langsmith", server_url="https://api.smith.langchain.com/mcp"
+        ).path
+        assert ui.successes == [
+            f"Logged in to MCP server 'langsmith'. Tokens saved to {token_path}."
+        ]
 
     @pytest.mark.usefixtures("fake_home")
     async def test_github_device_flow_with_recording_ui(

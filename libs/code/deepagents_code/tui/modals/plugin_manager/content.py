@@ -64,7 +64,7 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
         meta_parts.append(Content.styled(f"{glyphs.checkmark} connected", "dim"))
     if status:
         meta_parts.append(Content.styled(status, "dim"))
-    separator = Content.styled(" · ", "dim")
+    separator = Content.styled(f" {glyphs.separator} ", "dim")
     return Content.assemble(
         row.label,
         separator,
@@ -168,13 +168,17 @@ def _status_lines(row: _PluginRow) -> list[Content]:
     if row.load_state == "pending_reload":
         if row.enabled:
             return [
-                Content.styled("Status: Installed · pending /reload", "dim"),
+                Content.styled(
+                    f"Status: Installed {glyphs.separator} pending /reload", "dim"
+                ),
                 Content.styled(
                     "Run /reload to load this plugin into the current session.", "dim"
                 ),
             ]
         return [
-            Content.styled("Status: Disabled · pending /reload", "dim"),
+            Content.styled(
+                f"Status: Disabled {glyphs.separator} pending /reload", "dim"
+            ),
             Content.styled(
                 "Run /reload to unload this plugin from the current session.", "dim"
             ),

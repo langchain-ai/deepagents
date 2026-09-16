@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import logging
 import socket
@@ -18,12 +19,28 @@ from pydantic import Field
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from langchain_core.tools import BaseTool
     from tavily import TavilyClient
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
+
+_WEB_SEARCH_MARKER = "deepagents_web_search"
+"""Tool-metadata key marking a workspace-bound `web_search` variant.
+
+Read by `is_web_search_tool`, the same way MCP read-only hints are read off
+tool metadata, so a variant does not have to be registered anywhere.
+"""
+
+_WEB_SEARCH_TOKEN = object()
+"""Value `is_web_search_tool` requires under `_WEB_SEARCH_MARKER`.
+
+A module-private object rather than `True` so the marker cannot be forged: MCP
+tool metadata is deserialized JSON, which can carry the key but never this
+identity. Callers therefore need no separate "is this tool remote?" guard.
+"""
 
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
@@ -282,6 +299,31 @@ def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> s
     return parser.get_text()
 
 
+def _missing_tavily_key_error(query: object) -> dict[str, object]:
+    """Return the payload the model sees when no Tavily key is configured.
+
+    Shared by the built-in and workspace-bound variants: `is_web_search_tool`
+    treats them as one tool, so they have to fail identically.
+
+    Returns:
+        Error payload naming the env var to set.
+    """
+    return {
+        "error": "Tavily API key not configured. "
+        "Please set TAVILY_API_KEY environment variable.",
+        "query": query,
+    }
+
+
+def _missing_package_error(exc: ImportError) -> dict[str, str]:
+    """Return the payload the model sees when an optional package is absent.
+
+    Returns:
+        Error payload naming the missing package.
+    """
+    return {"error": f"Required package not installed: {exc.name}."}
+
+
 def _get_tavily_client() -> TavilyClient | None:
     """Get or initialize the lazy Tavily client singleton.
 
@@ -292,15 +334,65 @@ def _get_tavily_client() -> TavilyClient | None:
     if _tavily_client is not _UNSET:
         return _tavily_client  # ty: ignore[invalid-return-type]  # narrowed by sentinel check
 
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
 
-    if settings.has_tavily:
+    if credentials.has_tavily:
         from tavily import TavilyClient as _TavilyClient
 
-        _tavily_client = _TavilyClient(api_key=settings.tavily_api_key)
+        _tavily_client = _TavilyClient(api_key=credentials.tavily_api_key)
     else:
         _tavily_client = None
     return _tavily_client
+
+
+def create_web_search_tool(api_key: str) -> BaseTool:
+    """Bind web search to one workspace credential.
+
+    The schema is taken from `web_search` via `functools.wraps` so the built-in
+    and workspace-bound variants can never present different arguments. The two
+    also have to fail the same way: `is_web_search_tool` treats them as one, so
+    a missing package or an unusable key must return the payload the model can
+    act on rather than raising.
+
+    Returns:
+        Workspace-bound web search tool.
+    """
+    # Built on first use and reused: a per-call client would open a fresh
+    # connection pool and repeat the TLS handshake for every search.
+    client: TavilyClient | None = None
+
+    @tool("web_search")
+    @functools.wraps(web_search)
+    def workspace_web_search(**kwargs: Any) -> object:
+        nonlocal client
+        if not api_key:
+            return _missing_tavily_key_error(kwargs.get("query"))
+        if client is None:
+            try:
+                from tavily import TavilyClient as _TavilyClient
+
+                client = _TavilyClient(api_key=api_key)
+            except ImportError as exc:
+                return _missing_package_error(exc)
+        return _search_with_tavily(client, **kwargs)
+
+    workspace_web_search.metadata = {
+        **(workspace_web_search.metadata or {}),
+        _WEB_SEARCH_MARKER: _WEB_SEARCH_TOKEN,
+    }
+    return workspace_web_search
+
+
+def is_web_search_tool(candidate: object) -> bool:
+    """Return whether `candidate` is a built-in or workspace-bound search tool.
+
+    Returns:
+        `True` for the module-level tool or any variant the factory marked.
+    """
+    if candidate is web_search:
+        return True
+    metadata = getattr(candidate, "metadata", None) or {}
+    return metadata.get(_WEB_SEARCH_MARKER) is _WEB_SEARCH_TOKEN
 
 
 @tool
@@ -349,6 +441,31 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     Returns:
         Search hits with title, URL, snippet, and score.
     """
+    client = _get_tavily_client()
+    if client is None:
+        return _missing_tavily_key_error(query)
+    return _search_with_tavily(
+        client,
+        query=query,
+        max_results=max_results,
+        topic=topic,
+        include_raw_content=include_raw_content,
+    )
+
+
+def _search_with_tavily(
+    client: TavilyClient,
+    *,
+    query: str,
+    max_results: int,
+    topic: Literal["general", "news", "finance"],
+    include_raw_content: bool,
+) -> object:
+    """Execute a Tavily search with the standard error translation.
+
+    Returns:
+        Search hits or a translated error payload.
+    """
     try:
         import requests
         from tavily import (
@@ -359,15 +476,7 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         )
         from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
-
-    client = _get_tavily_client()
-    if client is None:
-        return {
-            "error": "Tavily API key not configured. "
-            "Please set TAVILY_API_KEY environment variable.",
-            "query": query,
-        }
+        return _missing_package_error(exc)
 
     try:
         return client.search(
@@ -410,7 +519,7 @@ def fetch_url(
         import requests
         from markdownify import markdownify
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
+        return _missing_package_error(exc)
 
     try:
         response = _fetch_with_redirects(url, timeout=timeout)

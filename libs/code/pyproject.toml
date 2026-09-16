@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     # Framework
     "deepagents==0.7.14",
-    "langchain>=1.4.0,<2.0.0",
+    "langchain>=1.4.1,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
@@ -58,7 +58,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.12.5",
+    "langsmith[sandbox]>=0.12.6",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
@@ -109,7 +109,7 @@ dependencies = [
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.2,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.4,<1.0.0"]
-bedrock = ["langchain-aws>=1.7.7,<2.0.0"]
+bedrock = ["langchain-aws>=1.7.8,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.6.1,<2.0.0"]

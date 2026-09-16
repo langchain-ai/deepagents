@@ -207,6 +207,32 @@ class TestProfileForModel:
             assert any(r.levelno == logging.DEBUG and "using provider defaults" in r.getMessage() for r in caplog.records)
             assert "identifier='myprov:my-model', provider='myprov'" in caplog.text
 
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    def test_identifier_prefix_is_not_treated_as_provider(self, identifier_attr: str) -> None:
+        """A colon-containing identifier is an exact key only, never a provider prefix.
+
+        `glm-5.2:cloud` is a plain Ollama model identifier, not a qualified
+        spec. Running it through the provider-prefix fallback would let a
+        profile registered under the bare key `glm-5.2` govern an unrelated
+        `ollama` model, which is the accident the resolver's docstring
+        promises is prevented.
+        """
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("glm-5.2", HarnessProfile(system_prompt_suffix="unrelated bare key"))
+            model = _make_model({identifier_attr: "glm-5.2:cloud"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+            result = _harness_profile_for_model(model, None)
+            assert result == HarnessProfile()
+
+    def test_exact_colon_identifier_still_resolves(self) -> None:
+        """The exact-key path still matches an identifier that contains colons."""
+        with patch.dict(_HARNESS_PROFILES):
+            profile = HarnessProfile(system_prompt_suffix="ollama cloud")
+            register_harness_profile("ollama:glm-5.2:cloud", profile)
+            model = _make_model({"model_name": "glm-5.2:cloud"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+            assert _harness_profile_for_model(model, None) is profile
+
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})

@@ -7,8 +7,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from contextlib import suppress
+from itertools import chain, repeat
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,20 +24,6 @@ def _process(*, errors: str = "strict") -> MagicMock:
         stdout=io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors=errors),
         stderr=io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors=errors),
     )
-
-
-def _fake_monotonic(*values: float) -> Callable[[], float]:
-    """Return a clock that steps through `values` and then holds the last one.
-
-    A `side_effect` list raises `StopIteration` if the code reads the clock one
-    extra time, which hides the real assertion. This holds instead.
-    """
-    remaining = list(values)
-
-    def clock() -> float:
-        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
-
-    return clock
 
 
 def test_peek_uses_available_byte_count() -> None:
@@ -100,23 +86,23 @@ def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
 
 
 def test_timeout_keeps_output_read_so_far() -> None:
-    """Test a timeout carries the output already read, decoded leniently.
+    """Test a timeout carries the text already decoded.
 
-    The buffers can end in the middle of an encoded character, so decoding must
-    replace the incomplete bytes rather than raise over the timeout.
+    A read can end in the middle of an encoded character. Those bytes stay with
+    the decoder, so a decoding error cannot replace the timeout.
     """
     process = _process()
     process.poll.return_value = None
     try:
         with (
             patch.object(windows_process, "_read_available", side_effect=[b"partial \xc3", b"err", None, None]),
-            patch.object(windows_process.time, "monotonic", side_effect=_fake_monotonic(0, 0, 5)),
+            patch.object(windows_process.time, "monotonic", side_effect=chain([0, 0], repeat(5))),
             patch.object(windows_process.time, "sleep"),
             pytest.raises(subprocess.TimeoutExpired) as caught,
         ):
             WindowsProcessReader(process).communicate(timeout=1)
 
-        assert caught.value.stdout == "partial \ufffd"
+        assert caught.value.stdout == "partial "
         assert caught.value.stderr == "err"
     finally:
         process.stdout.close()
@@ -130,7 +116,7 @@ def test_retries_preserve_multibyte_output_and_newlines() -> None:
     try:
         with (
             patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n", b"\nx\r", b"", b"\n", b""]),
-            patch.object(windows_process.time, "monotonic", side_effect=_fake_monotonic(0, 0, 2)),
+            patch.object(windows_process.time, "monotonic", side_effect=chain([0, 0], repeat(2))),
         ):
             with pytest.raises(subprocess.TimeoutExpired):
                 reader.communicate(timeout=1)

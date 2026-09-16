@@ -85,7 +85,13 @@ class _CommandTimeout(subprocess.TimeoutExpired):
     `subprocess.TimeoutExpired` alone cannot say whether cleanup managed to stop
     the command, so `terminated` carries that. It is `False` when the process may
     still be running, which changes the advice given to the caller.
+
+    `subprocess` types its captured output as bytes, but this class is only
+    raised for a text-mode process, so the two streams are narrowed to `str`.
     """
+
+    output: str
+    stderr: str
 
     def __init__(
         self,
@@ -106,6 +112,32 @@ def _command_summary(command: str) -> str:
     return command if len(command) <= _COMMAND_LOG_LIMIT else f"{command[:_COMMAND_LOG_LIMIT]}..."
 
 
+def _report_worker_failure(
+    worker: asyncio.Future[ExecuteResponse],
+    *,
+    backend_id: str,
+    command: str,
+) -> None:
+    """Retrieve a finished worker's exception and log a real failure.
+
+    The worker lost the race with cancellation, but it may have failed for an
+    unrelated reason. Report that instead of dropping it, or the caller only
+    ever sees "cancelled" for a real error. Retrieving the exception also stops
+    asyncio reporting it as never retrieved at an unrelated point later.
+    """
+    if worker.cancelled():
+        return
+    error = worker.exception()
+    if error is None or isinstance(error, asyncio.CancelledError):
+        return
+    logger.warning(
+        "Local shell command failed on backend %s after its caller was cancelled: %s",
+        backend_id,
+        command,
+        exc_info=error,
+    )
+
+
 def _release_background_worker(
     worker: asyncio.Future[ExecuteResponse],
     *,
@@ -114,19 +146,7 @@ def _release_background_worker(
 ) -> None:
     """Consume the result of an execution worker retained after cancellation."""
     _BACKGROUND_WORKERS.discard(worker)
-    if worker.cancelled():
-        return
-    try:
-        worker.result()
-    except asyncio.CancelledError:
-        return
-    except BaseException:  # noqa: BLE001  # Done callbacks cannot propagate worker control-flow exceptions.
-        logger.warning(
-            "Local shell execution failed after its caller was cancelled on backend %s: %s",
-            backend_id,
-            _command_summary(command),
-            exc_info=True,
-        )
+    _report_worker_failure(worker, backend_id=backend_id, command=command)
 
 
 async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> bool:
@@ -164,32 +184,26 @@ def _terminate_process(process: subprocess.Popen[str], process_group: int | None
     Returns:
         `True` if nothing this function can reach is still running.
     """
-    target = f"process group {process_group}" if process_group is not None else f"process {process.pid}"
-    try:
-        if _IS_WINDOWS or process_group is None:
-            process.kill()
-        else:
+    # An already-reaped process or an empty group is the ordinary result when
+    # cancellation arrives just after a command ends, so it is a success.
+    if not _IS_WINDOWS and process_group is not None:
+        try:
             os.killpg(process_group, signal.SIGKILL)
-    except ProcessLookupError:
-        # The group is empty, or the process was already reaped. This is the
-        # ordinary result when cancellation arrives just after a command ends,
-        # so it is a success, not a failure.
-        logger.debug("Local shell %s had already exited before cleanup", target)
-        return True
-    except OSError:
-        logger.warning("Failed to terminate local shell %s", target, exc_info=True)
-    else:
-        return True
-    # Only reached when the group kill failed. Kill the shell itself so at least
-    # the direct process goes away.
-    if process_group is None:
-        return False
+        except ProcessLookupError:
+            logger.debug("Local shell process group %s had already exited before cleanup", process_group)
+            return True
+        except OSError:
+            # Fall back to the shell itself so at least the direct process goes away.
+            logger.warning("Failed to terminate local shell process group %s", process_group, exc_info=True)
+        else:
+            return True
     try:
         process.kill()
     except ProcessLookupError:
+        logger.debug("Local shell process %s had already exited before cleanup", process.pid)
         return True
     except OSError:
-        logger.warning("Failed to terminate local shell process %s after group cleanup failed", process.pid, exc_info=True)
+        logger.warning("Failed to terminate local shell process %s", process.pid, exc_info=True)
         return False
     return True
 
@@ -273,7 +287,7 @@ def _timeout_with_partial_output(
 ) -> _CommandTimeout:
     """Build the timeout error, keeping whatever the command printed."""
     return _CommandTimeout(
-        process.args if isinstance(process.args, str) else str(process.args),
+        str(process.args),
         timeout,
         output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
         stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
@@ -615,20 +629,13 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                     _ASYNC_CANCELLATION_GRACE_PERIOD,
                 )
                 _BACKGROUND_WORKERS.add(worker)
+                # Keep only the log-sized command. An uncooperative worker may
+                # never finish, so the callback can outlive the whole command.
                 worker.add_done_callback(
-                    functools.partial(_release_background_worker, backend_id=self.id, command=command),
+                    functools.partial(_release_background_worker, backend_id=self.id, command=_command_summary(command)),
                 )
                 raise
-            # The worker lost the race with cancellation, but it may have failed
-            # for an unrelated reason. Report that instead of dropping it, or the
-            # caller only ever sees "cancelled" for a real error.
-            if not worker.cancelled() and (error := worker.exception()) is not None and not isinstance(error, asyncio.CancelledError):
-                logger.warning(
-                    "Local shell command failed on backend %s while its caller was cancelled: %s",
-                    self.id,
-                    _command_summary(command),
-                    exc_info=error,
-                )
+            _report_worker_failure(worker, backend_id=self.id, command=_command_summary(command))
             raise
 
     def execute(
@@ -805,22 +812,18 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=truncated,
             )
 
-        except subprocess.TimeoutExpired as error:
+        except _CommandTimeout as error:
             if timeout is not None:
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
             # What the command printed before it stopped responding is usually the
             # only clue about where it stopped, so keep it.
-            # `_communicate` attaches decoded text. A `TimeoutExpired` raised
-            # anywhere else still carries bytes, so normalize both here.
-            partial_stdout = _decode_stream(error.stdout, None)
-            partial_stderr = _decode_stream(error.stderr, None)
             truncated = False
-            if partial_stdout or partial_stderr:
-                partial, truncated = self._combine_output(partial_stdout, partial_stderr)
+            if error.output or error.stderr:
+                partial, truncated = self._combine_output(error.output, error.stderr)
                 msg = f"{msg}\n\nOutput before the timeout:\n{partial}"
-            if not getattr(error, "terminated", True):
+            if not error.terminated:
                 msg = f"{msg}\n\nWarning: the command could not be stopped and may still be running. Re-running it may start a second copy."
             return ExecuteResponse(
                 output=msg,

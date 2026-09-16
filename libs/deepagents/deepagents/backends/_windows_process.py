@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import logging
 import os
 import subprocess
@@ -67,6 +69,21 @@ def _read_available(pipe: IO[str]) -> bytes | None:
         raise
 
 
+def _make_decoder(pipe: IO[str] | None) -> io.IncrementalNewlineDecoder | None:
+    r"""Build an incremental decoder matching one text-mode pipe.
+
+    The decoder holds back the bytes of a character that a read cut in half, and
+    `IncrementalNewlineDecoder` applies the same universal-newline translation
+    `subprocess` gives a fully buffered stream, including a `\r\n` pair split
+    across two reads.
+    """
+    if pipe is None:
+        return None
+    stream = cast("TextIO", pipe)
+    decoder = codecs.getincrementaldecoder(stream.encoding)(stream.errors or "strict")
+    return io.IncrementalNewlineDecoder(decoder, translate=True)
+
+
 class WindowsProcessReader:
     """Read both captured pipes by polling instead of with reader threads.
 
@@ -75,10 +92,11 @@ class WindowsProcessReader:
     the pipes to stop waiting for a descendant that inherited them. This reader
     polls instead, which leaves the caller free to close the pipes at any time.
 
-    The process must be in text mode, because `_output` reads the encoding from
-    each pipe. Nothing may read the pipes before this reader is created.
-    Repeated calls to `communicate` keep the bytes already read, including an
-    incomplete encoded character split across two reads.
+    The process must be in text mode, because the reader takes the encoding and
+    error handler from each pipe. Nothing may read the pipes before this reader
+    is created. Each pipe is decoded incrementally as it is read, so repeated
+    calls to `communicate` keep the text already decoded, and an encoded
+    character split across two reads is held until the rest of it arrives.
 
     The caller owns termination and pipe cleanup if `communicate` raises.
     """
@@ -87,43 +105,24 @@ class WindowsProcessReader:
         """Retain a newly created text-mode process before any pipe reads."""
         self._process = process
         self._pipes = (process.stdout, process.stderr)
-        self._buffers = (bytearray(), bytearray())
+        self._decoders = tuple(_make_decoder(pipe) for pipe in self._pipes)
+        self._texts = ["", ""]
 
     def _read(self) -> bool:
         """Read one bounded chunk from each open pipe without starving either."""
         progress = False
-        for pipe, buffer in zip(self._pipes, self._buffers, strict=True):
-            if pipe is None or pipe.closed:
+        for index, (pipe, decoder) in enumerate(zip(self._pipes, self._decoders, strict=True)):
+            if pipe is None or decoder is None or pipe.closed:
                 continue
             data = _read_available(pipe)
             if data is not None:
                 progress = True
-                buffer.extend(data)
+                # Empty bytes mean EOF, which is where a still-incomplete
+                # character is a decoding error rather than a short read.
+                self._texts[index] += decoder.decode(data, final=not data)
                 if not data:
                     pipe.close()
         return progress
-
-    def _output(self, *, lenient: bool = False) -> tuple[str, str]:
-        """Decode the streams with subprocess-compatible newline handling.
-
-        Args:
-            lenient: Replace undecodable bytes instead of raising. Use this for a
-                buffer that is not at a stream boundary, because the last read can
-                end in the middle of an encoded character.
-
-        Returns:
-            The decoded stdout and stderr.
-        """
-
-        def decode(data: bytearray, pipe: IO[str] | None) -> str:
-            if pipe is None:
-                return ""
-            stream = cast("TextIO", pipe)
-            errors = "replace" if lenient else (stream.errors or "strict")
-            text = data.decode(stream.encoding, errors)
-            return text.replace("\r\n", "\n").replace("\r", "\n")
-
-        return decode(self._buffers[0], self._pipes[0]), decode(self._buffers[1], self._pipes[1])
 
     def communicate(self, *, timeout: float) -> tuple[str, str]:
         """Collect output and reap the direct process within a polling deadline.
@@ -140,7 +139,7 @@ class WindowsProcessReader:
 
         Raises:
             subprocess.TimeoutExpired: If output or process completion exceeds the
-                deadline. The exception carries the output read so far, so a
+                deadline. The exception carries the text decoded so far, so a
                 caller that gives up keeps it.
             OSError: If reading a captured pipe fails.
             UnicodeError: If captured output cannot be decoded.
@@ -149,12 +148,14 @@ class WindowsProcessReader:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                # The buffers can end mid-character here, so decode leniently.
-                # A decoding error must not replace the timeout.
-                stdout, stderr = self._output(lenient=True)
-                raise subprocess.TimeoutExpired(self._process.args, timeout, output=stdout, stderr=stderr)
+                raise subprocess.TimeoutExpired(
+                    self._process.args,
+                    timeout,
+                    output=self._texts[0],
+                    stderr=self._texts[1],
+                )
             progress = self._read()
             if all(pipe is None or pipe.closed for pipe in self._pipes) and self._process.poll() is not None:
-                return self._output()
+                return self._texts[0], self._texts[1]
             if not progress:
                 time.sleep(min(remaining, _POLL_INTERVAL))

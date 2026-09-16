@@ -10,10 +10,11 @@ import tempfile
 import threading
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, suppress
 from contextvars import ContextVar
+from itertools import chain, repeat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,20 +52,6 @@ def _as_posix() -> AbstractContextManager[bool]:
 def _as_windows() -> AbstractContextManager[bool]:
     """Select the Windows cleanup branch for the duration of a test."""
     return patch.object(local_shell_module, "_IS_WINDOWS", new=True)
-
-
-def _fake_monotonic(*values: float) -> Callable[[], float]:
-    """Return a clock that steps through `values` and then holds the last one.
-
-    A `side_effect` list raises `StopIteration` if the code reads the clock one
-    extra time, which hides the real assertion. This holds instead.
-    """
-    remaining = list(values)
-
-    def clock() -> float:
-        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
-
-    return clock
 
 
 def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
@@ -248,7 +235,7 @@ def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
     """Test the cancellation-aware polling loop enforces its deadline."""
     process = MagicMock(pid=1234)
     with (
-        patch.object(local_shell_module.time, "monotonic", side_effect=_fake_monotonic(0, 2)),
+        patch.object(local_shell_module.time, "monotonic", side_effect=chain([0], repeat(2))),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
         pytest.raises(subprocess.TimeoutExpired),
@@ -305,7 +292,8 @@ def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.L
         local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
 
     assert worker not in local_shell_module._BACKGROUND_WORKERS
-    assert "failed after its caller was cancelled" in caplog.text
+    assert "failed on backend" in caplog.text
+    assert "after its caller was cancelled" in caplog.text
     assert "local-test" in caplog.text
     assert "echo hi" in caplog.text
 
@@ -335,7 +323,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
     assert "Failed to terminate local shell process group 1234" in caplog.text
-    assert "Failed to terminate local shell process 1234 after group cleanup failed" in caplog.text
+    assert "Failed to terminate local shell process 1234" in caplog.text
     assert "Failed to reap local shell process 1234" in caplog.text
     assert "Failed to close stdout for local shell process 1234" in caplog.text
     assert "Failed to close stderr for local shell process 1234" in caplog.text
@@ -1194,7 +1182,6 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
     """
     execution_started = threading.Event()
     release_execution = threading.Event()
-    tracked: list[int] = []
 
     class SlowLocalShellBackend(LocalShellBackend):
         def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -1215,7 +1202,7 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        tracked.append(len(local_shell_module._BACKGROUND_WORKERS))
+        tracked = len(local_shell_module._BACKGROUND_WORKERS)
 
         release_execution.set()
         for _ in range(200):
@@ -1224,6 +1211,6 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
             await asyncio.sleep(0.01)
 
     assert task.cancelled()
-    assert tracked == [1], "the repeated cancellation skipped the background-worker bookkeeping"
+    assert tracked == 1, "the repeated cancellation skipped the background-worker bookkeeping"
     assert "overridden execute method may still be running" in caplog.text
     assert not local_shell_module._BACKGROUND_WORKERS

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar, Self
 
+import anyio
 import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from mcp.types import CallToolResult
+from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, ErrorData
 from pydantic import SecretStr
 
 from deepagents_talon.authorization import (
@@ -35,12 +38,14 @@ from deepagents_talon.mcp import (
     _authorization_interceptor,
     _connection,
     _normalize_mcp_arguments,
+    _protocol_error_interceptor,
     _run_authorized,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
 )
 from deepagents_talon.mcp_auth import (
+    DeviceAuthorizationCompletedError,
     FileTokenStorage,
     MCPAuthorizationError,
     _DeviceCodeResponse,
@@ -336,6 +341,91 @@ def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:
     )
 
     assert arguments == {"query": "", "fetchMode": {}}
+
+
+async def test_protocol_error_interceptor_reports_error_to_model() -> None:
+    """An McpError becomes a failed result instead of aborting the agent turn."""
+    request = MCPToolCallRequest(
+        name="listVulnerabilities",
+        args={"severity": "NOPE"},
+        server_name="vanta",
+    )
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise McpError(
+            ErrorData(
+                code=-32602,
+                message="severity must be one of CRITICAL, HIGH, MEDIUM, LOW",
+                data={
+                    "internal_trace": "/srv/vanta/handler.py:81",
+                    "token": "do-not-leak-this-fixture",
+                },
+            )
+        )
+
+    result = await _protocol_error_interceptor(request, execute)
+
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    text = "".join(block.text for block in result.content if block.type == "text")
+    assert "severity must be one of CRITICAL, HIGH, MEDIUM, LOW" in text
+    assert "-32602" in text
+    assert "listVulnerabilities" in text
+    # The unbounded server-controlled `data` payload is never fed to the model.
+    assert "internal_trace" not in text
+    assert "do-not-leak-this-fixture" not in text
+    assert "handler.py" not in text
+
+
+async def test_protocol_error_interceptor_passes_success_through_unchanged() -> None:
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+    expected = CallToolResult(content=[])
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        return expected
+
+    assert await _protocol_error_interceptor(request, execute) is expected
+
+
+async def test_protocol_error_interceptor_lets_cancellation_propagate() -> None:
+    """Cancellation must not be converted into a tool result."""
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _protocol_error_interceptor(request, execute)
+
+
+async def test_protocol_error_interceptor_keeps_authorization_bookkeeping() -> None:
+    """Nesting order leaves the authorization layer observing the raw McpError.
+
+    `_protocol_error_interceptor` is registered outermost so `_authorization_interceptor`
+    still sees the failure and reports it, rather than being handed a successful-looking
+    result.
+    """
+    request = MCPToolCallRequest(name="listVulnerabilities", args={}, server_name="vanta")
+    events: list[AuthorizationEvent] = []
+
+    async def handler(event: AuthorizationEvent) -> None:
+        events.append(event)
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        raise McpError(ErrorData(code=-32602, message="invalid params"))
+
+    async def authorized(inner: MCPToolCallRequest) -> CallToolResult:
+        return await _authorization_interceptor(inner, execute)
+
+    token = set_authorization_handler(handler)
+    try:
+        result = await _protocol_error_interceptor(request, authorized)
+    finally:
+        reset_authorization_handler(token)
+
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    assert not any(isinstance(event, AuthorizationCompleted) for event in events)
 
 
 async def test_argument_normalization_interceptor_overrides_request_arguments() -> None:
@@ -1222,3 +1312,117 @@ async def test_invalid_server_does_not_block_valid_server(
     assert [tool.name for tool in result.tools] == ["valid_read"]
     assert result.servers[0].status == "error"
     assert result.servers[1].status == "ok"
+
+
+async def _raise_device_completion() -> None:
+    raise DeviceAuthorizationCompletedError
+
+
+async def _raise_oauth_failure() -> None:
+    msg = "secret token exchange response"
+    raise OAuthFlowError(msg)
+
+
+async def _raise_connection_failure() -> None:
+    msg = "connection reset"
+    raise ConnectionError(msg)
+
+
+async def test_login_succeeds_when_the_device_flow_completes_inside_a_task_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A completed device login exits 0: the session task group wraps the marker."""
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}})
+
+    async def complete_device_login(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_device_completion)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_device_login)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    assert captured.out == "Logged in to MCP server 'remote'.\n"
+
+
+async def test_login_reports_a_grouped_failure_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    async def fail_inside_task_group(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_oauth_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_inside_task_group)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    error = capsys.readouterr().err
+    assert result == 1
+    assert error.startswith("MCP login failed: ")
+    assert "secret token exchange response" not in error
+
+
+async def test_authenticate_reports_failure_for_a_grouped_session_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A network failure with no binding must not raise the group into the agent."""
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(config_path, {"notion": {"url": "https://mcp.example", "auth": "oauth"}})
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _stored_tokens(),
+    )
+
+    async def fail_inside_task_group(_client: object, _server_name: str) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_connection_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_inside_task_group)
+
+    result = await provider._authenticate("notion", "tool-call")
+
+    assert result == {"status": "failed", "server_name": "notion"}
+    assert await provider.refresh_if_needed() is None
+
+
+async def test_login_succeeds_and_logs_a_failure_alongside_the_completion_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The marker is only raised after credentials persist, so the login did succeed."""
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}})
+
+    async def complete_then_fail(*_args: object) -> None:
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise_device_completion)
+            group.start_soon(_raise_connection_failure)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp"):
+        result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "Logged in to MCP server 'remote'.\n"
+    assert captured.err == ""
+    assert "after credentials were saved" in caplog.text
+    assert "connection reset" in caplog.text

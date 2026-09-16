@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import threading
 import traceback
 from collections import defaultdict
@@ -13,7 +14,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents_talon import history_adapters, history_backends
+from deepagents_talon import history_adapters, history_backends, history_drivers
 from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.config import TalonConfig, TalonConfigError
 from deepagents_talon.history_backends import open_history
@@ -23,6 +24,10 @@ if TYPE_CHECKING:
 
 URI_KEY = "DEEPAGENTS_TALON_HISTORY_URI"
 SCOPE = ArchiveScope(talon_history_channel="test", talon_history_chat="one")
+_BROKEN_DRIVERS = [
+    ("mongodb", "langgraph.store.mongodb"),
+    ("postgresql", "langgraph.store.postgres.aio"),
+]
 
 
 @pytest.mark.parametrize("scheme", ["mongodb", "mongodb+srv", "postgres", "postgresql", "mysql"])
@@ -167,15 +172,11 @@ class FakeDatabase:
         return self.uri, name
 
 
-def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
-    store = InMemoryStore()
-    mongo_data = defaultdict(InMemoryStore)
+async def _setup_generation(*_args: object):
+    return None
 
-    async def setup_generation(*_args: object):
-        return None
 
-    state = SimpleNamespace(closed=False, dispatcher=None)
-
+def fake_client(state):
     class Client:
         def __init__(self, uri, **_kwargs: object) -> None:
             self.uri = uri
@@ -186,6 +187,32 @@ def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
         def close(self):
             state.closed = True
 
+    return Client
+
+
+def fake_driver(state, store, mongo_store, failing):
+    def driver(module, _extra):
+        if module == "pymongo":
+            return SimpleNamespace(MongoClient=fake_client(state))
+        if module == "langgraph.store.mongodb" and not failing:
+            # Real MongoDBStore inherits AsyncBatchedBaseStore's dispatcher task; a
+            # store whose construction fails never starts one.
+            state.dispatcher = asyncio.create_task(asyncio.Event().wait())
+        return SimpleNamespace(
+            AsyncPostgresStore=postgres_driver(store, state, failing),
+            MongoDBStore=mongo_store,
+            create_vector_index_config=lambda **kwargs: kwargs,
+            setup_generation=_setup_generation,
+        )
+
+    return driver
+
+
+def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
+    store = InMemoryStore()
+    mongo_data = defaultdict(InMemoryStore)
+    state = SimpleNamespace(closed=False, dispatcher=None)
+
     def mongo_store(target, *, index_config=None, **_kwargs: object):
         uri, collection = target
         if started is not None:
@@ -193,22 +220,20 @@ def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
             release.wait(timeout=5)
         if failing:
             raise RuntimeError(uri)
-        backend = InMemoryStore(index=index_config)
+
+        class Dispatching(InMemoryStore):
+            # InMemoryStore is slotted; the dispatcher task needs a __dict__.
+            pass
+
+        backend = Dispatching(index=index_config)
         backend._data = mongo_data[collection]._data
         backend._vectors = mongo_data[collection]._vectors
+        backend._task = state.dispatcher
         return backend
 
-    def driver(module, _extra):
-        if module == "pymongo":
-            return SimpleNamespace(MongoClient=Client)
-        return SimpleNamespace(
-            AsyncPostgresStore=postgres_driver(store, state, failing),
-            MongoDBStore=mongo_store,
-            create_vector_index_config=lambda **kwargs: kwargs,
-            setup_generation=setup_generation,
-        )
-
-    monkeypatch.setattr(history_backends, "_driver", driver)
+    monkeypatch.setattr(
+        history_backends, "_driver", fake_driver(state, store, mongo_store, failing)
+    )
     return state
 
 
@@ -284,11 +309,32 @@ async def test_missing_backend_extra_has_install_guidance(tmp_path, monkeypatch,
         msg = "missing optional driver"
         raise ModuleNotFoundError(msg)
 
-    monkeypatch.setattr(history_backends.importlib, "import_module", missing)
+    monkeypatch.setattr(history_drivers.importlib, "import_module", missing)
     config = TalonConfig.from_env({URI_KEY: f"{scheme}://localhost/talon"}, base_home=tmp_path)
     with pytest.raises(ImportError, match=f"uv sync --extra {extra}"):
         async with open_history(config):
             pytest.fail("missing backend must not fall back to SQLite")
+
+
+@pytest.mark.parametrize(("scheme", "module"), _BROKEN_DRIVERS)
+async def test_installed_backend_reports_its_own_import_failure(
+    tmp_path, monkeypatch, scheme, module
+):
+    real = importlib.import_module
+
+    def broken(name):
+        if name == module:
+            msg = "libpq.so.5: cannot open shared object file"
+            raise ImportError(msg, name="psycopg_binary")
+        return real(name)
+
+    monkeypatch.setattr(history_drivers.importlib, "import_module", broken)
+    config = TalonConfig.from_env({URI_KEY: f"{scheme}://localhost/talon"}, base_home=tmp_path)
+    with pytest.raises(ImportError, match="libpq") as error:
+        async with open_history(config):
+            pytest.fail("a driver that is installed but broken must not be reported as missing")
+    # Telling the user to install what they already have hides the real cause.
+    assert "uv sync" not in str(error.value)
 
 
 @pytest.mark.parametrize("scheme", ["mongodb", "postgresql"])

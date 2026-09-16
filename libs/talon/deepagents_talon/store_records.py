@@ -9,10 +9,14 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
+from langgraph.store.base import PutOp
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
 
     from langgraph.store.base import BaseStore
+
+    from deepagents_talon.archive import ArchiveScope
 
 Record = dict[str, object]
 Write = tuple[str, Record | None]
@@ -22,6 +26,16 @@ _MAX_WRITES = 12
 def digest(*values: str) -> str:
     """Hash identifiers without relying on backend namespace escaping."""
     return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode()).hexdigest()
+
+
+def number(record: Record, key: str) -> int:
+    """Read a numeric ordering field from a versioned archive record."""
+    return cast("int", record.get(key, 0))
+
+
+def scope_key(scope: ArchiveScope) -> str:
+    """Encode a trusted chat scope as a backend-independent lookup key."""
+    return "scope:" + digest(scope["talon_history_channel"], scope["talon_history_chat"])
 
 
 async def finish[T](operation: Coroutine[object, object, T]) -> T:
@@ -93,11 +107,12 @@ class StoreRecords:
         journal = await self.get("journal")
         if journal is None:
             return
-        for key, value in cast("list[Write]", journal["writes"]):
-            if value is None:
-                await self.store.adelete(self.namespace, key)
-            else:
-                await self.store.aput(self.namespace, key, value, index=False, ttl=None)
+        await self.store.abatch(
+            [
+                PutOp(self.namespace, key, value, index=False, ttl=None)
+                for key, value in cast("list[Write]", journal["writes"])
+            ]
+        )
         await self.store.adelete(self.namespace, "journal")
 
     async def chain(self, cursor: int, link: str) -> AsyncIterator[tuple[int, Record]]:

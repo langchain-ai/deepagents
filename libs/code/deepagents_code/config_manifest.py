@@ -12,7 +12,7 @@ shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats
 `DEEPAGENTS_CODE_`-prefixed and canonical env, env beats user `config.toml`,
-and the typed default is the final fallback. A malformed numeric/list/PTC
+and the typed default is the final fallback. A malformed numeric/list/PTC/ISO
 value, an unrecognized boolean token, or a wrong-typed TOML value is logged
 and falls back to the next layer rather than raising, so one bad entry does
 not discard valid sibling policy.
@@ -36,7 +36,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import (
@@ -154,6 +156,78 @@ VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
 """Allowlist derived from `CursorStyle` so the two never drift."""
 
 
+def normalize_iso_datetime(value: object) -> str | None:
+    """Normalize an ISO 8601 date or aware datetime to a UTC timestamp.
+
+    Returns:
+        The normalized timestamp, or `None` when the value is invalid.
+    """
+    parsed: datetime
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            try:
+                parsed = datetime.combine(
+                    date.fromisoformat(text), datetime.min.time(), tzinfo=UTC
+                )
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).isoformat()
+
+
+_DURATION_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "w": 7 * 24 * 60 * 60,
+}
+_MAX_DURATION_SECONDS = int(timedelta.max.total_seconds())
+
+
+def normalize_duration(value: object) -> str | None:
+    """Normalize a positive integer duration such as `7d`.
+
+    Returns:
+        The normalized duration, or `None` when invalid.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)([smhdw])", value.strip().lower())
+    if match is None:
+        return None
+    digits, unit = match.groups()
+    if len(digits) > len(str(_MAX_DURATION_SECONDS)):
+        return None
+    count = int(digits)
+    seconds = count * _DURATION_UNITS[unit]
+    return f"{count}{unit}" if seconds <= _MAX_DURATION_SECONDS else None
+
+
+def parse_duration_seconds(value: object) -> int | None:
+    """Parse a positive integer duration such as `7d` into seconds.
+
+    Returns:
+        The duration in seconds, or `None` when invalid.
+    """
+    normalized = normalize_duration(value)
+    if normalized is None:
+        return None
+    return int(normalized[:-1]) * _DURATION_UNITS[normalized[-1]]
+
+
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
@@ -163,7 +237,7 @@ class OptionKind(Enum):
     `option_accepts_toml` is the public seam over that same coercion.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`, `EXTENSION_TRUST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
-    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    bespoke parsers (their semantics — dynamic debug fallback, pathsep-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
     allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
     coerced by the providers themselves (`ranked_theme_toml_value` and
@@ -196,6 +270,12 @@ class OptionKind(Enum):
 
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
+
+    ISO_DATETIME = "iso_datetime"
+    """An ISO 8601 date or timezone-aware datetime normalized to UTC."""
+
+    DURATION_SECONDS = "duration_seconds"
+    """A positive integer duration with an `s`, `m`, `h`, `d`, or `w` suffix."""
 
     MODEL_LIST_DELEGATE = "model_list"
     """Validates a list of `provider:model` specs and `provider:*` wildcards."""
@@ -245,6 +325,8 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.ISO_DATETIME: "ISO 8601 date or timezone-aware datetime",
+    OptionKind.DURATION_SECONDS: "duration (for example, 7d)",
     OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
@@ -376,6 +458,8 @@ type _BoolKind = Literal[OptionKind.BOOL, OptionKind.BOOL_PRESENCE]
 type _StrKind = Literal[
     OptionKind.STR,
     OptionKind.NON_EMPTY_STR,
+    OptionKind.ISO_DATETIME,
+    OptionKind.DURATION_SECONDS,
     OptionKind.CURSOR_STYLE_DELEGATE,
     OptionKind.EXTENSION_TRUST_DELEGATE,
     OptionKind.STARTUP_MODE_DELEGATE,
@@ -2481,7 +2565,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Tools",
         summary=(
             "Extra directories added to the skill symlink containment "
-            "allowlist (env is colon-separated)."
+            "allowlist (env uses the platform path separator)."
         ),
         kind=OptionKind.SKILLS_DIRS_DELEGATE,
         env_var=_env_vars.EXTRA_SKILLS_DIRS,
@@ -2664,6 +2748,25 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
+        key="threads.max_resume_age",
+        group="Threads",
+        summary=(
+            "Block resuming threads older than this duration (for example, '7d')."
+        ),
+        kind=OptionKind.DURATION_SECONDS,
+        toml_keys=("threads", "max_resume_age"),
+    ),
+    ConfigOption(
+        key="threads.resume_after",
+        group="Threads",
+        summary=(
+            "Block resuming threads last updated before this ISO 8601 date or "
+            "timezone-aware datetime."
+        ),
+        kind=OptionKind.ISO_DATETIME,
+        toml_keys=("threads", "resume_after"),
     ),
     ConfigOption(
         key="threads.relative_time",

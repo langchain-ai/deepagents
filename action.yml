@@ -10,7 +10,7 @@ inputs:
     description: "The prompt/instruction to send to the agent"
     required: true
   model:
-    description: "Model to use, as provider:model (e.g. openai:gpt-5.5, anthropic:claude-opus-4-6) or a bare name (claude-*, gpt-*, gemini-*) with the provider auto-detected."
+    description: "Model to use, as provider:model (e.g. openai:gpt-6-astra, anthropic:claude-opus-5) or a bare name (claude-*, gpt-*, gemini-*) with the provider auto-detected."
     required: false
   model_params:
     description: "JSON model kwargs passed to --model-params"

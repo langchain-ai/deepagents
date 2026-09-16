@@ -23,6 +23,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, TextContent
 
 from deepagents_talon.authorization import (
     AuthorizationAttempt,
@@ -43,10 +44,13 @@ from deepagents_talon.mcp_auth import (
     format_login_error,
     prepare_oauth_login,
 )
-from deepagents_talon.mcp_config import MCPConfigStore
+from deepagents_talon.mcp_config import (
+    MCPConfigStore,
+    agent_workspace_root,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -84,12 +88,31 @@ class _MCPLoginRequiredError(MCPConfigError):
     """An MCP server requires OAuth login before loading tools."""
 
 
+def _exception_leaves(exc: BaseException) -> Iterator[BaseException]:
+    """Yield `exc`, or every leaf of it when it is a possibly nested group.
+
+    Anyio task groups wrap even a single exception, so any failure raised inside
+    an MCP `ClientSession` reaches callers as a group and must be matched on its
+    leaves rather than on the group type.
+
+    Args:
+        exc: Exception to flatten.
+
+    Yields:
+        Each non-group exception, in the order the group holds them.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        for nested in exc.exceptions:
+            yield from _exception_leaves(nested)
+    else:
+        yield exc
+
+
 def _authentication_required(exc: BaseException) -> bool:
-    if isinstance(exc, (_MCPLoginRequiredError, MCPAuthorizationError)):
-        return True
-    if isinstance(exc, ExceptionGroup):
-        return any(_authentication_required(nested) for nested in exc.exceptions)
-    return False
+    return any(
+        isinstance(leaf, (_MCPLoginRequiredError, MCPAuthorizationError))
+        for leaf in _exception_leaves(exc)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +187,11 @@ class MCPToolProvider:
         self._refresh_revision = 0
         self._applied_revision = 0
         self._lock = asyncio.Lock()
-        self._config_store = MCPConfigStore(mcp_config_path(config), self.request_refresh)
+        self._config_store = MCPConfigStore(
+            mcp_config_path(config),
+            self.request_refresh,
+            agent_root=agent_workspace_root(config.env),
+        )
 
     async def load(self) -> MCPTools:
         """Load tools and include the narrow proactive authorization capability."""
@@ -313,6 +340,7 @@ class MCPToolProvider:
                 self._refresh_revision += 1
             raise
         except (
+            ExceptionGroup,
             HTTPError,
             McpError,
             OAuthFlowError,
@@ -369,6 +397,10 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             client = MultiServerMCPClient(
                 {name: connection},
                 tool_interceptors=[
+                    # Outermost: the authorization layer below still observes the
+                    # raw exception for its own failure bookkeeping, and only what
+                    # escapes it is converted into a model-visible tool error.
+                    _protocol_error_interceptor,
                     _authorization_interceptor,
                     partial(
                         _argument_normalization_interceptor,
@@ -475,6 +507,24 @@ async def login_mcp_server(
         await _open_mcp_session(client, server_name)
     except DeviceAuthorizationCompletedError:
         pass
+    except ExceptionGroup as group:
+        # A completed device flow raises from inside the session's task group,
+        # which wraps it, and can aggregate with a sibling failure from tearing
+        # down the abandoned code flow. The marker is raised only after the
+        # credentials are persisted, so its presence still means the login
+        # succeeded; report the rest rather than discarding or misreading it.
+        leaves = tuple(_exception_leaves(group))
+        remainder = tuple(
+            leaf for leaf in leaves if not isinstance(leaf, DeviceAuthorizationCompletedError)
+        )
+        if len(remainder) == len(leaves):
+            print(f"MCP login failed: {format_login_error(group)}", file=sys.stderr)  # noqa: T201
+            return 1
+        for leaf in remainder:
+            logger.warning(
+                "MCP login session failed after credentials were saved: %s",
+                format_login_error(leaf),
+            )
     except (
         HTTPError,
         McpError,
@@ -513,6 +563,53 @@ async def _open_authenticated_session(
     client = MultiServerMCPClient({server_name: connection})
     await _open_mcp_session(client, server_name)
     return True
+
+
+async def _protocol_error_interceptor(
+    request: MCPToolCallRequest,
+    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
+) -> MCPToolCallResult:
+    """Report MCP protocol errors to the model instead of failing the turn.
+
+    `handle_tool_errors=True` only covers execution errors the server reports as
+    `CallToolResult(isError=True)`; langchain-mcp-adapters deliberately raises its
+    `ToolException` subclass for those alone. A JSON-RPC protocol error such as
+    invalid-params instead raises `McpError`, which is a plain `Exception` and so
+    reaches LangGraph's `ToolNode`, whose default handler re-raises anything that
+    is not a `ToolInvocationError`. That aborts the whole agent turn -- and a
+    scheduled job records `last_status: error` -- without the model ever seeing
+    why, so it cannot retry without the rejected arguments.
+
+    Converting the error to an `isError=True` result puts it back on the path the
+    adapter already handles, producing a `ToolMessage` with `status="error"`.
+
+    Only the server's `code` and `message` are forwarded. The optional `data`
+    payload is dropped: it is unbounded server-controlled content that would be
+    injected into model context, and it carries no argument detail the model
+    needs to correct the call.
+    """
+    try:
+        return await handler(request)
+    except McpError as exc:
+        logger.debug(
+            "MCP protocol error from server %s calling %s",
+            request.server_name,
+            request.name,
+            exc_info=True,
+        )
+        return CallToolResult(
+            isError=True,
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"MCP server {request.server_name!r} rejected this call to "
+                        f"{request.name!r} with protocol error {exc.error.code}: "
+                        f"{exc.error.message}"
+                    ),
+                )
+            ],
+        )
 
 
 async def _authorization_interceptor(
@@ -622,9 +719,10 @@ async def _finish_authorization(
 
 
 def _authorization_failure_reason(exc: Exception) -> AuthorizationFailureReason:
-    if isinstance(exc, TimeoutError):
+    leaves = tuple(_exception_leaves(exc))
+    if any(isinstance(leaf, TimeoutError) for leaf in leaves):
         return "expired"
-    if isinstance(exc, MCPAuthorizationError):
+    if any(isinstance(leaf, MCPAuthorizationError) for leaf in leaves):
         return "invalid_callback"
     return "error"
 

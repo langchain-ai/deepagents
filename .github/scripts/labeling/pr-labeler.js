@@ -22,7 +22,8 @@ function loadConfig() {
   }
   const required = [
     'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
-    'typeToLabel', 'scopeToLabel', 'trustedThreshold',
+    'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
+    'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
   const missing = required.filter(k => !(k in config));
@@ -41,7 +42,12 @@ function init(github, owner, repo, config, core) {
     labelColor,
     sizeThresholds,
     scopeToLabel,
+    scopeAliases,
+    releaseLabel,
     typeToLabel,
+    breakingLabel,
+    tierLabels,
+    labelDescriptions,
     fileRules: fileRulesDef,
     branchRules: branchRulesDef,
     excludedFiles,
@@ -49,8 +55,12 @@ function init(github, owner, repo, config, core) {
   } = config;
 
   const sizeLabels = sizeThresholds.map(t => t.label);
-  const allTypeLabels = [...new Set(Object.values(typeToLabel))];
-  const tierLabels = ['new-contributor', 'trusted-contributor'];
+  // Config-driven like every other label. These were the last hardcoded
+  // literals, and require_issue_link.yml gates its whole check on
+  // `trusted`, so a rename that reached only one side would start closing
+  // trusted contributors' PRs.
+  const tierLabelNames = [tierLabels.new, tierLabels.trusted];
+  const titleTypeLabels = new Set([...Object.values(typeToLabel), breakingLabel, releaseLabel]);
 
   // ── Label management ──────────────────────────────────────────────
 
@@ -60,7 +70,9 @@ function init(github, owner, repo, config, core) {
     } catch (e) {
       if (e.status !== 404) throw e;
       try {
-        await github.rest.issues.createLabel({ owner, repo, name, color });
+        await github.rest.issues.createLabel({
+          owner, repo, name, color, description: labelDescriptions[name] ?? '',
+        });
       } catch (createErr) {
         // 422 = label created by a concurrent run between our get and create
         if (createErr.status !== 422) throw createErr;
@@ -157,6 +169,8 @@ function init(github, owner, repo, config, core) {
 
   // ── Title-based labels ────────────────────────────────────────────
 
+  // Type labels mirror the title for triage; release-please still reads the
+  // Conventional Commit itself. Scope labels identify packages/integrations.
   function matchTitleLabels(title) {
     const labels = new Set();
     const m = (title ?? '').match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
@@ -165,10 +179,10 @@ function init(github, owner, repo, config, core) {
     const type = m[1].toLowerCase();
     const scopeStr = m[2] ?? '';
     const breaking = !!m[3];
-
-    const typeLabel = typeToLabel[type] || null;
+    const typeLabel = type === 'release' ? releaseLabel :
+      Object.hasOwn(typeToLabel, type) ? typeToLabel[type] : null;
     if (typeLabel) labels.add(typeLabel);
-    if (breaking) labels.add('breaking');
+    if (breaking && typeLabel) labels.add(breakingLabel);
 
     const scopes = scopeStr.split(',').map(s => s.trim()).filter(Boolean);
     for (const scope of scopes) {
@@ -177,6 +191,41 @@ function init(github, owner, repo, config, core) {
     }
 
     return { labels, type, typeLabel, scopes, breaking };
+  }
+
+  function getStaleTitleLabels(title, currentLabels) {
+    const { labels, typeLabel } = matchTitleLabels(title);
+    // A malformed/unrecognized title supplies no replacement classification.
+    if (!typeLabel) return [];
+    return currentLabels.filter(name => titleTypeLabels.has(name) && !labels.has(name));
+  }
+
+  // ── Title scope canonicalization ──────────────────────────────────
+
+  // A scoped Conventional Commits title: `type(scope): subject`, with the `!`
+  // breaking marker allowed on either side of the parens.
+  const scopedTitlePattern = /^(\w+!?)\(([^)]+)\)(!?:\s*.*)$/;
+
+  // Rewrite package-component scopes (e.g. `deepagents-code`) to their
+  // canonical PR scope (`code`) per `scopeAliases`. Returns null when there is
+  // nothing to do: an unscoped title, a `release(...)` title (whose scope is a
+  // canonical version record and must not be touched), or scopes that are
+  // already canonical.
+  function canonicalizeTitleScopes(title) {
+    const match = (title ?? '').match(scopedTitlePattern);
+    if (!match) return null;
+
+    const type = match[1].replace('!', '').toLowerCase();
+    if (type === 'release') return null;
+
+    const scopeStr = match[2];
+    const newScopeStr = scopeStr
+      .split(',')
+      .map(s => scopeAliases[s.trim()] ?? s.trim())
+      .join(',');
+    if (newScopeStr === scopeStr) return null;
+
+    return { title: `${match[1]}(${newScopeStr})${match[3]}`, scopes: newScopeStr };
   }
 
   // ── Org membership ────────────────────────────────────────────────
@@ -233,7 +282,12 @@ function init(github, owner, repo, config, core) {
       }
     }
 
-    const info = { isExternal, mergedCount };
+    // `tierKnown` is explicit because a null `mergedCount` means "the search
+    // failed", not "zero merged PRs". Callers that reconcile labels must not
+    // read the absence of a tier as an instruction to remove one — doing so
+    // strips `auto:trusted-contributor`, and `require_issue_link.yml` gates
+    // its whole enforcement path (label, comment, close) on that label.
+    const info = { isExternal, mergedCount, tierKnown: !isExternal || mergedCount != null };
     contributorCache.set(author, info);
     return info;
   }
@@ -260,8 +314,8 @@ function init(github, owner, repo, config, core) {
     }
 
     let tierLabel = null;
-    if (mergedCount >= trustedThreshold) tierLabel = 'trusted-contributor';
-    else if (mergedCount === 0 && !skipNewContributor) tierLabel = 'new-contributor';
+    if (mergedCount >= trustedThreshold) tierLabel = tierLabels.trusted;
+    else if (mergedCount === 0 && !skipNewContributor) tierLabel = tierLabels.new;
 
     if (tierLabel) {
       await ensureLabel(tierLabel);
@@ -289,7 +343,8 @@ function init(github, owner, repo, config, core) {
     })).data.title;
 
     // Title-based labels
-    for (const l of matchTitleLabels(prTitle).labels) toAdd.add(l);
+    const { labels: titleLabels } = matchTitleLabels(prTitle);
+    for (const l of titleLabels) toAdd.add(l);
 
     // File-based labels + size
     const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -299,6 +354,16 @@ function init(github, owner, repo, config, core) {
     for (const l of matchFileLabels(files)) toAdd.add(l);
 
     for (const name of toAdd) await ensureLabel(name);
+    const currentLabels = (await github.paginate(github.rest.issues.listLabelsOnIssue, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    })).map(label => label.name);
+    for (const name of getStaleTitleLabels(prTitle, currentLabels)) {
+      try {
+        await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name });
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
     const labels = [...toAdd];
     if (labels.length) {
       await github.rest.issues.addLabels({
@@ -316,13 +381,18 @@ function init(github, owner, repo, config, core) {
     matchFileLabels,
     matchBranchLabels,
     matchTitleLabels,
+    getStaleTitleLabels,
+    canonicalizeTitleScopes,
     labelPR,
-    allTypeLabels,
     checkMembership,
     getContributorInfo,
     applyTierLabel,
     sizeLabels,
-    tierLabels,
+    // Array for the "managed labels" sweeps; map for callers that need to
+    // pick a specific tier.
+    tierLabels: tierLabelNames,
+    tierLabelsByTier: tierLabels,
+    releaseLabel,
     trustedThreshold,
     labelColor,
   };

@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
 
     from deepagents_code._server_config import ServerConfig
     from deepagents_code.cost_tracking import PreparedOperationCost
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import (
         OffloadExecution,
         OffloadResponse,
@@ -84,7 +86,9 @@ _TRACE_FLUSH_TIMEOUT = 2.0
 """Seconds allowed for the shutdown trace flush."""
 _TRACE_FLUSH_POLL_INTERVAL = 0.05
 """Seconds between completion checks while the daemon flush thread runs."""
-_WORKSPACE_REQUEST_FIELDS = frozenset({"config_fingerprint", "cwd", "workspace_config"})
+_WORKSPACE_REQUEST_FIELDS = frozenset(
+    {"config_fingerprint", "cwd", "validate_only", "workspace_config"}
+)
 """Every field a workspace bind request may carry.
 
 One of the allowlists that gate this trust boundary; an unknown key is rejected
@@ -199,11 +203,17 @@ def _runtime_unavailable_detail(consequence: str) -> str:
     )
 
 
+def _mcp_server_info_payload(
+    server_info: list[MCPServerInfo] | None,
+) -> list[dict[str, Any]] | None:
+    return None if server_info is None else [asdict(server) for server in server_info]
+
+
 async def workspace(request: Request) -> JSONResponse:
     """Create or verify the durable workspace assigned to a thread.
 
     Returns:
-        A validated workspace descriptor or an error response.
+        A validated workspace descriptor and its MCP metadata, or an error.
     """
     thread_id = request.path_params["thread_id"]
     body = await request.json()
@@ -260,12 +270,26 @@ async def workspace(request: Request) -> JSONResponse:
             trusted = trusted.preserve_bound_extension_trust(
                 existing.workspace_config()
             )
-        binding = await bind_thread_workspace(
-            thread_id,
+        proposed = await asyncio.to_thread(
+            resolve_workspace,
             identity.cwd,
             trusted.to_workspace_payload(),
             config_fingerprint=trusted.workspace_fingerprint(),
         )
+        validate_only = body.get("validate_only", False)
+        if not isinstance(validate_only, bool):
+            return JSONResponse(
+                {"detail": "validate_only must be a boolean"}, status_code=422
+            )
+        if validate_only:
+            binding = proposed
+        else:
+            binding = await bind_thread_workspace(
+                thread_id,
+                identity.cwd,
+                trusted.to_workspace_payload(),
+                config_fingerprint=trusted.workspace_fingerprint(),
+            )
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
@@ -276,7 +300,7 @@ async def workspace(request: Request) -> JSONResponse:
     # `ValueError` to 422, but a `ValueError` out of the runtime build is server
     # misconfiguration, not a malformed request.
     try:
-        await get_server_runtime(binding)
+        runtime = await get_server_runtime(binding)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     except SystemExit:
@@ -284,27 +308,39 @@ async def workspace(request: Request) -> JSONResponse:
         detail = _runtime_unavailable_detail("this workspace cannot be used")
         return JSONResponse({"detail": detail}, status_code=503)
 
-    client = _thread_client()
-    metadata = {
-        "cwd": binding.cwd,
-        "dcode_workspace_id": binding.workspace_id,
-        "dcode_workspace_generation": binding.generation,
-    }
-    try:
-        await client.threads.create(
-            thread_id=thread_id,
-            if_exists="do_nothing",
-            metadata=metadata,
-            graph_id="agent",
-        )
-        await client.threads.update(thread_id, metadata=metadata)
-    except Exception:
-        logger.exception("Failed to mirror workspace metadata for thread %s", thread_id)
-        return JSONResponse(
-            {"detail": "Workspace was bound but thread metadata could not be updated."},
-            status_code=503,
-        )
-    return JSONResponse({"workspace": binding.to_payload()})
+    if not validate_only:
+        client = _thread_client()
+        metadata = {
+            "cwd": binding.cwd,
+            "dcode_workspace_id": binding.workspace_id,
+            "dcode_workspace_generation": binding.generation,
+        }
+        try:
+            await client.threads.create(
+                thread_id=thread_id,
+                if_exists="do_nothing",
+                metadata=metadata,
+                graph_id="agent",
+            )
+            await client.threads.update(thread_id, metadata=metadata)
+        except Exception:
+            logger.exception(
+                "Failed to mirror workspace metadata for thread %s", thread_id
+            )
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Workspace was bound but thread metadata could not be updated."
+                    )
+                },
+                status_code=503,
+            )
+    return JSONResponse(
+        {
+            "workspace": binding.to_payload(),
+            "mcp_server_info": _mcp_server_info_payload(runtime.mcp_server_info),
+        }
+    )
 
 
 def _extensions(request: Request) -> JSONResponse:

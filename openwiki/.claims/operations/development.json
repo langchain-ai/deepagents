@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b267d8e43f0fba2b494d2a6fb9efde2cab1cbeecaea49aa3a14842fd850cc16b",
+  "pageVersion": "sha256:a99fce307c6bd673b1f28708a93bd8f734339d848b4b3dd289bf6064bb26422e",
   "claims": [
     {
       "id": "claim_a64f733f2f92431a84333168dbfe4826",
@@ -62,11 +62,11 @@
     },
     {
       "id": "claim_4a0fef756f594209901908160d4144b9",
-      "statement": "The release-please-managed manifest records independent current release baselines: libs/deepagents 0.7.13, libs/acp 0.0.11, libs/code 0.1.66, libs/talon 0.0.7, daytona 0.0.8, modal 0.0.6, runloop 0.0.7, vercel 0.0.2, and quickjs 0.3.7.",
+      "statement": "The release-please-managed manifest records independent current release baselines: libs/deepagents 0.7.13, libs/acp 0.0.11, libs/code 0.1.67, libs/talon 0.0.7, daytona 0.0.8, modal 0.0.6, runloop 0.0.7, vercel 0.0.2, and quickjs 0.3.7.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L10",
-          "version": "repo-lines-v1:sha256:1a54a1b68caee5c9113094c313e54d723cea39d75bcf35dff76dd59e45118936:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNjlhNWVjYTI2YzRjODcxYTg1ZmE1ZDU0MmMzZGIwMGQ1NTg1OTE3NmEyZjczY2Y4NjRlMjdhYWFkZjMzNTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+          "version": "repo-lines-v1:sha256:5e11592e78365e8b4ff0a5c578e99b98e334ddcf948889bea3461b1fb5b8a734:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNjlhNWVjYTI2YzRjODcxYTg1ZmE1ZDU0MmMzZGIwMGQ1NTg1OTE3NmEyZjczY2Y4NjRlMjdhYWFkZjMzNTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
         }
       ]
     },
@@ -261,10 +261,48 @@
           "version": "repo-lines-v1:sha256:eedde06c0cf3f743276fe6bee4a7bf23f9b29c3eb9afcb76baa4629469c8526f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MDg5MDY1MzY0NjZlYTU3NTAwOWVmMmQyMGQ1ZDFlNDA3MmEzNWZlMjRlMjI4NjJhMDI2NjhkNzBjZWZmY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlNzA3OWVkYTJkYzcyOTA5NjFmZDcyODg0MmJiYzNjM2QwYjIxMjU1MzI0NTEyNzhkMWFhNzU1NzM3ZGRiMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1OTI5NjM1OGRjOWZkZTk5Y2EyYTAxZjFkN2I3ODU0N2YyODEzNWNlYzRiOTk5YjczYjA0YzZmNWVkNTU3NjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3NmIyMmJmYzA1NTlkMGRlNTQ1MDM2MjVhNzA5ZTU3ZmRmNjlmNTc5MGI1NWFlZDM0NmVmYjNiN2QwNGIwYWIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_273d06c9560b4ad396fde88fc1a9314c",
+      "statement": "External pull requests must link to a maintainer-approved issue or discussion and the contributor must be assigned to it before the PR is opened.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L3-L11",
+          "version": "repo-lines-v1:sha256:5a200d8bee207074d46f4b9370c4a619156fd714286de79a246ad2293fb00cf6:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTVjNjRhNWIxMmY5MmJlMzMzM2M1OTgxMTg3ZTk5M2VhNjkzMzVhMjUwZDdhNmJhZjNlMTk4ODRkN2NmZGI5NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjk2YzRlNjcxMDY2MmRhOGEwNjg1Mzg3YTVmOWFlZTk4MWZhMGQ0NDFjZTE3NzU1NTEzNDVlZGYwYjdiYmU0ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTQ3NDYxMGY4MDJiMDAxZTIxYTk5MWM5NGRhZGM2MmRlZTFkZTBlZTQ1YzZhZmMzN2E2YmUxNzY4ZDVhNDAyYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2Q3YzU1YjkzNDNjYTQ4NTkyNTJiNDM4MmYwMmFhMjhkNDdiNzQwOTljYzBkNzVjNzAyNmI3NmY1ODcwY2RlZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d9bcdb3ce828460ca4772ff122514bbe",
+      "statement": "The main CI workflow runs on pull requests, pushes to main, and merge-group events; its change detector uses package path filters before package jobs decide whether to run.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L1-L16",
+          "version": "repo-lines-v1:sha256:9036a40d84bfb46fd8ab18b2f01414ee95ce9bcbd57e8afca2f75351d908a1c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3NzJjOWZmOWU2NDgzYjIzMDU1NTgzYmIyNzc3YTE3MjRiZTMzN2NhYzNkYmYyNTA5Y2E0YTdiNTdmOTg5OGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljZTk4NjBmNzFkZDNkYTZmMjQyZjJhNGM5Mjc3NzA5OTE0MTY4ZDIzOWZjMzgzYjk2MmE3ZGJiYWIzOGI1ZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNTliYWNlYzIzMjQ5ZDRiOWVjMjFiZGQzNGI0NzFlN2Y1MTJkYTJlZWIwZmVmMGI1MWRiYjg0NmI4NmU0MTMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L127-L232",
+          "version": "repo-lines-v1:sha256:f051ba40d2978cc42f6f6bb2e2bca6f85248b9504e1c47115bf0c46558794c43:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YTAzNDcxZThkOGUxOTYwYTYwMjUzNTBjZTNmYTE0NjcwNTg4NTQ1Nzg5NjE1YmRlOTFmZDczYjUwMmJhOTI0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2OGRkZDYwMzFiOTUxZWVhYjAxMGY4MzFhMGI5ZWYzOWE3OGI5NTY0MDBhZWYyZTcxYWQ3OTA3OGEzYWE3NzVmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNWFlZmYzMjEzNjAyZjFhY2U5NzljYjBmYTcwMDYzYTA2Njg4M2M0ODgzMWU4NWIxMzYwZTJlNDZlYjdlOTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1Y2U1ODdjMzIwMWFkMjFhODJkYzRhNmMxZjA0MWMwMmZmMDhiZDJmZDJiYTZlNGNlYWJiNWE4NDhjNjAyYTA2In0"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L43-L64",
+          "version": "repo-lines-v1:sha256:437309c44776aadfd9f155b89aabd3f8aa30eb7ccd671e7f12419cb0a94b6db6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhM2UzMGQyMzZjZWRlZmQ2Nzg5ZjdkMDRhMDZiOTVhODhhY2RjYjAyMjRjNzAzNDAwNzQ5ODUzMWQwMzQxZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiNjUzNTk1OTcwZDhiYWVkNmIzMTAxMmYxOTdhYzdkM2M2M2E2NWRlNjY1ZWYzNjNmZjkxNTNiZmIzYjM2ZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4MzliYzlhMmFlYjMwMWNlZGZjYzIwZjgyYjc3NDgxMDgzNTlhYzNmOTJmYzYzZGIxMTE1YzEyYzkwMmQ0YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fa1620630ede484eb8f5cdc131873ba1",
+      "statement": "GitHub Actions entry workflows are event-driven files without a leading underscore, while reusable workflows use the _*.yml naming convention and are called through workflow_call.",
+      "evidence": [
+        {
+          "resource": "repo://.github/LAYOUT.md#L22-L28",
+          "version": "repo-lines-v1:sha256:3cbc8ca5aef2cc6f2dacc6e986c472d823b9e864857b30dafaa9989bc10842f5:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjEwZGQxZGEwMDhiMDdhZmZhMzViYmUyMTdhYWU4Zjg1ZDUwNDBiZWYxYjk2YjJkOTdlODJlOGExMzY2ZDZhMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY2MGM5N2QwMGZmNDIwZDYwN2U1ZmVlNTdhMTljMzNkNjJkZTJiMThlMzI2ZjdjM2U3NGYxNDA5OTI4MGMxMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGZiMjk5ZDQyNmRhZTc0MmFmOWViYzY2NzFmYmE5ZTI1ODkwMzZiN2E2ZjBlOTdiMmVkOTY3NTI2YWI4MTQwMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWM0NmU5OTc2MjMxNDMxYzY5Yzk1MTk2YzgwMjRkOTUzNTMzOGI5MjFmNzg2MmE4MzAzOGVhNWY3OGU5ZDRkYiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-09T08:05:37.706Z"
   }
 }

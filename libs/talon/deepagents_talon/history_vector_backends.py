@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from contextlib import asynccontextmanager
 from importlib.metadata import entry_points
@@ -13,9 +14,8 @@ from langgraph.store.base import PutOp
 
 from deepagents_talon.config import TalonConfigError
 from deepagents_talon.history_vectors import HistoryVectorIndex
-from deepagents_talon.store_archive import number
 from deepagents_talon.store_archive_index import StoreVectorArchive
-from deepagents_talon.store_records import finish
+from deepagents_talon.store_records import finish, number
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.history_profiles import EmbeddingProfile
     from deepagents_talon.store_archive import StoreConversationArchive
+
+logger = logging.getLogger(__name__)
+_ERASE_BATCH = 96
+_PROGRESS_SECONDS = 5
 
 
 async def prepare_generation(config: TalonConfig, archive: StoreConversationArchive) -> str | None:
@@ -74,29 +78,43 @@ async def prepare_generation(config: TalonConfig, archive: StoreConversationArch
 
 async def _erase_vectors(archive: StoreConversationArchive, store: BaseStore) -> None:
     records = archive.records
-    root = await records.root()
+    # Reads run under `access()`, which replays an interrupted journal first; the
+    # caller already recovers, but this function must not depend on that.
+    async with records.access():
+        root = await records.root()
     index = HistoryVectorIndex(StoreVectorArchive(archive), store, indexing=False)
     index.identity = str(root["identity"])
     cursor, last = number(root, "reindex_cursor"), number(root, "last")
+    start, reported = cursor, asyncio.get_running_loop().time()
     while cursor < last:
-        stop = min(cursor + 96, last)
+        stop = min(cursor + _ERASE_BATCH, last)
         operations: list[PutOp] = []
-        for identifier in range(cursor + 1, stop + 1):
-            record = await records.get(str(identifier))
-            if record is not None and record.get("kind") == "chunk":
-                owner = await records.get(str(number(record, "owner")))
-                if owner is not None:
-                    scope = cast("dict[str, str]", owner["scope"])
-                    namespace = index.namespace(
-                        scope["talon_history_channel"], scope["talon_history_chat"]
-                    )
-                    operations.append(PutOp(namespace, str(identifier), None))
+        async with records.access():
+            for identifier in range(cursor + 1, stop + 1):
+                record = await records.get(str(identifier))
+                if record is not None and record.get("kind") == "chunk":
+                    owner = await records.get(str(number(record, "owner")))
+                    if owner is not None:
+                        scope = cast("dict[str, str]", owner["scope"])
+                        namespace = index.namespace(
+                            scope["talon_history_channel"], scope["talon_history_chat"]
+                        )
+                        operations.append(PutOp(namespace, str(identifier), None))
         if operations:
             await finish(store.abatch(operations))
         cursor = stop
         async with records.access():
             root = await records.root()
             await records.commit([("root", {**root, "reindex_cursor": cursor})])
+        # This runs before the host serves anything and is O(archive), so a large
+        # rebuild otherwise looks like a hang. Progress is durable in
+        # `reindex_cursor`, so an interrupted rebuild resumes where it stopped.
+        now = asyncio.get_running_loop().time()
+        if now - reported >= _PROGRESS_SECONDS:
+            reported = now
+            logger.info(
+                "Rebuilding history vectors: erased %d of %d records", cursor - start, last - start
+            )
 
 
 @asynccontextmanager

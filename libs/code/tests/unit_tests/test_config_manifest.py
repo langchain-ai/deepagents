@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import tomllib
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -113,6 +114,84 @@ _SILENT_RESOLVER_READERS = frozenset(
 # `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
 # so it is deliberately not counted. Exact, not a floor — see the test.
 _EXPECTED_LITERAL_CALL_SITES = 7
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("7d", "7d"), ("2w", "2w"), (" 12H ", "12h")],
+)
+def test_max_resume_age_parses_duration(value, expected) -> None:
+    """A rolling resume age is normalized during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={"threads": {"max_resume_age": value}},
+    ) == (expected, "config.toml")
+
+
+@pytest.mark.parametrize(
+    "value", ["0d", "7", "1.5d", "-1d", "forever", f"{'9' * 5000}d"]
+)
+def test_max_resume_age_rejects_invalid_duration(value, caplog) -> None:
+    """An invalid rolling resume age is rejected during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert _resolve_manifest_option(
+            option,
+            toml_data={"threads": {"max_resume_age": value}},
+        ) == (None, "default")
+    assert "max_resume_age" in caplog.text
+
+
+def test_resume_after_normalizes_managed_cutoff() -> None:
+    """Managed resume policy wins and normalizes its cutoff to UTC."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={"threads": {"resume_after": "2030-01-01"}},
+        managed_toml_data={"threads": {"resume_after": "2026-06-01T08:00:00-04:00"}},
+    ) == ("2026-06-01T12:00:00+00:00", "managed config")
+
+
+def test_resume_after_rejects_naive_datetime(caplog) -> None:
+    """A timezone-less cutoff cannot silently become managed policy."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert _resolve_manifest_option(
+            option,
+            toml_data={"threads": {"resume_after": "2026-06-01T08:00:00"}},
+        ) == (None, "default")
+    assert "resume_after" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (date(2030, 1, 1), "2030-01-01T00:00:00+00:00"),
+        (
+            datetime(2026, 6, 1, 8, tzinfo=timezone(timedelta(hours=-4))),
+            "2026-06-01T12:00:00+00:00",
+        ),
+    ],
+)
+def test_resume_after_accepts_toml_temporal_values(value, expected) -> None:
+    """Native TOML dates and aware datetimes normalize consistently."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={},
+        managed_toml_data={"threads": {"resume_after": value}},
+    ) == (expected, "managed config")
 
 
 def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:

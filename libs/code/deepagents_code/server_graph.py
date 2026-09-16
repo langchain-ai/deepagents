@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadOperation
     from deepagents_code.workspace import WorkspaceBinding
 
@@ -65,6 +66,32 @@ _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
 _server_tracing_settings: tuple[dict[str, str | None], bool] | None = None
 _server_tracing_initialized = False
+
+
+def _close_sandbox(context: AbstractContextManager[Any]) -> None:
+    context.__exit__(None, None, None)
+
+
+async def _open_sandbox(
+    create: Callable[[], AbstractContextManager[Any]],
+) -> tuple[AbstractContextManager[Any], Any]:
+    def _enter() -> tuple[AbstractContextManager[Any], Any]:
+        context = create()
+        return context, context.__enter__()  # noqa: PLC2801
+
+    task = asyncio.create_task(asyncio.to_thread(_enter))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            context, _ = await asyncio.shield(task)
+        except BaseException:  # Preserve the caller's cancellation
+            logger.debug(
+                "Sandbox startup did not complete after cancellation", exc_info=True
+            )
+        else:
+            await asyncio.to_thread(_close_sandbox, context)
+        raise
 
 
 def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
@@ -268,13 +295,7 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
 
 
 class ServerRuntime(NamedTuple):
-    """The one-per-process result of building this server's agent.
-
-    A named tuple rather than a bare tuple so the three slots are addressed by
-    name: `agent` is structurally opaque to the type checker (the SDK exposes no
-    usable compiled-graph type here), so a positional transposition would hand
-    LangGraph the backend as its compiled graph with no complaint.
-    """
+    """The one-per-process result with named slots to prevent transposition."""
 
     agent: Any
     """Compiled LangGraph agent graph served as `agent`."""
@@ -284,6 +305,9 @@ class ServerRuntime(NamedTuple):
 
     offload: OffloadOperation
     """Server-owned thread offload operation bound to `backend`."""
+
+    mcp_server_info: list[MCPServerInfo] | None = None
+    """Workspace-scoped MCP metadata for the interactive client."""
 
 
 async def _make_graphs(
@@ -442,24 +466,22 @@ async def _make_graphs_in_environment(
     # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
     sandbox_backend = None
-    if config.sandbox_type:
+    if sandbox_type := config.sandbox_type:
         from deepagents_code.integrations.sandbox_factory import create_sandbox
 
         try:
-            _sandbox_cm = create_sandbox(
-                config.sandbox_type,
-                sandbox_id=config.sandbox_id,
-                snapshot_name=config.sandbox_snapshot_name,
-                setup_script_path=config.sandbox_setup,
+            context, backend = await _open_sandbox(
+                lambda: create_sandbox(
+                    sandbox_type,
+                    sandbox_id=config.sandbox_id,
+                    snapshot_name=config.sandbox_snapshot_name,
+                    setup_script_path=config.sandbox_setup,
+                )
             )
-            _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime
-            sandbox_backend = _sandbox_backend
-
-            def _cleanup_sandbox() -> None:
-                if _sandbox_cm is not None:
-                    _sandbox_cm.__exit__(None, None, None)
-
-            atexit.register(_cleanup_sandbox)
+            _sandbox_cm = context
+            _sandbox_backend = backend
+            sandbox_backend = backend
+            atexit.register(_close_sandbox, context)
         except ImportError:
             logger.exception(
                 "Sandbox provider '%s' is not installed", config.sandbox_type
@@ -558,6 +580,7 @@ async def _make_graphs_in_environment(
             agent=agent,
             backend=composite_backend,
             offload=offload,
+            mcp_server_info=mcp_server_info,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy

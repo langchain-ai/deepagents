@@ -2,6 +2,60 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
+
+### Features
+
+- Update `read_file` output formatting. ([#5648](https://github.com/langchain-ai/deepagents/pull/5648))
+- Surface DeepSeek V4.1 Flash in the model picker. ([#6254](https://github.com/langchain-ai/deepagents/pull/6254))
+- Surface locally tracked GitHub stacks in agent context. ([#6290](https://github.com/langchain-ai/deepagents/pull/6290))
+- Copy a model slug with Ctrl+click. ([#6243](https://github.com/langchain-ai/deepagents/pull/6243))
+- Show session length in the Debug Console. ([#6224](https://github.com/langchain-ai/deepagents/pull/6224))
+
+### Bug Fixes
+
+- Price nested usage with its own model and honor completions. ([#6251](https://github.com/langchain-ai/deepagents/pull/6251))
+- Drop stale Anthropic thinking blocks. ([#6300](https://github.com/langchain-ai/deepagents/pull/6300))
+- Isolate credentials used for user shell tracing. ([#6242](https://github.com/langchain-ai/deepagents/pull/6242))
+- Attribute dotenv configuration sources. ([#6222](https://github.com/langchain-ai/deepagents/pull/6222))
+- Expose unknown reasoning effort values. ([#6241](https://github.com/langchain-ai/deepagents/pull/6241))
+- Open the Debug Console at the bottom of the log. ([#6218](https://github.com/langchain-ai/deepagents/pull/6218))
+- Order Debug Console log filters. ([#6217](https://github.com/langchain-ai/deepagents/pull/6217))
+- Show the spinner during pre-stream turn setup. ([#6253](https://github.com/langchain-ai/deepagents/pull/6253))
+- Demote no-output hint suppression messages to debug logging. ([#6245](https://github.com/langchain-ai/deepagents/pull/6245))
+
+## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
+
+### Features
+
+- Recommended GLM 5.3 models are now available in code workflows ([#6211](https://github.com/langchain-ai/deepagents/pull/6211)).
+
+### Bug Fixes
+
+- Added pricing support for Fireworks GLM-5.3 and GLM-5.3 Flash usage ([#6221](https://github.com/langchain-ai/deepagents/pull/6221), [#6223](https://github.com/langchain-ai/deepagents/pull/6223)).
+- Workspace switches now ask for confirmation before restarting the server ([#6178](https://github.com/langchain-ai/deepagents/pull/6178)).
+- Effort changes are now included in cache identity for OpenAI and Anthropic requests ([#6196](https://github.com/langchain-ai/deepagents/pull/6196)).
+- Standardized the recent-thread environment variable ([#6205](https://github.com/langchain-ai/deepagents/pull/6205)).
+- Silenced warnings when the themes config is absent ([#6220](https://github.com/langchain-ai/deepagents/pull/6220)).
+
+## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-09)
+
+### Features
+
+- Added `GPT-6 Astra` support ([#6141](https://github.com/langchain-ai/deepagents/issues/6141)).
+- Reuses the server across workspace switches ([#6152](https://github.com/langchain-ai/deepagents/issues/6152)).
+- Limits thread resume age ([#6068](https://github.com/langchain-ai/deepagents/issues/6068)).
+
+### Bug Fixes
+
+- Improved workspace isolation by resolving project policy per workspace, scoping project dotenv to workspaces, and isolating LangSmith auth and workspace tracing ([#6064](https://github.com/langchain-ai/deepagents/issues/6064), [#5980](https://github.com/langchain-ai/deepagents/issues/5980), [#6061](https://github.com/langchain-ai/deepagents/issues/6061)).
+- Improved transcript tail reconciliation by bounding and serializing reconciliation work ([#6057](https://github.com/langchain-ai/deepagents/issues/6057), [#6143](https://github.com/langchain-ai/deepagents/issues/6143)).
+- Refuses a second sandbox workspace and moves sandbox creation and entry off the guarded event loop ([#5979](https://github.com/langchain-ai/deepagents/issues/5979), [#6017](https://github.com/langchain-ai/deepagents/issues/6017)).
+- Surfaces stale updates in-session ([#6063](https://github.com/langchain-ai/deepagents/issues/6063)).
+- Surfaces the LangSmith credential in `dcode config` ([#6083](https://github.com/langchain-ai/deepagents/issues/6083)).
+- Offloads server config imports ([#6089](https://github.com/langchain-ai/deepagents/issues/6089)).
+- Correctly parses extra skill directories with the platform separator ([#6151](https://github.com/langchain-ai/deepagents/issues/6151)).
+
 ## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
 
 ### Features

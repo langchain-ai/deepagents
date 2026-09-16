@@ -188,7 +188,7 @@ async def test_capture_offload_preserves_backend_failure(output: str, monkeypatc
 async def test_capture_offload_preserves_child_failure(monkeypatch: pytest.MonkeyPatch, *, offloaded: bool, use_async: bool) -> None:
     sandbox = MockSandbox()
     sandbox.enable_capture_offload = True
-    response = ExecuteResponse(output=f"__DEEPAGENTS_EXEC_META__ 3 {int(offloaded)} 0\noops", exit_code=0)
+    response = ExecuteResponse(output=f"__DEEPAGENTS_EXEC_META__ 3 {int(offloaded)} 0 0\noops", exit_code=0)
     monkeypatch.setattr(sandbox, "execute", Mock(return_value=response))
 
     if use_async:
@@ -2644,13 +2644,13 @@ class TestParseCaptureExecuteOutput:
         ],
     )
     def test_marker_flag_set_only_by_positive_surplus(self, *, surplus: int, expected_marker: bool) -> None:
-        result = _parse_capture_execute_output(self._meta(0, 1, 0, surplus))
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 1, 0, surplus)))
 
         assert result.offloaded is True
         assert result.preview_has_truncation_marker is expected_marker
 
     def test_parses_exit_code_and_cap_flag(self) -> None:
-        result = _parse_capture_execute_output(self._meta(3, 1, 1, 7))
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(3, 1, 1, 7)))
 
         assert result.offloaded is True
         assert result.response.exit_code == 3
@@ -2659,7 +2659,7 @@ class TestParseCaptureExecuteOutput:
         assert result.preview_has_truncation_marker is True
 
     def test_inline_output_is_not_offloaded(self) -> None:
-        result = _parse_capture_execute_output(self._meta(0, 0, 0, 0))
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 0, 0, 0)))
 
         assert result.offloaded is False
         assert result.preview_has_truncation_marker is False
@@ -2676,7 +2676,7 @@ class TestParseCaptureExecuteOutput:
         whole result onto the raw-output fallback path -- which would also frame a
         preview as complete output and leak the sentinel line to the model.
         """
-        result = _parse_capture_execute_output(self._meta(3, 1, 1, bad_surplus))
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(3, 1, 1, bad_surplus)))
 
         assert result.offloaded is True
         assert result.response.exit_code == 3
@@ -2696,7 +2696,7 @@ class TestParseCaptureExecuteOutput:
         ],
     )
     def test_malformed_meta_falls_back_to_raw_output(self, bad_meta: str, reason: str) -> None:
-        result = _parse_capture_execute_output(bad_meta)
+        result = _parse_capture_execute_output(ExecuteResponse(output=bad_meta))
 
         assert result.offloaded is False, reason
         assert result.response.output == bad_meta, reason
@@ -2705,32 +2705,32 @@ class TestParseCaptureExecuteOutput:
     def test_malformed_meta_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """The fallback reframes a preview as complete output, so it must not be silent."""
         with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
-            _parse_capture_execute_output(f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY")
+            _parse_capture_execute_output(ExecuteResponse(output=f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY"))
 
         assert any("meta line absent or malformed" in r.getMessage() for r in caplog.records)
 
     def test_unparseable_exit_code_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """Same reason as its two sibling fallbacks: the caller cannot tell it happened."""
         with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
-            _parse_capture_execute_output(f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY")
+            _parse_capture_execute_output(ExecuteResponse(output=f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY"))
 
         assert any("non-integer exit code" in r.getMessage() for r in caplog.records)
 
     def test_marker_flag_requires_offloaded(self) -> None:
         """A response carrying no preview can never claim a marker, whatever the surplus."""
-        result = _parse_capture_execute_output(self._meta(0, 0, 0, 5))
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 0, 0, 5)))
 
         assert result.offloaded is False
         assert result.preview_has_truncation_marker is False
 
     def test_unparseable_surplus_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
-            _parse_capture_execute_output(self._meta(0, 1, 0, "junk"))
+            _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 1, 0, "junk")))
 
         assert any("non-integer preview line surplus" in r.getMessage() for r in caplog.records)
 
     def test_backend_truncation_propagates_through_fallback(self) -> None:
-        result = _parse_capture_execute_output("garbage", backend_truncated=True)
+        result = _parse_capture_execute_output(ExecuteResponse(output="garbage", truncated=True))
 
         assert result.offloaded is False
         assert result.response.truncated is True

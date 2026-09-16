@@ -1313,8 +1313,6 @@ The truncation marker counts whole lines dropped from the middle, so without
 this notice nothing would mention the cut.
 """
 
-_EXECUTE_CAPTURE_META_FIELDS: Final = 4
-
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
 _EXECUTE_CAPTURE_TAIL_LINES: Final = 5
 _EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
@@ -1457,7 +1455,7 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     )
 
 
-def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteOffloadResult:
+def _parse_capture_execute_output(response: ExecuteResponse) -> ExecuteOffloadResult:
     r"""Parse capture-wrapper stdout into an `ExecuteOffloadResult`.
 
     The wrapper emits a meta line followed by the body:
@@ -1479,22 +1477,23 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     count toward the budget.
 
     When the meta line is absent or malformed (e.g. the backend truncated
-    transport), the result falls back to `offloaded=False` with the raw output —
-    logged, since this silently reframes a preview as complete output. The
-    caller must not re-run the command in that case. `response.truncated` is set
-    when the captured output hit the size cap (the saved file is incomplete) or
-    `backend_truncated` is passed through from the underlying `execute`.
+    transport), the result falls back to `offloaded=False` with the original
+    response — logged, since this silently reframes a preview as complete
+    output. The caller must not re-run the command in that case.
+    `response.truncated` is set when the captured output hit the size cap (the
+    saved file is incomplete) or the underlying `execute` response was
+    truncated.
     """
-    first, _, body = output.partition("\n")
+    first, _, body = response.output.partition("\n")
 
     def _unoffloaded() -> ExecuteOffloadResult:
-        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+        return ExecuteOffloadResult(offloaded=False, response=response)
 
     # Reject non-wrapper output before splitting: with the wrapper disabled the
     # first line can be the whole output on one line (minified JS, single-line
     # JSON), and splitting allocates a string per space only to discard them.
     if not first.startswith(_EXECUTE_CAPTURE_SENTINEL):
-        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded: %r", first[:200])
+        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded")
         return _unoffloaded()
 
     parts = first.split(" ")
@@ -1502,10 +1501,9 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     # wrapper's output, so fall back to returning it verbatim.
     if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:
         logger.warning(
-            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded: %r",
+            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded",
             len(parts),
             _EXECUTE_CAPTURE_META_FIELDS,
-            first[:200],
         )
         return _unoffloaded()
     try:
@@ -1527,7 +1525,7 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     offloaded = parts[2] == "1"
     return ExecuteOffloadResult(
         offloaded=offloaded,
-        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
+        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or response.truncated),
         # `and offloaded` upholds the field's documented invariant by construction:
         # the two fields are parsed from independent meta columns, so a wrapper bug
         # could otherwise report a marker on output that carries no preview.
@@ -1621,7 +1619,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
-        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+        return _parse_capture_execute_output(result)
 
     async def aexecute_with_offload(
         self,
@@ -1639,7 +1637,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
-        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+        return _parse_capture_execute_output(result)
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""

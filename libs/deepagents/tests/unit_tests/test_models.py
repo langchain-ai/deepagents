@@ -553,12 +553,33 @@ class TestProviderProfileRegistry:
         assert get_provider_profile("") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd model spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = ProviderProfile(init_kwargs={"a": 1})
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("fbprov", base)
-            assert get_provider_profile("fbprov:missing-model") is base
+            assert get_provider_profile("fbprov:missing:model") is base
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = ProviderProfile(init_kwargs={"priority": "provider"})
+        exact = ProviderProfile(init_kwargs={"priority": "model"})
+        provider = key.partition(":")[0]
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(provider, base)
+            register_provider_profile(key, exact)
+            assert get_provider_profile(key).init_kwargs["priority"] == "model"
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -872,12 +893,33 @@ class TestHarnessProfileRegistry:
         assert _get_harness_profile("claude-sonnet-4-6") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = HarnessProfile(system_prompt_suffix="provider suffix")
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile("fbharness", base)
-            assert _get_harness_profile("fbharness:missing-model") is base
+            assert _get_harness_profile("fbharness:missing:model") is base
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = HarnessProfile(system_prompt_suffix="provider")
+        exact = HarnessProfile(system_prompt_suffix="model")
+        provider = key.partition(":")[0]
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(provider, base)
+            register_harness_profile(key, exact)
+            assert _get_harness_profile(key).system_prompt_suffix == "model"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -1889,13 +1931,25 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="non-empty"):
             register_harness_profile("", HarnessProfile())
 
-    def test_multiple_colons_rejected_provider(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_provider_profile("a:b:c", ProviderProfile())
+    def test_colons_in_model_identifier_accepted_provider(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            profile = ProviderProfile()
+            register_provider_profile("a:b:c", profile)
+            assert get_provider_profile("a:b:c") is profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
 
-    def test_multiple_colons_rejected_harness(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_harness_profile("a:b:c", HarnessProfile())
+    def test_colons_in_model_identifier_accepted_harness(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile()
+            register_harness_profile("a:b:c", profile)
+            assert _get_harness_profile("a:b:c") is profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
     def test_empty_provider_half_rejected(self) -> None:
         with pytest.raises(ValueError, match="empty provider"):
@@ -2114,8 +2168,15 @@ class TestProfileLookupKeyValidation:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_harness_lookup_rejects_double_colon(self) -> None:
-        assert _get_harness_profile("a:b:c") is None
+    def test_harness_lookup_accepts_colon_in_model_identifier(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile(system_prompt_suffix="exact")
+            register_harness_profile("a:b:c", profile)
+            assert _get_harness_profile("a:b:c") is profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
     def test_harness_lookup_rejects_empty_string(self) -> None:
         assert _get_harness_profile("") is None
@@ -2138,8 +2199,15 @@ class TestProfileLookupKeyValidation:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
-    def test_provider_lookup_rejects_double_colon(self) -> None:
-        assert get_provider_profile("a:b:c") is None
+    def test_provider_lookup_accepts_colon_in_model_identifier(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            profile = ProviderProfile(init_kwargs={"exact": True})
+            register_provider_profile("a:b:c", profile)
+            assert get_provider_profile("a:b:c") is profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
 
 
 class TestOpenRouterEmptyEnvVar:

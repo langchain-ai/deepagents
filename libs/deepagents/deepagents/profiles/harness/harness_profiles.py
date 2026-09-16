@@ -1013,16 +1013,17 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,
-            or a full `provider:model` spec for a per-model override. Valid
-            shapes:
+            or a full `provider:model` spec for a per-model override. The first
+            colon is the separator: providers must not contain colons, while
+            model identifiers may, as in `"ollama:glm-5.2:cloud"`. Valid shapes:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
+            - `"ollama:glm-5.2:cloud"` — model identifier containing a colon
         profile: The runtime harness profile or declarative config to register.
 
     Raises:
-        ValueError: If `key` is empty, contains more than one `:`, or has an
-            empty provider/model half.
+        ValueError: If `key` is empty or has an empty provider/model component.
     """
     _ensure_harness_profiles_loaded()
     _register_harness_profile_impl(key, profile)
@@ -1066,19 +1067,21 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
-    Malformed specs (empty string, more than one `:`, or a `:` with an empty
-    provider/model half) return `None` without consulting the registry. This
-    prevents a spec like `"openai:"` from silently matching the provider-wide
-    `"openai"` registration.
+    The first colon separates the provider from the complete model identifier.
+    Providers must not contain colons, while model identifiers may. Malformed
+    specs (empty string or a `:` with an empty provider/model component) return
+    `None` without consulting the registry. This prevents a spec like
+    `"openai:"` from silently matching the provider-wide `"openai"` registration.
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
+            identifier. For example, `"ollama:glm-5.2:cloud"` has provider
+            `ollama` and model identifier `glm-5.2:cloud`.
 
     Returns:
         The matching `HarnessProfile`, or `None` when no registered profile matches.
     """
-    if not spec or spec.count(":") > 1:
+    if not spec:
         return None
 
     provider, sep, model = spec.partition(":")
@@ -1260,9 +1263,9 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     and provider (via `_get_ls_params`) are extracted from the model instance
     and combined into a `provider:identifier` key so that model-level profiles
     registered under the canonical `provider:model` shape still resolve when
-    the caller hands in a pre-built model. The combined lookup is followed by
-    an identifier-only lookup (when the identifier is already in
-    `provider:model` shape) and a provider-only fallback.
+    the caller hands in a pre-built model. The identifier may itself contain
+    colons; they remain part of the model identifier. The combined lookup is
+    followed by an identifier-only lookup and a provider-only fallback.
 
     A *bare* identifier (no `:`) is deliberately not consulted against the
     registry. If it were, a pre-built model whose `model_name` happened to
@@ -1290,10 +1293,9 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     # Try the canonical `provider:model` key first so user registrations under
     # that shape match. `_get_harness_profile` internally falls back from the
     # exact key to the provider prefix, which also subsumes the pure
-    # provider-only case below when both pieces are known. Skip when the
-    # identifier already contains a colon to avoid producing a malformed
-    # double-colon key.
-    if provider and identifier and ":" not in identifier:
+    # provider-only case below when both pieces are known. Colons in the
+    # identifier remain part of the model component.
+    if provider and identifier:
         profile = _get_harness_profile(f"{provider}:{identifier}")
         if profile is not None:
             return profile

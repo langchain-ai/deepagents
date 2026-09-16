@@ -9,28 +9,26 @@ from __future__ import annotations
 
 
 def validate_profile_key(key: str) -> None:
-    """Validate a profile registry key.
+    """Validate a `provider` or `provider:model` profile registry key.
 
-    Enforces the `provider` or `provider:model` shape used by the lookup
-    functions. Rejects empty strings, whitespace-only or whitespace-padded
-    halves, multiple colons, and empty halves.
+    The first colon separates the provider from the complete model identifier.
+    Providers must not contain colons, while model identifiers may contain them;
+    for example, `ollama:glm-5.2:cloud` identifies provider `ollama` and model
+    `glm-5.2:cloud`. Both components must be nonempty when a colon is present.
 
     Args:
         key: The registry key to check.
 
     Raises:
         ValueError: If `key` is empty, contains leading/trailing whitespace,
-            has more than one `:`, has whitespace adjacent to `:`, or has
-            an empty half on either side of `:`.
+            has whitespace adjacent to the separator, or has an empty provider
+            or model component.
     """
     if not key:
         msg = "Profile key must be a non-empty string."
         raise ValueError(msg)
     if key != key.strip():
         msg = f"Profile key {key!r} has leading or trailing whitespace; expected 'provider' or 'provider:model'."
-        raise ValueError(msg)
-    if key.count(":") > 1:
-        msg = f"Profile key {key!r} has more than one ':'; expected 'provider' or 'provider:model'."
         raise ValueError(msg)
     if ":" in key:
         provider, _, model = key.partition(":")

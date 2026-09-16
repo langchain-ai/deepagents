@@ -154,18 +154,18 @@ class TestProfileForModel:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_matches_combined_provider_model_key_for_prebuilt(self) -> None:
-        """Model-level keys (`provider:model`) resolve for pre-built models."""
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    def test_matches_combined_provider_model_key_for_prebuilt(self, identifier_attr: str) -> None:
+        """Colon-containing identifiers combine with providers for exact lookup."""
         original = dict(_HARNESS_PROFILES)
         try:
             provider_profile = HarnessProfile(system_prompt_suffix="provider level")
             model_profile = HarnessProfile(system_prompt_suffix="model level")
             register_harness_profile("fakeprov", provider_profile)
-            register_harness_profile("fakeprov:my-model", model_profile)
-            model = _make_model({"model_name": "my-model"})
+            register_harness_profile("fakeprov:model:version", model_profile)
+            model = _make_model({identifier_attr: "model:version"})
             model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
             result = _harness_profile_for_model(model, None)
-            # Model-level wins on merge; suffix reflects model-level registration.
             assert result.system_prompt_suffix == "model level"
         finally:
             _HARNESS_PROFILES.clear()

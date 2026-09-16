@@ -231,17 +231,18 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,
-            or a full `provider:model` spec for a per-model override. Valid
-            shapes:
+            or a full `provider:model` spec for a per-model override. The first
+            colon is the separator: providers must not contain colons, while
+            model identifiers may, as in `"ollama:glm-5.2:cloud"`. Valid shapes:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
+            - `"ollama:glm-5.2:cloud"` — model identifier containing a colon
 
         profile: The provider profile to register.
 
     Raises:
-        ValueError: If `key` is empty, contains more than one `:`, or has an
-            empty provider/model half.
+        ValueError: If `key` is empty or has an empty provider/model component.
     """
     _ensure_provider_profiles_loaded()
     _register_provider_profile_impl(key, profile)
@@ -271,10 +272,11 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
-    Malformed specs (empty string, more than one `:`, or a `:` with an empty
-    provider/model half) return `None` without consulting the registry. This
-    prevents a spec like `"openai:"` from silently matching the provider-wide
-    `"openai"` registration.
+    The first colon separates the provider from the complete model identifier.
+    Providers must not contain colons, while model identifiers may. Malformed
+    specs (empty string or a `:` with an empty provider/model component) return
+    `None` without consulting the registry. This prevents a spec like
+    `"openai:"` from silently matching the provider-wide `"openai"` registration.
 
     !!! note "Prefer `apply_provider_profile` for model construction"
 
@@ -285,12 +287,13 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
+            identifier. For example, `"ollama:glm-5.2:cloud"` has provider
+            `ollama` and model identifier `glm-5.2:cloud`.
 
     Returns:
         The matching `ProviderProfile`, or `None` when no registered profile matches.
     """
-    if not spec or spec.count(":") > 1:
+    if not spec:
         return None
 
     provider, sep, model = spec.partition(":")
@@ -349,7 +352,8 @@ def apply_provider_profile(
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
+            identifier. For example, `"ollama:glm-5.2:cloud"` has provider
+            `ollama` and model identifier `glm-5.2:cloud`.
 
             Same shape accepted by `get_provider_profile`.
         kwargs: Caller-supplied kwargs that override profile defaults on

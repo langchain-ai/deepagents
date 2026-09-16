@@ -420,12 +420,6 @@ test('label-creating scripts resolve colors from the config', () => {
   }
 });
 
-test('topic classifier choices come from the shared config', () => {
-  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
-  assert.deepEqual(h.topicLabels, config.topicLabels);
-  assert.ok(h.topicLabels.every(label => label.startsWith('topic:')));
-});
-
 test('topic labels come from the modules a PR touched', () => {
   const h = helpers();
   const f = filename => ({ filename, additions: 1, deletions: 0 });

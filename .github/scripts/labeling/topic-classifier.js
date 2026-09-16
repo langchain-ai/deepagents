@@ -1,5 +1,13 @@
+const fs = require('node:fs');
+const path = require('node:path');
+
 const MODEL = 'llama-3.1-8b-instant';
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+
+function loadTopicLabels() {
+  const manifest = path.resolve(__dirname, '../../topic-labels.json');
+  return JSON.parse(fs.readFileSync(manifest, 'utf8'));
+}
 
 async function classifyTopicLabels(text, allowedLabels, options = {}) {
   const input = (text ?? '').trim().slice(0, 20000);
@@ -51,4 +59,4 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
   return new Set(labels.filter(label => allowed.has(label)));
 }
 
-module.exports = { classifyTopicLabels, ENDPOINT, MODEL };
+module.exports = { classifyTopicLabels, loadTopicLabels, ENDPOINT, MODEL };

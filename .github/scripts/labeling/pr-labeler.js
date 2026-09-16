@@ -23,7 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
-    'topicFileRules', 'topicLabels',
+    'topicFileRules',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
@@ -52,7 +52,6 @@ function init(github, owner, repo, config, core) {
     labelDescriptions,
     fileRules: fileRulesDef,
     topicFileRules: topicFileRulesDef,
-    topicLabels,
     branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
@@ -435,7 +434,6 @@ function init(github, owner, repo, config, core) {
     trustedThreshold,
     labelColor,
     labelColors,
-    topicLabels,
   };
 }
 

@@ -69,12 +69,12 @@ jobs:
             const issue = context.payload.issue;
             const { h } = require('./.github/scripts/labeling/pr-labeler.js')
               .loadAndInit(github, owner, repo, core);
-            const { classifyTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
+            const { classifyTopicLabels, loadTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
 
             let topics;
             try {
               topics = await classifyTopicLabels(
-                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, h.topicLabels,
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, loadTopicLabels(),
               );
             } catch (error) {
               core.warning(`Topic classification failed: ${error.message}`);

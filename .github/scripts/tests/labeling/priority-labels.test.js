@@ -306,7 +306,7 @@ function runTopicStep(globals) {
   return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
     console: { log() {} },
     require: spec => spec.endsWith('topic-classifier.js')
-      ? { classifyTopicLabels: globals.classifyTopicLabels }
+      ? { classifyTopicLabels: globals.classifyTopicLabels, loadTopicLabels: () => [] }
       : sandboxRequire(spec),
     ...globals,
   });

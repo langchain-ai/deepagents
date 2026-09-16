@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { classifyTopicLabels, ENDPOINT, MODEL } = require('../../labeling/topic-classifier.js');
+const { classifyTopicLabels, loadTopicLabels, ENDPOINT, MODEL } = require('../../labeling/topic-classifier.js');
 
 const allowed = ['topic:mcp', 'topic:models'];
 
@@ -14,6 +14,12 @@ function response(content, status = 200) {
     },
   };
 }
+
+test('loads classifier choices from the cached manifest', () => {
+  const labels = loadTopicLabels();
+  assert.ok(labels.length > 0);
+  assert.ok(labels.every(label => label.startsWith('topic:')));
+});
 
 test('classifies with the small open model and filters output to the allowlist', async () => {
   let request;

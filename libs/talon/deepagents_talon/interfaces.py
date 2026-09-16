@@ -101,6 +101,9 @@ class SendResult:
     retryable: bool = False
 
 
+ProgressMessageHandler = Callable[[str], Awaitable[SendResult]]
+
+
 ToolApprovalDecision = Literal["approve", "reject"]
 
 
@@ -132,6 +135,7 @@ class AgentRequest:
         metadata: Runtime context supplied by the triggering component.
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
+        message_handler: Optional callback for progress updates to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
     """
@@ -152,6 +156,13 @@ class AgentRequest:
         compare=False,
     )
 
+    message_handler: ProgressMessageHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class AgentResult:
@@ -161,10 +172,15 @@ class AgentResult:
         text: Text to deliver to the triggering channel. Empty text means the
             runtime has no message to send.
         metadata: Runtime metadata for future observability integrations.
+        background_results: Background result ids this turn consumed, which the
+            runtime has already acknowledged. A host that then discards the turn's
+            reply hands these back through `BackgroundSubagents.requeue`, so work
+            the user never heard about is offered to the next turn instead.
     """
 
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    background_results: tuple[str, ...] = ()
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]

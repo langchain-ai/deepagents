@@ -28,7 +28,7 @@ jobs:
   check-release-deps:
     name: "resolve release dependencies"
     # Runs on every release PR, including ones carrying the
-    # `release-deps: acknowledged` bypass label. Under the label the script
+    # `ci:ack-release-deps` bypass label. Under the label the script
     # soft-runs: it resolves and posts the follow-up-release sticky but
     # exits 0, so the remaining release debt stays visible instead of
     # disappearing behind a skipped job.
@@ -56,7 +56,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RELEASE_DEPS_ACKED: "${{ contains(github.event.pull_request.labels.*.name, 'release-deps: acknowledged') }}"
+          RELEASE_DEPS_ACKED: "${{ contains(github.event.pull_request.labels.*.name, 'ci:ack-release-deps') }}"
         run: uv run --no-project --with packaging python .github/scripts/release/check_release_deps.py
 
   manage-release-deps-comment:

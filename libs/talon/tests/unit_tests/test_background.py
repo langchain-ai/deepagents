@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -11,10 +13,17 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
-from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.archive import ArchiveScope
+from deepagents_talon.authorization import (
+    current_authorization_handler,
+    reset_authorization_handler,
+    set_authorization_handler,
+)
+from deepagents_talon.background import _IN_SUBAGENT, BackgroundSubagents
+from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.runtime import _CRON_ORIGIN, _HISTORY_SCOPE, DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import _config
 
@@ -77,26 +86,26 @@ async def test_chat_continues_then_main_processes_background_result(tmp_path, mo
     try:
         await host.receive_message(channel, ChannelMessage("chat", "research"))
         await asyncio.wait_for(entered.wait(), 2)
-        await asyncio.wait_for(host._tasks["chat"], 2)
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
         await host.receive_message(channel, ChannelMessage("chat", "hello"))
-        await asyncio.wait_for(host._tasks["chat"], 2)
-        assert runtime.background.owners() == {"chat"}
-        assert not runtime.background.results("chat")
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+        assert runtime.background.owners() == {"test:chat"}
+        assert not runtime.background.results("test:chat")
         release.set()
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
         await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks["chat"], 2)
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
         assert channel.sent == [
             ("chat", "Working on it"),
             ("chat", "Still here"),
             ("chat", "Processed research"),
         ]
-        state = await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})
+        state = await runtime._graph.aget_state({"configurable": {"thread_id": "test:chat"}})
         assert any(
             "raw research result" in str(message.content) for message in state.values["messages"]
         )
-        assert child_threads[0] != "chat"
-        assert not runtime.background.results("chat")
+        assert child_threads[0] != "test:chat"
+        assert not runtime.background.results("test:chat")
     finally:
         release.set()
         await host.stop()
@@ -129,14 +138,14 @@ async def test_commands_cancel_only_this_threads_children_when_main_idle(
         for owner in ("one", "two"):
             await host.receive_message(channel, ChannelMessage(owner, "research"))
             await asyncio.wait_for(entered.get(), 2)
-            await asyncio.wait_for(host._tasks[owner], 2)
+            await asyncio.wait_for(host._tasks[f"test:{owner}"], 2)
         assert channel.sent == [("one", "Started"), ("two", "Started")]
         await host.receive_message(channel, ChannelMessage("one", command))
         assert len(cancelled) == 1
-        assert runtime.background.owners() == {"two"}
-        assert not runtime.background.results("one")
+        assert runtime.background.owners() == {"test:two"}
+        assert not runtime.background.results("test:one")
         if command == "/new":
-            assert host._agent_conversation_id("one") != "one"
+            assert host._agent_conversation_id("test:one") != "test:one"
     finally:
         await host.stop()
     assert len(cancelled) == 2
@@ -217,6 +226,106 @@ async def test_cancel_finished_subagent_preserves_result():
     assert background.owners() == {"one"}
     assert not background.results("two")
     background.acknowledge(results)
+    assert not background.results("one")
+    assert not background.owners()
+
+
+async def test_invoke_reports_the_results_it_acknowledged(monkeypatch):
+    """The runtime hands back what it acknowledged so a host can undo it.
+
+    Acknowledgement records that the model consumed a result, which the runtime
+    knows; whether the user was told depends on the reply being delivered, which
+    only the host knows. The ids travel so the two can be reconciled.
+    """
+
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(
+        monkeypatch,
+        child,
+        [
+            _delegate(),
+            AIMessage(content="Working on it"),
+            AIMessage(content="Processed research"),
+        ],
+    )
+    await runtime.start()
+    try:
+        launched = await runtime.invoke(AgentRequest(conversation_id="chat", text="research"))
+        assert launched.background_results == ()
+
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        pending = set(runtime.background.results("chat"))
+        assert pending
+
+        processed = await runtime.invoke(AgentRequest(conversation_id="chat", text="anything else"))
+
+        assert set(processed.background_results) == pending
+        assert not runtime.background.results("chat")
+
+        runtime.background.requeue(processed.background_results)
+
+        assert set(runtime.background.results("chat")) == pending
+    finally:
+        await runtime.stop()
+
+
+async def test_requeue_returns_only_the_results_it_is_given():
+    """Re-queueing is scoped to one turn's ids, not to everything acknowledged.
+
+    A conversation can hold results from several turns. Only the turn whose reply
+    was discarded goes back to the queue; anything an earlier turn delivered stays
+    acknowledged, so it is never reported to the user twice.
+    """
+
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    for thread in ("one", "two"):
+        await background.awrap_tool_call(_request(thread, task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    first = background.results("one")
+    second = background.results("two")
+    background.acknowledge(first)
+    background.acknowledge(second)
+    assert not background.results("one")
+    assert not background.results("two")
+    assert not background.owners()
+
+    background.requeue(first)
+
+    assert background.results("one") == first
+    assert not background.results("two")
+    assert background.owners() == {"one"}
+
+
+async def test_requeue_skips_cancelled_and_unknown_results():
+    """Nothing is resurrected that the conversation has no use for.
+
+    `/stop` discards a thread's results deliberately, and a result already pruned
+    is gone. Re-queueing either would be an undelivered turn reviving work the user
+    stopped, so both are left alone.
+    """
+
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    results = background.results("one")
+    background.acknowledge(results)
+    assert await background.cancel("one")
+
+    background.requeue(results)
+    background.requeue(["subagent-never-existed"])
+
     assert not background.results("one")
     assert not background.owners()
 
@@ -350,3 +459,138 @@ async def test_interrupted_main_keeps_worker_and_retries_unprocessed_result(monk
     finally:
         release.set()
         await runtime.stop()
+
+
+async def test_background_worker_inherits_caller_context_and_isolates_its_own():
+    marker = contextvars.ContextVar("marker", default="unset")
+
+    @tool
+    async def task() -> str:
+        """Report the context the worker runs in."""
+        return f"{marker.get()}/{_IN_SUBAGENT.get()}"
+
+    background = BackgroundSubagents()
+    marker.set("main conversation")
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    assert [job.result for job in background._jobs.values()] == ["main conversation/True"]
+    assert _IN_SUBAGENT.get() is False
+
+
+async def test_background_failure_is_logged_and_reported_without_arguments(caplog):
+    @tool
+    async def task(credential: str) -> str:
+        """Fail while holding a credential."""
+        assert credential
+        msg = "upstream rejected the request"
+        raise RuntimeError(msg)
+
+    background = BackgroundSubagents()
+    with caplog.at_level(logging.ERROR, logger="deepagents_talon.background"):
+        await background.awrap_tool_call(
+            _request("one", task, credential="sk-not-a-real-key"), _unused_handler
+        )
+        await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    (job,) = background._jobs.values()
+    assert job.result == "Subagent failed before returning a result."
+    assert "RuntimeError: upstream rejected the request" in caplog.text
+    assert "sk-not-a-real-key" not in caplog.text
+
+
+async def test_background_timeout_is_reported_separately_from_failure(monkeypatch):
+    monkeypatch.setattr("deepagents_talon.background._TASK_TIMEOUT_SECONDS", 0.01)
+
+    @tool
+    async def task() -> str:
+        """Never return."""
+        await asyncio.Event().wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+
+    (job,) = background._jobs.values()
+    assert job.result == "Subagent ran out of time before returning a result."
+    assert not job.cancelled
+
+
+async def test_repeatedly_failing_turns_drop_the_unprocessed_result(monkeypatch):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(monkeypatch, child, [_delegate(), AIMessage(content="Started")])
+    await runtime.start()
+    try:
+        assert (await runtime.invoke(AgentRequest("chat", "delegate"))).text == "Started"
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert runtime.background.results("chat")
+
+        async def fail(_request, _activity):
+            msg = "model failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(runtime, "_invoke_until_text", fail)
+        failures = 0
+        while runtime.background.results("chat") and failures < 8:
+            with pytest.raises(RuntimeError):
+                await runtime.invoke(AgentRequest("chat", "process results"))
+            failures += 1
+
+        assert failures == 3
+        assert "chat" not in runtime.background.owners()
+        (job,) = runtime.background._jobs.values()
+        assert "never reached the user" in job.result
+        assert "research result" in job.result
+    finally:
+        await runtime.stop()
+
+
+async def test_background_worker_keeps_scoped_state_but_not_the_authorization_handler():
+    async def authorize(_event):
+        return None
+
+    @tool
+    async def task() -> str:
+        """Report the scoped state this worker inherited."""
+        return f"{_HISTORY_SCOPE.get()}|{_CRON_ORIGIN.get()}|{current_authorization_handler()}"
+
+    scope = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
+    origin = CronOrigin("chat")
+    background = BackgroundSubagents()
+    _HISTORY_SCOPE.set(scope)
+    _CRON_ORIGIN.set(origin)
+    token = set_authorization_handler(authorize)
+    try:
+        await background.awrap_tool_call(_request("one", task), _unused_handler)
+        await asyncio.gather(*(job.worker for job in background._jobs.values()))
+        assert current_authorization_handler() is authorize
+    finally:
+        reset_authorization_handler(token)
+
+    (job,) = background._jobs.values()
+    assert job.result == f"{scope}|{origin}|None"
+
+
+async def test_host_shutdown_completes_when_a_worker_outlives_cancellation(tmp_path, monkeypatch):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    runtime = _runtime(monkeypatch, child, [AIMessage(content="Hello")])
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=runtime, channels=[channel])
+    await host.start()
+
+    async def refuse(_owner=None):
+        return False
+
+    monkeypatch.setattr(runtime.background, "cancel", refuse)
+    await host.stop()
+
+    # The runtime raises rather than closing resources a live worker may write to,
+    # and the host treats that as a component failure so shutdown still finishes.
+    assert channel.stopped is True
+    assert host._stopped.is_set()
+    assert runtime._graph is not None

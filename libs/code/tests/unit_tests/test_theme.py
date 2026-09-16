@@ -239,6 +239,15 @@ class TestLoadUserThemes:
         _load_user_themes(builtins, config_path=config)
         assert builtins == {}
 
+    def test_absent_themes_is_silent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = tmp_path / "config.toml"
+        _write_config(config, "[ui]\ncursor_blink = true\n")
+        with caplog.at_level("WARNING", logger="deepagents_code.theme"):
+            _load_user_themes({}, config_path=config)
+        assert not caplog.records
+
 
 # ---------------------------------------------------------------------------
 # _build_registry with user themes

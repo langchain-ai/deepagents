@@ -803,10 +803,16 @@ class RemoteAgent:
         return await self.abind_workspace(config, self._workspace_cwd)
 
     async def _request_workspace(
-        self, config: Mapping[str, Any], cwd: str
+        self,
+        config: Mapping[str, Any],
+        cwd: str,
+        *,
+        validate_only: bool = False,
     ) -> tuple[dict[str, Any], list[MCPServerInfo] | None]:
         thread_id = _require_thread_id(config)
         payload: dict[str, Any] = {"cwd": cwd}
+        if validate_only:
+            payload["validate_only"] = True
         if self._workspace_config is not None:
             payload["workspace_config"] = self._workspace_config
             payload["config_fingerprint"] = self._workspace_config_fingerprint
@@ -874,18 +880,25 @@ class RemoteAgent:
         self._workspaces.update(workspaces)
 
     async def aswitch_workspace(
-        self, config: Mapping[str, Any], cwd: str
+        self,
+        config: Mapping[str, Any],
+        cwd: str,
+        *,
+        validate_only: bool = False,
     ) -> list[MCPServerInfo] | None:
-        """Bind one thread to a workspace and make it the default for new threads.
+        """Bind or validate one thread's workspace and return MCP metadata.
 
         Returns:
             MCP metadata for the server runtime selected by the binding.
         """
         thread_id = _require_thread_id(config)
-        workspace, mcp_server_info = await self._request_workspace(config, cwd)
-        self._workspace_cwd = cwd
-        self._workspaces.clear()
-        self._workspaces[thread_id] = workspace
+        workspace, mcp_server_info = await self._request_workspace(
+            config, cwd, validate_only=validate_only
+        )
+        if not validate_only:
+            self._workspace_cwd = cwd
+            self._workspaces.clear()
+            self._workspaces[thread_id] = workspace
         return mcp_server_info
 
     def set_workspace(

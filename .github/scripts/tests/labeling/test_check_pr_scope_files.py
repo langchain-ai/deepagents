@@ -215,7 +215,7 @@ def test_unmanaged_package_artifacts_do_not_trigger_release_bypass() -> None:
     assert not is_release_file("libs/evals/deepagents_evals/_version.py")
     assert not is_release_pr_change("release(deepagents-code): 0.1.22", changed)
     assert find_offenders("release(deepagents-code): 0.1.22", changed, config) == [
-        {"package": "evals", "dirs": ["libs/evals/"]}
+        {"package": "package:evals", "dirs": ["libs/evals/"]}
     ]
 
 
@@ -394,14 +394,14 @@ def test_partner_package_dir_detected_with_real_config() -> None:
         "fix(sdk): repair startup",
         ["libs/partners/daytona/langchain_daytona/sandbox.py"],
         config,
-    ) == [{"package": "daytona", "dirs": ["libs/partners/daytona/"]}]
+    ) == [{"package": "integration:daytona", "dirs": ["libs/partners/daytona/"]}]
 
 
 def test_partner_scope_aliases_resolve_with_real_config() -> None:
     """`langchain-*` scope aliases map to the same partner package labels."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
-    assert declared_packages("fix(langchain-quickjs): x", config) == {"quickjs"}
-    assert declared_packages("fix(quickjs): x", config) == {"quickjs"}
+    assert declared_packages("fix(langchain-quickjs): x", config) == {"integration:quickjs"}
+    assert declared_packages("fix(quickjs): x", config) == {"integration:quickjs"}
 
 
 def test_non_dict_file_rule_raises() -> None:
@@ -570,11 +570,11 @@ def test_main_missing_scope_map_returns_2(capsys, tmp_path) -> None:
 def test_real_config_has_package_scope_and_dir_mappings() -> None:
     """The committed PR labeler config exposes the maps this check reads."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
-    assert declared_packages("fix(sdk): x", config) == {"deepagents"}
-    assert declared_packages("fix(code): x", config) == {"dcode"}
+    assert declared_packages("fix(sdk): x", config) == {"package:deepagents"}
+    assert declared_packages("fix(code): x", config) == {"package:dcode"}
     assert changed_packages(["libs/deepagents/deepagents/graph.py"], config) == {
-        "deepagents": ["libs/deepagents/"]
+        "package:deepagents": ["libs/deepagents/"]
     }
     assert changed_packages(["libs/code/deepagents_code/app.py"], config) == {
-        "dcode": ["libs/code/"]
+        "package:dcode": ["libs/code/"]
     }

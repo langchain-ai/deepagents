@@ -30,6 +30,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
+from langchain.tools import ToolRuntime  # noqa: TC002  # runtime injection marker
+
 from deepagents_code import _env_vars
 from deepagents_code._paths import PATHS, project_paths
 from deepagents_code.mcp_config import resolve_mcp_server_env
@@ -58,6 +60,7 @@ _MCP_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_TOOL_NAME_MAX_LENGTH = 64
 _MCP_TOOL_NAME_HASH_LENGTH = 12
 _MCP_ORIGINAL_TOOL_NAME_KEY = "_deepagents_code_mcp_tool"
+_MISSING_TOOL_RUNTIME = cast("ToolRuntime[None, Any]", None)
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -2094,9 +2097,8 @@ def _build_cached_mcp_tool(
             return str(error) or f"{lc_tool_name} failed with no error detail"
 
     async def coroutine(
-        # `runtime` is injected by LangChain's tool-calling plumbing.
-        # MCP tools don't use it but the kwarg must still be accepted.
-        runtime: Any = None,  # noqa: ANN401, ARG001
+        # The annotation keeps the injected runtime out of recorded tool inputs.
+        runtime: ToolRuntime[None, Any] = _MISSING_TOOL_RUNTIME,  # noqa: ARG001
         **arguments: Any,
     ) -> Any:  # noqa: ANN401
         from deepagents_code.mcp_auth import find_reauth_required

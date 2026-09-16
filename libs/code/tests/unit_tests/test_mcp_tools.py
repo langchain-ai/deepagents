@@ -1540,6 +1540,39 @@ class TestGetMCPTools:
         session.call_tool.assert_awaited_once_with(original_name, {})
         await manager.cleanup()  # ty: ignore
 
+    async def test_runtime_is_not_passed_to_mcp_tool_inputs(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+    ) -> None:
+        """Runtime injection leaves only schema-declared arguments for MCP."""
+        path = write_config({"mcpServers": {"srv": {"command": "node", "args": []}}})
+        session, _recorded = fake_create_session
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [
+                    _make_mcp_tool(
+                        "search",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    )
+                ]
+            )
+        )
+        session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, _server_infos = await get_mcp_tools(path)
+
+        assert "runtime" not in tools[0].args
+        await tools[0].ainvoke({"query": "langchain"})
+
+        session.call_tool.assert_awaited_once_with("search", {"query": "langchain"})
+        await manager.cleanup()  # ty: ignore
+
     async def test_stateless_long_tool_name_is_bounded(
         self,
         fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],

@@ -3,6 +3,7 @@
 import asyncio
 import io
 import logging
+import os
 import signal
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
@@ -2045,6 +2046,52 @@ class TestMaxTurns:
 
 class TestRunStartupCommand:
     """Tests for `_run_startup_command` (`--startup-cmd`)."""
+
+    async def test_uses_project_langsmith_environment_when_launch_value_absent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Headless startup commands receive project values, not dcode values."""
+        import json
+
+        import deepagents_code.config as config_mod
+
+        (tmp_path / ".env").write_text("LANGSMITH_API_KEY=project-key\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        carrier = json.dumps({"launch": launch, "user": dict(launch)})
+        monkeypatch.setenv("LANGSMITH_API_KEY", "dcode-key")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv(config_mod._USER_LANGSMITH_ENV_CARRIER, carrier)
+        monkeypatch.setenv("STARTUP_TEST_UNRELATED", "preserved")
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"startup-output\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        with patch(
+            "asyncio.create_subprocess_shell",
+            return_value=mock_proc,
+        ) as create_shell:
+            await _run_startup_command("echo startup-output", console, quiet=False)
+
+        child_env = create_shell.call_args.kwargs["env"]
+        assert child_env["LANGSMITH_API_KEY"] == "project-key"
+        assert child_env["STARTUP_TEST_UNRELATED"] == "preserved"
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in child_env
+        assert not any(
+            key.startswith("DEEPAGENTS_CODE_LANGSMITH_") for key in child_env
+        )
+        assert os.environ["LANGSMITH_API_KEY"] == "dcode-key"
+        assert "startup-output" in buf.getvalue()
 
     async def test_cancellation_kills_process_group_on_posix(self) -> None:
         """Outer cancellation should still clean up the startup process group."""

@@ -458,6 +458,7 @@ _FILESYSTEM_ACCESS_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _TRANSITION_NUDGE_MIN_MESSAGES = 6
+_TRANSITION_NUDGE_MIN_USER_TURNS = 2
 _COMPACT_NEW_TASK_RE = re.compile(
     r"\b(?:move on|switch(?:ing)? to|new task|different task|unrelated task|"
     r"separate task|new topic|different topic|unrelated topic)\b",
@@ -781,8 +782,16 @@ def _message_text(message: AIMessage | HumanMessage | ToolMessage) -> str:
     return ""
 
 
+def _external_human_message_indexes(messages: list[Any]) -> list[int]:
+    return [
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, HumanMessage) and getattr(message, "name", None) not in _INTERNAL_MESSAGE_NAMES
+    ]
+
+
 def _external_human_messages(messages: list[Any]) -> list[HumanMessage]:
-    return [message for message in messages if isinstance(message, HumanMessage) and getattr(message, "name", None) not in _INTERNAL_MESSAGE_NAMES]
+    return [cast("HumanMessage", messages[index]) for index in _external_human_message_indexes(messages)]
 
 
 def _last_external_human_text(messages: list[Any]) -> str:
@@ -1161,17 +1170,17 @@ class NemotronPolicyNudgeMiddleware(AgentMiddleware):
         if len(messages) < _TRANSITION_NUDGE_MIN_MESSAGES:
             return False
 
-        humans = _external_human_messages(messages)
-        if not humans:
+        human_indexes = _external_human_message_indexes(messages)
+        if len(human_indexes) < _TRANSITION_NUDGE_MIN_USER_TURNS:
             return False
 
-        latest = humans[-1]
+        latest_index = human_indexes[-1]
+        latest = cast("HumanMessage", messages[latest_index])
         user_text = _message_text(latest)
-        window = _messages_since_last_user(messages)
-        if any(call.get("name") == "compact_conversation" for call in _iter_tool_calls(window)):
+        if any(call.get("name") == "compact_conversation" for call in _iter_tool_calls(messages[latest_index:])):
             return False
 
-        has_prior_file_work = any(call.get("name") in _FILESYSTEM_TOOLS for call in _iter_tool_calls(messages[:-1]))
+        has_prior_file_work = any(call.get("name") in _FILESYSTEM_TOOLS for call in _iter_tool_calls(messages[:latest_index]))
         starts_new_task = _COMPACT_NEW_TASK_RE.search(user_text) is not None
         asks_follow_on_file = _FOLLOW_ON_WORK_RE.search(user_text) is not None
         asks_large_file_work = _COMPACT_LARGE_READ_RE.search(user_text) is not None

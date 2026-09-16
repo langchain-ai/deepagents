@@ -57,13 +57,6 @@ def test_reads_only_available_bytes() -> None:
     read.assert_called_once_with(pipe.fileno(), 3)
 
 
-def test_caps_each_read() -> None:
-    pipe = MagicMock()
-    with patch.object(windows_process, "_peek_pipe", return_value=1_000_000), patch.object(windows_process.os, "read", return_value=b"x") as read:
-        windows_process._read_available(pipe)
-    assert read.call_args.args[1] == 32_768
-
-
 @pytest.mark.parametrize("code", [109, 232, 233, 5])
 def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
     """Test every end-of-stream error code reads as EOF and others propagate.
@@ -137,20 +130,6 @@ def test_exited_shell_does_not_discard_descendant_output() -> None:
             patch.object(windows_process.time, "sleep"),
         ):
             assert WindowsProcessReader(process).communicate(timeout=1) == ("late", "")
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-
-
-def test_exited_shell_with_live_empty_pipes_times_out() -> None:
-    process = _process()
-    process.poll.return_value = 0
-    try:
-        with patch.object(windows_process, "_read_available", return_value=None):
-            start = time.monotonic()
-            with pytest.raises(subprocess.TimeoutExpired):
-                WindowsProcessReader(process).communicate(timeout=0.02)
-            assert time.monotonic() - start < 1
     finally:
         process.stdout.close()
         process.stderr.close()

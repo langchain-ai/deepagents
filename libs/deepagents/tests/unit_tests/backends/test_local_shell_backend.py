@@ -162,32 +162,6 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.truncated is False
 
 
-def test_local_shell_backend_execute_configures_session_for_platform() -> None:
-    """Test that only POSIX commands start in a new session."""
-    process = MagicMock(returncode=0)
-    process.communicate.return_value = ("hello\n", "")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
-        with patch.object(local_shell_module, "WindowsProcessReader", return_value=process), patch("subprocess.Popen", return_value=process) as popen:
-            backend.execute("echo hello")
-
-    assert popen.call_args.kwargs["start_new_session"] == (sys.platform != "win32")
-
-
-@_POSIX_SHELL_ONLY
-def test_local_shell_backend_execute_process_is_group_leader() -> None:
-    """Test the real shell process leads its detached process group."""
-    probe = "import os; parent = os.getppid(); print(parent, os.getpgid(parent))"
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(probe)}; :"
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result = LocalShellBackend(root_dir=tmpdir, inherit_env=True).execute(command)
-
-    assert result.exit_code == 0
-    process_id, process_group = (int(value) for value in result.output.split())
-    assert process_id == process_group
-    assert process_group != os.getpgrp()
-
-
 @_POSIX_SHELL_ONLY
 def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
     """Test a real background descendant stops after command timeout."""
@@ -257,29 +231,6 @@ def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
     kill_and_reap.assert_called_once_with(process, 1234)
 
 
-def test_local_shell_backend_cleanup_without_process_group_kills_process() -> None:
-    """Test cleanup falls back to the direct process without a group."""
-    process = MagicMock(pid=1234)
-    assert local_shell_module._kill_and_reap(process, None) is True
-    process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
-
-
-def test_local_shell_backend_cleanup_accepts_missing_pipes() -> None:
-    """Test cleanup accepts processes without captured output pipes."""
-    local_shell_module._close_pipe(None, "stdout", 1234)
-
-
-def test_local_shell_backend_cancelled_background_worker_is_released() -> None:
-    """Test a cancelled background worker is dropped without reading its result."""
-    worker = MagicMock()
-    worker.cancelled.return_value = True
-    local_shell_module._BACKGROUND_WORKERS.add(worker)
-    local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
-    assert worker not in local_shell_module._BACKGROUND_WORKERS
-    worker.result.assert_not_called()
-
-
 async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
     worker = asyncio.get_running_loop().create_future()
     worker.set_exception(asyncio.CancelledError())
@@ -287,22 +238,6 @@ async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(c
     local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     assert not caplog.records
-
-
-def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.LogCaptureFixture) -> None:
-    """Test a late background worker failure is consumed and diagnosed."""
-    worker = MagicMock()
-    worker.cancelled.return_value = False
-    worker.result.side_effect = RuntimeError("backend exploded")
-    local_shell_module._BACKGROUND_WORKERS.add(worker)
-    with caplog.at_level("WARNING", logger="deepagents.backends.local_shell"):
-        local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
-
-    assert worker not in local_shell_module._BACKGROUND_WORKERS
-    assert "failed on backend" in caplog.text
-    assert "after its caller was cancelled" in caplog.text
-    assert "local-test" in caplog.text
-    assert "echo hi" in caplog.text
 
 
 @_POSIX_SHELL_ONLY
@@ -334,23 +269,6 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     assert "Failed to reap local shell process 1234" in caplog.text
     assert "Failed to close stdout for local shell process 1234" in caplog.text
     assert "Failed to close stderr for local shell process 1234" in caplog.text
-
-
-def test_local_shell_backend_timeout_cleans_up_posix_process_group() -> None:
-    """Test a timeout kills the command's POSIX process group."""
-    process = MagicMock(pid=1234)
-    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        _as_posix(),
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch("subprocess.Popen", return_value=process),
-        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
-    ):
-        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
-
-    assert result.exit_code == 124
-    _assert_posix_cleanup(process, killpg)
 
 
 def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:

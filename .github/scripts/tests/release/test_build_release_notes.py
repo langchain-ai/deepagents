@@ -1705,8 +1705,12 @@ class TestCollectContributors:
         )
         assert community == []
 
+    # Both spellings: PRs merged before the label-taxonomy migration carry the
+    # retired `internal`, and release notes walk historical merged PRs, so
+    # losing either one republishes past maintainers as community contributors.
+    @pytest.mark.parametrize("label", ["org:internal", "internal"])
     def test_internal_label_routes_to_maintainers(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, label: str
     ) -> None:
         head = self._repo(tmp_path)
         community, internal, _ = self._run(
@@ -1715,7 +1719,7 @@ class TestCollectContributors:
             {
                 "author": {"login": "maint", "is_bot": False},
                 "body": "Twitter: @maint",
-                "labels": [{"name": "internal"}],
+                "labels": [{"name": label}],
             },
             monkeypatch,
         )
@@ -1756,7 +1760,7 @@ class TestCollectContributors:
             "2": {
                 "author": {"login": "dual", "is_bot": False},
                 "body": "",
-                "labels": [{"name": "internal"}],
+                "labels": [{"name": "org:internal"}],
             },
         }
         calls = {"n": 0}
@@ -2151,7 +2155,7 @@ class TestIssueReporters:
             self._payload(
                 [{"number": 101}],
                 author={"login": "renovate[bot]", "is_bot": True},
-                labels=[{"name": "internal"}],
+                labels=[{"name": "org:internal"}],
             ),
             {101: "carol"},
             monkeypatch,
@@ -2361,7 +2365,7 @@ class TestIssueReporters:
             "2": self._payload(
                 [],
                 author={"login": "carol", "is_bot": False},
-                labels=[{"name": "internal"}],
+                labels=[{"name": "org:internal"}],
             ),
         }
         prs = iter(["1", "2"])
@@ -4205,7 +4209,7 @@ class TestPackageMap:
     def test_workflow_working_dirs_match(self) -> None:
         """Paths must match too, not just package names.
 
-        A wrong-but-existing path (deepagents-code -> libs/cli) would otherwise
+        A wrong-but-existing path (deepagents-code -> libs/acp) would otherwise
         pass every other check while scoping the git log to the wrong package.
         """
         text = _release_yml_text()

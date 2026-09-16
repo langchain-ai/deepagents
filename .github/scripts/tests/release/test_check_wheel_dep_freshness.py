@@ -791,7 +791,7 @@ def test_workflow_mirrors_release_install_flags() -> None:
         in freshness
     )
 
-    assert "deepagents-code|deepagents-talon)" in release
+    assert "resolve_python_matrix.py" in release
     assert "DEEPAGENTS_CODE_BUILD_COMMIT:" in release
     assert 'if [ "$PKG_NAME" = "deepagents-talon" ]; then' in release
     assert 'INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")' in release
@@ -799,7 +799,7 @@ def test_workflow_mirrors_release_install_flags() -> None:
         'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
         in release
     )
- # pass if either one reverted.
+    # pass if either one reverted.
     release_install = (
         'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
     )

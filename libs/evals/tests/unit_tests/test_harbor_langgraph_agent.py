@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents_code.config import settings
+from deepagents_code.config import runtime_state
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -25,19 +25,19 @@ _MODEL_IDENTITY_FIELDS = (
 
 
 @pytest.fixture(autouse=True)
-def _restore_model_identity_settings() -> Iterator[None]:
-    """Snapshot/restore dcode's `settings` model-identity fields.
+def _restore_model_identity_state() -> Iterator[None]:
+    """Snapshot and restore dcode's process-wide model identity.
 
     `make_graph` writes these process-level singleton fields (so the system
     prompt's Model Identity section is populated). Without restoring them, a
     test that runs `make_graph` would leak the model identity into later tests.
     """
-    saved = {field: getattr(settings, field) for field in _MODEL_IDENTITY_FIELDS}
+    saved = {field: getattr(runtime_state, field) for field in _MODEL_IDENTITY_FIELDS}
     try:
         yield
     finally:
         for field, value in saved.items():
-            setattr(settings, field, value)
+            setattr(runtime_state, field, value)
 
 
 def test_langgraph_config_points_to_deepagent_factory() -> None:
@@ -328,13 +328,13 @@ def test_make_graph_builds_headless_local_deepagent(
     assert "system_prompt" not in captured_create[0]
 
 
-def test_make_graph_populates_model_identity_settings(
+def test_make_graph_populates_runtime_model_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`make_graph` must feed `configurable.model` into dcode `settings`.
+    """`make_graph` feeds `configurable.model` into dcode runtime state.
 
     create_cli_agent -> get_system_prompt renders the prompt's Model Identity
-    section from these settings, so without this wiring the eval agent's prompt
+    section from this state, so without this wiring the eval agent's prompt
     would omit which model it is running as.
     """
 
@@ -365,17 +365,17 @@ def test_make_graph_populates_model_identity_settings(
         }
     )
 
-    assert settings.model_name == "claude-sonnet-4-5"
-    assert settings.model_provider == "anthropic"
-    assert settings.model_context_limit == 200_000
-    assert settings.model_unsupported_modalities == frozenset({"audio", "video"})
+    assert runtime_state.model_name == "claude-sonnet-4-5"
+    assert runtime_state.model_provider == "anthropic"
+    assert runtime_state.model_context_limit == 200_000
+    assert runtime_state.model_unsupported_modalities == frozenset({"audio", "video"})
 
 
 def test_make_graph_resets_model_identity_for_model_without_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    settings.model_context_limit = 200_000
-    settings.model_unsupported_modalities = frozenset({"audio", "video"})
+    runtime_state.model_context_limit = 200_000
+    runtime_state.model_unsupported_modalities = frozenset({"audio", "video"})
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
     monkeypatch.setattr(
@@ -394,8 +394,8 @@ def test_make_graph_resets_model_identity_for_model_without_profile(
         }
     )
 
-    assert settings.model_context_limit is None
-    assert settings.model_unsupported_modalities == frozenset()
+    assert runtime_state.model_context_limit is None
+    assert runtime_state.model_unsupported_modalities == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -435,8 +435,8 @@ def test_make_graph_derives_identity_for_bare_model_name(
         }
     )
 
-    assert settings.model_name == expected_name
-    assert settings.model_provider == expected_provider
+    assert runtime_state.model_name == expected_name
+    assert runtime_state.model_provider == expected_provider
 
 
 @pytest.mark.parametrize(

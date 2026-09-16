@@ -89,6 +89,29 @@ def _tool_call(name: str, args: dict[str, Any], call_id: str) -> AIMessage:
     )
 
 
+def _build_agent_with_one_forked_subagent() -> CompiledStateGraph:
+    """Build a declarative fork whose output identifies its stream scope."""
+    parent = _Scripted(
+        responses=[
+            _task_call("continue with ticket T-123", "researcher", "call-parent-fork"),
+            AIMessage(content="parent done"),
+        ]
+    )
+    worker = _Scripted(responses=[AIMessage(content="FORK_PRIVATE_RESULT")])
+    return create_deep_agent(
+        model=parent,
+        subagents=[
+            {
+                "name": "researcher",
+                "description": "continues the current conversation",
+                "model": worker,
+                "mode": "fork",
+                "tools": [],
+            }
+        ],
+    )
+
+
 def _build_agent_with_one_subagent() -> CompiledStateGraph:
     parent = _Scripted(
         responses=[
@@ -205,6 +228,31 @@ class TestCreateDeepAgentAstreamV2:
         assert isinstance(sub_output, dict)
         assert "messages" in sub_output
 
+    async def test_forked_subagent_messages_are_separate_from_parent_projection(self) -> None:
+        agent = _build_agent_with_one_forked_subagent()
+        run = await agent.astream_events({"messages": [HumanMessage(content="ticket is T-123")]}, version="v3")
+
+        parent_chunks: list[str] = []
+        fork_chunks: list[str] = []
+        handles: list[AsyncSubagentRunStream] = []
+
+        async def drain_subagents() -> None:
+            async for subagent in run.subagents:
+                handles.append(subagent)
+                fork_chunks.extend([str(message.output_message.content) async for message in subagent.messages])
+
+        async def drain_parent_messages() -> None:
+            parent_chunks.extend([str(message.output_message.content) async for message in run.messages])
+
+        await asyncio.gather(drain_subagents(), drain_parent_messages())
+
+        assert len(handles) == 1
+        assert handles[0].name == "researcher"
+        assert handles[0].cause == {"type": "toolCall", "tool_call_id": "call-parent-fork"}
+        assert handles[0].status == "completed"
+        assert any("FORK_PRIVATE_RESULT" in chunk for chunk in fork_chunks)
+        assert not any("FORK_PRIVATE_RESULT" in chunk for chunk in parent_chunks)
+
     async def test_subagent_tool_calls_surface(self) -> None:
         agent = _build_agent_with_one_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
@@ -318,6 +366,24 @@ class TestCreateDeepAgentStreamV2:
         # Drain to completion.
         for _ in run.messages:
             pass
+
+    def test_forked_subagent_messages_are_separate_from_parent_projection_sync(self) -> None:
+        agent = _build_agent_with_one_forked_subagent()
+        run = agent.stream_events({"messages": [HumanMessage(content="ticket is T-123")]}, version="v3")
+
+        handles: list[SubagentRunStream] = []
+        fork_chunks: list[str] = []
+        for subagent in run.subagents:
+            handles.append(subagent)
+            fork_chunks.extend(str(message.output_message.content) for message in subagent.messages)
+        parent_chunks = [str(message.output_message.content) for message in run.messages]
+
+        assert len(handles) == 1
+        assert handles[0].name == "researcher"
+        assert handles[0].cause == {"type": "toolCall", "tool_call_id": "call-parent-fork"}
+        assert handles[0].status == "completed"
+        assert any("FORK_PRIVATE_RESULT" in chunk for chunk in fork_chunks)
+        assert not any("FORK_PRIVATE_RESULT" in chunk for chunk in parent_chunks)
 
     def test_subagents_yields_one_typed_handle_sync(self) -> None:
         agent = _build_agent_with_one_subagent()

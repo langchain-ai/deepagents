@@ -1,242 +1,28 @@
 """Unit tests for goal tools middleware."""
 
-import json
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import pytest
-from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
+from deepagents_code.goal_state_limits import (
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
+    GOAL_MESSAGE_SCHEMA_VERSION,
     build_goal_continuation,
     build_goal_state_notice,
+    goal_state_fingerprint,
     goal_state_notice_info,
 )
-from deepagents_code.goal_tools import (
-    GoalToolsMiddleware,
-    GoalToolState,
-    _goal_snapshot,
-    _rubric_snapshot,
-    _update_goal_command,
-)
+from deepagents_code.goal_tools import GoalToolsMiddleware, _update_goal_command
 
-
-def test_rubric_snapshot_without_rubric() -> None:
-    """`get_rubric` should report inactive state when no criteria are set."""
-    assert _rubric_snapshot({}) == {
-        "active": False,
-        "criteria": None,
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
-    """The public `rubric` state is what `RubricMiddleware` grades this turn."""
-    assert _rubric_snapshot(
-        {
-            "rubric": "- one-shot criteria",
-            "_sticky_rubric": "- sticky criteria",
-            "_goal_objective": "ship it",
-            "_goal_rubric": "- goal criteria",
-            "_rubric_status": "needs_revision",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- one-shot criteria",
-        "grading_status": "needs_revision",
-    }
-
-
-@pytest.mark.parametrize("status", ["active", "blocked"])
-def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input(
-    status: str,
-) -> None:
-    """Actionable goal criteria are returned when no public rubric is set."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": status,
-            "_goal_rubric": "- goal criteria",
-            "_sticky_rubric": "- sticky criteria",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- goal criteria",
-        "grading_status": None,
-    }
-
-
-@pytest.mark.parametrize("status", ["paused", "complete"])
-def test_rubric_snapshot_suppresses_inactive_goal_rubric(status: str) -> None:
-    """Paused and completed goal criteria must not drive later work."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": status,
-            "_goal_rubric": "- tests pass",
-            "_sticky_rubric": "- tests pass",
-        }
-    ) == {
-        "active": False,
-        "criteria": None,
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_keeps_standalone_sticky_rubric_for_paused_goal() -> None:
-    """An unrelated sticky rubric remains active while a goal is paused."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": "paused",
-            "_goal_rubric": "- goal criteria",
-            "_sticky_rubric": "- standalone criteria",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- standalone criteria",
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
-    """Persisted sticky rubric should be visible outside an active turn."""
-    assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {
-        "active": True,
-        "criteria": "- sticky criteria",
-        "grading_status": None,
-    }
-
-
-def test_goal_snapshot_without_goal_preserves_rubric() -> None:
-    """`get_goal` should report inactive state while still showing criteria."""
-    assert _goal_snapshot({"rubric": "- tests pass"}) == {
-        "active": False,
-        "objective": None,
-        "status": None,
-        "criteria": "- tests pass",
-        "note": None,
-    }
-
-
-def test_goal_snapshot_with_active_goal() -> None:
-    """`get_goal` should expose objective, status, criteria, and note."""
-    assert _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "blocked",
-            "_goal_rubric": "- tests pass",
-            "_goal_status_note": "waiting on API docs",
-        }
-    ) == {
-        "active": True,
-        "objective": "add refresh tokens",
-        "status": "blocked",
-        "criteria": "- tests pass",
-        "note": "waiting on API docs",
-    }
-
-
-def test_goal_snapshot_paused_goal_is_inactive_but_persisted() -> None:
-    """A paused goal remains readable without being actionable."""
-    snapshot = _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "paused",
-            "_goal_rubric": "- tests pass",
-        }
-    )
-
-    assert snapshot == {
-        "active": False,
-        "objective": "add refresh tokens",
-        "status": "paused",
-        "criteria": "- tests pass",
-        "note": None,
-    }
-
-
-def test_goal_snapshot_complete_goal_is_inactive() -> None:
-    """A completed goal must report `active=False` (status drives the flag)."""
-    snapshot = _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "complete",
-            "_goal_status_note": "tests pass",
-        }
-    )
-    assert snapshot["active"] is False
-    assert snapshot["status"] == "complete"
-
-
-def test_goal_snapshot_objective_without_status_defaults_active() -> None:
-    """An objective with no recorded status reads as active, not contradictory."""
-    snapshot = _goal_snapshot({"_goal_objective": "add refresh tokens"})
-    assert snapshot["active"] is True
-    assert snapshot["status"] == "active"
-
-
-def test_update_goal_without_active_goal_returns_tool_message_only() -> None:
-    """`update_goal` should not invent goals when none exists."""
-    command = _update_goal_command(
-        status="complete",
-        note="done",
-        tool_call_id="call-1",
-        state={},
-    )
-
-    assert isinstance(command, Command)
-    assert command.update is not None
-    assert set(command.update) == {"messages"}
-    message = command.update["messages"][0]
-    assert message.content == "No active goal is set."
-    assert message.tool_call_id == "call-1"
-
-
-def test_update_goal_requests_complete_with_note() -> None:
-    """Completion is staged until the post-turn rubric result is available."""
-    command = _update_goal_command(
-        status="complete",
-        note="tests pass",
-        tool_call_id="call-1",
-        state={"_goal_objective": "add refresh tokens"},
-    )
-
-    assert isinstance(command, Command)
-    assert command.update is not None
-    assert command.update["_pending_goal_completion_note"] == "tests pass"
-    assert "_goal_status" not in command.update
-    assert "_goal_status_note" not in command.update
-    message = command.update["messages"][0]
-    assert message.content == (
-        "Goal completion requested. It will be recorded if the accepted rubric "
-        "is satisfied."
-    )
-    assert message.tool_call_id == "call-1"
-
-
-@pytest.mark.parametrize("rubric_status", [None, "needs_revision", "satisfied"])
-def test_update_goal_completion_request_ignores_current_rubric_status(
-    rubric_status: str | None,
-) -> None:
-    """The final rubric result is checked after the agent turn, not in-tool."""
-    state = {"_goal_objective": "add refresh tokens"}
-    if rubric_status is not None:
-        state["_rubric_status"] = rubric_status
-    command = _update_goal_command(
-        status="complete",
-        note="tests pass",
-        tool_call_id="call-1",
-        state=state,
-    )
-
-    assert isinstance(command, Command)
-    assert command.update is not None
-    assert command.update["_pending_goal_completion_note"] == "tests pass"
+if TYPE_CHECKING:
+    from langchain.agents.middleware.types import AgentState
 
 
 def test_update_goal_marks_blocked_with_note() -> None:
@@ -292,59 +78,92 @@ def test_update_goal_rejects_status_change_after_completion() -> None:
     assert "already complete" in command.update["messages"][0].content
 
 
-def test_update_goal_rejects_empty_note() -> None:
-    """Evidence is required: an empty note must not commit a status."""
+def test_update_goal_rejects_oversized_note_without_changing_status() -> None:
+    """Runtime validation covers calls that bypass the generated tool schema."""
     command = _update_goal_command(
-        status="complete",
-        note="   ",
+        status="blocked",
+        note="x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1),
         tool_call_id="call-1",
-        state={"_goal_objective": "add refresh tokens"},
+        state={"_goal_objective": "ship it", "_goal_status": "active"},
     )
 
-    assert isinstance(command, Command)
+    assert command.update is not None
+    assert "_goal_status" not in command.update
+    message = command.update["messages"][0]
+    assert "maximum is 4,000" in message.content
+
+
+def test_update_goal_refuses_when_saved_state_is_too_large() -> None:
+    """The notice says the goal is unusable, so the write side must agree.
+
+    `update_goal` is the only goal surface left after the read tools were
+    removed, so "do not work toward it and do not grade against it" cannot rest
+    on notice prose alone.
+    """
+    command = _update_goal_command(
+        status="blocked",
+        note="waiting on docs",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "x" * (RUBRIC_CHAR_LIMIT + 1),
+        },
+    )
+
     assert command.update is not None
     assert set(command.update) == {"messages"}
-    message = command.update["messages"][0]
-    assert "evidence" in message.content
-    assert message.tool_call_id == "call-1"
+    content = command.update["messages"][0].content
+    assert "too large to use" in content
+    assert "clear and recreate the goal" in content
+    assert "Rubric is" in content
 
 
-def test_get_rubric_tool_invokes_snapshot() -> None:
-    """The registered `get_rubric` tool should delegate to `_rubric_snapshot`."""
-    middleware = GoalToolsMiddleware()
-    get_rubric = next(t for t in middleware.tools if t.name == "get_rubric")
-    result = get_rubric.func(  # ty: ignore[unresolved-attribute]
-        state={"rubric": "- tests pass"}
+def test_update_goal_refuses_when_a_legacy_status_note_is_too_large() -> None:
+    """The model cannot shorten its own oversized note; only the user can.
+
+    An actionable goal embeds `_goal_status_note` in its notice, so a legacy
+    checkpoint carrying an oversized one trips the same guard as an oversized
+    rubric — and `update_goal` is the only surface the model has to replace it.
+    Recovery is therefore user-only, via `/goal clear`. Every other oversized test
+    triggers on the objective or the rubric, so this pins the one case where the
+    model's own prior write is what locks it out.
+    """
+    command = _update_goal_command(
+        status="blocked",
+        note="a short new blocker",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_status_note": "x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1),
+        },
     )
-    assert result["criteria"] == "- tests pass"
-    assert result["active"] is True
 
-
-def test_get_goal_tool_invokes_snapshot() -> None:
-    """The registered `get_goal` tool should delegate to `_goal_snapshot`."""
-    middleware = GoalToolsMiddleware()
-    get_goal = next(t for t in middleware.tools if t.name == "get_goal")
-    result = get_goal.func(  # ty: ignore[unresolved-attribute]
-        state={"_goal_objective": "ship it", "_goal_status": "active"}
-    )
-    assert result["objective"] == "ship it"
-    assert result["active"] is True
-
-
-def test_update_goal_tool_invokes_command_builder() -> None:
-    """The registered `update_goal` tool should wire all args to the helper."""
-    middleware = GoalToolsMiddleware()
-    update_goal = next(t for t in middleware.tools if t.name == "update_goal")
-    command = update_goal.func(  # ty: ignore[unresolved-attribute]
-        status="complete",
-        note="all green",
-        tool_call_id="call-9",
-        state={"_goal_objective": "ship it"},
-    )
-    assert isinstance(command, Command)
     assert command.update is not None
-    assert command.update["_pending_goal_completion_note"] == "all green"
-    assert command.update["messages"][0].tool_call_id == "call-9"
+    assert set(command.update) == {"messages"}
+    content = command.update["messages"][0].content
+    assert "too large to use" in content
+    # The message must point at the user action, since no model action can fix it.
+    assert "clear and recreate the goal" in content
+    assert "Goal status note is" in content
+
+
+def test_update_goal_commits_when_state_fits_the_notice_budget() -> None:
+    """The oversized guard must not block a normal blocker report."""
+    command = _update_goal_command(
+        status="blocked",
+        note="waiting on docs",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+        },
+    )
+
+    assert command.update is not None
+    assert command.update["_goal_status"] == "blocked"
 
 
 def _capturing_handler(
@@ -366,7 +185,13 @@ def _fake_request(
     state: dict[str, object] | None = None,
     messages: list[object] | None = None,
 ) -> SimpleNamespace:
-    """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
+    """Build a `ModelRequest`-shaped double with an `override` that mirrors it.
+
+    `override` rebuilds from the receiver rather than from this factory's
+    request, so chained calls compose the way `ModelRequest.override` does.
+    Rebuilding from the original would silently drop an earlier override — for
+    example the `_summarization_event` reset applied before a notice is pinned.
+    """
     request = SimpleNamespace(
         system_message=system_message,
         runtime=SimpleNamespace(context=context or {}),
@@ -374,13 +199,16 @@ def _fake_request(
         messages=messages or [],
     )
 
-    def override(**kw: object) -> SimpleNamespace:
-        updated = SimpleNamespace(**vars(request))
-        updated.__dict__.update(kw)
-        return updated
+    def _attach(target: SimpleNamespace) -> SimpleNamespace:
+        def override(**kw: object) -> SimpleNamespace:
+            updated = SimpleNamespace(**vars(target))
+            updated.__dict__.update(kw)
+            return _attach(updated)
 
-    request.override = override
-    return request
+        target.override = override
+        return target
+
+    return _attach(request)
 
 
 def test_before_model_persists_public_rubric_notice() -> None:
@@ -458,6 +286,44 @@ def test_notice_update_is_none_for_empty_state() -> None:
     assert GoalToolsMiddleware._notice_update(state) is None
 
 
+def test_oversized_state_keeps_clearing_the_rubric_on_later_turns() -> None:
+    """The steady state is a `rubric` clear with no `messages` key at all.
+
+    `rubric` is a public per-invocation input the app re-sets each turn, so from
+    turn two onward the notice already matches and only the clear is left. If
+    the clear were ever made conditional on writing a notice, grading would
+    silently resume re-injecting the oversized criteria from turn two on — the
+    exact failure the oversized path exists to prevent.
+    """
+    rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    messages: list[object] = [HumanMessage(content="continue")]
+    state = cast(
+        "AgentState[Any]",
+        {"rubric": rubric, "_sticky_rubric": rubric, "messages": messages},
+    )
+
+    first = GoalToolsMiddleware._notice_update(state)
+
+    assert first is not None
+    assert set(first) == {"messages", "rubric"}
+    assert first["rubric"] is None
+
+    # Turn two: the notice is in history, but the app has re-set `rubric`.
+    resent = cast(
+        "AgentState[Any]",
+        {
+            "rubric": rubric,
+            "_sticky_rubric": rubric,
+            "messages": [*messages, *first["messages"]],
+        },
+    )
+    second = GoalToolsMiddleware._notice_update(resent)
+
+    assert second is not None
+    assert set(second) == {"rubric"}
+    assert second["rubric"] is None
+
+
 async def test_abefore_model_matches_before_model() -> None:
     # The async boundary must produce the same notice update as the sync one;
     # tests elsewhere only exercise `_notice_update` directly, so drive the
@@ -509,6 +375,180 @@ def test_wrap_model_call_restores_notice_after_compaction() -> None:
     assert goal_state_notice_info(notice) is not None
 
 
+@pytest.mark.parametrize("cutoff", [-1, 99])
+def test_wrap_model_call_disables_malformed_summarization_cutoff(
+    cutoff: int,
+) -> None:
+    """An invalid restored cutoff cannot strip the only visible goal notice."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": cutoff,
+        },
+    }
+    notice = build_goal_state_notice(state, event_id="persisted")
+    request = _fake_request(
+        None,
+        state=state,
+        messages=[notice, HumanMessage(content="continue")],
+    )
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    assert captured["request"].state["_summarization_event"] is None
+    # Discarding the event forces a fresh tail notice without changing the
+    # cacheable request prefix.
+    sent = captured["request"].messages
+    assert sent[:-1] == request.messages
+    assert goal_state_notice_info(sent[-1]) is not None
+    assert sum(goal_state_notice_info(m) is not None for m in sent) == 2
+    assert state["_summarization_event"] is not None
+
+
+def test_wrap_model_call_preserves_latest_authoritative_oversized_notice() -> None:
+    """The only current notice remains visible until a successor is appended."""
+    state: dict[str, object] = {"rubric": "current"}
+    superseded = build_goal_state_notice(
+        {"rubric": "old"}, event_id="superseded-oversized"
+    )
+    authoritative = build_goal_state_notice(state, event_id="authoritative-oversized")
+    oversized_content = (
+        "notice\n<acceptance_criteria>"
+        f"{'x' * (RUBRIC_CHAR_LIMIT + 1)}"
+        "</acceptance_criteria>"
+    )
+    superseded.content = oversized_content
+    authoritative.content = oversized_content
+    request = _fake_request(None, state=state, messages=[superseded, authoritative])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert "oversized superseded goal/rubric state notice was omitted" in (
+        messages[0].content
+    )
+    assert messages[1] is authoritative
+    assert messages[1].content == oversized_content
+
+
+def test_wrap_model_call_preserves_bounded_stale_notice() -> None:
+    """Schema-invalid history remains byte-stable while it fits the budget."""
+    state: dict[str, object] = {"rubric": "current"}
+    stale = build_goal_state_notice({"rubric": "old"}, event_id="bounded-stale")
+    stale.additional_kwargs = {
+        **stale.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    request = _fake_request(None, state=state, messages=[stale])
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert messages[0] is stale
+    assert messages[-1] is not stale
+    assert "Acceptance criteria" in messages[0].content
+
+
+def test_wrap_model_call_preserves_history_with_summarization_cutoff() -> None:
+    """Appending a current notice leaves the summarizer's history unchanged."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship the fix",
+        "_goal_status": "active",
+    }
+    superseded = build_goal_state_notice({"rubric": "stale"}, event_id="superseded")
+    previous = build_goal_state_notice({"rubric": "old"}, event_id="previous")
+    tool_call = AIMessage(
+        content="calling",
+        tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(content="file body", tool_call_id="call-1")
+    messages: list[object] = [
+        HumanMessage(content="m0"),
+        superseded,
+        HumanMessage(content="m2"),
+        tool_call,
+        tool_result,
+        previous,
+    ]
+    cutoff = 3
+    summary = HumanMessage(content="SUMMARY")
+    state["_summarization_event"] = {
+        "cutoff_index": cutoff,
+        "summary_message": summary,
+    }
+    request = _fake_request(None, state=state, messages=messages)
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    inner = captured["request"].messages
+    assert inner[:-1] == messages
+    assert inner[1] is superseded
+    assert tool_call in inner[cutoff:]
+    assert tool_result in inner[cutoff:]
+    assert goal_state_notice_info(inner[-1]) is not None
+    assert inner[-1].additional_kwargs["state_fingerprint"] == (
+        goal_state_fingerprint(state)
+    )
+
+
+def test_wrap_model_call_preserves_history_without_summarization_event() -> None:
+    """A current tail notice leaves the whole cacheable history byte-stable."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship the fix",
+        "_goal_status": "active",
+    }
+    stale_one = build_goal_state_notice({"rubric": "stale one"}, event_id="stale-1")
+    stale_two = build_goal_state_notice({"rubric": "stale two"}, event_id="stale-2")
+    previous = build_goal_state_notice({"rubric": "old"}, event_id="previous")
+    tool_call = AIMessage(
+        content="calling",
+        tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(content="file body", tool_call_id="call-1")
+    messages: list[object] = [
+        HumanMessage(content="m0"),
+        stale_one,
+        AIMessage(content="a1"),
+        tool_call,
+        stale_two,
+        tool_result,
+        previous,
+    ]
+    request = _fake_request(None, state=state, messages=messages)
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    inner = captured["request"].messages
+    assert inner[:-1] == messages
+    assert inner[1] is stale_one
+    assert inner[4] is stale_two
+    assert inner[-2] is previous
+    assert goal_state_notice_info(inner[-1]) is not None
+    assert sum(goal_state_notice_info(m) is not None for m in inner) == 4
+
+
 def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() -> None:
     state: dict[str, object] = {
         "_goal_objective": "old goal",
@@ -530,62 +570,85 @@ def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() ->
     assert captured["request"].messages == [fallback]
 
 
-def test_wrap_model_call_leaves_system_message_unchanged() -> None:
-    """Request wrapping must not mutate the system prompt."""
-    system = SystemMessage(content="base instructions")
-    captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(system)
+class _NoticeCase(NamedTuple):
+    """A goal state paired with what its notice is expected to expose.
 
-    result = GoalToolsMiddleware().wrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-    )
+    Expectations are carried per case rather than recomputed from the state, so a
+    regression in `project_goal_state`'s actionability rule cannot move the
+    expectation and the behavior together and still pass.
+    """
 
-    assert result == "response"
-    assert captured["request"] is request
-    assert captured["request"].system_message is system
-
-
-def test_wrap_model_call_leaves_missing_system_message_none() -> None:
-    """Request wrapping must not invent a system message when none exists."""
-    captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(None)
-
-    GoalToolsMiddleware().wrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-    )
-
-    assert captured["request"] is request
-    assert captured["request"].system_message is None
+    label: str
+    state: dict[str, object]
+    expect_notice: bool
+    expect_objective: bool
+    expect_criteria: bool
+    expect_status_note: bool = False
 
 
-def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
-    """Goal lifecycle state must not change cache-sensitive request prefixes."""
-    base_system = SystemMessage(content="base instructions")
-    states: list[dict[str, object]] = [
-        {},
+_NOTICE_CASES = [
+    _NoticeCase("no state at all", {}, False, False, False),
+    _NoticeCase(
+        "active goal with rubric",
         {
             "_goal_objective": "ship it",
             "_goal_status": "active",
             "_goal_rubric": "tests pass",
         },
+        True,
+        True,
+        True,
+    ),
+    _NoticeCase(
+        "blocked goal stays actionable",
         {
             "_goal_objective": "ship it",
             "_goal_status": "blocked",
             "_goal_status_note": "waiting",
             "_goal_rubric": "tests pass",
         },
+        True,
+        True,
+        True,
+        expect_status_note=True,
+    ),
+    _NoticeCase(
+        "paused goal withholds everything",
         {
             "_goal_objective": "ship it",
             "_goal_status": "paused",
             "_goal_rubric": "tests pass",
         },
+        True,
+        False,
+        False,
+    ),
+    _NoticeCase(
+        "complete goal withholds everything",
         {
             "_goal_objective": "ship it",
             "_goal_status": "complete",
             "_goal_rubric": "tests pass",
         },
+        True,
+        False,
+        False,
+    ),
+    _NoticeCase(
+        # A one-shot rubric outlives a paused goal (see `app.py`'s `_next_rubric`
+        # handling), so criteria render while the objective stays withheld.
+        "paused goal with a one-shot rubric",
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "paused",
+            "rubric": "tests pass",
+        },
+        True,
+        False,
+        True,
+    ),
+    _NoticeCase(
+        "explicitly cleared state",
         {
             "rubric": None,
             "_sticky_rubric": None,
@@ -594,94 +657,133 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
             "_goal_rubric": None,
             "_goal_status_note": None,
         },
-    ]
-    system_refs: list[object] = []
-    schema_bytes: list[bytes] = []
-    notice_texts: list[str] = []
-
-    for state in states:
-        captured: dict[str, SimpleNamespace] = {}
-        middleware = GoalToolsMiddleware()
-        request = _fake_request(base_system, state=state)
-        middleware.wrap_model_call(
-            request,  # ty: ignore[invalid-argument-type]
-            _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-        )
-        system_refs.append(captured["request"].system_message)
-        notice_texts.append(
-            "".join(
-                message.content
-                for message in captured["request"].messages
-                if isinstance(getattr(message, "content", None), str)
-            )
-        )
-        schemas = [convert_to_openai_tool(tool) for tool in middleware.tools]
-        schema_bytes.append(
-            json.dumps(schemas, sort_keys=True, separators=(",", ":")).encode()
-        )
-
-    assert all(system is base_system for system in system_refs)
-    assert len(set(schema_bytes)) == 1
-    # The appended goal-state notice is the only model-visible surface this
-    # middleware adds, so it must stay coarse: the private objective, status
-    # note, and rubric criteria must never leak into it, while an
-    # objective-bearing state still produces a notice.
-    for state, notice_text in zip(states, notice_texts, strict=True):
-        assert "ship it" not in notice_text
-        assert "tests pass" not in notice_text
-        assert "waiting" not in notice_text
-        if state.get("_goal_objective"):
-            assert "Goal status:" in notice_text
+        False,
+        False,
+        False,
+    ),
+]
 
 
-async def test_awrap_model_call_leaves_system_message_unchanged() -> None:
-    """The async path should also leave the system prompt alone."""
-    system = SystemMessage(content="base instructions")
-    captured: dict[str, SimpleNamespace] = {}
+def test_stale_schema_notice_is_superseded_then_settles() -> None:
+    """A resumed thread holding a prior-schema notice gets a current one, once.
 
-    async def handler(request: SimpleNamespace) -> str:  # noqa: RUF029
-        captured["request"] = request
-        return "response"
+    Prior notices could truncate required text or instruct the model to call read
+    tools that no longer exist, so a resumed thread must not keep treating one as
+    authoritative. The appended notice must also converge: the notice channel is
+    append-only, so a predicate that never settles would grow history every turn.
+    """
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_goal_rubric": "tests pass",
+    }
+    stale = build_goal_state_notice(state, event_id="old-schema")
+    stale.additional_kwargs = {
+        **stale.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    messages: list[object] = [HumanMessage(content="continue"), stale]
+    middleware = GoalToolsMiddleware()
 
-    request = _fake_request(system)
-
-    result = await GoalToolsMiddleware().awrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        handler,  # ty: ignore[invalid-argument-type]
+    first = middleware._notice_update(
+        cast("AgentState[Any]", {**state, "messages": messages})
     )
 
-    assert result == "response"
-    assert captured["request"] is request
-    assert captured["request"].system_message is system
+    assert first is not None
+    fresh = first["messages"][0]
+    info = goal_state_notice_info(fresh)
+    assert info is not None
+    assert info["schema_version"] == GOAL_MESSAGE_SCHEMA_VERSION
+    assert "<goal_objective>ship it</goal_objective>" in fresh.content
+
+    # Having appended the current notice, the next two boundaries must be no-ops.
+    settled = [*messages, fresh]
+    for _ in range(2):
+        assert (
+            middleware._notice_update(
+                cast("AgentState[Any]", {**state, "messages": settled})
+            )
+            is None
+        )
 
 
-def test_goal_tool_state_marks_goal_fields_private() -> None:
-    """`_goal_*` channels must stay private so they don't leak into the schema.
+def test_notice_below_summarization_cutoff_is_rewritten() -> None:
+    """A notice summarization has scrolled past is not authoritative.
 
-    The channels are inherited from `GoalRubricChannels`. Resolving the full
-    hints the way LangGraph does (`get_type_hints(..., include_extras=True)`,
-    which walks the MRO) confirms the `PrivateStateAttr` markers carry through
-    inheritance, while the public `rubric` input stays non-private.
+    Summarization leaves `state["messages"]` intact and applies its cutoff only
+    when building a request, so a matching notice below the cutoff is present in
+    persisted history yet invisible to the model. `before_model` must still write a
+    current one rather than leaving the transient re-pin to carry the objective on
+    every later turn.
     """
-    hints = get_type_hints(GoalToolState, include_extras=True)
-    for field in (
-        "_goal_objective",
-        "_goal_status",
-        "_goal_rubric",
-        "_goal_status_note",
-        "_pending_goal_completion_note",
-        "_sticky_rubric",
-    ):
-        assert PrivateStateAttr in getattr(hints[field], "__metadata__", ())
-    # `rubric` is the public `RubricMiddleware` input and stays non-private.
-    assert PrivateStateAttr not in getattr(hints["rubric"], "__metadata__", ())
-
-
-def test_goal_tools_middleware_registers_tools() -> None:
-    """Middleware should expose exactly the constrained rubric and goal tools."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_goal_rubric": "tests pass",
+    }
+    notice = build_goal_state_notice(state, event_id="in-view")
+    messages: list[object] = [HumanMessage(content="continue"), notice]
     middleware = GoalToolsMiddleware()
-    assert [tool.name for tool in middleware.tools] == [
-        "get_rubric",
-        "get_goal",
-        "update_goal",
-    ]
+
+    in_view = middleware._notice_update(
+        cast("AgentState[Any]", {**state, "messages": messages})
+    )
+    trimmed_away = middleware._notice_update(
+        cast(
+            "AgentState[Any]",
+            {
+                **state,
+                "messages": messages,
+                "_summarization_event": {"cutoff_index": 2},
+            },
+        )
+    )
+
+    at_cutoff = middleware._notice_update(
+        cast(
+            "AgentState[Any]",
+            {
+                **state,
+                "messages": messages,
+                "_summarization_event": {"cutoff_index": 1},
+            },
+        )
+    )
+
+    assert in_view is None
+    assert trimmed_away is not None
+    assert "<goal_objective>ship it</goal_objective>" in (
+        trimmed_away["messages"][0].content
+    )
+    # The comparison is `>=`, not `>`: `_effective_conversation` slices with
+    # `messages[cutoff:]`, so the message at exactly `cutoff` is the first one
+    # still visible and its notice remains authoritative. Weakening this to `>`
+    # appends a redundant notice whenever summarization lands on the boundary.
+    assert at_cutoff is None
+
+
+@pytest.mark.parametrize("cutoff", [-1, 99])
+def test_notice_update_repairs_malformed_summarization_cutoff(cutoff: int) -> None:
+    """A restored invalid event is cleared alongside a fresh durable notice."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+    }
+    notice = build_goal_state_notice(state, event_id="persisted")
+    update = GoalToolsMiddleware._notice_update(
+        cast(
+            "AgentState[Any]",
+            {
+                **state,
+                "messages": [notice, HumanMessage(content="continue")],
+                "_summarization_event": {
+                    "summary_message": HumanMessage(content="summary"),
+                    "cutoff_index": cutoff,
+                },
+            },
+        )
+    )
+
+    assert update is not None
+    assert update["_summarization_event"] is None
+    assert goal_state_notice_info(update["messages"][0]) is not None

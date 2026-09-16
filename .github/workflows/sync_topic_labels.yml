@@ -54,6 +54,10 @@ jobs:
           set -euo pipefail
           git add -- .github/topic-labels.json
           if git diff --cached --quiet; then
+            existing_prs=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[].number')
+            for pr in $existing_prs; do
+              gh pr close "$pr" --delete-branch
+            done
             echo "Topic label manifest is current."
             exit 0
           fi

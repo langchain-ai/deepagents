@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,9 +23,6 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
-
-if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -42,6 +39,7 @@ from deepagents.middleware.skills import (
     SkillMetadata,
     SkillsMiddleware,
     SkillsState,
+    SkillsStateUpdate,
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
@@ -1408,8 +1406,8 @@ def test_format_skills_list_no_optional_fields() -> None:
     assert "(advisory)" not in result
 
 
-def test_before_model_loads_skills(tmp_path: Path) -> None:
-    """Test that before_model loads skills from backend."""
+def test_before_agent_loads_skills(tmp_path: Path) -> None:
+    """Test that before_agent loads skills from backend."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create some skills
@@ -1433,8 +1431,8 @@ def test_before_model_loads_skills(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    # Call before_model
-    result = middleware.before_model({}, None, {})  # type: ignore[arg-type]
+    # Call before_agent
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "skills_metadata" in result
@@ -1444,7 +1442,7 @@ def test_before_model_loads_skills(tmp_path: Path) -> None:
     assert skill_names == {"skill-one", "skill-two"}
 
 
-def test_before_model_skill_override(tmp_path: Path) -> None:
+def test_before_agent_skill_override(tmp_path: Path) -> None:
     """Test that skills from later sources override earlier ones."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
@@ -1474,8 +1472,8 @@ def test_before_model_skill_override(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    # Call before_model
-    result = middleware.before_model({}, None, {})  # type: ignore[arg-type]
+    # Call before_agent
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["skills_metadata"]) == 1
@@ -1493,8 +1491,8 @@ def test_before_model_skill_override(tmp_path: Path) -> None:
     }
 
 
-def test_before_model_empty_registries(tmp_path: Path) -> None:
-    """Test before_model with empty sources."""
+def test_before_agent_empty_registries(tmp_path: Path) -> None:
+    """Test before_agent with empty sources."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create empty directories
@@ -1506,13 +1504,13 @@ def test_before_model_empty_registries(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    result = middleware.before_model({}, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
 
 
-def test_before_model_records_skill_load_errors() -> None:
+def test_before_agent_records_skill_load_errors() -> None:
     """Source load errors should be available in private middleware state."""
     backend = SimpleNamespace(
         ls=MagicMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[])),
@@ -1520,14 +1518,14 @@ def test_before_model_records_skill_load_errors() -> None:
     )
     middleware = SkillsMiddleware(backend=backend, sources=["/bad"])
 
-    result = middleware.before_model({}, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
     assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
-def test_before_model_partial_load_across_sources() -> None:
+def test_before_agent_partial_load_across_sources() -> None:
     """A failing source must not hide skills loaded from a sibling source."""
     skill_content = make_skill_content("good-skill", "Skill from the working source")
     skill_dir_path = "/good/good-skill/"
@@ -1544,7 +1542,7 @@ def test_before_model_partial_load_across_sources() -> None:
     )
     middleware = SkillsMiddleware(backend=backend, sources=["/good", "/bad"])
 
-    result = middleware.before_model({}, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert [skill["name"] for skill in result["skills_metadata"]] == ["good-skill"]
@@ -1764,8 +1762,8 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     assert "Base registry description" not in content, "Should not contain base source description"
 
 
-def test_before_model_skips_loading_if_metadata_present(tmp_path: Path) -> None:
-    """Test that before_model skips loading if skills_metadata is already in state."""
+def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
+    """Test that before_agent skips loading if skills_metadata is already in state."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a skill in the backend
@@ -1794,21 +1792,21 @@ def test_before_model_skips_loading_if_metadata_present(tmp_path: Path) -> None:
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
-    result = middleware.before_model(state_with_metadata, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
     # Should return None, not load new skills
     assert result is None
 
     # Case 2: State has empty list for skills_metadata
     state_with_empty_list = {"skills_metadata": []}
-    result = middleware.before_model(state_with_empty_list, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent(state_with_empty_list, None, {})  # type: ignore[arg-type]
 
     # Should still return None and not reload
     assert result is None
 
     # Case 3: State does NOT have skills_metadata key
     state_without_metadata = {}
-    result = middleware.before_model(state_without_metadata, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent(state_without_metadata, None, {})  # type: ignore[arg-type]
 
     # Should load skills and return update
     assert result is not None
@@ -1817,21 +1815,21 @@ def test_before_model_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     assert result["skills_metadata"][0]["name"] == "test-skill"
 
 
-def test_before_model_reloads_when_metadata_is_none(tmp_path: Path) -> None:
-    """A stored `None` means skills are not loaded, so `before_model` loads them."""
+def test_before_agent_reloads_when_metadata_is_none(tmp_path: Path) -> None:
+    """A stored `None` means skills are not loaded, so `before_agent` loads them."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "test-skill" / "SKILL.md")
     backend.upload_files([(skill_path, make_skill_content("test-skill", "A test skill").encode("utf-8"))])
     middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
 
-    result = middleware.before_model({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert [skill["name"] for skill in result["skills_metadata"]] == ["test-skill"]
 
 
-def test_before_model_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
+def test_before_agent_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
     """Every load rewrites `skills_load_errors`, so warnings from an earlier load are cleared."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
@@ -1839,7 +1837,7 @@ def test_before_model_clears_load_errors_when_sources_load_cleanly(tmp_path: Pat
     middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
 
     state = {"skills_metadata": None, "skills_load_errors": ["Cannot load skills from '/old': denied"]}
-    result = middleware.before_model(state, None, {})  # type: ignore[arg-type]
+    result = middleware.before_agent(state, None, {})  # type: ignore[arg-type]
 
     assert result == {"skills_metadata": [], "skills_load_errors": []}
 
@@ -2001,12 +1999,9 @@ def _touch() -> str:
     return "ok"
 
 
-def test_after_model_reset_reloads_skills_within_a_run(tmp_path: Path) -> None:
-    """A reset after one model call is served before the next model call of the same run."""
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    skills_dir = tmp_path / "skills" / "user"
-    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
-    model = GenericFakeChatModel(
+def _two_call_model() -> GenericFakeChatModel:
+    """Return a model that takes two turns, the first via a no-op tool call."""
+    return GenericFakeChatModel(
         messages=iter(
             [
                 # Any tool call will do; it exists only to earn a second model call.
@@ -2015,8 +2010,56 @@ def test_after_model_reset_reloads_skills_within_a_run(tmp_path: Path) -> None:
             ]
         )
     )
+
+
+def test_after_model_reset_is_not_served_within_a_run(tmp_path: Path) -> None:
+    """Skills load once per run, so a mid-run reset waits for the next run.
+
+    The remaining model calls of the run see an empty skills list rather than
+    the stale one: `modify_request` renders a pending `None` as no skills.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
     middleware = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
     agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], tools=[_touch], middleware=[middleware])
+
+    agent.invoke({"messages": [HumanMessage(content="add a skill")]})
+
+    assert len(model.call_history) == 2
+    first_system_prompt = model.call_history[0]["messages"][0].text
+    assert "old-skill" in first_system_prompt
+    assert "new-skill" not in first_system_prompt
+    assert "new-skill" not in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+
+
+class _ReloadingSkillsMiddleware(SkillsMiddleware):
+    """Skills middleware that also checks the cache before every model call.
+
+    Loading stays in `before_agent`, so a subclass wanting a reset served
+    sooner reloads from `before_model` as well. Both hooks share the base
+    implementation, which no-ops when `skills_metadata` already holds a list.
+    """
+
+    def before_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+        return super().before_agent(state, runtime, config)
+
+
+def test_subclass_reloading_in_before_model_serves_mid_run_reset(tmp_path: Path) -> None:
+    """A subclass that reloads in `before_model` picks up a reset within the run.
+
+    Passed through `middleware=` with no `skills=`, so the built-in middleware
+    is not also mounted.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
+    skills = _ReloadingSkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    invalidator = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
+    agent = create_deep_agent(model=model, backend=backend, tools=[_touch], middleware=[skills, invalidator])
 
     agent.invoke({"messages": [HumanMessage(content="add a skill")]})
 
@@ -2175,7 +2218,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-123 can read its own skill
     with _runtime_context("assistant-123"):
-        result_1 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -2184,7 +2227,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     with _runtime_context("assistant-456"):
-        result_2 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -2199,7 +2242,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-456 can read its own skill
     with _runtime_context("assistant-456"):
-        result_3 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_3 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -2208,7 +2251,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
     with _runtime_context("assistant-123"):
-        result_4 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_4 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
@@ -2235,7 +2278,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
     # Test: runtime without server_info accesses default namespace
     with _runtime_context(None):
-        result_1 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -2244,7 +2287,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
     # Test: runtime with server_info but empty assistant_id also uses default namespace
     with _runtime_context(""):
-        result_2 = middleware.before_model({}, runtime, {})  # type: ignore[arg-type]
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 1
@@ -2271,7 +2314,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-123 can read its own skill
     with _runtime_context("assistant-123"):
-        result_1 = await middleware.abefore_model({}, runtime, {})  # type: ignore[arg-type]
+        result_1 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -2280,7 +2323,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     with _runtime_context("assistant-456"):
-        result_2 = await middleware.abefore_model({}, runtime, {})  # type: ignore[arg-type]
+        result_2 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -2295,7 +2338,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-456 can read its own skill
     with _runtime_context("assistant-456"):
-        result_3 = await middleware.abefore_model({}, runtime, {})  # type: ignore[arg-type]
+        result_3 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -2304,7 +2347,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
     with _runtime_context("assistant-123"):
-        result_4 = await middleware.abefore_model({}, runtime, {})  # type: ignore[arg-type]
+        result_4 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1

@@ -7,13 +7,14 @@ import logging
 import shutil
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
@@ -21,11 +22,8 @@ from langgraph.runtime import Runtime
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.skills import SkillsMiddleware, SkillsState, _alist_skills
+from deepagents.middleware.skills import SkillsMiddleware, SkillsState, SkillsStateUpdate, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
-
-if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -241,8 +239,8 @@ Content
     ]
 
 
-async def test_abefore_model_loads_skills(tmp_path: Path) -> None:
-    """Test that abefore_model loads skills from backend."""
+async def test_abefore_agent_loads_skills(tmp_path: Path) -> None:
+    """Test that abefore_agent loads skills from backend."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create some skills
@@ -266,8 +264,8 @@ async def test_abefore_model_loads_skills(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    # Call abefore_model
-    result = await middleware.abefore_model({}, None, {})  # type: ignore[arg-type]
+    # Call abefore_agent
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "skills_metadata" in result
@@ -277,7 +275,7 @@ async def test_abefore_model_loads_skills(tmp_path: Path) -> None:
     assert skill_names == {"skill-one", "skill-two"}
 
 
-async def test_abefore_model_skill_override(tmp_path: Path) -> None:
+async def test_abefore_agent_skill_override(tmp_path: Path) -> None:
     """Test that skills from later sources override earlier ones (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
@@ -307,8 +305,8 @@ async def test_abefore_model_skill_override(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    # Call abefore_model
-    result = await middleware.abefore_model({}, None, {})  # type: ignore[arg-type]
+    # Call abefore_agent
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["skills_metadata"]) == 1
@@ -326,8 +324,8 @@ async def test_abefore_model_skill_override(tmp_path: Path) -> None:
     }
 
 
-async def test_abefore_model_empty_sources(tmp_path: Path) -> None:
-    """Test abefore_model with empty sources (async)."""
+async def test_abefore_agent_empty_sources(tmp_path: Path) -> None:
+    """Test abefore_agent with empty sources (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create empty directories
@@ -339,13 +337,13 @@ async def test_abefore_model_empty_sources(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    result = await middleware.abefore_model({}, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
 
 
-async def test_abefore_model_records_skill_load_errors() -> None:
+async def test_abefore_agent_records_skill_load_errors() -> None:
     """Source load errors should be available in private middleware state."""
     backend = SimpleNamespace(
         als=AsyncMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[])),
@@ -353,14 +351,14 @@ async def test_abefore_model_records_skill_load_errors() -> None:
     )
     middleware = SkillsMiddleware(backend=backend, sources=["/bad"])
 
-    result = await middleware.abefore_model({}, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
     assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
-async def test_abefore_model_partial_load_across_sources() -> None:
+async def test_abefore_agent_partial_load_across_sources() -> None:
     """A failing source must not hide skills loaded from a sibling source (async)."""
     skill_content = make_skill_content("good-skill", "Skill from the working source")
     skill_dir_path = "/good/good-skill/"
@@ -377,15 +375,15 @@ async def test_abefore_model_partial_load_across_sources() -> None:
     )
     middleware = SkillsMiddleware(backend=backend, sources=["/good", "/bad"])
 
-    result = await middleware.abefore_model({}, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert [skill["name"] for skill in result["skills_metadata"]] == ["good-skill"]
     assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
-async def test_abefore_model_skips_loading_if_metadata_present(tmp_path: Path) -> None:
-    """Test that abefore_model skips loading if skills_metadata is already in state."""
+async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
+    """Test that abefore_agent skips loading if skills_metadata is already in state."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a skill in the backend
@@ -403,27 +401,27 @@ async def test_abefore_model_skips_loading_if_metadata_present(tmp_path: Path) -
 
     # State has skills_metadata already
     state_with_metadata = {"skills_metadata": []}
-    result = await middleware.abefore_model(state_with_metadata, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
     # Should return None, not load new skills
     assert result is None
 
 
-async def test_abefore_model_reloads_when_metadata_is_none(tmp_path: Path) -> None:
-    """A stored `None` means skills are not loaded, so `abefore_model` loads them."""
+async def test_abefore_agent_reloads_when_metadata_is_none(tmp_path: Path) -> None:
+    """A stored `None` means skills are not loaded, so `abefore_agent` loads them."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "test-skill" / "SKILL.md")
     backend.upload_files([(skill_path, make_skill_content("test-skill", "A test skill").encode("utf-8"))])
     middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
 
-    result = await middleware.abefore_model({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert [skill["name"] for skill in result["skills_metadata"]] == ["test-skill"]
 
 
-async def test_abefore_model_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
+async def test_abefore_agent_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
     """Every load rewrites `skills_load_errors`, so warnings from an earlier load are cleared."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
@@ -431,7 +429,7 @@ async def test_abefore_model_clears_load_errors_when_sources_load_cleanly(tmp_pa
     middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
 
     state = {"skills_metadata": None, "skills_load_errors": ["Cannot load skills from '/old': denied"]}
-    result = await middleware.abefore_model(state, None, {})  # type: ignore[arg-type]
+    result = await middleware.abefore_agent(state, None, {})  # type: ignore[arg-type]
 
     assert result == {"skills_metadata": [], "skills_load_errors": []}
 
@@ -515,12 +513,9 @@ def _touch() -> str:
     return "ok"
 
 
-async def test_aafter_model_reset_reloads_skills_within_a_run(tmp_path: Path) -> None:
-    """A reset after one model call is served before the next model call of the same run (async)."""
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    skills_dir = tmp_path / "skills" / "user"
-    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
-    model = GenericFakeChatModel(
+def _two_call_model() -> GenericFakeChatModel:
+    """Return a model that takes two turns, the first via a no-op tool call."""
+    return GenericFakeChatModel(
         messages=iter(
             [
                 # Any tool call will do; it exists only to earn a second model call.
@@ -529,8 +524,56 @@ async def test_aafter_model_reset_reloads_skills_within_a_run(tmp_path: Path) ->
             ]
         )
     )
+
+
+async def test_aafter_model_reset_is_not_served_within_a_run(tmp_path: Path) -> None:
+    """Skills load once per run, so a mid-run reset waits for the next run (async).
+
+    The remaining model calls of the run see an empty skills list rather than
+    the stale one: `modify_request` renders a pending `None` as no skills.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
     middleware = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
     agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], tools=[_touch], middleware=[middleware])
+
+    await agent.ainvoke({"messages": [HumanMessage(content="add a skill")]})
+
+    assert len(model.call_history) == 2
+    first_system_prompt = model.call_history[0]["messages"][0].text
+    assert "old-skill" in first_system_prompt
+    assert "new-skill" not in first_system_prompt
+    assert "new-skill" not in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+
+
+class _AReloadingSkillsMiddleware(SkillsMiddleware):
+    """Skills middleware that also checks the cache before every model call.
+
+    Loading stays in `abefore_agent`, so a subclass wanting a reset served
+    sooner reloads from `abefore_model` as well. Both hooks share the base
+    implementation, which no-ops when `skills_metadata` already holds a list.
+    """
+
+    async def abefore_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+        return await super().abefore_agent(state, runtime, config)
+
+
+async def test_subclass_reloading_in_abefore_model_serves_mid_run_reset(tmp_path: Path) -> None:
+    """A subclass that reloads in `abefore_model` picks up a reset within the run.
+
+    Passed through `middleware=` with no `skills=`, so the built-in middleware
+    is not also mounted.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
+    skills = _AReloadingSkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    invalidator = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
+    agent = create_deep_agent(model=model, backend=backend, tools=[_touch], middleware=[skills, invalidator])
 
     await agent.ainvoke({"messages": [HumanMessage(content="add a skill")]})
 

@@ -28,8 +28,8 @@ jobs:
 
       # Every new issue starts in the backlog; a maintainer escalates from
       # there. Runs before the Area sync so an issue opened without the form
-      # (API, blank issue) is still prioritized even though that step fails on
-      # the missing "## Area" heading. Skipped when a priority is already
+      # (API, blank issue) is still prioritized even though package labeling
+      # does not apply. Skipped when a priority is already
       # present, so a re-run or a form-applied label is never overwritten and
       # an escalation is never demoted.
       - name: Apply default priority
@@ -110,10 +110,7 @@ jobs:
             // Extract text under "## Area" or "### Area" (handles " (Required)" suffix and being last section)
             const match = body.match(/#{2,3} Area[^\n]*\n([\s\S]*?)(?:\n#{2,3} |$)/i);
             if (!match) {
-              core.setFailed(
-                `Could not find "## Area" section in issue #${context.issue.number} body. ` +
-                `The issue template may have changed — update the regex in this workflow.`
-              );
+              console.log(`Issue #${context.issue.number} has no Area section; skipping package labels.`);
               return;
             }
 

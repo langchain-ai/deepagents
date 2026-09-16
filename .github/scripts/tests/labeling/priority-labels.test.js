@@ -354,6 +354,29 @@ test('the issue steps that only add labels run on opened alone', () => {
   }
 });
 
+function runPackageStep(globals) {
+  const source = fs.readFileSync(
+    path.join(REPO_ROOT, '.github/workflows/auto-label-by-package.yml'), 'utf8',
+  ).split('- name: Sync package labels\n')[1];
+  assert.ok(source, 'Missing step: Sync package labels');
+  const lines = source.split('          script: |\n')[1].split('\n');
+  const end = lines.findIndex(line => line.trim() && !line.startsWith('            '));
+  const body = (end === -1 ? lines : lines.slice(0, end)).map(l => l.slice(12)).join('\n');
+  return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
+    console: { log() {} }, ...globals,
+  });
+}
+
+test('package labeling skips issues without an Area section', async () => {
+  await runPackageStep({
+    context: {
+      repo: { owner: 'owner', repo: 'repo' }, issue: { number: 7 },
+      payload: { issue: { body: 'Freeform issue opened without a form.' } },
+    },
+    github: { rest: { issues: { get: async () => assert.fail('labels must not be read') } } },
+  });
+});
+
 // ── Topic labels on an issue (auto-label-by-package.yml) ─────────────────
 function runTopicStep(globals) {
   const source = fs.readFileSync(

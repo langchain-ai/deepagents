@@ -1,5 +1,7 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+const { loadAndInit } = require('./pr-labeler.js');
+
 const DEFAULT_BYPASS_LABEL = 'ci:keep-open';
 const DEFAULT_PENDING_DELETION_LABEL = 'auto:pending-deletion';
 // Why release PRs are exempt at all: release-please keeps one long-lived PR
@@ -812,6 +814,10 @@ async function sweepStalePendingDeletionLabels({
 
 async function run({ github, context, core, options = {} }) {
   const { owner, repo } = context.repo;
+  // Label colors follow the taxonomy prefix. Borrow the labeler's resolver
+  // rather than repeating the prefix rule, so a change to how a color is
+  // chosen — not just to a hex — reaches this script too.
+  const { colorFor } = loadAndInit(github, owner, repo, core).h;
   // `||` (not `??`) so an empty string falls back to the default: an
   // empty-named label can never be applied, which would silently disable the
   // bypass or auto:pending-deletion mechanisms.
@@ -845,7 +851,7 @@ async function run({ github, context, core, options = {} }) {
     owner,
     repo,
     name: bypassLabel,
-    color: '0e8a16',
+    color: colorFor(bypassLabel),
     description: 'Bypass automatic closure of old PRs',
   });
   await ensureLabel({
@@ -853,7 +859,7 @@ async function run({ github, context, core, options = {} }) {
     owner,
     repo,
     name: pendingDeletionLabel,
-    color: 'fbca04',
+    color: colorFor(pendingDeletionLabel),
     description: 'PR is past the auto-close warning threshold and will be closed unless exempted',
   });
   const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });

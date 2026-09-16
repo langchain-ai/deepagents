@@ -8,10 +8,10 @@
 | --- | --- | --- |
 | `type:*` | Issue/PR work type and PR breaking marker | Issue forms + PR title labeler + maintainers |
 | `package:*` | Repository package | Labeler + maintainers |
-| `topic:*` | Technical subject spanning packages | Maintainers |
+| `topic:*` | Technical subject spanning packages | Labeler (paths + model classification) + maintainers |
 | `integration:*` | External sandbox or service under `libs/partners/` | Labeler + maintainers |
 | `org:*` | Author provenance | Automation |
-| `priority:*` | Priority | Maintainers |
+| `priority:*` | Priority | Maintainers + automation (issue default and PR propagation) |
 | `size:*` | PR diff size | Automation |
 | `triage:*` | Issue management state | Maintainers + agents |
 | `auto:*` | State owned by automation | Automation |
@@ -21,7 +21,7 @@ Rules that are easy to get wrong:
 
 - **PR type labels mirror the Conventional Commit title.** The labeler derives the work type and optional breaking marker from the title, and `package:*` and `integration:*` from its scope. Labels support triage; release-please still reads Conventional Commits to determine releases. `release(...)` titles receive `auto:release-pr` for release and stale-PR automation.
 - An issue carries exactly one `type:*`, normally one `package:*`, and any number of `topic:*`.
-- `priority:*` has three levels. **Backlog is the absence of a priority label** — the retired `p3`/`p4` are not migrated onto `priority:backlog`.
+- `priority:*` has three levels on issues, with `priority:backlog` as the default. Only `priority:urgent` and `priority:high` propagate to linked PRs; backlog leaves a PR without a priority label. Retired `p0`–`p4` labels are stripped from PRs without mapping them to a new priority.
 - **A `ci:*` label always represents a human decision, but two of them are written by automation on a maintainer's instruction:** `ci:keep-open` (`keep_open_on_comment.yml`, on a `!keep-open` comment) and `ci:skip-issue-link` (`require_issue_link.yml`, when a maintainer bypasses the gate). The labeler never applies a `ci:*`, and every one of them is read by a gate. See the `ci:*` table for which are read-only.
 - Every label must have a description.
 
@@ -52,9 +52,20 @@ Rules that are easy to get wrong:
 
 Package and integration labels are additive: title edits do not remove them. `pr_labeler.yml` normalizes package aliases such as `deepagents` → `sdk` before labeling. `pr_scope_file_check.yml` uses the same mappings to validate that PR title scopes match changed packages.
 
-### `topic:*` — maintainers
+### `topic:*` — `pr_labeler.yml`, `auto-label-by-package.yml`, maintainers
 
-`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. No automation applies these. `topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns.
+`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. Any number may apply.
+
+Two signals feed them, both additive. A topic is never removed, so a maintainer's hand-applied topic survives. Issue classification runs on `opened` only, so a removed topic is not re-added by a later edit:
+
+- **Changed modules** (`topicFileRules`): a PR touching `middleware/subagents.py` gets `topic:subagents` (and `topic:middleware`, since the whole middleware dir maps too); `backends/sandbox.py` gets `topic:backends` and `topic:sandboxes`; `mcp_*.py` gets `topic:mcp`. Rules name a *module*, not a package, so the label means the diff actually touched that subject.
+- **Issue wording**: `openai/gpt-oss-20b`, an open-weight production model available on Groq's Developer plan, classifies an issue's title and body against the cached `.github/topic-labels.json` manifest. PRs receive automatic topic labels from changed modules only.
+
+`topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns. Path rules distinguish the implementations; wording classifications come from the model.
+
+A daily workflow adds newly discovered repository topics to `.github/topic-labels.json` and opens or refreshes a PR when it changes. Existing choices are preserved because labels are created on demand; a topic absent from the repository may simply not have been used yet. A response containing no topic labels fails the sync without changing the manifest. To retire a topic, remove it explicitly from the manifest, the repository labels, and any `topicFileRules` entries that could recreate it.
+
+Runtime labeling reads the local manifest, so it makes no extra label-list API call. Add a `topicFileRules` entry only when deterministic path-based matching is also useful; model output is filtered against the manifest before labels are applied.
 
 ### `org:*` — `pr_labeler.yml` (PRs), `tag-external-issues.yml` (issues)
 
@@ -66,9 +77,13 @@ Package and integration labels are additive: title edits do not remove them. `pr
 
 `org:external` is applied on `opened` only, using the `ORG_MEMBERSHIP_APP_*` GitHub App token, because org membership is private. A non-404 membership error fails the step rather than defaulting to external. The other two come from the default-token step, so they fire no `labeled` event.
 
-### `priority:*` — `sync_priority_labels.yml`
+### `priority:*` — `auto-label-by-package.yml`, `sync_priority_labels.yml`
 
-`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive, copied from issues linked by `Closes/Fixes/Resolves #N` onto the PR; highest across linked issues wins. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
+`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive.
+
+**Every new issue gets `priority:backlog`** from the "Apply default priority" step in `auto-label-by-package.yml`, which runs on `opened` before the Area sync so an issue filed without the form is still prioritized. It skips an issue that already carries a `priority:*`, so a re-run never overwrites an escalation.
+
+`sync_priority_labels.yml` copies a priority from issues linked by `Closes/Fixes/Resolves #N` onto the PR, highest across linked issues winning — but **only `priority:urgent` and `priority:high` propagate** (`PROPAGATED_PRIORITY_LABELS`). Backlog is every issue's default, so copying it would label nearly every PR while saying nothing; a PR carrying a backlog label from an earlier run gets it stripped. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
 
 ### `auto:*` — lifecycle and release automation
 
@@ -139,7 +154,8 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 
 ## Mechanics worth knowing
 
-- Labels applied by `pr_labeler.yml` are created on demand. Labels that workflows only read, including most `ci:*` labels, must already exist in the repository.
+- Labels applied by `pr_labeler.yml` are created on demand, taking their description from `labelDescriptions` and their color from `labelColors` (keyed by taxonomy prefix) in `pr-labeler-config.json`, so a label created on demand matches the ones already on the repo. Labels that workflows only read, including most `ci:*` labels, must already exist in the repository.
+- `labelColors` defines the color palette. `close-old-prs.js` and `normalize-release-labels.js` resolve colors from the config. `sync_priority_labels.yml` and `require_issue_link.yml` have no repository checkout from which to load the shared helper, so they inline colors. The palette test in `pr-labeler.test.js` rejects inline hex values outside the configured palette; it does not verify that each value matches the label's prefix.
 - All PR label changes belong in `pr_labeler.yml` to avoid workflows racing to update the same labels.
 - Workflows that must trigger follow-up label events use the GitHub App token because events created by the default `GITHUB_TOKEN` do not start other workflows.
 

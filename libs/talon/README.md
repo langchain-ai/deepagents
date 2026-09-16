@@ -299,7 +299,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 

@@ -20,7 +20,7 @@
 #   were still running.
 #
 #   "Normally" is load-bearing. `guard-pending-release` waits on the
-#   `autorelease: pending` label, which release.yml flips in `mark-release`,
+#   `auto:release-pending` label, which release.yml flips in `mark-release`,
 #   not on the release run concluding — sibling jobs (`bump-code-sdk-pin`)
 #   can still be running after the label clears. The guard also gives up
 #   after its own MAX_WAIT and defers on release commits, both of which end

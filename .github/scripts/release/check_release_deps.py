@@ -41,7 +41,7 @@ from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
-BYPASS_LABEL = "release-deps: acknowledged"
+BYPASS_LABEL = "ci:ack-release-deps"
 COMMENT_MARKER = "<!-- release-deps-check -->"
 ACKED_ENV = "RELEASE_DEPS_ACKED"
 FOLLOWUP_LIMIT = 10
@@ -1350,7 +1350,7 @@ def run_check(
     Args:
         base_sha: Pull request base commit.
         head_sha: Pull request head commit.
-        acked: Whether the `release-deps: acknowledged` bypass label is set.
+        acked: Whether the `ci:ack-release-deps` bypass label is set.
         fetcher: Injectable PyPI JSON fetcher for tests.
 
     Returns:

@@ -57,7 +57,7 @@ def test_acknowledgment_label_matches_the_javascript_literal() -> None:
     If they diverge, applying the label the PR comment names would no longer
     clear the block, with no failing test to say so.
     """
-    assert ACKNOWLEDGMENT_LABEL == "readme: acknowledged"
+    assert ACKNOWLEDGMENT_LABEL == "ci:ack-readme"
     assert f"'{ACKNOWLEDGMENT_LABEL}'" in GATE_JS.read_text()
 
 

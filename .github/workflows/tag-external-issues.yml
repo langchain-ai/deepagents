@@ -1,4 +1,4 @@
-# Automatically tag issues as "external" or "internal" based on whether
+# Automatically tag issues as "org:external" or "org:internal" based on whether
 # the author is a member of the langchain-ai GitHub organization, and
 # apply contributor tier labels to external contributors based on their
 # merged PR history.
@@ -87,7 +87,7 @@ jobs:
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const issue = context.payload.issue;
-            // new-contributor is only meaningful on PRs, not issues
+            // auto:new-contributor is only meaningful on PRs, not issues
             await h.applyTierLabel(issue.number, issue.user.login, { skipNewContributor: true });
 
       - name: Add external/internal label
@@ -102,7 +102,7 @@ jobs:
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const label = '${{ steps.check-membership.outputs.is-external }}' === 'true'
-              ? 'external' : 'internal';
+              ? 'org:external' : 'org:internal';
             await h.ensureLabel(label);
             await github.rest.issues.addLabels({
               owner, repo, issue_number, labels: [label],
@@ -141,7 +141,7 @@ jobs:
 
             const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
-            const tierLabels = ['trusted-contributor'];
+            const tierLabels = [h.tierLabelsByTier.trusted];
             for (const name of tierLabels) {
               await h.ensureLabel(name);
             }
@@ -157,13 +157,28 @@ jobs:
               if (processed >= maxItems) break;
               if (issue.pull_request) continue;
 
+              // Counted before the work, not after it: an issue that throws
+              // still consumed an attempt. Leaving it uncounted lets a run
+              // whose every issue failed walk the whole open backlog while
+              // reporting `Processed 0`. Matches pr_labeler_backfill.yml.
+              processed++;
+
               try {
                 const author = issue.user.login;
                 const info = await h.getContributorInfo(contributorCache, author, issue.user.type);
 
-                const labels = [info.isExternal ? 'external' : 'internal'];
+                const labels = [info.isExternal ? 'org:external' : 'org:internal'];
+                // Tier unknown (the merged-PR search failed) — see the same
+                // guard in pr_labeler_backfill.yml. Reconciling against an
+                // incomplete set would strip `auto:trusted-contributor`.
+                if (!info.tierKnown) {
+                  failures++;
+                  core.warning(
+                    `Issue #${issue.number}: contributor tier unknown for ${author} — leaving tier labels untouched`,
+                  );
+                }
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
-                  labels.push('trusted-contributor');
+                  labels.push(h.tierLabelsByTier.trusted);
                 }
 
                 // Ensure all labels exist before batch add
@@ -177,7 +192,7 @@ jobs:
                   { owner, repo, issue_number: issue.number, per_page: 100 },
                 )).map(l => l.name ?? '');
                 for (const name of currentLabels) {
-                  if (tierLabels.includes(name) && !labels.includes(name)) {
+                  if (info.tierKnown && tierLabels.includes(name) && !labels.includes(name)) {
                     try {
                       await github.rest.issues.removeLabel({
                         owner, repo, issue_number: issue.number, name,
@@ -192,7 +207,6 @@ jobs:
                   owner, repo, issue_number: issue.number, labels,
                 });
                 console.log(`Issue #${issue.number} (${author}): ${labels.join(', ')}`);
-                processed++;
               } catch (e) {
                 failures++;
                 core.warning(`Failed to process issue #${issue.number}: ${e.message}`);
@@ -200,3 +214,10 @@ jobs:
             }
 
             console.log(`\nBackfill complete. Processed ${processed} issues, ${failures} failures. ${contributorCache.size} unique authors.`);
+            // Without this the job is green however many issues threw, and
+            // this is the workflow an operator runs to apply the taxonomy to
+            // the existing backlog — a false success reads as "migration
+            // done". Matches the backfill in pr_labeler_backfill.yml.
+            if (failures > 0) {
+              core.setFailed(`${failures} issue(s) failed to process — check warnings above`);
+            }

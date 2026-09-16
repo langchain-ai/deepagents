@@ -660,11 +660,11 @@ requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
     { name = "langchain", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.2,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.6,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.7,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.3,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.7" },
-    { name = "langsmith", specifier = ">=0.12.4" },
+    { name = "langsmith", specifier = ">=0.12.5" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<13.0.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -1321,7 +1321,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.12.4"
+version = "0.12.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1339,9 +1339,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/92/d15b73c1550b4e005b31a22b746043a7ac154bfab7bc179da7348061feb0/langsmith-0.12.4.tar.gz", hash = "sha256:f486435323eeb0c525087cc694f0b7cd92e255f340db08db643204c789f4f1c4", size = 4886419, upload-time = "2026-09-09T21:19:57.002Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/07/0ba19a70e430efd56503aebb7e58f507b09120ed9bee8efe2589ff4dcfae/langsmith-0.12.5.tar.gz", hash = "sha256:0b0440a90ce155c99125f899242a27662182d20ebfd71b5d8fe45c960b96ca48", size = 4890567, upload-time = "2026-09-15T10:36:45.138Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/b1/d0c6f84cde25b2443bcdca81f9b30732fc3af602c46f5114fcbe5246b978/langsmith-0.12.4-py3-none-any.whl", hash = "sha256:b2edaa49baeec0c7347a84ca0f755039dcff9e9e52f0b9dc26423ec2a98a4dab", size = 767513, upload-time = "2026-09-09T21:19:55.283Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/ff/aadc7eeb7be5257a4cfd023670d12e2a0ee4acbf5ed835320843157106f8/langsmith-0.12.5-py3-none-any.whl", hash = "sha256:ad9fa911c6a002d8bb53daf1064fd0484560f33ac86f334060789258c989e043", size = 768488, upload-time = "2026-09-15T10:36:42.676Z" },
 ]
 
 [[package]]

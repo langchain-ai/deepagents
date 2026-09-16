@@ -201,33 +201,56 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded during lazy bootstrap), the new
-    profile is merged on top rather than replacing it. The incoming profile's
-    fields win on conflicts; unspecified fields inherit from the existing
-    profile.
-    `pre_init` callables chain (existing runs first), and `init_kwargs_factory`
-    callables chain — both factories are invoked at every resolution (base
-    first, then override) and their outputs merge with the override's values
-    winning on shared keys.
+    Register under a provider name to set defaults for its models, or under
+    `provider:model` to customize one model. Model-specific settings override
+    conflicting provider defaults and inherit the remaining settings.
 
-    To layer additional kwargs onto a built-in profile, register under the
-    same provider key. To override a built-in default (e.g. disable the
-    OpenAI Responses API), set the conflicting key explicitly:
+    For example, set defaults for a hypothetical provider, then lower the
+    temperature for one model:
 
     ```python
     from deepagents import ProviderProfile, register_provider_profile
 
-    # Adds temperature alongside the built-in `use_responses_api=True`.
-    register_provider_profile("openai", ProviderProfile(init_kwargs={"temperature": 0}))
-
-    # Explicitly disables Responses API for OpenAI. (This will break usage,
-    # this example is purely illustrative.)
     register_provider_profile(
-        "openai",
-        ProviderProfile(init_kwargs={"use_responses_api": False}),
+        "my_provider",
+        ProviderProfile(init_kwargs={"temperature": 0.7, "timeout": 30}),
+    )
+    register_provider_profile(
+        "my_provider:my-model:tag",
+        ProviderProfile(init_kwargs={"temperature": 0}),
     )
     ```
+
+    When Deep Agents constructs `my_provider:my-model:tag`, the profile supplies
+    `temperature=0` and `timeout=30`. Other models from `my_provider` receive
+    `temperature=0.7` and `timeout=30`. The model identifier is `my-model:tag`;
+    only the first colon separates it from the provider.
+
+    Register profiles before constructing the agent. Passing an already-built
+    model to `create_deep_agent` leaves its construction settings unchanged.
+
+    Calling `register_provider_profile` again with the same key updates the
+    existing profile. Continuing the example, give this model a longer timeout:
+
+    ```python
+    register_provider_profile(
+        "my_provider:my-model:tag",
+        ProviderProfile(init_kwargs={"timeout": 60}),
+    )
+    ```
+
+    Future construction of this model uses `temperature=0` and `timeout=60`.
+    The previous temperature setting is retained, and other models still use
+    the provider's defaults.
+
+    Deep Agents also ships **built-in profiles**: model-construction defaults
+    registered automatically for selected providers. Registering under one of
+    those keys customizes the shipped settings using the same merge rules.
+
+    Registrations are **additive**: new settings override conflicts and inherit
+    unspecified fields. `pre_init` callables run existing first, then new.
+    Both `init_kwargs_factory` callables run in that order too, with the new
+    factory's output winning on shared keys.
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,

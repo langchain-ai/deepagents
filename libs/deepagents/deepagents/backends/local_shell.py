@@ -80,30 +80,11 @@ class _CommandCancelled(BaseException):
 
 
 class _CommandTimeout(subprocess.TimeoutExpired):
-    """A command timeout, with the output read before the deadline.
+    """A command timeout recording whether cleanup stopped the command."""
 
-    `subprocess.TimeoutExpired` alone cannot say whether cleanup managed to stop
-    the command, so `terminated` carries that. It is `False` when the process may
-    still be running, which changes the advice given to the caller.
-
-    `subprocess` types its captured output as bytes, but this class is only
-    raised for a text-mode process, so the two streams are narrowed to `str`.
-    """
-
-    output: str
-    stderr: str
-
-    def __init__(
-        self,
-        cmd: str,
-        timeout: float,
-        *,
-        output: str = "",
-        stderr: str = "",
-        terminated: bool = True,
-    ) -> None:
-        """Record the partial output and whether the command was stopped."""
-        super().__init__(cmd, timeout, output=output, stderr=stderr)
+    def __init__(self, cmd: str, timeout: float, *, terminated: bool) -> None:
+        """Record whether the command may still be running after cleanup."""
+        super().__init__(cmd, timeout)
         self.terminated = terminated
 
 
@@ -262,39 +243,6 @@ def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) ->
     return terminated and reaped
 
 
-def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
-    """Decode output taken from a `TimeoutExpired` raised by a text-mode process.
-
-    `Popen.communicate` decodes its return value but not the partial output on
-    its `TimeoutExpired`, which stays as bytes even in text mode.
-    `WindowsProcessReader` attaches text, which is returned unchanged.
-    """
-    if not data:
-        return ""
-    if isinstance(data, str):
-        return data
-    encoding = getattr(pipe, "encoding", None) or "utf-8"
-    # A timeout can split an encoded character; decoding must not hide the timeout.
-    return data.decode(encoding, errors="replace")
-
-
-def _timeout_with_partial_output(
-    process: subprocess.Popen[str],
-    timeout: float,
-    partial: subprocess.TimeoutExpired | None,
-    *,
-    terminated: bool,
-) -> _CommandTimeout:
-    """Build the timeout error, keeping whatever the command printed."""
-    return _CommandTimeout(
-        str(process.args),
-        timeout,
-        output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
-        stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
-        terminated=terminated,
-    )
-
-
 def _communicate(
     process: subprocess.Popen[str],
     timeout: int,
@@ -327,9 +275,6 @@ def _communicate(
     """
     collect = WindowsProcessReader(process).communicate if _IS_WINDOWS else process.communicate
     deadline = time.monotonic() + timeout
-    # Each attempt keeps the bytes already read, so the newest `TimeoutExpired`
-    # carries everything the command has printed so far.
-    partial: subprocess.TimeoutExpired | None = None
     try:
         while cancellation_event is None or not cancellation_event.is_set():
             remaining = deadline - time.monotonic()
@@ -337,8 +282,7 @@ def _communicate(
                 raise subprocess.TimeoutExpired(process.args, timeout)  # noqa: TRY301  # Route deadline expiry through shared process cleanup.
             try:
                 output = collect(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
-            except subprocess.TimeoutExpired as error:
-                partial = error
+            except subprocess.TimeoutExpired:
                 if cancellation_event is None:
                     raise
                 continue
@@ -349,7 +293,7 @@ def _communicate(
     except BaseException as error:
         terminated = _kill_and_reap(process, process_group)
         if isinstance(error, subprocess.TimeoutExpired):
-            raise _timeout_with_partial_output(process, timeout, partial, terminated=terminated) from None
+            raise _CommandTimeout(str(process.args), timeout, terminated=terminated) from None
         raise
 
 
@@ -810,18 +754,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
-            # What the command printed before it stopped responding is usually the
-            # only clue about where it stopped, so keep it.
-            truncated = False
-            if error.output or error.stderr:
-                partial, truncated = self._combine_output(error.output, error.stderr)
-                msg = f"{msg}\n\nOutput before the timeout:\n{partial}"
             if not error.terminated:
                 msg = f"{msg}\n\nWarning: the command could not be stopped and may still be running. Re-running it may start a second copy."
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,  # Standard timeout exit code
-                truncated=truncated,
+                truncated=False,
             )
         except Exception as e:
             # Broad exception catch is intentional: we want to catch all execution errors

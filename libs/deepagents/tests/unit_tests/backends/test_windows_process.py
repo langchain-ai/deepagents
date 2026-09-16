@@ -78,30 +78,6 @@ def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
                 windows_process._read_available(MagicMock())
 
 
-def test_timeout_keeps_output_read_so_far() -> None:
-    """Test a timeout carries the text already decoded.
-
-    A read can end in the middle of an encoded character. Those bytes stay with
-    the decoder, so a decoding error cannot replace the timeout.
-    """
-    process = _process()
-    process.poll.return_value = None
-    try:
-        with (
-            patch.object(windows_process, "_read_available", side_effect=[b"partial \xc3", b"err", None, None]),
-            patch.object(windows_process.time, "monotonic", side_effect=chain([0, 0], repeat(5))),
-            patch.object(windows_process.time, "sleep"),
-            pytest.raises(subprocess.TimeoutExpired) as caught,
-        ):
-            WindowsProcessReader(process).communicate(timeout=1)
-
-        assert caught.value.stdout == "partial "
-        assert caught.value.stderr == "err"
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-
-
 def test_retries_preserve_multibyte_output_and_newlines() -> None:
     process = _process()
     process.poll.return_value = 7

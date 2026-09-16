@@ -139,8 +139,7 @@ class WindowsProcessReader:
 
         Raises:
             subprocess.TimeoutExpired: If output or process completion exceeds the
-                deadline. The exception carries the text decoded so far, so a
-                caller that gives up keeps it.
+                deadline.
             OSError: If reading a captured pipe fails.
             UnicodeError: If captured output cannot be decoded.
         """
@@ -151,8 +150,6 @@ class WindowsProcessReader:
                 raise subprocess.TimeoutExpired(
                     self._process.args,
                     timeout,
-                    output=self._texts[0],
-                    stderr=self._texts[1],
                 )
             progress = self._read()
             if all(pipe is None or pipe.closed for pipe in self._pipes) and self._process.poll() is not None:

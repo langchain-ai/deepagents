@@ -973,45 +973,6 @@ def test_local_shell_backend_polling_loop_drains_more_than_a_pipe_buffer() -> No
     assert len(stderr) == 200_000
 
 
-@_POSIX_SHELL_ONLY
-def test_local_shell_backend_timeout_reports_output_printed_before_it() -> None:
-    """Test a timed-out command still reports what it printed first.
-
-    What a command printed before it wedged is usually the only clue about where
-    it stopped, so the response must carry it.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result = LocalShellBackend(root_dir=tmpdir, inherit_env=True).execute('printf "progress line\n"; sleep 30', timeout=1)
-
-    assert result.exit_code == 124
-    assert "timed out" in result.output
-    assert "progress line" in result.output
-
-
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
-@pytest.mark.parametrize("data", [b"progress \xe2", b"progress \xff"])
-def test_local_shell_backend_timeout_replaces_undecodable_output(tmp_path: Path, stream: str, data: bytes) -> None:
-    """Incomplete or invalid UTF-8 must preserve the timeout and partial output."""
-    process = MagicMock(pid=1234)
-    pipe = getattr(process, stream)
-    pipe.encoding = "utf-8"
-    pipe.errors = "strict"
-    process.communicate.side_effect = subprocess.TimeoutExpired(
-        "command", 1, output=data if stream == "stdout" else None, stderr=data if stream == "stderr" else None
-    )
-    with (
-        _as_posix(),
-        patch("subprocess.Popen", return_value=process),
-        patch.object(local_shell_module.os, "killpg", create=True),
-    ):
-        result = LocalShellBackend(root_dir=tmp_path).execute("command", timeout=1)
-
-    assert result.exit_code == 124
-    assert "timed out after 1 seconds (custom timeout)" in result.output
-    assert "The command may be stuck or require more time." in result.output
-    assert "progress \ufffd" in result.output
-
-
 def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Test an empty process group counts as success, not as a failed kill.
 

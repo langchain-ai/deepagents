@@ -14,6 +14,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
 
@@ -489,20 +490,29 @@ async def test_ainvoke_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
     assert "skills_metadata" not in result
 
 
-class _InvalidateSkillsOnce(AgentMiddleware[SkillsState, Any, Any]):
-    """Invalidator middleware: clears the skills cache after the first model call."""
+class _AddSkillThenInvalidate(AgentMiddleware[SkillsState, Any, Any]):
+    """Invalidator middleware: adds a skill and clears the cache after the first model call."""
 
     state_schema = SkillsState
 
-    def __init__(self) -> None:
+    def __init__(self, backend: FilesystemBackend, skill_path: str) -> None:
         super().__init__()
+        self._backend = backend
+        self._skill_path = skill_path
         self.cleared = False
 
     async def aafter_model(self, state: SkillsState, runtime: Runtime) -> dict[str, Any] | None:
         if self.cleared:
             return None
         self.cleared = True
+        self._backend.upload_files([(self._skill_path, make_skill_content("new-skill", "New skill").encode("utf-8"))])
         return {"skills_metadata": None}
+
+
+@tool
+def _touch() -> str:
+    """Do nothing; exists only so the model can take a second turn."""
+    return "ok"
 
 
 async def test_aafter_model_reset_reloads_skills_within_a_run(tmp_path: Path) -> None:
@@ -513,26 +523,14 @@ async def test_aafter_model_reset_reloads_skills_within_a_run(tmp_path: Path) ->
     model = GenericFakeChatModel(
         messages=iter(
             [
-                # The agent itself writes a new skill, so the reload has something to find.
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "write_file",
-                            "args": {
-                                "file_path": str(skills_dir / "new-skill" / "SKILL.md"),
-                                "content": make_skill_content("new-skill", "New skill"),
-                            },
-                            "id": "call_write_skill",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
+                # Any tool call will do; it exists only to earn a second model call.
+                AIMessage(content="", tool_calls=[{"name": "_touch", "args": {}, "id": "call_touch", "type": "tool_call"}]),
                 AIMessage(content="done"),
             ]
         )
     )
-    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], middleware=[_InvalidateSkillsOnce()])
+    middleware = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], tools=[_touch], middleware=[middleware])
 
     await agent.ainvoke({"messages": [HumanMessage(content="add a skill")]})
 

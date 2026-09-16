@@ -1868,37 +1868,37 @@ async def _mount_backends(
     from fastmcp.server.server import create_proxy
 
     router: Any = FastMCP(name="deepagents-code")
-    stack = AsyncExitStack()
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
-    for server_name, transport in backends.items():
-        try:
-            backend = StatefulProxyClient(
-                transport=transport,
-                log_handler=_server_log_handler(server_name),
-            )
-            await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
-            # `StatefulProxyClient.__aexit__` leaves persistent sessions open, so
-            # own both teardown callbacks explicitly. LIFO closes the client first.
-            stack.push_async_callback(transport.close)
-            stack.push_async_callback(backend._disconnect, force=True)
-            tools = await backend.list_tools()
-            discovered[server_name] = [
-                tool.model_copy(update={"name": f"{server_name}_{tool.name}"})
-                for tool in tools
-            ]
-            router.mount(create_proxy(backend), namespace=server_name)
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:  # noqa: BLE001 - one server must not sink the rest
-            failures[server_name] = _classify_connect_failure(
-                server_name,
-                exc,
-                redact=redact.get(server_name, False),
-            )
+    async with AsyncExitStack() as stack:
+        for server_name, transport in backends.items():
+            try:
+                backend = StatefulProxyClient(
+                    transport=transport,
+                    log_handler=_server_log_handler(server_name),
+                )
+                await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
+                # `StatefulProxyClient.__aexit__` leaves persistent sessions open, so
+                # own both teardown callbacks explicitly. LIFO closes the client first.
+                stack.push_async_callback(transport.close)
+                stack.push_async_callback(backend._disconnect, force=True)
+                tools = await backend.list_tools()
+                discovered[server_name] = [
+                    tool.model_copy(update={"name": f"{server_name}_{tool.name}"})
+                    for tool in tools
+                ]
+                router.mount(create_proxy(backend), namespace=server_name)
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:  # noqa: BLE001 - one server must not sink the rest
+                failures[server_name] = _classify_connect_failure(
+                    server_name,
+                    exc,
+                    redact=redact.get(server_name, False),
+                )
 
-    return FastMCPClient(router), stack, discovered, failures
+        return FastMCPClient(router), stack.pop_all(), discovered, failures
 
 
 def _classify_connect_failure(

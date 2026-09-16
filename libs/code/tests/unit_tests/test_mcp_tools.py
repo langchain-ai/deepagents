@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator, Sequence
     from types import ModuleType
 
+    from mcp.types import Tool
+
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_middleware import (
@@ -2363,6 +2365,43 @@ class TestLoadToolsConcurrency:
         assert [t.name for t in tools] == ["good_t_good"]
         assert manager is not None
         await manager.cleanup()
+
+    async def test_discovery_cancellation_closes_all_connected_backends(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """Cancellation during listing closes the current and earlier backends."""
+        from fastmcp.server.providers.proxy import StatefulProxyClient
+
+        for name in ("first", "second"):
+            mcp_servers.register(name, "tool")
+        clients: list[StatefulProxyClient] = []
+        listing = asyncio.Event()
+        list_tools = StatefulProxyClient.list_tools
+
+        async def blocked_list_tools(client: StatefulProxyClient) -> list[Tool]:
+            clients.append(client)
+            if len(clients) == 2:
+                listing.set()
+                await asyncio.Event().wait()
+            return await list_tools(client)
+
+        with patch.object(StatefulProxyClient, "list_tools", blocked_list_tools):
+            task = asyncio.create_task(
+                _load_tools_from_config(self._config("first", "second"))
+            )
+            try:
+                await asyncio.wait_for(listing.wait(), timeout=5)
+                assert all(client.is_connected() for client in clients)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+                assert not any(client.is_connected() for client in clients)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                for client in clients:
+                    await client._disconnect(force=True)
 
     async def test_tool_build_cancellation_closes_adopted_resources(
         self,

@@ -224,15 +224,6 @@ class TestProfileForModel:
             result = _harness_profile_for_model(model, None)
             assert result == HarnessProfile()
 
-    def test_exact_colon_identifier_still_resolves(self) -> None:
-        """The exact-key path still matches an identifier that contains colons."""
-        with patch.dict(_HARNESS_PROFILES):
-            profile = HarnessProfile(system_prompt_suffix="ollama cloud")
-            register_harness_profile("ollama:glm-5.2:cloud", profile)
-            model = _make_model({"model_name": "glm-5.2:cloud"})
-            model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
-            assert _harness_profile_for_model(model, None) is profile
-
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})

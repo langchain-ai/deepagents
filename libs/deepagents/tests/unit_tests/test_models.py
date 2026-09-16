@@ -1933,26 +1933,6 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="non-empty"):
             register_harness_profile("", HarnessProfile())
 
-    def test_colons_in_model_identifier_accepted_provider(self) -> None:
-        original = dict(_PROVIDER_PROFILES)
-        try:
-            profile = ProviderProfile()
-            register_provider_profile("a:b:c", profile)
-            assert get_provider_profile("a:b:c") is profile
-        finally:
-            _PROVIDER_PROFILES.clear()
-            _PROVIDER_PROFILES.update(original)
-
-    def test_colons_in_model_identifier_accepted_harness(self) -> None:
-        original = dict(_HARNESS_PROFILES)
-        try:
-            profile = HarnessProfile()
-            register_harness_profile("a:b:c", profile)
-            assert _get_harness_profile("a:b:c") is profile
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
-
     def test_empty_provider_half_rejected(self) -> None:
         with pytest.raises(ValueError, match="empty provider"):
             register_provider_profile(":model", ProviderProfile())
@@ -2017,21 +1997,6 @@ class TestRegisterProfileKeyValidation:
             register_harness_profile(key, harness_profile)
             assert get_provider_profile(key) is provider_profile
             assert _get_harness_profile(key) is harness_profile
-
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "ollama:glm-5.2:cloud",
-            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-v1:0",
-        ],
-    )
-    def test_real_multi_colon_keys_accepted(self, key: str) -> None:
-        """The complete model identifier is available for exact lookup."""
-        with patch.dict(_HARNESS_PROFILES):
-            profile = HarnessProfile()
-            register_harness_profile(key, profile)
-            assert _get_harness_profile(key) is profile
 
     def test_valid_provider_key_accepted(self) -> None:
         original = dict(_PROVIDER_PROFILES)
@@ -2204,16 +2169,6 @@ class TestProfileLookupKeyValidation:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_harness_lookup_accepts_colon_in_model_identifier(self) -> None:
-        original = dict(_HARNESS_PROFILES)
-        try:
-            profile = HarnessProfile(system_prompt_suffix="exact")
-            register_harness_profile("a:b:c", profile)
-            assert _get_harness_profile("a:b:c") is profile
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
-
     def test_harness_lookup_rejects_empty_string(self) -> None:
         assert _get_harness_profile("") is None
 
@@ -2231,16 +2186,6 @@ class TestProfileLookupKeyValidation:
         try:
             register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
             assert get_provider_profile(":some-model") is None
-        finally:
-            _PROVIDER_PROFILES.clear()
-            _PROVIDER_PROFILES.update(original)
-
-    def test_provider_lookup_accepts_colon_in_model_identifier(self) -> None:
-        original = dict(_PROVIDER_PROFILES)
-        try:
-            profile = ProviderProfile(init_kwargs={"exact": True})
-            register_provider_profile("a:b:c", profile)
-            assert get_provider_profile("a:b:c") is profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)

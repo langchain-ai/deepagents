@@ -986,10 +986,8 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    Accepts either a runtime `HarnessProfile` or a declarative
-    `HarnessProfileConfig`. Config objects are converted to runtime profiles
-    at registration time so YAML/JSON-backed callers do not need a separate
-    manual conversion step.
+    Accepts a runtime `HarnessProfile` or converts a declarative
+    `HarnessProfileConfig` at registration time.
 
     Register under a provider name to set defaults for its models, or under
     `provider:model` to customize one model. Model-specific settings inherit
@@ -1016,8 +1014,7 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
 
     An agent using `my_provider:my-model:tag` excludes `execute` and receives
     the 100-word prompt suffix. Other models from `my_provider` exclude
-    `execute` and receive the 500-word suffix. The model override replaces
-    the suffix while inheriting the excluded tool.
+    `execute` and receive the 500-word suffix.
 
     Register profiles before calling `create_deep_agent`. Using the hypothetical
     provider above, you can pass a model string or construct the model yourself:
@@ -1039,8 +1036,9 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
     provider and model identifier reported by that object. If it reports
     `my_provider` and `my-model:tag`, it matches the same registration above.
 
-    Calling `register_harness_profile` again with the same key updates the
-    existing profile. Continuing the example, exclude one more tool:
+    Re-registering merges with the existing profile: new values override
+    conflicts and unspecified fields remain. Continuing the example, exclude
+    one more tool:
 
     ```python
     register_harness_profile(
@@ -1050,16 +1048,17 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
     ```
 
     An agent created afterward with this model excludes both `execute` and
-    `grep` and still receives the 100-word prompt suffix. The new registration
-    adds `grep` without discarding the previous suffix or provider defaults.
+    `grep` and still receives the 100-word prompt suffix.
 
     Deep Agents also ships **built-in profiles**: default harness settings
     registered automatically for selected models. Registering under one of
     those keys customizes the shipped settings using the same merge rules.
 
-    Registrations are **additive**: new settings override conflicts and inherit
-    unspecified fields. Excluded-tool sets union, middleware sequences merge
+    Excluded-tool sets union, middleware sequences merge
     by type, and `general_purpose_subagent` settings merge field-wise.
+
+    See the [Profiles guide](https://docs.langchain.com/oss/python/deepagents/profiles)
+    for registration workflows and configuration files.
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,

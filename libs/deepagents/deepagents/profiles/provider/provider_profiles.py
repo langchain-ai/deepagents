@@ -226,11 +226,13 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     `temperature=0.7` and `timeout=30`. The model identifier is `my-model:tag`;
     only the first colon separates it from the provider.
 
-    Register profiles before constructing the agent. Passing an already-built
-    model to `create_deep_agent` leaves its construction settings unchanged.
+    Register profiles before constructing the agent. Passing a model instance
+    to `create_deep_agent` leaves its construction settings unchanged; see
+    `register_harness_profile` for examples of both forms.
 
-    Calling `register_provider_profile` again with the same key updates the
-    existing profile. Continuing the example, give this model a longer timeout:
+    Re-registering merges with the existing profile: new values override
+    conflicts and unspecified fields remain. Continuing the example, give
+    this model a longer timeout:
 
     ```python
     register_provider_profile(
@@ -239,18 +241,19 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     )
     ```
 
-    Future construction of this model uses `temperature=0` and `timeout=60`.
-    The previous temperature setting is retained, and other models still use
-    the provider's defaults.
+    Future construction of this model uses `temperature=0` and `timeout=60`;
+    other models still use the provider's defaults.
 
     Deep Agents also ships **built-in profiles**: model-construction defaults
     registered automatically for selected providers. Registering under one of
     those keys customizes the shipped settings using the same merge rules.
 
-    Registrations are **additive**: new settings override conflicts and inherit
-    unspecified fields. `pre_init` callables run existing first, then new.
+    `pre_init` callables run existing first, then new.
     Both `init_kwargs_factory` callables run in that order too, with the new
     factory's output winning on shared keys.
+
+    See the [Profiles guide](https://docs.langchain.com/oss/python/deepagents/profiles)
+    for registration workflows and configuration files.
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,

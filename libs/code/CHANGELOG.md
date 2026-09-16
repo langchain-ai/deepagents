@@ -2,6 +2,15 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-16)
+
+### Bug Fixes
+
+- Fixed prompt clipboard word deletion behavior. ([#6345](https://github.com/langchain-ai/deepagents/pull/6345))
+- Clarified unknown model effort in footer. ([#6337](https://github.com/langchain-ai/deepagents/pull/6337))
+- Prevented duplicate clicks in the footer model and effort pickers. ([#6344](https://github.com/langchain-ai/deepagents/pull/6344))
+- Delayed hook status display in the footer to reduce UI noise. ([#6322](https://github.com/langchain-ai/deepagents/pull/6322))
+
 ## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
 
 ### Features

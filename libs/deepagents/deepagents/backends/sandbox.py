@@ -1484,7 +1484,6 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
-
     def _unoffloaded() -> ExecuteOffloadResult:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
 
@@ -1492,7 +1491,7 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     # first line can be the whole output on one line (minified JS, single-line
     # JSON), and splitting allocates a string per space only to discard them.
     if not first.startswith(_EXECUTE_CAPTURE_SENTINEL):
-        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded: %r", first[:200])
+        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded")
         return _unoffloaded()
 
     parts = first.split(" ")
@@ -1500,10 +1499,9 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     # wrapper's output, so fall back to returning it verbatim.
     if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:
         logger.warning(
-            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded: %r",
+            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded",
             len(parts),
             _EXECUTE_CAPTURE_META_FIELDS,
-            first[:200],
         )
         return _unoffloaded()
     try:

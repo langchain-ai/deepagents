@@ -274,8 +274,8 @@ def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
     if isinstance(data, str):
         return data
     encoding = getattr(pipe, "encoding", None) or "utf-8"
-    errors = getattr(pipe, "errors", None) or "replace"
-    return data.decode(encoding, errors)
+    # A timeout can split an encoded character; decoding must not hide the timeout.
+    return data.decode(encoding, errors="replace")
 
 
 def _timeout_with_partial_output(

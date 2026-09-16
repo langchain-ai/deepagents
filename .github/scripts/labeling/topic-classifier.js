@@ -10,10 +10,10 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
   if (!apiKey) throw new Error('GROQ_API_KEY is required for topic classification');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  let response;
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 15000);
+  let payload;
   try {
-    response = await fetchImpl(ENDPOINT, {
+    const response = await fetchImpl(ENDPOINT, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -37,12 +37,12 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
         ],
       }),
     });
+    if (!response.ok) throw new Error(`Topic classifier returned HTTP ${response.status}`);
+    payload = await response.json();
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) throw new Error(`Topic classifier returned HTTP ${response.status}`);
 
-  const payload = await response.json();
   const content = payload.choices?.[0]?.message?.content;
   const labels = JSON.parse(content ?? '{}').labels;
   if (!Array.isArray(labels)) throw new Error('Topic classifier returned invalid labels');

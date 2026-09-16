@@ -35,6 +35,22 @@ test('classifies with the small open model and filters output to the allowlist',
   assert.match(body.messages[1].content, /topic:models/);
 });
 
+test('keeps the timeout active while reading the response body', async () => {
+  const fetchImpl = async (_url, options) => ({
+    ok: true,
+    async json() {
+      await new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason));
+      });
+    },
+  });
+
+  await assert.rejects(
+    classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl, timeoutMs: 1 }),
+    { name: 'AbortError' },
+  );
+});
+
 test('returns no labels for empty input without calling the model', async () => {
   const labels = await classifyTopicLabels(' ', allowed, {
     fetchImpl: async () => assert.fail('fetch should not be called'),

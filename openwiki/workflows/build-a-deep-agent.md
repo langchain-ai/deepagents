@@ -3,9 +3,6 @@ type: workflow
 title: Build and Customize a Deep Agent
 description: Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
 tags: [deepagents, langgraph, middleware, subagents, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
@@ -39,7 +36,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-16T08:05:50.355Z
 ---
 
 # Build and Customize a Deep Agent
@@ -54,7 +54,7 @@ Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` 
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-6-astra",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )
@@ -153,6 +153,8 @@ The server pattern exposes endpoints to create threads, start/restart and poll r
 `memory=` supplies `AGENTS.md` paths. `MemoryMiddleware` loads sources in order at startup, concatenates them into system-prompt context, and strips HTML comments. Its injected guidance treats memory as reference material rather than instructions that override the user's request or verified tool evidence.
 
 Use `permissions=` for built-in filesystem-tool policy, not sandboxing. `FilesystemPermission` rules are ordered first-match decisions with `allow`, `deny`, and `interrupt` modes; unmatched operations are allowed. `FilesystemMiddleware` enforces them for its tools, but direct backend use does not. Declarative subagents inherit parent rules unless their own rules replace them.
+
+A backend that provides command execution normally cannot be combined with `permissions=`: `FilesystemMiddleware` raises `NotImplementedError` because execute-tool permissions are not implemented. The exception is a `CompositeBackend` where every permission path is scoped to routes: its executable default is then outside the permitted paths, and a sandbox in a non-default route does not expose command execution. Use an isolated backend for the enforcement boundary and apply HITL to shell operations separately.
 
 Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem rules. The builder turns those rules into path-aware `HumanInTheLoopMiddleware` predicates and merges them with explicit entries; explicit configuration wins when both name the same tool. Bulk operations such as `ls`, `glob`, `grep`, and `delete` interrupt conservatively when their possible scope could overlap a protected path. Install a `checkpointer` when interrupted runs must be resumed.
 

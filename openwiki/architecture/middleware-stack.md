@@ -1,11 +1,8 @@
 ---
 type: architecture pattern
-title: Middleware Stack and Customization Boundaries
-description: How create_deep_agent assembles and filters the ordered middleware stacks for a main agent and its subagents. Covers profile exclusions, caller insertion and replacement, state boundaries, and the distinction between middleware and ordinary tools.
+title: Middleware Stack and Ordering
+description: How create_deep_agent assembles, orders, customizes, and filters middleware for the main agent and subagents. Covers profile exclusions, state boundaries, context-overflow recovery, and order-sensitive safety invariants.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -21,16 +18,23 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-13b8cea81b8a29f0950cc836
+    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-6228ff9cf1d681a771797121
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
   - id: openwiki-source-454da083c2cc29febd156c7e
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-16T08:05:50.355Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
-# Middleware Stack and Customization Boundaries
+# Middleware Stack and Ordering
 
 `create_deep_agent()` is a harness assembler, not a separate agent runtime. It resolves the model and applicable `HarnessProfile`, constructs ordered `AgentMiddleware`, and passes the final main stack to LangChain's `create_agent()`, which owns the model/tool loop. The passed-through graph options include the system prompt, tools, response format, schemas, checkpointing, store, debugging, name, and cache. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md) for the runtime boundary.
 
@@ -38,7 +42,7 @@ Middleware is the request-time extension boundary. A `wrap_model_call()` hook in
 
 ## Main-agent assembly
 
-Membership is conditional on inputs and the resolved profile. `skills`, subagent forms, memory, filesystem permissions, interrupt configuration, profile extras, installed provider integrations, and profile exclusions all affect the result. The flow below shows the verified ordering and the only caller customization decision points; optional entries are absent when their condition is unmet.
+Membership is conditional on inputs and the resolved profile. `skills`, subagent forms, memory, filesystem permissions, interrupt configuration, profile extras, installed provider integrations, and profile exclusions all affect the result. The flow shows the ordering and the two points where profile policy constrains caller customization.
 
 ```mermaid
 flowchart TD
@@ -52,9 +56,9 @@ flowchart TD
     State --> Agent["Pass stack to create_agent"]
 ```
 
-Diagram: verified main-stack assembly and the profile/caller customization points.
+Diagram: main-stack assembly, including the ordering-dependent exclusion and caller-insertion stages.
 
-### Stack order
+### Core, tail, and final filter
 
 The **core band** is assembled in this order:
 
@@ -65,15 +69,21 @@ The **core band** is assembled in this order:
 5. `PatchToolCallsMiddleware`.
 6. `AsyncSubAgentMiddleware`, when remote async specs exist.
 
+`PatchToolCallsMiddleware.before_agent()` repairs persisted dangling valid or invalid tool calls before an agent run: for each unanswered call ID it inserts an error `ToolMessage`, preserving a coherent message history after cancellation, interruption, or malformed/truncated arguments.
+
 The **tail band** appends materialized `HarnessProfile.extra_middleware`, provider prompt-caching middleware, `MemoryMiddleware` when configured, and `HumanInTheLoopMiddleware` when the resolved interrupt mapping is non-empty. Cache middleware is before memory deliberately: profile extras run before caching, and memory's system-prompt mutations occur after the Anthropic cache prefix. Anthropic caching is always installed with unsupported models ignored. Bedrock and Fireworks variants are added only when their integration packages can be imported, and also ignore unsupported models.
 
 The first profile-exclusion pass runs after the tail is assembled. Caller `middleware=` is then merged, exclusions run again, and `_ToolExclusionMiddleware` is appended only when the profile has `excluded_tools`. Being last matters: it sees the near-final request after tool-producing middleware and caller model wrappers, so excluded names cannot be restored by a caller wrapper.
 
 The assembler also combines an explicit `state_schema` with middleware-contributed schemas, derives private state-field names, and assigns them to `SubAgentMiddleware`. This determines what ordinary synchronous delegation may carry across its state boundary.
 
-### Context-management role
+### Context management and overflow recovery
 
-The default summarization component is not merely a prompt addition. It can truncate old large tool arguments, compact history when configured thresholds are crossed, and retry through compaction after `ContextOverflowError`. Evicted history is offloaded to the configured backend and a private summarization event records the replacement summary and recovery path; an offload failure warns that older messages are unrecoverable. Its factory selects model-aware thresholds when profile information is available. See [context management](/openwiki/concepts/context-management.md).
+The default summarization component reconstructs effective messages from prior summary events, then can truncate large old tool arguments before deciding whether to summarize. It summarizes when its threshold is met or the calculated input is over budget; even below threshold, a recognized provider context-overflow error triggers the same recovery path.
+
+Before summarizing, it offloads the compacted history to the backend. The summary event records the cutoff, replacement summary message, and backend file path, while the private session ID is retained for subsequent turns. If history offload fails, summarization still proceeds but emits a warning that older messages are unrecoverable. Large trailing tool results can also be replaced with backend-backed references to make a request fit.
+
+Recovery is deliberately bounded. After compaction it verifies the complete request against the input budget, including prompt, tools, and output allowance; irreducible input raises `ContextOverflowError` without sending it. A recognized overflow gets at most one smaller retry, and a second overflow raises rather than repeatedly resending. The synchronous and asynchronous wrappers implement the same control flow. See [context management](/openwiki/concepts/context-management.md).
 
 ## Caller middleware and profile exclusions
 
@@ -105,9 +115,11 @@ Subagent form is determined during assembly: a spec with `graph_id` becomes an `
 
 ### Declarative subagents
 
-Every declarative spec resolves its own model and harness profile and builds an independent stack: `FilesystemMiddleware`, summarization, and `PatchToolCallsMiddleware`; isolated-spec skills or forked-parent skills; profile extras; prompt caching; two exclusion passes around spec middleware; coverage validation; then the final tool filter. A fork also mirrors top-level memory when configured.
+Every declarative spec resolves its own model and harness profile and builds an independent stack. An isolated child orders `FilesystemMiddleware`, summarization, `PatchToolCallsMiddleware`, then its declared skills; a fork instead puts inherited top-level skills before filesystem. Both then add profile extras and caching, apply exclusions before and after spec middleware, validate coverage, and append the final tool filter. A fork also mirrors top-level memory when configured.
 
-A spec inherits top-level tools, permissions, and `interrupt_on` only when it omits each field. Its own permissions replace, rather than extend, parent rules. After those values are resolved, a non-empty interrupt mapping adds `HumanInTheLoopMiddleware` while compiling the declarative graph. The parent `state_schema` is supplied to this compilation; supplied compiled runnables and remote graphs own their own schemas and approval configuration.
+A fork merges parent caller middleware with spec middleware by name, with the spec entry winning on a collision; that lets its stack rebuild parent prompt-producing behavior without duplicate middleware names. An isolated child does not receive top-level caller middleware merely by being a child.
+
+A spec inherits top-level tools, permissions, and `interrupt_on` only when it omits each field. Its own permissions replace, rather than extend, parent rules. After those values are resolved, a non-empty interrupt mapping adds `HumanInTheLoopMiddleware` while compiling the declarative graph. Supplied compiled runnables and remote graphs own their own schemas and approval configuration.
 
 The default mode is `isolated`: the child receives a `HumanMessage` containing the delegated task rather than the parent's conversation. `handoff` is accepted as a legacy alias for isolated behavior. Experimental `fork` instead receives the parent's effective compacted history plus a task preamble, and rebuilds the parent prompt with an optional child addendum. A declarative fork cannot specify independent skills; it retains eligible private state channels, while a forked compiled runnable has private keys stripped because its schema is opaque. A forked child is refused if it calls `task`, preventing recursive delegation. See [subagents and skills](/openwiki/concepts/subagents-skills.md).
 
@@ -121,4 +133,6 @@ An `AsyncSubAgent` runs through Agent Protocol as a background task. `AsyncSubAg
 
 ## Safe changes and focused tests
 
-Ordering changes alter what the model sees and what tools can execute. Test assembled stacks, not only middleware constructors. Focus tests on replacement versus insertion, both exclusion passes, final request/tool-call filtering, protected-scaffolding and ambiguous-name failures, and coverage across main and general-purpose stacks. Also test the separate declarative, compiled, async, isolated, and fork paths—especially private-state treatment, fork prompt/history construction, recursive-delegation refusal, and the structured-response fallback. The unit suite exercises middleware-provided filesystem and `task` tools; graph tests cover profile exclusion behavior and subagent stack assembly.
+Ordering changes alter what the model sees and what tools can execute. Test assembled stacks, not only middleware constructors. Graph tests cover replacement versus insertion, both exclusion passes, protected-scaffolding and ambiguous-name failures, coverage across main and general-purpose stacks, and subagent stack assembly. Tool-exclusion tests compile an agent and verify that a scripted call to an excluded tool errors without reaching the backend while an allowed call still runs.
+
+For context management, exercise sync and async paths with threshold and provider-overflow triggers. The recovery tests assert that an oversized tail is reduced before sending, only one smaller retry follows an overflow, repeated overflow raises, and known irreducible prompt/tool/output overhead never reaches the server. Separately test dangling valid and invalid tool-call repair, and the declarative, compiled, async, isolated, and fork paths—especially private-state treatment, fork prompt/history construction, recursive-delegation refusal, and the structured-response fallback.

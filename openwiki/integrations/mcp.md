@@ -34,10 +34,10 @@ sources:
     resource: repo://libs/talon/tests/test_mcp.py
   - id: openwiki-source-e2be45e59936bfba43c18816
     resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-16T08:05:50.355Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # MCP Integration
@@ -250,11 +250,13 @@ literal by placing `<redacted>` in the same field. It takes a POSIX lock, reject
 symlink and non-regular reads, atomically replaces the file, and schedules a
 refresh only after a successful write. A stale revision returns a conflict, and
 validation, I/O, and malformed-file errors return generic messages that do not
-leak stored strings. With `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true`, an
+leak stored strings. When `update_mcp_server` runs without an active approval-policy entry, an
 update that restores a redacted literal may change only tool filters; changing
 any other managed setting is rejected so a hidden value cannot be redirected.
-Otherwise configuration writes are approval-sensitive in the Talon runtime;
-cron triggers are not approved this way.
+Configuration writes are approval-sensitive in the Talon runtime; cron triggers
+are not approved this way. The obsolete
+`DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE` environment variable does not bypass
+that file-backed policy.
 
 Approving a configuration update remains security sensitive: it can authorize a
 command launch or credentials sent to a remote URL.

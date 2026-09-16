@@ -5,7 +5,7 @@ description: How deepagents and dcode control model-visible context through resu
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-16T08:05:50.355Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -33,7 +33,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # Context Management and Offload
@@ -47,7 +47,7 @@ flowchart TD
     Tool["Tool returns result"] --> Oversize{"Text exceeds budget"}
     Oversize -->|Yes| Evict["Write artifact and retain preview"]
     Oversize -->|No| Keep["Keep result in request context"]
-    Request["Prepare model request"] --> Trigger{"Summary policy fires"}
+    Request["Prepare model request"] --> Trigger{"Trigger or input budget fires"}
     Trigger -->|Yes| Plan["Partition old history"]
     Trigger -->|No| Call["Call model"]
     Plan --> Archive["Archive old history"]
@@ -71,6 +71,8 @@ The summarizer derives history and large-result prefixes from its backend. A `Co
 
 If automatic summarization is not indicated, the middleware first tries the ordinary model request. A `ContextOverflowError` changes to the same compaction path. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive.
 
+The middleware also treats a request that exceeds its calculated input budget as needing reduction even if the configured trigger has not fired. That budget is 95% of a usable `max_input_tokens` profile value, less the largest configured output-token setting. After compaction it checks the complete request and permits at most one strictly smaller tail-clipping retry; an unchanged, still-over-budget, or again-overflowing request ends as `ContextOverflowError` instead of being resent indefinitely.
+
 ### Conversation archive lifecycle
 
 A session uses one markdown archive at `{artifacts_root}/conversation_history/{session_id}.md`; each compaction appends a timestamped `## Summarized at` XML-rendered section rather than replacing earlier material. Previous summary messages are filtered out because they summarize data already archived. `_summarization_session_id` is reused from state, or a UUID-derived `session_...` id is generated and persisted for later turns.
@@ -84,6 +86,8 @@ Only after overflow-triggered compaction, `_clip_overflow_tail` examines a **tra
 ## dcode compaction and server-owned `/offload`
 
 `CLICompactionMiddleware` retains the SDK model-initiated `compact_conversation` tool and adds a `PreCompact` gate before threshold compaction and provider-overflow recovery. If the gate declines normal automatic compaction, dcode continues the normal model call. If a provider has already overflowed and the gate blocks recovery, it re-raises the original `ContextOverflowError`. Its asynchronous automatic and model-initiated paths serialize archive read-append-rewrite cycles with a process-local lock keyed by summarization session.
+
+A configured dedicated summarization model is a best-effort optimization. dcode constructs it lazily, installs dcode's retry behavior and a model-specific history trim budget, and falls back to the main agent model when the dedicated model cannot be built or generate a summary. A blocking-error guard and a main-model failure still propagate; the fallback is not a way to conceal a failed main compaction.
 
 Forced compaction is a server operation, not a client checkpoint mutation. `OffloadOperation` plans summary state from hydrated checkpoint messages and dispatches a synthetic forced `compact_conversation` through `PreCompact` and `PreToolUse`. A hook interrupt returns to the client without a state write; resume invokes the operation again from the beginning with accumulated responses. The forced call id is derived from the attempt checkpoint namespace, stable across resume rounds but different across attempts. Missing hook outcome data fails closed.
 

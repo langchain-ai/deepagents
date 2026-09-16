@@ -5,7 +5,7 @@ description: Architecture of dcode's normal terminal-client and local LangGraph-
 tags: [deepagents-code, dcode, architecture, client-server, langgraph, acp, streaming]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-16T08:05:50.355Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -27,6 +27,8 @@ sources:
     resource: repo://libs/code/deepagents_code/configuration/resolver.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
@@ -39,7 +41,7 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
   - id: openwiki-source-877b53371bf970f1b38a1809
     resource: repo://libs/code/tests/unit_tests/test_workspace.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # Deep Agents Code Architecture
@@ -95,7 +97,7 @@ The child environment is also a security boundary. Startup-sensitive inherited v
 
 `RemoteAgent` wraps LangGraph's `RemoteGraph`: the underlying client performs HTTP/SSE parsing, `messages-tuple` negotiation, namespace extraction, and interrupt detection. dcode normalizes thread IDs and converts streamed message dictionaries to message objects for the Textual adapter, while state snapshots remain in the server's serialized form. It also retries one state update after an HTTP 409 by cancelling active runs, which addresses a stream cancellation that races server-side completion.
 
-Before a thread is used, `RemoteAgent` posts the configured cwd, workspace policy, and fingerprint to `/dcode/threads/{thread_id}/workspace`, then caches the server-returned descriptor. It separately registers the HTTP thread record because SQLite checkpoint data can survive a server restart even when the dev server has no live thread row.
+Before a thread is used, `RemoteAgent` posts the configured cwd and its configured **session** workspace claim/fingerprint to `/dcode/threads/{thread_id}/workspace`, then caches the server-returned descriptor. That cache is client-side convenience, not authority. The endpoint resolves the project policy from the server's `ServerConfig`; it rejects a client claim that includes project-scoped fields or differs from the server's session claim, and persists the resulting server-resolved policy. On a non-validation bind it also materializes the LangGraph HTTP thread record. Separately, `RemoteAgent.aensure_thread()` performs idempotent HTTP registration for recovery paths: SQLite checkpoint data can survive a server restart even when the dev server has no live thread row.
 
 ```mermaid
 flowchart TD

@@ -3,12 +3,7 @@ type: agent extension mechanisms
 title: Subagents and Skills
 description: Deepagents middleware for inline, forked, compiled, and remote asynchronous delegation, plus progressive-disclosure skill discovery and loading. Includes dcode and Talon configuration and runtime behavior for these extensions.
 tags: [subagents, skills, delegation, middleware, progressive-disclosure, agent-protocol, dcode, talon]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-1eafe6f1154067896b272b26
     resource: repo://libs/code/deepagents_code/skills/invocation.py
   - id: openwiki-source-090c6e0a873de04d273989ad
@@ -23,10 +18,6 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-454da083c2cc29febd156c7e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-ef66a16bd57d322614dc349d
@@ -39,9 +30,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-8ca4576d19f02a613c296c83
     resource: repo://libs/talon/tests/test_async_subagents.py
-  - id: openwiki-source-82dab853903c3a574614fd1e
-    resource: repo://libs/talon/tests/unit_tests/test_background.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-16T08:05:50.355Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # Subagents and Skills
@@ -60,18 +52,23 @@ The SDK default is **`"isolated"`**. `"handoff"` remains a legacy alias for isol
 
 ```mermaid
 flowchart TD
-    Parent["Parent agent"] --> Task["Inline task tool"]
-    Task --> Isolated["Isolated or legacy handoff"]
-    Task --> Fork["Fork"]
+    Parent["Parent agent turn"] --> Inline["task"]
+    Inline --> Isolated["Isolated or handoff alias"]
+    Inline --> Fork["Fork"]
     Isolated --> Fresh["Description in one HumanMessage"]
-    Fork --> Context["Effective history and task preamble"]
-    Fresh --> Reply["ToolMessage and filtered public state"]
-    Context --> Reply
-    Parent --> AsyncTools["Async task tools"]
-    AsyncTools --> Remote["Remote Agent Protocol graph"]
-    Remote --> Handle["Persisted task ID"]
+    Fork --> History["Effective history and task preamble"]
+    Fresh --> InlineReport["Wait for ToolMessage"]
+    History --> InlineReport
+    Parent --> RemoteTool["start_async_task"]
+    RemoteTool --> Remote["Remote Agent Protocol graph"]
+    Remote --> SdkRecord["Persist task record and return task ID"]
+    TalonTask["Talon task or start_async_task"] --> Worker["In-memory background worker"]
+    Worker --> TalonResult["Deliver result on a later owner turn"]
+    Reload["Talon reload"] --> NewGraph["Replacement graph"]
+    NewGraph --> NextTurn["Subsequent turns"]
+    Reload -.-> Active["Current turns and workers keep original graph"]
 ```
-*The inline path waits for a report; the SDK remote path starts work and returns a durable handle.*
+*Delegation lifecycle: SDK inline calls wait, SDK remote calls persist a handle, and Talon backgrounds both kinds while a reload affects only subsequent turns.*
 
 ## Inline `task`: state, results, and compilation
 
@@ -129,7 +126,7 @@ For interactive `/skill:` commands, dcode wraps the SDK skill parser with a loca
 
 ## Talon: fresh, backgrounded, and reloadable delegation
 
-Talon is experimental and has its own delegation layer around the SDK. It loads remote definitions from `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. The CLI supplies this loader to `DeepAgentRuntime` in strict mode. An absent file yields no remote agents; unreadable, malformed, or invalid configuration fails startup in strict mode. Non-strict loading warns and retains valid entries.
+Talon is experimental and has its own delegation layer around the SDK. It loads remote definitions from `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. The CLI supplies this loader to `DeepAgentRuntime`. An absent file yields no remote agents. Loading is fail-closed: an unreadable or malformed file, invalid section, or a single invalid definition raises `ValueError` rather than starting with only the valid entries.
 
 Talon also reads local `AGENTS.md` definitions from its assistant `agents/{name}/` directory (or its parent fallback). These require name and description, may select a model and exact unique tool names, and compile as **fresh** agents with a task-only input and the operator approval policy. Talon does not support SDK fork mode: local configuration rejects any mode other than its `fresh` default, and preparation rejects `fork`. Per call, its `task` wrapper can add selected catalog tools to a named local subagent without replacing configured tools; it rejects duplicate or unavailable selections.
 

@@ -3,9 +3,6 @@ type: security and approval concept
 title: Permissions and Human Approval
 description: Explains filesystem permission enforcement and path-scoped HITL, dcode approval modes and shell policy, and Talon's channel-mediated approval lifecycle. Distinguishes tool availability, policy enforcement, and human authorization.
 tags: [permissions, human-in-the-loop, security, filesystem, approvals, interrupts, talon, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py

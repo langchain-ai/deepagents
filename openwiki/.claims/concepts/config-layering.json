@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:821511372862b5cc93cc3136a9b0e838a018d3acda9d273ec5e6ba64a8286d58",
+  "pageVersion": "sha256:9b35bd2437c43bc17249a54baf21abf240288ad92c38937353df2d2e70175448",
   "claims": [
     {
       "id": "claim_1cfe64c62dd94bdf928836136186968f",
@@ -347,10 +347,52 @@
           "version": "repo-lines-v1:sha256:1826ffe948e9e3aefe94ce31ea4139965d4f83b0facf5067aa535eb4df06ca73:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1MWUyNWQwMzI5MWFjMjZlY2U3ZjNmNTE5MTBkNWE1YjQ3ZmFhNjBkMmFjNzUyYjVmMjAxNjY5MzQyYzZkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTQ1NGM3NWZkMGQ5ODY2MjA0NmZlODFiMTg5ZDY1NjczNDUzY2YwM2IxZjk0NjZkNTYzZDA1MmNkM2QyNmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTQ1ZmVjNDI1ODM3YTZlMWQ2NGRjY2MzN2M1ZGRiNTE1YmU2M2JkZmUxODJjZTI5ZmYzMjFlNGZkNDMzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3YWU5MjBkYzdkMWU2NmFhM2ZiNjRjYTIzMmVkNTEyYWNkODUwYWNjMzhiM2M2ZTc3MWRkNDI4OWY1NTc2MzgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_25319d1d39894b6ea60932296a5efede",
+      "statement": "The configuration manifest is the single source of truth for scalar option types, defaults, environment names, and config.toml locations; malformed scalar source values are logged and fall through to the next layer, while credential-bearing structured tables are redacted in config output.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L1-L31",
+          "version": "repo-lines-v1:sha256:f7750d5a50ebea3c3c8e898b0a9f20cf6ee5222d9b401cf3fe6fc399095a4bce:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwODhjNTFmMGQ0MDU5YmY3MTZiMmFkZDBjYmFlNDNiZmNjOTA1ODQyMjNhMWM3ZGMzYWRkM2QyODVmNDUxMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NDIzMjYyYmFlYzVhZWU1MTBiZWUzMmQ0MzQwYmI4MWZkYjVmNzk1ZGY1MTU2MTg4ZmU2MmUxNjNkZTNkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_195215b47ab74a1a855505d3807a0ce8",
+      "statement": "Server configuration distinguishes client-supplied session workspace claims from project workspace fields that the server must resolve per target directory, because project fields can authorize checkout-scoped code execution and must not be accepted across an unverified client boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_server_config.py#L34-L80",
+          "version": "repo-lines-v1:sha256:e54fa697f9c270b34b6ba4931d809c76bd8904c994bd0b923c1a2ca1b68fe3f3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2YzdmZDNiMzdiODYwNzU3OWViNDUyMGI2MjE2NTZiMDVkZTU0NGVkODFhZWUwMjkxNWZlNmU4ODJjNzUyNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4MGUyNTg3YWZmOGM4ODlhMWM0ZmY5NGY1MDA4M2I2ZTY0NDliZTQ4NWE0YjBmZDg5MWY3MjYwZGFjYTg1NDIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L781-L817",
+          "version": "repo-lines-v1:sha256:9dbfe4ffcde5940585a9037df180d7785c74e6a228ac4593bf29b293719a5839:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiN2IzODUzMGJjNjkwNjY3OTE5YWIzZDk4YWFmZTBiMGEyZGZiNTljM2VhMmM3YjYwZDY4ZDY0ODcyZjg1ZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1MzlkN2U2ZjczODY3NjNiMzlmZmQ3ZGI0Zjc5MjRlMWEwNDdkZTc1ZGJlNzRiYmNlMjRhYTYyMGJkMzJjMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1OGZiZTZmNmE4OWEwZDQwMmQzNjM2YzlhNjhhZWM3ZThlOGVjOGQyZTA0ZmUxMDIwY2IzYTcyMzc4YjFkN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkNjNkMTYxM2Q2MDZlNmM4NDc4ZDIzNDFkMzEyNGJjZTVhYzM2YjllZjg5Yjg2YTZkOTA2MTExZDhjYzYxMTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L435-L497",
+          "version": "repo-lines-v1:sha256:1e978efff5d629366aa3ad1b98fdda3495fc0a51b88bfb748f238be0ca38b648:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MDZkOTRiMzNmMzRkYzMwYWRjZGJkYmQ0ZjQ0OWJkNzk4MzRmN2JmNGQ4OTBkZWM3NTljNzQwMDFmMGM5YzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NTVkZmFmNWE5MDJlNjA1NmY3ODhlYzAwOTUyMDcwOWFhMmI0Mjc0NjBmYzI1ZDQwNDQ3MzcwM2ZjNzI4NGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1Yjk5YTM2NjRiYzk5YzkwOWQ3NjkwNTFiYjBlNjk0ZjBiNWFhZTgwNzRjMmQzZDFiNzFjZjQ3YTJmOGMzMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_85c3bfd2f0b5474aaf88bcc977dffbb4",
+      "statement": "Thread workspace bindings are durable SQLite records whose context must match at execution time; their stored workspace policy and fingerprint protect a thread from silently changing its workspace resource configuration after binding.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L201-L243",
+          "version": "repo-lines-v1:sha256:abdf822e3c0a70b21bb27611b93696b437de215a4da8b5b506b06b0a861ce0d2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlOGZjYjM2MWFjOTg4Mjk5MWUzMzM4YmQzNWUzMTQ0OTdkNDJmN2M1Yzc2MmY2NWUwYmI0NjgwODNhYjA3MmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4NzQxNGRkOTlmOWE4ZjgzNzUxOGM0ZGJmOThiN2NmMmY3NjFiM2FkNTI2MWZjZjQ2NjgwZGVmYzQwNWU5YTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwY2UyOTFiYTlhOWM0ZjkxNTE1ZWYzMmMyMzI4MmJmNjBhMzgyMGFjMzg0MzkzZWE0MTcyNDc2YmQ5ZGU1ZDcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L397-L497",
+          "version": "repo-lines-v1:sha256:90fd750fa63f094e0fc46dd2afccebd5a1336a970bcddc43adafd4d4eecc53bc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhMTMzNWNiYmE1NzA4ZmQ2MDU5NmNjMDBlOWE4YmYzYzU2YzViZmY0MDAyNjRkZDc4MDlmYzhhMTRlYWI3ZDNjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwNTU1ZGZhZjVhOTAyZTYwNTZmNzg4ZWMwMDk1MjA3MDlhYTJiNDI3NDYwZmMyNWQ0MDQ0NzM3MDNmYzcyODRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZjI5MDk3MmE1MWYyZGEyOGZkZGNiMjJhMGQ0Nzk0ZGRjZDBmNTc2MDhlN2ZkNWM4YzA2OTQzMGY0ZjliNDUyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

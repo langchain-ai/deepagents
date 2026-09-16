@@ -3,9 +3,6 @@ type: architecture source map
 title: Source Map and Change Routing
 description: Route an intended Deep Agents behavior change to its owning package, supported surface, implementation seam, focused tests, and release boundary. Use this as a change-navigation map rather than a package inventory.
 tags: [source-map, architecture, monorepo, deepagents, dcode, release]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -53,7 +50,10 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-16T08:05:50.355Z
 ---
 
 # Source Map and Change Routing
@@ -98,6 +98,8 @@ The `deepagents` root is the supported import boundary: it re-exports `create_de
 
 The layer boundary is important when routing a fix: Deep Agents is the opinionated harness, LangChain owns the generic agent loop, and LangGraph owns runtime state, checkpoints, streaming, and interrupts. Provider profiles affect model construction (including initialization arguments and pre-initialization effects); harness profiles affect the already-built agent's prompt, visible tools, middleware, and default subagent behavior. Registrations are additive, so a profile extension should be checked for its merge interaction rather than presumed to replace an earlier profile.
 
+A profile may tailor the stack, but it cannot exclude `FilesystemMiddleware` or `SubAgentMiddleware`: those are protected scaffolding for the built-in file tools, filesystem permissions, and `task` handler. `create_deep_agent()` rejects an invalid exclusion rather than silently producing an agent without those capabilities. Route a request to remove or replace either capability through the explicit middleware/backend APIs and cover the observable failure or replacement behavior.
+
 ## dcode: process boundary and server invariants
 
 dcode is a prebuilt terminal coding agent with a terminal client and an agent-server process connected by streaming. `deepagents_code:cli_main` is intentionally lazy so ordinary submodule imports do not load startup machinery. Use `agent.py` for dcode-specific graph composition, and use `server_graph.py` when the behavior is server-owned.
@@ -105,7 +107,7 @@ dcode is a prebuilt terminal coding agent with a terminal client and an agent-se
 The server factory has two load-bearing protections:
 
 - It caches the agent, backend, and offload operation shared by the interactive graph and offload routes. Rebuilding them per request would repeat MCP discovery, leak sandbox sessions, and install duplicate process-exit handlers.
-- A request carrying execution context must provide a non-empty thread ID and a validated workspace binding. The server re-resolves project policy and rejects drift; when resolving a different project, it drops launch-project MCP and sandbox setup rather than reusing potentially untrusted policy.
+- A request carrying execution context must provide a non-empty thread ID and a validated workspace binding. The server re-resolves project policy and rejects drift; when resolving a different project, it drops launch-project MCP and sandbox setup rather than reusing potentially untrusted policy. Bound workspaces have their own bounded-LRU runtime cache, but a configured process-wide sandbox can be claimed by only one workspace, so a second workspace is refused instead of sharing it.
 
 MCP discovery is asynchronous on the server event loop. The process-wide MCP session manager is tied to that loop, and sandbox/runtime construction failures are surfaced with a machine-readable startup marker for the parent process. These are lifecycle constraints, not implementation details to bypass in a feature change.
 

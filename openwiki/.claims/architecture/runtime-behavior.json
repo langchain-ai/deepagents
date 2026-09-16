@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f5638ab2b317aae0a2ce7a32c33597b416fe81278c4f7bd8931c206e2b83c1a3",
+  "pageVersion": "sha256:b096967871a5e7e092773f26a7967dd931930a3422c724052fed420ee7073dd7",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
         }
       ]
     },
@@ -199,10 +199,66 @@
           "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
         }
       ]
+    },
+    {
+      "id": "claim_0e91f26fcd1340598c0bd5fa7ab90821",
+      "statement": "The interactive CLI passes raw `-r` resume intent to the TUI for asynchronous resolution before server startup; normal launches reset startup-update deferral, while resume launches can defer it only for a bounded grace period.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L6112-L6120",
+          "version": "repo-lines-v1:sha256:49237132abfecc8c25b3cd6d3450092f77f4820640267b73079d8a6a1991ccc2:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjI2MWFlMWE3NmQxOGJmZDUyOGJkNDZlOTY1ODllNjQ1ZDRkOTBmZmIzZTkwM2ViMmM2NGJiZTg3YzkwMjkzYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmQ4MWUyYWI4ZjlkYWQxNTdiNjNjNjk1Mjc4NjFlNzdmMGZlOThiOGY4Y2NhODY4ODcyNDBmMzUxYjIzOTNkYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzMzZDc4NTY1OWQxOTQ5M2Q3ZDcyOWExMDZmZTVkOTI3NjFiYjA5NDEyYTU5NDRmY2VhMzE2ZmRhYjlhMDMxYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzlhM2E5OGZiNmZlZDc4Zjg1M2Y0NzFhMmNkMjMzNTJmY2IyOTM0ZWFmNjExZjE3YzdiMDJkZDBmNWUwYzhlZiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L6307-L6337",
+          "version": "repo-lines-v1:sha256:bee374a9740be95ead18d6428d3ca86f40a3102f947b4726b6265f12f0827ed5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0MTgwOTUxMGE0YTg1Y2IwZDJhMjkxYzk5ZjI2YzA5M2QyNDFmMTczZTBmOGVkYWNiYTkxOTNmYWYzZGU1YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZWI4MGJmYjFjM2U1NThiMTk1ZTIyYzVjNjEyNDBkMzVmYmYxNDk1NDkzZTNjZThlODc4Y2ZhNzdlZTQyYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyNjI5ZDFlZTk3NjQxMjg2ZDEyMzZjMjc3YjBkMmY1NWFmNzUwZDJkNDY5NjVkMGViZDViZTdhMGQxNDgwMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3M2NmZmI3ZGQ4YWYwYTVlMTU5Zjk3NTEwZDQ4ZTg3MjgzZWNkNTRhOGMyYWI4YzdiZGFhZTI2YzcyNmMzM2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_022e692b34984912962b57d9ee02686b",
+      "statement": "Resume resolution fail-closes on an unusable or too-old thread timestamp according to the strictest configured `threads.resume_after` or `threads.max_resume_age`; missing history, declined resume, and lookup failures create a fresh thread, while a launch-time cwd prompt can abort a selected resume.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L5871-L5939",
+          "version": "repo-lines-v1:sha256:8cc8c19b59cd1f1143d6ec3c316d833f5feea759e5b5b15a1a5a366e8568a55b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhZDBiYWQ5YWFkNGNiMDI4YjliZjYxMTU4YTJiMDA2ZjM2ZjNlZjllZjU4MDU2YTY5NjBhZjk1ZDUzOTUwMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1N2U2YjVlN2U5ZTAwZWViNzAzNjhiZDdiNjcxZGJkNGQ2YzY0ZTkwYjRiNDBiMTBkYzA2NzQ1OWI0MjcwMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5YWM5ZjE0N2RjOWZiMGQxYzhiODc3NDE3MmRjOTQ0OTRkYjliYjY1OTQ3ODcwZGUwOGI0YzdjMjhlZTBhMDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L5941-L6108",
+          "version": "repo-lines-v1:sha256:ed34a474bec12e37a38e055064d4d463433ba7ae18882d81d04fa7735378fc21:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNWJhOTgwMjI5ODJjZjRlYzU3M2RhYjBiYTFhOTBhYjA3NzY1YzNiM2Y0NTBiZjhjOTgwYWRiZmJmNmI1NWJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxZTVhMzM5NGJhOTRjZmIzNWUzNWZiNzgzODk4NWNjZjQzMzY4YmY1OGEzZGU2MDJkZmRiYWJmNmM2NGE2MzAzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMDA3ZTUwMjJiNzc1NTM1OWMyZDRmOWFkZDVhMjg1YjNiYzY4ODVhZTUyZDY1YTBmNzU0ZjRlOGMzYzZiMWU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MzNkNzg1NjU5ZDE5NDkzZDdkNzI5YTEwNmZlNWQ5Mjc2MWJiMDk0MTJhNTk0NGZjZWEzMTZmZGFiOWEwMzFiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_796f250668194479980e442a09da1423",
+      "statement": "ResumeState uses private checkpoint-versioned channels to restore effective successful-model settings and context tokens alongside the model response, while goal and rubric facts use graph or client state-update write paths; the TUI can restore these facts without replaying or re-tokenizing history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/resume_state.py#L1-L54",
+          "version": "repo-lines-v1:sha256:2e889e1ff7c7560cddb64b7787454f6af5f13ed4a68ec5aab2176b40e099744e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4ZDZiYjNkYjAxMzMxYmJhNzc0NjBhYTk3MDkxMTM5NDkyYmUxZDRhMmJlNWZiNmM3ZTgyMjBkZWQyNmUwYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0NzE4Y2IwMGQ5ODA4N2JjMGQ0NGUwZGU2ODY2OGE3NDQ0ODRlYTNiZTkxZDk5MTU3YzM4MTZmZjQ1Y2Y2YzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/resume_state.py#L235-L260",
+          "version": "repo-lines-v1:sha256:2d73e636161f6cf3b6452a33dc31bf7ebc01a787238f130fb2fcf0ba90acc4e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhNGRiNzYwNzYzZjcxMmVjZGM4NzU3NzY0MTdjY2JkMzQzYjljYjA0MzhiY2QyYTBiMjA4MDhkMjQ1MjIxYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0M2Q0ZThjOTJiMjE4ODI1NjNiOGVmYTgyMDkyZTUxMDRlZjY2NTMxMTc2NmI1YTAyODlhNjBiZDhiY2E0MDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkMWZlZjk4NWVhZGMyZGI3ZTQ5M2FjMGQwZmQ3ZGVmOGNmZGVkMmM2ZWYyNmZmOGVjN2M1ZjJlZGQ4N2ZhMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmZTU5ZDI1NDFhNGQ5YTMwOTg4ODZhNzU5NjNlZmRjMDc4ZDNjZTgxODEyZDE2YjJjYWMwNzA4NjVkNGU5ODIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e8b7e79a42c244dc803b4bd4a88825c2",
+      "statement": "For an oversized resumed remote thread, dcode offers compaction only after checking pending graph work; confirmed pending work is abandoned before offload, and failure to abandon reports that the conversation was not compacted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L29402-L29512",
+          "version": "repo-lines-v1:sha256:295625f66c40e1581d32cb7fd5dfcb54fbc23cd8936ad3eed4bb5a21666c6fd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkY2Y1YjAxM2VhMjc3Y2VlYTBkMDY0OTIwN2JmNzExMmQ1NDFjMGJhNDgxOWI0MzA0NDFlMWYyZWE1ZjNhNmM2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYjczM2JiZmY5NTMyNDcyMTlmOWNlYTRhODkyN2EyZjNhNTliOTcwMDZiY2IzMDYyOWVjMDcxM2Q4ZDIyNWMwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNjNjNTVlZjg3OGM4MTc2OTUxNTM1MjliNmQ1YTcwZTcwYjQ1OWY4ZjcyMjU1N2RiMjIxOGM3NmFkMzQxODdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMzI3MTI0MmE5ZjhiZWU0NjFhMWZiMjVmMzY5ODE4NmNmYjExZGY1NThmNjI0MDRiYWE5NGMxZTg0YTQ0ZmMwIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_compact_resume.py#L119-L128",
+          "version": "repo-lines-v1:sha256:783fe8e168cf09d5ebd86a55114636ff6db4ae46954a98564740f266034f75f9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3NzZlZDc2MGJlMDg5ZTkwNjQ1NzA4YzZlNjE2ODNmNGNiMzc2MjA2YTJlODBjNDk4NjFhNzcyNWE4NGI5YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExZmM0NjY4OThlMjEwMDBhOTE0MDZmNGMwODQyZjZjNDRhZDEzYWQ0ZjVhMjI1ODI5Yzc0NjY0N2E2OTE1YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3N2M4YTNkZWUzY2IxNTMyZWZmY2NiYzE4Yzc4NDU5YjcyYzJmMTEwN2IwNmVjOWM4YWQ3NDMxMTBjNjNmYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiYzk1YTMzNTAxZWVkZDYwMTc0YzZhOTFlOTFlNDZlZGJiYzg2YzYzN2RkMzg2NGEzZWE5YjFiNmIzMDFlYzMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

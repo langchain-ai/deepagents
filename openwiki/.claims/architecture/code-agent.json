@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2a99ed137478555ec2efb3c96e348559e67345781bdb5237a8d1270b0879d943",
+  "pageVersion": "sha256:2fd61a855ab410564130977808820e57e515e501b54f3c3afe778c9c9d08d4cb",
   "claims": [
     {
       "id": "claim_d463e7db72ac47529b1cd7e9f1097352",
@@ -262,7 +262,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L792-L952",
-          "version": "repo-lines-v1:sha256:4e79aab3904b1648de4a74d82de6f7c72bcc9c7a779a38947bc92784116c21a7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiZjlmZGQwMTk2MDIwNWMwNzQ2N2U3MDJjNmE1YmRhZGJkMzFlZmE3NDU4NmY0M2Q5NjZkYmJiOGMwYjg2ZDY5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMjljNTI0NDM0YzAwOWFhZjBkN2ZlOWUyZmZlNzIyYjE3MGNmOGViMWM4YzE1NzVlNGUzYmQ1MWU5MjZjNzFiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMDg2MjcyYWM0Nzg3YzI3N2IyYzFlMzlmOTljMDgxZGY4MzM2ZWZjZmFkOTFjZjgyNjQ0Y2QzYmY4YTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWJkMGNmYmFhYmM0NDI1ZjI4NDUxMjQ3NTliMmFlNTIxNTBiMmM2MTBjMjNhYzU0NDE2YWI0YzU5ODMyYzc0In0"
+          "version": "repo-lines-v1:sha256:d8eaaad3a59b008a7b348d6baa2824de55872e91f46e86315b7a952cdc4e124e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTc0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiZjlmZGQwMTk2MDIwNWMwNzQ2N2U3MDJjNmE1YmRhZGJkMzFlZmE3NDU4NmY0M2Q5NjZkYmJiOGMwYjg2ZDY5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMjljNTI0NDM0YzAwOWFhZjBkN2ZlOWUyZmZlNzIyYjE3MGNmOGViMWM4YzE1NzVlNGUzYmQ1MWU5MjZjNzFiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMDg2MjcyYWM0Nzg3YzI3N2IyYzFlMzlmOTljMDgxZGY4MzM2ZWZjZmFkOTFjZjgyNjQ0Y2QzYmY4YTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWJkMGNmYmFhYmM0NDI1ZjI4NDUxMjQ3NTliMmFlNTIxNTBiMmM2MTBjMjNhYzU0NDE2YWI0YzU5ODMyYzc0In0"
         }
       ]
     },
@@ -383,10 +383,24 @@
           "version": "repo-lines-v1:sha256:9a4859d8e893f697e5f5eb5b654ee06471a3b3b615c50d8f3ec2adedf5c9d539:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjM2QxMzIwN2ViMjFjMmRjMmQzZDg2YjNkNTIxMzFkYTY2M2Q4YjM5NDVmMWIzY2IwMWMzNWE4NGIyNjNmZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzODlmMmZhN2Q5YzQwY2FiMjU4ODQ0M2QwYzFlOTRkNzMzNDQ1MjQwNGIwYzhhZDgzMDQ3NGYxYTg4MWRmODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ1Njk1ZmVhZjEyOTUzOWU1MGM1Njk5NGUzYTUxZTVmZTFlY2I4NmMzMzhkODUxNTQ0NmZmY2RiNDU1NmIwZTgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ec51a9ca283244198cc207e090289bb9",
+      "statement": "The server workspace endpoint treats the cwd as an untrusted identity input and resolves project policy itself: it rejects project-scoped client policy and mismatched session claims, binds the server-resolved workspace policy, and returns workspace-specific MCP metadata.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L212-L325",
+          "version": "repo-lines-v1:sha256:28df6d5e6b6dc9fae1a1245170d69a9842e4ba227b1bb8414364370fedb1591f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZjA4MmRlMTg2NTAxNWNmMzU4ZWYwOGMzMzk1NDYzYjViZmIyNDZjYzY1ODJlNDlkMmUxOTY4OTY2ZjExMDA1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MzkyMzYzODRjY2VhZTczMDgyODkxNWIyZjU3MGRhNTE1NWIxMjgwYTdmMzhkNjc5ODA5NjFhY2Q5ZjJiOGVhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NmFiNWU2YmU0NGM1YWU0N2E3MzZkYmJkN2MzMDljMDFjYzY0OTNhYmUwMDc0OGMzMTc4MjQyNGI5N2YxODgzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3OGIyMWFjZmIyNzMzMTYwOWJmZjcyNWFkODI3OTFkNjEzYTg3YWNhNzU0YTRlMWE5ZjBiMDg0NDVmMmZmOWY2In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L156-L197",
+          "version": "repo-lines-v1:sha256:a83bb0b5dec67b3b6e60601aa5f06aca836b839b177f57bbe665d62ce579a99b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzNTE2NjNiYjA0ZGM3MTQ3ZTQxYzVlZGU5ZGFmOTBjNWYxYzE3YWFiMGRjYzRmZWY5ZmQzNjYwNjdhZWMwZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2NzBmMjllMDc5YzY3NzQzM2Q4NTg1ZGVmZDhjYjY4YzRjMDZiNjRjN2E5ZGNiYjIyOWE4Mzg0MTBhYzk3MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NzQxNGRkOTlmOWE4ZjgzNzUxOGM0ZGJmOThiN2NmMmY3NjFiM2FkNTI2MWZjZjQ2NjgwZGVmYzQwNWU5YTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

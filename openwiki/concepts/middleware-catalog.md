@@ -3,9 +3,6 @@ type: capability reference
 title: Middleware Capability Catalog
 description: Capability-to-owner lookup for Deep Agents middleware, covering request shaping, filesystem access, context, memory, skills, delegation, quality gates, permissions, caching, and profile enforcement. Use it to select the owning layer and understand its important lifecycle boundaries.
 tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
@@ -41,7 +38,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-16T08:05:50.355Z
 ---
 
 # Middleware Capability Catalog
@@ -121,7 +121,7 @@ If a normal request raises `ContextOverflowError`, summarization is attempted ev
 
 `RubricMiddleware` is inert without a caller-supplied `rubric`. At a natural agent stop it sends a bounded, sanitized transcript to a lazily built separate grader agent, whose `GraderResponse` is constrained to `satisfied`, `needs_revision`, or `failed` and criterion-level consistency. Only `needs_revision` appends tagged grader feedback as a synthetic `HumanMessage` and jumps back to the model. `max_iterations_reached` and `grader_error` are middleware terminal results, not grader verdicts; non-satisfied terminal outcomes preserve the main agent's last response, so callers must inspect private state, events, or the callback to branch. Grader transcript contents are explicitly treated as untrusted observation, while the rubric defines done.
 
-`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call whose id has no `ToolMessage`, it inserts a synthetic cancelled response—or a malformed-arguments response for invalid calls—and rewrites the complete message list.
+`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call whose id has no `ToolMessage`, it inserts a synthetic error response: valid calls report that no result was recorded and may have been cancelled or interrupted, while invalid calls report malformed or truncated arguments. It then rewrites the complete message list.
 
 Profiles may omit middleware and tools. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: it removes excluded tools from the model request and rejects an excluded name at the tool-call boundary, preventing a custom request wrapper from re-advertising it. This aligns advertised and executable tools; it is not a security boundary.
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:65f4cf51bd392fbff3520bbeb7a094778c6783486901b83de21be002cd751bd7",
+  "pageVersion": "sha256:42f4f37e41ad6db3ee2adc98bba30733d0c4f2ee426c61d95369e13bcdb864ed",
   "claims": [
     {
       "id": "claim_d5aa81de837946b19d18c6953cbc5d84",
@@ -104,7 +104,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/auto_mode.py",
-          "version": "repo-file-v1:sha256:b3820bdba2ab9519abfe8220708d5a13a5efcc7768dae0861042c613cddd5e4d"
+          "version": "repo-file-v1:sha256:aa5505d2df5dad53c911baa19cd7c6dbe675213814cdc60accd290bb807d05cb"
         },
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
@@ -150,11 +150,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -164,15 +164,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py",
@@ -190,11 +190,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -204,11 +204,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_mcp_config.py",
-          "version": "repo-file-v1:sha256:96f1d0d8ece96fba82491ae16c4b77ffd08e1adb4388efcdf3da20ec0dbaf3c3"
+          "version": "repo-file-v1:sha256:cd2e39b982d43391e4ea321148740203cf408055608ddc01b70d7cdc33adbd10"
         }
       ]
     },
@@ -218,11 +218,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -242,23 +242,23 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         }
       ]
     },
     {
       "id": "claim_4d154abe2dc94739a6bc5a21580c3531",
-      "statement": "When `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true`, an `update_mcp_server` request that restores `<redacted>` values may change only tool filters; other managed-setting changes are rejected to prevent redirecting a hidden value.",
+      "statement": "When `update_mcp_server` runs without an active approval-policy entry, an update that restores `<redacted>` values may change only tool filters; other managed-setting changes are rejected to prevent redirecting a hidden value.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

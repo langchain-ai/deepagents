@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cca9bd3acb617ac4ef20a2c54ef9ce636c7ba8340b675b3a3ef740ee827d0f87",
+  "pageVersion": "sha256:e4963c2344be339e5fa38a2f29c08c0c8346467e5eaacf6354c5a33969c3e635",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
-          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+          "version": "repo-file-v1:sha256:14c50a50b3561d34caf35578ff0736e4b1cfcd3e01a98b7f0be429bc40b19939"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -28,7 +28,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -42,7 +42,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -52,7 +52,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -90,7 +90,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -100,7 +100,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
-          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+          "version": "repo-file-v1:sha256:14c50a50b3561d34caf35578ff0736e4b1cfcd3e01a98b7f0be429bc40b19939"
         }
       ]
     },
@@ -110,7 +110,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
@@ -140,7 +140,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -154,7 +154,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -168,7 +168,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -188,7 +188,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py#L119-L142",
-          "version": "repo-lines-v1:sha256:edfd629ff3086bb037a5b6dd70ab5e008b077f7de406c80fefb161a98c543721:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNGYwMjI1NTU0YWYyZWU5MmFmNGQ0M2VlY2Q2YjUwMTFkZmFkMDFlMzQ5NmIwNmVjYmY2MzUwMWZiNGZkZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhYWVmZDAwYjA3ZDQzZWU2ZTIwMjE3ZDc0NzBjZGE0NDJkMWJhMWQyZDA4YmQxYzAyMzk3MWJhNzAyYThmNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5OTUxMjVkMmZhYTdmNzBhOTkxNTE0ODc5NDg0ZjcwNzk0NzAzYmRlNGZiZTQ5NGQ1YTA1MGE1NWFiNDNjOTcifQ"
+          "version": "repo-lines-v1:sha256:8d21688e45d7728c798ac70569e6df1f4fb92f3146991d6b14b463d448ad384d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNGYwMjI1NTU0YWYyZWU5MmFmNGQ0M2VlY2Q2YjUwMTFkZmFkMDFlMzQ5NmIwNmVjYmY2MzUwMWZiNGZkZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhYWVmZDAwYjA3ZDQzZWU2ZTIwMjE3ZDc0NzBjZGE0NDJkMWJhMWQyZDA4YmQxYzAyMzk3MWJhNzAyYThmNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5OTUxMjVkMmZhYTdmNzBhOTkxNTE0ODc5NDg0ZjcwNzk0NzAzYmRlNGZiZTQ5NGQ1YTA1MGE1NWFiNDNjOTcifQ"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L605-L613",
@@ -361,10 +361,38 @@
           "version": "repo-lines-v1:sha256:c381e3e94451ec6f95315ba57af4868bfc3fcdb9cb946fcd2e1102ea601d5b3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3Nzc2ZWQ3NjBiZTA4OWU5MDY0NTcwOGM2ZTYxNjgzZjRjYjM3NjIwNmEyZTgwYzQ5ODYxYTc3MjVhODRiOWM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OWFlZTllM2U2MWI5Yzc3OTEwNzJmMjU2MTNlMGExMzYyNjU0ZTQwOTMwNWQyNDllYjQ0MDljOGY1ODgxNTQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NzdjOGEzZGVlM2NiMTUzMmVmZmNjYmMxOGM3ODQ1OWI3MmMyZjExMDdiMDZlYzljOGFkNzQzMTEwYzYzZmFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MiwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMTg2YzA2YWNlOWMxZjIxZmExMjY2ODAxYmY0NzU1ZDczYjcwNDUwYTYwZjNkYjMwYmNlYjYwNzMxYzkxYzlmIn0"
         }
       ]
+    },
+    {
+      "id": "claim_4175588394564a4fbc3cc69313efe66c",
+      "statement": "Summarization also compacts when a request exceeds its calculated input budget: 95% of the model profile's max input tokens after reserving configured output tokens. It sends at most one strictly smaller tail-clipped recovery retry and raises ContextOverflowError when reduction cannot make the request fit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1380-L1470",
+          "version": "repo-lines-v1:sha256:aec5f75101a7094ebeb55ad2551249f357c08db5085f877c8c0c911237aba439:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkMTQzNzVlZjlkMTRmZTBiNDZkYWFiMDZmMzMyNmU0NDliNTZjZTQ2MGU3NzhhYWU2YjY1OTNjOGVmZDZhMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3YzQ4ODg1NDY4ZTI5NDBkMTU0MDk0NjE5MzAyYThkZmU1MDJmMjJlMDQ5OWEwYTYwMTA2MGMyOWQ4MTE0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5NDVkNTdmYmI4N2Y3ODE4NDVhYzY0NTBlMDUyN2I3MzRmNDEwOWVhOTdmYTNiNTQzOTMwYTBlYTIyMjVlYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1508-L1608",
+          "version": "repo-lines-v1:sha256:4c723ff3eaf6cde8b6b8a244cc96292253a937591a70c459692de3b1634786ff:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxZGU1MjdlNzdhODgwY2Q3OTlkYTY4NzNhZWMwM2QzZTE1NTRkNTZmOTFkNGJmYWNkNDYxYTQ2ZGQ0Y2VjYjBiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYjUzMzY3NzIwYTM2NWQ5ZGU0YTA4YzQzMDIxZjgyMjM2MGZlOWYxYjU4Y2QyMmI3ZjAzOWQ2NDcxN2ZjODRiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMjM3NTY4ZjM3MWM2NjRmYTczOWZlNmRmMzcwMmU3NjI1M2UwNzQzMjhkMDI1NmE0YWFkM2RlZDk5ZDdmOGE0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_acb25d224d334d7aae8c301775b8ffe0",
+      "statement": "dcode lazily configures a dedicated summarization model, including retry and model-specific trim/token settings, but falls back to the main agent model if that dedicated model cannot be built or cannot generate a summary; a main-model failure still propagates.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L157-L237",
+          "version": "repo-lines-v1:sha256:1c67060c38a248f8fa152d5f1a88a1a05c8f9171d16cc7dcd5bd00b899d09671:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjODBhZjcyOWZlYmNkNzZlNjcyNjI2ZTNiZjdlOTkwZGU3MDI1ZWJlZjQzODI0ODdiMDFiNjBhNzllYTYzMWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0OTQ3YTlhNzA5OTc5N2Y0M2I1ODdjNjg5YzUzMzYxNzFhNDkwM2M5MjdjMGU2YzcyZDU0ZjczZjY3MmQ0NWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkYzFlNDQ5NTNiYWI0ODlmMzBmNTJmZmMyYzM0MjhiZTM3OWMwN2FmNGJhYjcxMDgyYTFlNDlmNWQ1ZWU1YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNTZmNjM5YmEyY2U4YjFlYTMwN2Q1OWIxYmI1ODMxODYwYzgyY2U3ZjJhZWUyMDcwYTlkMTBlNjk1MDUwY2EifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L280-L441",
+          "version": "repo-lines-v1:sha256:10d7c81d319e9d3e8c7c4ac8ab0f26899040f69f1d802e9d3068d8591251fb45:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4OTNhMjg5MGI1NDdjMjNlNTg2Y2U5MGY4MzBkMTIwMTIxMzZiMjg0NGM0ZjI2YWVkNzA0NzFiMDQ2MWJjNzk1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2YmNkZGQ3NmU0MmI5OWU1YzMyZjBhYTRlNWRiNDBmNzhmZjVkMmJlNjQ1ZDM1Yzk0NzU3N2YxYmRhZjcwN2UzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmY2FiMTZkNmFmY2NmYTBjZGJkYjNkMzgzZjk5ODk3MTg1NmQzNzRlOTY3NmEwMzZkYTk0NmFkMjI2MGM4MDZkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMDczOTE3YjBlNzZmZTAxMzc5ZTgzNmEwMDI2MDU0ZWZjN2ZhOWU4NTAxZWU5YjFhMzkyOTdiMTkzYTU1ODg4In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

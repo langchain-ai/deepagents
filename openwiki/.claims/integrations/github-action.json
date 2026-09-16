@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1368b1a7cdce0622350ef575dd2a5bb6f44925f40f631665ef67e13854307ac2",
+  "pageVersion": "sha256:91b3e254411e366219810b3f46dcd1715f3374d95f2e33dd495e76151df59b78",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -133,10 +133,66 @@
           "version": "repo-lines-v1:sha256:4f05b909c56eb1c684ba70e4660417a9c62c983f7b8d420be73578d5150efb87:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjM0NTgzYTU5ODc2N2JmNTZhZWZlYjY1ZTIwMzNhMTY1MWNjNGM4ZDdlNmYwYWYzZTVjZmQzMjkzZjkzM2IzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjYjk3OTk3ZmM2NDQwNWMyMDExOWI2MWYwMTNjZmE3NTE4YzUzNDY5ZjU4ZDI3ZjY1YTMwYTQ4NDZkMjgyZDZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0N2RjZmUwZGIwMzUxN2VlZjFkOGU1M2NiZGIwYTIxMGU2OWRjMjYwZDVlMDI3ZWYxNmFlNjBlNGMyNGZjYTM2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
+    },
+    {
+      "id": "claim_0c867cafda9f463f9f4244c3461dc413",
+      "statement": "The composite action declares its complete workflow input contract in `action.yml`, including task and model controls, credentials, memory identity and scope, skills, shell, MCP, interpreter, sandbox, rubric, output formatting, stdin, and outer timeout inputs, with documented defaults for the applicable fields.",
+      "evidence": [
+        {
+          "resource": "repo://action.yml#L8-L151",
+          "version": "repo-lines-v1:sha256:4a0a5ba710169cd8f8b66c67251dd358c0a418725c272a07f3b93058c30ef77c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZGVhNWExN2UxOGRkNmQwYzM0YjRlM2E1Yzk3MWE5YjdhZWI2MzNkNjFhNTU2YmU1NDQ1NjdhNGQ5MTJhYjk0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OGJhNDJjYmY0OWQwYzRmNDgzNzE3YmQzNGRiYzlkNjY1OWM3MmY1NGE1M2NjNmEwMzg5NTQyZTVhODE0OWUzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxMTdlNDkwY2FmNTNkNDI4NWViMzI0YTkzOThhNjMxZjgyODE5OWZmMGM2MGIyNGQyNDJiOTdiZmFmYjE4NWFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyM2RjNzI0ZGI3N2RiYTM1MWNhZGFiNTUwZTI2MTQ4NDI0Y2UxYjhjMjIxNzBkNWNhYTE2ZGM2NjZlZTM3MDFmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1b125b19f90c40f68d927c593454e422",
+      "statement": "dcode’s CLI gives action-forwarded model profile overrides precedence over configured profile overrides, merges an explicit MCP configuration above auto-discovered configurations, disables all MCP loading with `--no-mcp`, and treats `--trust-project-mcp` as trust for project stdio and remote MCP servers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2641-L2662",
+          "version": "repo-lines-v1:sha256:4facbd5266546094114cf9831e4494c3e438357e82f8bb3607c57206070116cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMGY5OWQwNWVmMGNjZTU1ZTllN2M4ZjU1MzUzZDllZWMwNjI3MDRhMTRiZjU2YmNjOTk1MDhhZDU2NTVjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkNGJlYWEzOTBjOTRmZjMxNzY2MzhlODk2Y2YzNDJiYmQwOWYzMjFmZjk1NjYwY2VkMDY5Yjk1MjJmODNiYWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlODc2NGNlYzhiMjJmM2E0MWJhYmNlNTI5MTI5OTVmMGY5ZGEyMTMwNzgwZGMzNTk1ZDk0YjMyNmQ5ZmUyN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5MjIwZTFlOWZjMDgzYWU3OGEyOThhZmIxNzdjZDgzZjRlMTBlZWU4ZDA4Y2NiNGMxNWQ3MmQwOTEwNDdkMTMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2529-L2535",
+          "version": "repo-lines-v1:sha256:6983c5b9a9256869c17336d007024395f71eefdc1b5b88fed38d5f2c1a06f146:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJlY2VlYWZkYjYyNzg5NWJkMGVkNjA0YzlmY2VkYjY4Njk3ODY1NjE4Y2JkMjQ0OWEwNjZjMDAzZTk0OGJmMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDcyOWIyOWE1YzMwZDdlOWNkOGI3MWJkMGQ2ZmFiYzdkY2U0NjM2OGVmZWE2MzZhZTVkZWVjOWVlY2Y0MzJlMCJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2760-L2775",
+          "version": "repo-lines-v1:sha256:e031ea398baee1e64fc767da511d171e929aed3a06232f095a873ccb04c39bce:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmZmE2ZjlmZTEwOWU5ZGU2YmQyMDJkMGViMDE2OWYzMmYzMTgwMjg2YzExNTU4ZWNkMWNjYTZmODQwYmMyYmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzOWZiZWM3ODVlODZjYjQ3MGUxMTM5NjY3ZDRmN2RlY2I5NGVkYTA1NTY4ZDNhYjFlZTAxMzEzMmQ3YzEzZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3MjJjODFhNjE1MGZkMjNlMTQ5NWQ1OWZiY2ZmMTY3OWVkNDUxMmJlNDIwMjExZTQ5ZTNkYTdmMTMxYWQxYWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_da376115ebfe4d2281cc811e7f2f2e59",
+      "statement": "A dcode startup command runs before the headless task; its nonzero exit or timeout produces a warning but does not abort the task.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2634-L2640",
+          "version": "repo-lines-v1:sha256:fadb664280d498b4b03f49ea24215f8f89b888ffd88b5d688f58d949fbb4389e:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZThkNTBlMTMyODUyYjE0NmVlNzM3ZTAyNjdjNzhjMmU1YTAyN2ViYzZmMzU3N2UyZmVjODgxYWUyZDVhM2FlZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjBhYjEyM2U1YWEyNjNhODczNmExZTUwNDQ0MTQzMWJmZjAwZGVmZjIyMWM5MTFhNGFkMmFjMmI2Mjc1MjNkZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODc2MzUwYjI3YjgxZDVjMjliYjk3MDE0MTQ3MDFlMDk1NDQxNDliN2VmZmQzMGEyYTE5YzM2NDE1NDRkYjUzMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2RmOGYyMzc2ZTkxZTczZDJmYmJhNzM0ZDE5YWI1OTI5MjlmNDZiYTIyYzNmYjZlZWE4NTJjYWUxZjJhZjhlYiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2701-L2706",
+          "version": "repo-lines-v1:sha256:a49999c56798f3f62cb914565cc2e2c2637e9b16e9e36106acd37de71ee6f0a9:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDJhZGFiMzYxMGI1YjM2NTk5N2M3ODFjODMxNjMxNmY4MTJmMDE4N2EyMWE3NmFhMGYxYmE0NDRkZTIyZTc3MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzgwYzNkYzhkM2ZmN2ZhNTUyNTE1NWJiODMyOGQ2ZGRkYTBkYzUwYWQwNDQ0NGMxYzJjNDRhYTFjMzc4N2RkNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjAwMTZkOTFhYmE3ZWVlODJkODA1NjBkOWE5MmVjZGE3MThlNGI5YThhNjg3OTE2NmQ2MGU1ODYwZTdhOWQ2NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmM4OWRhYTkwYTc2YWUzMGQ3MmY0YTIyOWU4ZTU5YjE5MGNmYzM4NTgyNzBhNzNhY2NlMTU2YTU1Y2NiZTNmNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_299fa8d8caac4b6e81daccc8ec3caa66",
+      "statement": "With no explicit interpreter action input, dcode uses its sandbox-aware interpreter default; `--interpreter-tools` accepts `safe`, `all`, or a comma-separated tool list and sets the JS interpreter PTC allowlist.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2663-L2667",
+          "version": "repo-lines-v1:sha256:a70718e89e393908b0a769c492aa40f6f95d8022061668d2da1a775d39be8b87:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTYxOWI3YjVlNWZlZDdiYWYyMDE1MWU3MWQzMzQ3NWJmYTczMzBiNmFkNTZiY2VjYmNlNWY4NmQ2YjRkZTgwYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2FmNjk0ODNiMTRlMmFiZWYyNTE0NzJjYzc3ZmQ5MTM3MjJlNjVjNmI1ZGY5OTgzNzUyNGZhNDQ2NzQ1MmM5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmExZWZmZjMwYmE2MDU3ODQzMjRmN2Q0OTllMzdmZTA1YmIyZTEzMTZiYWI2OWMwNGY5MmRkNzM5ZGJjNGM3NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2I0ZGEyMzZmZGU2ZjFkYmZlZGE3Yjg1MWZmYTkxOTkwZWFlYWZhYjBjNTViOWZkMjI3NGYwYTllMDZkYmRiOSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2798-L2810",
+          "version": "repo-lines-v1:sha256:baf1bf7c639fd229761510c9994c7642ef870d357df6d2d2d412497d825dcea7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhNzFkZDAwOGM0OTE4MGM4OGNjNDk3NmQwYTU0YjU2ZDJiNzA2NTU2ZDdlODBlODE5NTY3MGMzNmEwMTVkYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5MTRjMmI1Y2UwNWEzMzU5Y2I5ZTI3Njg1ZTcxODhmZGRiYmY2Yzk5MTNlMTQ1ZGNkNDY4ODM0MzMwMzRmNjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0Y2MwYzhkMmE2N2E2MTQxYTAyN2NkNGIyMjY0MzRlYWRiMmVmN2E5NDMxYmIxMzY4MGEzYjQyNjU1NmM0ZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhMjUwYzdhOTk4YTI2ZTgzMjEyNTU2MTliMmMwNjFlZGU0NzlhNWMyMDY5YmUxODcwZWFkOGIwNDc3NmVlYWIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

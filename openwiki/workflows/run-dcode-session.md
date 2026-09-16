@@ -1,56 +1,26 @@
 ---
 type: operator workflow guide
-title: Run a dcode Session
-description: Trace an interactive or headless dcode session from CLI policy and startup through its workspace-bound LangGraph server, streaming and approvals, persistence and offload, to recovery and cleanup.
-tags: [dcode, deepagents-code, cli, sessions, headless, acp, approvals, mcp, hooks, sandboxes]
-sources:
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-a9143c1c174362216a1cfa2c
-    resource: repo://libs/code/deepagents_code/approval_mode.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
-    resource: repo://libs/code/deepagents_code/client/non_interactive.py
-  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
-    resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-0f8622164498a685abc913d5
-    resource: repo://libs/code/deepagents_code/sessions.py
-  - id: openwiki-source-29a60a7d68da0bf4ec625403
-    resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
-  - id: openwiki-source-88fb8e5a1d032ebc6b6d11b3
-    resource: repo://libs/code/EXTENSIONS.md
-  - id: openwiki-source-a7917911d186cc47811a1430
-    resource: repo://libs/code/HOOKS.md
-  - id: openwiki-source-1d73b3e2b56b5f0d27273379
-    resource: repo://libs/code/README.md
-  - id: openwiki-source-6e002fd7a8a5dcb5186cae05
-    resource: repo://libs/code/tests/integration_tests/test_compact_resume.py
-  - id: openwiki-source-c8dacdfd6192dd22d24a9362
-    resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
+title: Run and Debug a dcode Session
+description: Operate and diagnose interactive, headless, remote, resumed, approved, MCP-enabled, ACP, and offload dcode sessions from CLI dispatch through server-owned workspace and graph state.
+tags: [dcode, deepagents-code, cli, sessions, headless, acp, approvals, mcp, sandboxes, debugging]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+    at: 2026-09-16T08:05:50.355Z
+sources:
+  - id: openwiki-source-0f8622164498a685abc913d5
+    resource: repo://libs/code/deepagents_code/sessions.py
+  - id: openwiki-source-2210f4f5fcd450ae7e603c49
+    resource: repo://libs/code/DEVELOPMENT.md
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
-# Run a dcode Session
+# Run and Debug a dcode Session
 
-`deepagents-code` (`dcode`) has three launch shapes: the normal interactive Textual TUI, a one-task headless client, and an ACP server. The TUI and headless modes are clients of a temporary local LangGraph server. ACP is an explicitly separate in-process stdio integration and is not on the normal-session path.
+`deepagents-code` (`dcode`) has three deliberately different launch paths: an interactive Textual TUI, one-task headless execution, and an ACP stdio server. TUI and headless are clients of a temporary local LangGraph runtime. ACP builds and serves its agent in-process, so do not diagnose it as a failed loopback-client session.
 
-See [code-agent architecture](../architecture/code-agent.md), [runtime behavior](../architecture/runtime-behavior.md), [configuration layering](../concepts/config-layering.md), [context management](../concepts/context-management.md), [state persistence](../concepts/state-persistence.md), [MCP](../integrations/mcp.md), and [security](../operations/security.md).
+See [code-agent architecture](../architecture/code-agent.md), [runtime behavior](../architecture/runtime-behavior.md), [configuration layering](../concepts/config-layering.md), [context management](../concepts/context-management.md), [MCP](../integrations/mcp.md), and [security](../operations/security.md).
 
-## Choose a mode and establish trust
+## Start with the right mode and trust boundary
 
 ```bash
 curl -LsSf https://langch.in/dcode | bash
@@ -59,115 +29,139 @@ dcode
 # One bounded CI or scripting task
 dcode -n "run the focused tests" --max-turns 8 --timeout 600
 
-# Separate ACP service over stdin/stdout
+# Editor-host protocol over stdin/stdout
 dcode --acp
 ```
 
-OpenAI, Anthropic, and Gemini are included in the installer; provider extras can be selected with `DEEPAGENTS_CODE_EXTRAS`. The working directory is a trust boundary: project artifacts are read before an approval panel exists. Approvals gate model-requested tools, not startup reads. Do not use an untrusted checkout on the host; use a remote sandbox when host isolation is required.
+The installer includes OpenAI, Anthropic, and Gemini; use `DEEPAGENTS_CODE_EXTRAS` for other provider extras. The current working directory is a trust boundary: project artifacts are read before the approval UI is available. Approval controls model-requested tool calls, not startup reads. Do not run an untrusted checkout on the host; select a remote sandbox for execution isolation.
 
-No `--sandbox` means local execution. A bare `--sandbox` resolves the configured default; a provider name selects it. `--sandbox-id`, `--sandbox-snapshot-name`, and `--sandbox-setup` select or provision the remote environment.
+An omitted `--sandbox` remains local. A bare `--sandbox` selects the configured default; sandbox ID, snapshot, and setup options select or provision the remote environment. A managed default names the backend for a sandboxed launch; it does not force an otherwise local launch into a sandbox.
 
-## Dispatch and normalize input before startup
+## Dispatch before an agent exists
 
-The CLI parses arguments and applies managed policy before an agent launch. If managed configuration cannot be enforced, normal operations fail closed with exit 78. Help and the diagnostic `config`, `doctor`, and `auth path` routes remain available; `threads list`/`ls` and `threads delete` operate on SQLite without starting an agent.
+CLI parsing and managed-policy enforcement precede session launch. When managed configuration cannot be enforced, normal operations fail closed with exit 78. Help plus `config`, `doctor`, and `auth path` remain available for diagnosis. `threads list`/`ls` and `threads delete` operate on persisted state without launching an agent.
 
-Piped stdin is capped at 10 MiB. Its precedence is an existing headless task, an interactive initial prompt, an auto-detected startup-skill prompt, then a new headless task; explicit `--stdin` requires non-terminal stdin. Headless-only output, turn, timeout, and rubric controls require a task. A headless shell is disabled unless a shell allow-list is supplied. Turn and wall-clock timeout expiry use exit 124.
+Piped text is capped at 10 MiB. It is applied in this order: an existing headless task, an interactive `-m` prompt, an auto-detected startup skill prompt, then a new headless task. Explicit `--stdin` requires non-terminal stdin. Headless output, turn, timeout, and rubric controls require a headless task; turn or timeout budget expiry is exit 124. Headless ignores approval-mode flags, and shell access is disabled unless a shell allow-list is supplied.
 
-## Normal TUI and headless session
+## Normal session lifecycle
 
 ```mermaid
 sequenceDiagram
     participant CLI
     participant Client as dcode client
-    participant Server as loopback server
+    participant Server as loopback runtime
     participant Graph as workspace graph
     participant Store as SQLite state
     participant User
     CLI->>Client: resolved arguments and policy
     Client->>Client: validate explicit MCP config
     Client->>Server: start temporary runtime
-    Server->>Graph: load config and graph
+    Server->>Graph: load agent graph
     Client->>Server: wait for agent graph
     Client->>Server: bind thread workspace
-    Client->>Graph: stream prompt with thread context
+    Client->>Graph: stream prompt and context
     Graph->>Store: checkpoint state
     Graph-->>Client: messages updates custom events
     Client->>User: render output or interrupt
     User-->>Client: reply or approval
     Client->>Graph: resume stream
     Graph->>Store: persist state
-    Client->>Server: stop session runtime
+    Client->>Server: stop runtime
 ```
 
-*The normal-session sequence: startup is parent-owned, while execution and durability are server-owned.*
+*The parent client owns startup and teardown; the server owns graph execution, workspace policy, and durable state.*
 
-### Startup, server process, and binding
+### Startup and remote client
 
-`server_session` builds a resolved `ServerConfig`, validates an explicit MCP file before spawning, serializes configuration through `DEEPAGENTS_CODE_SERVER_*`, and scaffolds a temporary `langgraph dev` workspace with a SQLite checkpointer. The process normally binds `127.0.0.1` on an ephemeral port, waits for the `agent` graph, then creates a `RemoteAgent` and binds the launch workspace. Failed or cancelled startup stops the process; context-manager teardown stops a handed-off process and reports preserved server logs after terminal restoration.
+`server_session` resolves server configuration, preflights an explicit MCP file before spawning, serializes the result through `DEEPAGENTS_CODE_SERVER_*`, and scaffolds a temporary `langgraph dev` workspace backed by SQLite. It listens on `127.0.0.1` and an ephemeral port by default, waits for the `agent` graph, creates a `RemoteAgent`, and assigns its launch workspace plus configuration fingerprint. Failed or cancelled startup reaps the process; context-manager teardown stops a handed-off process.
 
-A bind is an atomic durable association of a thread with canonical workspace identity, a resource key, configuration fingerprint, and server-resolved workspace policy. The client can claim only session policy and must match the server's fingerprint; it cannot supply project policy. Subsequent streams must carry the persisted descriptor exactly. The server re-resolves workspace policy on execution and rejects project-policy or configuration drift rather than silently running under changed trust or configuration.
+`RemoteAgent` requires `configurable.thread_id`. On every stream it adds the durable workspace descriptor to context, delegates transport/SSE handling to the remote graph, and converts message payloads and HITL interrupts into client values. The TUI requests `messages`, `updates`, and `custom` streams with subgraphs, renders tool activity, collects `ask_user` or approval input, then streams a resume. Message conversion failures are dropped with a warning rather than silently masquerading as valid messages.
 
-The graph factory requires a thread ID and workspace context for request execution, loads that thread's binding, and selects its workspace runtime. Runtimes use an LRU bounded at 32 entries. MCP discovery, sandbox construction, and `atexit` setup must happen only once per runtime; because a sandbox backend is process-wide, a second workspace is rejected after the sandbox is claimed.
+### Workspace binding is server-authoritative
 
-While constructing a runtime, the server snapshots workspace environment and credentials off the event loop, resolves model, built-in tools, MCP tools, and optional sandbox, then passes those resources to `create_cli_agent`. The composite backend and its offload operation are shared by graph execution and the custom offload route. Keep these responsibilities server-side when changing environment handling, compaction, or resume.
+The workspace route resolves canonical identity and project policy on the server. It rejects unknown request keys, project-policy claims from clients, and mismatched session claims; it persists the thread binding before mirroring thread metadata. Request validation failures return 422, conflicts return 409, and a request-scoped runtime build failure returns 503. A metadata-mirroring failure can therefore leave a durable binding but returns 503 rather than claiming a completely successful bind.
 
-### Streaming, tools, and approvals
+Execution requires both a thread ID and workspace context. The graph checks that context against the thread's durable binding, re-resolves policy and fingerprint to reject drift, then chooses a workspace runtime. Workspace runtimes are LRU-cached at 32 entries. Runtime caching is an invariant, not merely optimization: it prevents repeat MCP discovery, sandbox sessions, and `atexit` handlers. Because a sandbox backend is process-wide, a sandboxed server rejects another workspace after the first workspace claims it.
 
-`RemoteAgent` requires a thread ID, adds the thread's workspace context to every stream, and converts server messages and HITL interrupts into client values. The TUI requests `messages`, `updates`, and `custom` streams with subgraphs, renders output/tool activity, collects an approval or `ask_user` response, and resumes the graph. Rendering changes belong in the TUI/app boundary; tools, interrupt policy, and backends belong in graph construction and `create_cli_agent`.
+Runtime construction snapshots the workspace environment and credentials, then resolves the model, built-ins, MCP tools, optional sandbox, and `create_cli_agent`. The composite backend and its offload operation are shared by graph execution and the custom operation route. Keep environment, backend, and compaction changes server-side; a client must not substitute these resources.
 
-Interactive approval has Manual, Auto, and YOLO modes. Invalid persisted values fail closed to Manual; Shift+Tab omits unavailable modes; YOLO needs acknowledgement of the current policy version. Auto is unavailable for sandbox-backed sessions. In headless mode every process creates a new UUID7 thread. Without a shell allow-list shell access is disabled; a restrictive list enables shell middleware and `all` permits unrestricted shell use. Permission hooks can force gated calls through the client.
+### Approvals, extensions, and MCP
 
-### Resume and state
+Interactive approval has Manual, Auto, and YOLO modes. Invalid persisted values revert to Manual, unavailable modes are omitted while cycling with Shift+Tab, and YOLO requires a versioned acknowledgement. Auto approval is enabled only for interactive non-sandbox runtimes. In headless runs, `--auto-approve` and `--yolo` have no effect.
 
-Checkpoints live in global SQLite state. UUID7 thread IDs are time-sortable, and thread listing uses a covering index to avoid checkpoint blobs while retaining a correct full-scan fallback if index creation fails. Deleting a thread also attempts to remove offloaded history.
+An explicit MCP configuration takes highest precedence, `--no-mcp` disables MCP loading, and the two flags are mutually exclusive. Project MCP servers require trust. Hook handlers run commands at the user's privilege with JSON lifecycle payloads; trusted project hooks participate alongside user and plugin hooks, matching handlers run concurrently, and exit code 2 blocks only the event where it is meaningful. Experimental project Python extensions require trust and their tools are not automatically added to the human-approval map.
 
-TUI `-r` selects the recent eligible thread and `-r <ID>` selects a named thread. A configured absolute or rolling age cutoff blocks stale resumes; the user can choose a fresh thread or exit. A stored-cwd mismatch offers a switch, unknown IDs produce similar-ID suggestions, and database failures or a declined resume fall back to a new thread. Headless always creates a new thread.
+## Resume and persistent state
 
-## Workspace and `/offload` branching
+Checkpoints reside in global SQLite state. New threads use naturally time-sortable UUID7 IDs. `threads list` builds a covering index so it can read metadata without scanning checkpoint blobs; inability to create the index retains a slower, correct scan.
+
+In the TUI, bare `-r` chooses the recent eligible thread and `-r <ID>` chooses a named thread. Configured absolute or rolling cutoffs block old threads; a stored-CWD mismatch offers a switch, missing IDs suggest similar IDs, and a miss or database failure falls back to a new thread. Headless always creates a new thread, so it is not a resume mechanism.
+
+## Server-owned offload
 
 ```mermaid
 flowchart TD
-    Start["Client posts workspace bind"] --> Validate["Server validates cwd and client claim"]
-    Validate --> Claim{"Claim matches server policy"}
-    Claim -- no --> Bind409["Return 409 conflict"]
-    Claim -- yes --> Persist["Persist thread workspace binding"]
-    Persist --> Run["Stream graph with binding context"]
-    Run --> Offload{"User requests offload"}
-    Offload -- no --> Checkpoint["Checkpoint normal turn"]
-    Offload -- yes --> Idle{"Thread idle and no pending work"}
-    Idle -- no --> Offload409["Return 409 no commit"]
-    Idle -- yes --> Compact["Use bound runtime offload operation"]
-    Compact --> Hook{"Hook requests response"}
-    Hook -- yes --> Replay["Client posts response with same operation id"]
-    Replay --> Compact
-    Hook -- no --> Commit["Commit allowed summary state and archive"]
+    Begin["Client posts workspace bind"] --> Validate["Server resolves policy and validates claim"]
+    Validate --> Match{"Claim matches server policy"}
+    Match -- no --> Conflict["Return conflict"]
+    Match -- yes --> Persist["Persist workspace binding"]
+    Persist --> Stream["Stream graph with binding"]
+    Stream --> Choice{"Offload requested"}
+    Choice -- no --> Checkpoint["Checkpoint turn"]
+    Choice -- yes --> Idle{"Idle and no pending work"}
+    Idle -- no --> Reject["Return conflict no commit"]
+    Idle -- yes --> Execute["Run bound offload operation"]
+    Execute --> Hook{"Hook response needed"}
+    Hook -- yes --> Replay["Repost same operation id"]
+    Replay --> Execute
+    Hook -- no --> Commit["Commit permitted summary and archive state"]
 ```
 
-*Workspace binding makes the server authoritative for a thread's execution policy; offload operates only on a quiescent bound thread.*
+*The bind fixes a thread's authority and resources; `/offload` works only against that quiescent, server-validated thread.*
 
-`/offload` is a server operation, not a client filesystem action. It reads and hydrates the checkpoint, requires an idle registered thread with no pending graph work, checks its workspace binding, and uses the matching runtime's offload operation. The route rejects concurrent, interrupted, unregistered, changed, or pending-work threads with 409 before committing. It permits only the state channels declared by `OffloadStateUpdate`, refusing message writes that could overwrite concurrent content.
+`/offload` hydrates checkpoint state itself and accepts only idle or error-status threads that have no `next`, `tasks`, or `interrupts`. It validates the durable workspace binding and uses the bound runtime's offload operation. Its per-thread lock, active-operation tracking, and recheck of checkpoint ID before commit prevent an offload result from being committed after the conversation advanced.
 
-Offload hook interrupts are resumable HTTP rounds, not a suspended server coroutine: the client repeats the same operation ID with accumulated hook responses, and the server re-executes while replaying answered calls. The operation reserves summary state and commits archive linkage carefully; a failed state write is read back to distinguish unchanged, advanced, and indeterminate outcomes. Model selection for offload is restored from the checkpoint/server configuration, not accepted from request context, preventing a loopback client from choosing the credentialed summarizer's endpoint.
+Only channels declared by `OffloadStateUpdate` may be written; message writes are rejected so a custom operation cannot overwrite conversation content. The route distinguishes malformed input (422), thread conflicts and no commit (409), unavailable runtime (503), and indeterminate or unexpected server failure (500). Archive linking reserves summary state first, rolls the append back when a link definitively did not land, and reports indeterminacy when it cannot confirm the link.
 
-This design keeps compaction and archive I/O on the backend that the agent actually uses. A resumed thread on a fresh server can therefore read its persisted archive through its own backend.
+A hook interrupt is an HTTP round-trip, not a suspended coroutine. The client reposts the same operation ID with accumulated hook responses; the server starts the operation again and replays answered hooks. If a custom graph server does not register the dcode route, the client reports an actionable unsupported-server error rather than a bare 404.
 
-## Configuration, extension, and hook boundaries
+This placement ensures compaction and archive I/O use the backend the agent actually uses. A thread resumed through a new server can consequently read its prior offloaded archive through that server's runtime.
 
-`--mcp-config` has highest precedence and is preflight-validated for normal sessions; `--no-mcp` disables MCP loading. Project MCP servers require trust. Hooks run user-privilege commands with JSON lifecycle payloads; project hooks require workspace trust, matching handlers run concurrently and reduce project → user → plugin, and exit code 2 is event-specific blocking. Experimental project Python extensions require trust and are not automatically placed in dcode's human-approval map.
+## ACP is a separate service path
 
-## ACP is separate
+`dcode --acp` does not use `server_session`, a temporary loopback server, or `RemoteAgent`. It imports ACP dependencies, resolves a model and project context, loads MCP tools, opens the SQLite checkpointer, creates agents for ACP session contexts, and serves the supplied ACP server with `run_acp_agent`. MCP sessions are cleaned up in `finally`. Dependency-import and MCP-loading failures exit 1 before serving; an exception while serving is reported as an ACP server failure and also exits 1.
 
-`dcode --acp` does not call `server_session`, start a loopback `langgraph dev` process, or construct a `RemoteAgent`. It imports ACP dependencies, resolves model and project context, loads MCP tools, opens SQLite checkpointing, builds agents for ACP session contexts, and calls `run_acp_agent`; MCP cleanup is in `finally`. Dependency or MCP-load errors return 1 before serving, and serving exceptions are reported as ACP server failures with exit 1. Treat it as an editor-host protocol integration, not as headless automation.
+## Focused diagnosis
+
+For checkout development, bootstrap with `make bootstrap`, launch with `uv run deepagents-code`, use `make test` for unit tests, `make integration_test` when network-capable integration coverage is needed, and `make check` before a full change.
+
+Enable both process logs when diagnosing a normal TUI session:
+
+```bash
+cd libs/code
+export DEEPAGENTS_CODE_DEBUG=1
+uv run deepagents-code
+```
+
+| Symptom | First evidence | Next action |
+| --- | --- | --- |
+| One-line launch failure | Server subprocess log | After terminal restoration, open `$TMPDIR/deepagents_server_log_*.txt` and find `Failed to initialize server graph`; inspect the traceback below it. |
+| App starts but UI, tool, model, or slash-command behavior is wrong | Client thread log | Tail `/tmp/deepagents_debug/<thread-id>.log`, or use `DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>`. |
+| Bind/execution conflict | Server logs and persisted workspace binding | Compare cwd, client workspace descriptor, server policy, and fingerprint; do not weaken drift rejection to make it run. |
+| `/offload` conflict or no result | Thread state and server log | Check active/pending graph work and checkpoint changes; retry only after the thread is quiescent. |
+| MCP failure | Explicit config or server log | Explicit malformed config fails before spawn; discovered project/user configurations are reported leniently in the MCP UI. |
+
+Debug mode preserves the server log path on exit and creates client per-thread logs only when enabled. The client log directory and files are owner-restricted and reject symlinks; failure to secure them disables the file handler. Stdio MCP stderr captured at DEBUG can contain credentials, so do not share such logs. The in-app Debug Console (`Ctrl+\` or hidden `/debug`) offers an always-on in-memory log tail and a runtime snapshot even without debug mode.
 
 ## Regression focus
 
-| Change | Primary boundary | Focused verification |
-| --- | --- | --- |
-| CLI syntax, policy, stdin, exit codes | `main.py` | CLI argument and dispatch tests |
-| Server scaffolding, env serialization, binding, cleanup | `client/launch/server_manager.py` | `test_server_manager.py` plus smoke test |
-| Workspace validation, runtime selection, drift | `workspace.py`, `server_graph.py`, `offload_api.py` | binding and conflict tests |
-| Stream conversion and interrupt resume | `remote_client.py`, TUI adapter | stream and approval-resume tests |
-| Offload persistence and restart | custom offload route and backend | `test_compact_resume.py` |
-| Abandoning interrupted graph work | remote client recovery path | `test_pending_work_recovery.py` |
+| Change area | Focused verification |
+| --- | --- |
+| CLI policy, stdin, mode validation, exit behavior | CLI argument and dispatch tests |
+| Server scaffolding, configuration serialization, bind, cleanup | `tests/unit_tests/test_server_manager.py` |
+| Remote stream conversion, interrupt resume, offload protocol | `tests/unit_tests/test_remote_client.py` and `tests/unit_tests/test_offload_api.py` |
+| Workspace validation, runtime caching, and drift | workspace and server-graph tests |
+| Archive persistence across server restart | `tests/integration_tests/test_compact_resume.py` |
+| Recovery of abandoned graph work | `tests/integration_tests/test_pending_work_recovery.py` |
 
-The compaction-resume integration test creates persistent state on one temporary server, runs `/offload` through a fresh production-style app with no client-owned backend, and verifies a later server can read the archive. The pending-work recovery test establishes a graph paused before a tool node, abandons it through `RemoteAgent`, and verifies the tool never executes while an error `ToolMessage` records cancellation. These tests protect the core invariants: server-owned persistence and no execution of abandoned pending work.
+The compaction-resume integration test persists a thread through one temporary server, invokes `/offload` from a fresh production-style app without a client-owned backend, then verifies later server agents can read the archive. The pending-work recovery test leaves a graph paused before a tool node and verifies cancellation clears pending work, avoids tool execution, and records an error `ToolMessage`.

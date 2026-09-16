@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: Trace how create_deep_agent resolves its dependencies and policies into a LangChain-compiled LangGraph agent, then how state, streaming, tool calls, checkpoints, and interrupts behave at runtime.
+description: Trace how create_deep_agent resolves dependencies and policies into a LangChain agent compiled on LangGraph, including middleware, subagents, state, streaming, checkpoints, and interrupts.
 tags: [deepagents, create_deep_agent, langchain, langgraph, middleware, subagents, streaming, state]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-16T08:05:50.355Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -31,7 +31,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # SDK Construction and Execution
@@ -47,7 +47,7 @@ sequenceDiagram
     participant Profiles as Model and profile resolution
     participant Stack as Middleware and subagent assembly
     participant LC as LangChain create_agent
-    participant Graph as Configured LangGraph
+    participant Runtime as LangGraph runtime
     participant Model as Chat model
     participant Tools as Middleware tool handlers
 
@@ -57,19 +57,21 @@ sequenceDiagram
     Builder->>Stack: prepare prompt tools backend and subagents
     Stack-->>Builder: middleware stack and state policy
     Builder->>LC: model prompt tools middleware and runtime options
-    LC-->>Graph: compiled agent
+    LC-->>Builder: compiled agent graph
     Builder-->>App: graph with config
-    App->>Graph: invoke or stream_events
+    App->>Runtime: invoke or stream_events on graph
+    Runtime->>LC: execute the compiled agent loop
     loop Until model has no tool calls
-        Graph->>Model: messages prompt and current tools
-        Model-->>Graph: response or tool calls
-        Graph->>Tools: execute selected calls
-        Tools-->>Graph: tool results and state updates
+        LC->>Model: messages prompt and current tools
+        Model-->>LC: response or tool calls
+        LC->>Tools: execute selected calls
+        Tools-->>LC: tool results and state updates
+        LC->>Runtime: persist state or raise interrupt
     end
-    Graph-->>App: final state or stream projections
+    Runtime-->>App: final state or stream projections
 ```
 
-Caption: construction ends at LangChain compilation; LangGraph subsequently drives the model/tool loop, while installed middleware determines the effective prompt, tools, policy, and state updates.
+Caption: `create_deep_agent` ends at LangChain compilation. LangChain creates the model/tool loop; LangGraph owns its graph execution, durable state, checkpoints, streaming, and interrupts, while middleware determines the effective prompt, tools, policy, and state updates.
 
 ## Resolution and shared dependencies
 
@@ -119,7 +121,7 @@ A custom `state_schema` is passed as the main graph schema and to `SubAgentMiddl
 
 ## Runtime, streaming, and extension choices
 
-On `invoke`, `ainvoke`, or stream execution, LangGraph runs model turns against message history, the effective system prompt, and the middleware-produced tool surface. A final model response ends the loop; tool calls run and append results/state, then the model is called again. Middleware can alter a request before or around model/tool execution, govern tool visibility, summarize or offload history, write typed state, and enforce permissions. A callable in `tools=` only runs after the model selects it, so it cannot alter the preceding request.
+On `invoke`, `ainvoke`, or stream execution, LangGraph executes the graph durably while the agent loop that LangChain created runs model turns against message history, the effective system prompt, and the middleware-produced tool surface. A final model response ends the loop; tool calls run and append results/state, then the model is called again. Middleware can alter a request before or around model/tool execution, govern tool visibility, summarize or offload history, write typed state, and enforce permissions. A callable in `tools=` only runs after the model selects it, so it cannot alter the preceding request.
 
 The compiled graph exposes upstream streaming. Tests use `stream_events(..., version="v3")` and `astream_events(..., version="v3")`, whose runs provide projections including messages, tool calls, values, subgraphs, and subagents. A delegated subagent appears as a typed child stream with its name, originating tool-call ID, status, and output. Parent and forked-subagent message projections remain separate; consumers should drain the relevant projections, and concurrent parent/subagent iteration is tested. If a subagent model raises, the child stream reaches `failed` with an error and the upstream runtime error can propagate while projections are drained.
 

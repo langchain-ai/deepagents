@@ -5,45 +5,15 @@ description: System-level map of the independently versioned Deep Agents package
 tags: [architecture, deep-agents, langchain, langgraph, monorepo, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-16T08:05:50.355Z
 sources:
-  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
-    resource: repo://.release-please-manifest.json
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
-  - id: openwiki-source-8134f31fb22085cb0e6b4054
-    resource: repo://libs/acp/README.md
-  - id: openwiki-source-68ae2141dbec1e0915410ac3
-    resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-f2bb883b9cbec377de535c00
     resource: repo://libs/evals/pyproject.toml
-  - id: openwiki-source-8565b7f246ed6e34051d8dfe
-    resource: repo://libs/evals/README.md
-  - id: openwiki-source-7da6afe7fe64c6589cf1fed0
-    resource: repo://libs/README.md
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-16T08:05:50.355Z" }
 ---
 
 # Monorepo Architecture Overview
@@ -61,13 +31,14 @@ Deep Agents is an opinionated agent harness, not a replacement runtime. Start a 
 
 ```mermaid
 flowchart TD
-  Products["dcode, ACP clients, Talon, and applications"] --> SDK["Deep Agents SDK"]
-  SDK --> LC["LangChain create_agent"]
-  LC --> LG["LangGraph runtime"]
-  SDK --> Harness["Middleware, backends, profiles, and subagents"]
-  Harness --> LC
+  App["Application or product"] -->|"calls create_deep_agent"| SDK["Deep Agents SDK"]
+  SDK -->|"calls create_agent"| LC["LangChain agent abstraction"]
+  LC -->|"builds runnable graph"| LG["LangGraph runtime"]
+  App -->|"invokes runnable graph"| LG
+  SDK -->|"assembles"| Harness["Middleware, backends, profiles, and subagents"]
+  Harness -->|"extends agent loop"| LC
 ```
-The diagram shows the runtime dependency direction and the SDK's harness extension boundary.
+The runtime-call flow separates SDK construction from execution of the returned LangGraph runnable.
 
 The stack has three distinct owners:
 
@@ -75,7 +46,7 @@ The stack has three distinct owners:
 - **LangChain `create_agent()`** provides the agent abstraction: model, tools, middleware, and the model/tool/repeat loop built on LangGraph.
 - **Deep Agents** provides the batteries-included harness above `create_agent()`: default middleware, pluggable backends, profiles, subagents, skills, and memory configuration. It does not introduce another runtime.
 
-The dependency direction is **Deep Agents → LangChain `create_agent()` → LangGraph**. Use Deep Agents for the complete harness, bare `create_agent()` for a lighter loop, and LangGraph when the loop itself must be a custom graph. The boundary remains composable: a LangGraph `CompiledStateGraph` can be supplied as a Deep Agents subagent.
+The runtime dependency direction is **Deep Agents → LangChain `create_agent()` → LangGraph**. Use Deep Agents for the complete harness, bare `create_agent()` for a lighter loop, and LangGraph when the loop itself must be a custom graph. The boundary remains composable: a LangGraph `CompiledStateGraph` can be supplied as a Deep Agents subagent.
 
 ## SDK public surface and construction boundary
 
@@ -92,12 +63,12 @@ sequenceDiagram
   App->>SDK: create_deep_agent configuration
   SDK->>SDK: Resolve profile, backend, prompt, and subagents
   SDK->>LC: Model, tools, middleware, and persistence options
-  LC->>LG: Compile agent graph
+  LC->>LG: Build runnable graph
   LG-->>App: Configured runnable graph
   App->>LG: Invoke with messages
   LG->>LC: Execute model and tool loop
 ```
-The sequence separates SDK assembly from LangGraph-driven execution after invocation.
+This sequence shows construction calls first and the runtime call from the application after the graph is returned.
 
 ### Middleware, state, and failure boundaries
 
@@ -107,9 +78,21 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 `DeepAgentState` extends LangChain `AgentState` with a `DeltaChannel` reducer for `messages`, keeping checkpoint growth linear rather than quadratic on long threads. A custom state schema is expected to subclass it. The schema is merged with middleware state and forwarded to declarative subagents, whereas already compiled and remote subagents keep their own schemas. LangGraph owns graph-state checkpoints; the selected Deep Agents backend separately decides where files, memory, and shell execution live.
 
-## Package map and dependency direction
+## Package map and declared dependency direction
 
-`libs/` is a monorepo of independently versioned packages. The release manifest tracks released package versions separately, including the SDK, ACP, Code, Talon, and each sandbox/provider partner. Package manifests make the dependency direction explicit: product, evaluation, and host packages consume the SDK rather than the SDK depending on them.
+`libs/` is a monorepo of independently versioned packages. The release manifest tracks released package versions separately, including the SDK, ACP, Code, Talon, and each sandbox/provider partner. The following diagram is **declared Python package dependencies**, not a runtime-call diagram: arrows point from a consuming distribution to its declared dependency.
+
+```mermaid
+flowchart LR
+  Code["deepagents-code"] -->|"declares"| SDKPkg["deepagents"]
+  Code -->|"declares"| ACPPkg["deepagents-acp"]
+  ACPPkg -->|"declares"| SDKPkg
+  Evals["deepagents-evals"] -->|"declares"| SDKPkg
+  Evals -->|"declares"| Code
+  Talon["deepagents-talon"] -->|"declares"| SDKPkg
+  Talon -->|"declares"| Code
+```
+The package flow shows that products, the protocol bridge, the host, and evaluation tooling consume the SDK; it does not describe which functions call one another while an agent runs.
 
 | Package | Public entry point and ownership boundary |
 | --- | --- |
@@ -130,7 +113,7 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 ### Talon lifecycle and security boundary
 
-Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, establishes request-scoped authorization, history, cron, graph, and background-result context, then resets those contexts in a `finally` block. `stop()` cancels background work before releasing the graph and closing a closeable checkpointer.
+Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents, loads an approval snapshot, and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, rebuilds the graph when the approval snapshot changes, and establishes request-scoped approval, authorization, history, cron, graph, and background-result context. It resets those contexts in a `finally` block. `stop()` cancels background work before releasing the graph and closing a closeable checkpointer; if cancellation does not finish, it leaves resources open and raises rather than close them under a live worker.
 
 Talon is alpha software and does not provide production-grade human approval policy, channel administrator controls, sandbox execution isolation, or multi-tenant boundaries. Treat a channel user as having direct access to the operator's agent, credentials, MCP tools, and local-host resources. This is a deployment constraint, not an SDK permission guarantee.
 

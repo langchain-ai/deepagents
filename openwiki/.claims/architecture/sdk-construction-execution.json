@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:35f502611310db4144b45573df631abdadd85bbd2f7d883002195ca4bfe62183",
+  "pageVersion": "sha256:16400c65d9d4f8456c24e2af62e08f417d49edf557bc2a4995ca3fa5be14ab3b",
   "claims": [
     {
       "id": "claim_c399b6f76b1b4806b54942f95ea0f31f",
@@ -347,10 +347,38 @@
           "version": "repo-lines-v1:sha256:4bc09ef1f0037ca25c55e72d9e707662954f281a68f323c2582355b1739804c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MDI4YzkxYzk1ZjkyYTNjYjczOWQ4ODIwYzY2YzAwNWQ3OTk2ZGNiMDYzZDI0YzllOTM4NjQ0MDhkNGM0N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMzA2ZmNmYWNlZDFiNTkzYjA5MDRkODU2MTZlZDdmOGE3ZDI2NTNhMWYwNWFhZThiOTQ2YTA1ZTE3YmQ0MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3OWQyMGYxZGExNzNjZWExYWM5NTIxYmVhYTRhMGU5MjQwMjI0YzRjZDhmODc4Y2RkMWE4NmM0MzgzNmNlNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_7972b8eaf80947e79095b2059623cc6c",
+      "statement": "LangChain's create_agent() builds the model-and-tool agent loop on top of LangGraph, while LangGraph provides graph execution, state, checkpoints, streaming, and interrupts; Deep Agents is an opinionated harness that assembles inputs to that boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L22-L30",
+          "version": "repo-lines-v1:sha256:d0e4b34d7ac0f847f179c246bda4d85978a5947f41613a47942ab43fa5f3ae4e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmMyOGUyZTZiZmRmOWQwYjc1MjEzNjE3ODdhNWI2Zjc2YWViYjU2NTI3ZThhNmNjZjkzN2I5MmI3ZGY4MmY1MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmI0YmM2NDViMjUyOTQyMzY0OTRlMGE0ZGQ5YmM0M2MwNzU4NTY3YjFlYzMxNDg5ODdjYTkxMTJhMGVlYjI0MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjFiMjZiOTJlYWE4NDBhM2QzYjEzOWI0YjE2ZDQzNzg0MGQ2MmI1YWVmZTRhNmFlN2M5MzgxZjJlY2M3NWEzMiJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L956-L978",
+          "version": "repo-lines-v1:sha256:ce72cae51d4840037c22060ea712300d889c9e91699926dc2fbc48e24202fa58:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYTYzNGI1MDQwYzhkN2IyM2M0NGUxZWZmMDdmYmU4Nzk2MThmMzA1ODhkOTAzYzM2NDMxZTZiYmZkOGY5ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0N2MyNWZhNDZiODg0MzJlNDI0NGQ5MjM4MTk0ODg5Mjc1Y2VjZDZiOGIzNzQyMmFmODM2NGIyNTE3MjJmYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c9dd89a8e4bf4277861a1a11afed56a0",
+      "statement": "The required subclass relationship between a custom state_schema and DeepAgentState is enforced by static typing rather than a runtime issubclass check, because TypedDicts cannot be checked that way; preserving DeepAgentState keeps the DeltaChannel messages reducer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L518-L540",
+          "version": "repo-lines-v1:sha256:c2b64b664f56b1d97acb7e7563575779fd2bc05c2ecc277ffe2c4b1fb580e64d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2Y0ZTRkNDU2MWYyNDM3MzkzMDZmOTBiYTBmZmY0YTVlODg0MWIzMDg4MjhhNThmMTIwMmI2ODM0NWZkNzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxMjg4ZDQ4NGE1YmJjYTFhMTZjMmVhNmE4MDA0ZjI0NTczZTVkODBjNDI2MWRiNzlkOGRjNjkxN2I1ZjcwMjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNjkxYzdlM2Q0NTljOTk4OWY1NDU0YzcxMzViZDExMDQ5MGZhMjk4YTc0M2M0MzlmZTEzYzZjNGNhZjNhNWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ZjUxNjNhZmI2N2U4MjY1ZGMyYmI4NGY2MTMxOWIxNjNhOGNkMDdkOGNlNzM0NzdmOGZlNWQwYWRmZTUzYmIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L590-L592",
+          "version": "repo-lines-v1:sha256:f6b2eb480885debdc3166e405f4d76d6fcbf58dc675c73b5a18e4ccd1d27a303:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGJjMGNiNzFkODRkMTJkMzM3NjYxMjMzYmU5MGUzZjBjNjZlYWQyY2IxNGM5OGFkN2RmZDRmNGE4NGRlNDkyNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjNlOTk0ZWQ1YzY2OTM4OGE3OGVhNTI1MjgxMjE4MjE2MDAyNzYyZGUzOWQ1NDAyOTg5N2QxY2IyM2RhYTcyMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTUyMGVjYWY5NWFjMDBiMjI1MGU4MzZiZTk0ODg5NTcxYWEwNWY4MTFkMTIyNjYyZmQ4NzJiNzA2Njg5MmQ4NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjdkYTM2ZGRmZDdiMGE4Yzk0MjBhMDMxYzAzZDhjMGRlNmQ0OTExMzMyZTU0YmY4N2RjYTQ1MTBjZjUxNTM4NiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

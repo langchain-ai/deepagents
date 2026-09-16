@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1f71b8f19aee8bd9ba5803bf747945f327a4367be3252ab10e1e0350c4835c8c",
+  "pageVersion": "sha256:3669aac1bb5da94a41ce5142cd34b02ba38f2dfb6b3af269f7cdd0e5c6308946",
   "claims": [
     {
       "id": "claim_d3c0b63bcdd446b9b1fe8e28af20eec7",
@@ -124,11 +124,11 @@
     },
     {
       "id": "claim_b819fc8a1bcb46ebbac28f072e0b4792",
-      "statement": "PatchToolCallsMiddleware runs in before_agent and repairs dangling tool calls: for every AIMessage tool_call lacking a matching ToolMessage it appends a synthetic ToolMessage (cancelled, or malformed for invalid calls) and rewrites the history.",
+      "statement": "PatchToolCallsMiddleware runs in before_agent and repairs dangling tool calls: for every AIMessage tool call lacking a matching ToolMessage it appends a synthetic error ToolMessage, reporting malformed or truncated arguments for invalid calls and an unrecorded result for valid calls, then rewrites the history.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py#L11-L49",
-          "version": "repo-lines-v1:sha256:76f04f6b2a3bb9fe5f05680a60203adaf73b37205246546d7dd233746d191d55:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwMzk0ZDhhOTc1OGNhMmYwYzUwNjE3ODNjMThlYTY2OTZjZmYxZjcxMmUwMzRiYjg2MmU3ZDdkOGVmNjdlZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiYTYzYjIyZDYzMDhiYTdlOWM4YjIzYzYzZjNkMTk0YjcyNjAzYmQ3ZTIxZDI5MmE1ZjE0NGE5OTIwNjNmYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlMTQyYjdiNmE4MDViOTAyZDQxMzVhZDUxYmM0NTBlZjQxYmUyMjg5NWQ1NzA5NmZkNWRhNDY3OWQ1ZWM1NTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py#L17-L52",
+          "version": "repo-lines-v1:sha256:dc28f911875031d6cd8cfb4748684050abaee489d09108144d5dd086e51f604f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMzJlMDFhMTc4OGRkMDQ4ZmQ2ZDNhMzJmNmJlZWUyOTQzNzAxZTQ3YTc1ZmY1YzFmZjJmMzA0MjgwNTdlY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiYTYzYjIyZDYzMDhiYTdlOWM4YjIzYzYzZjNkMTk0YjcyNjAzYmQ3ZTIxZDI5MmE1ZjE0NGE5OTIwNjNmYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MWU4MWY4N2QyZjY2MjZiZDA0YTViOTI0NTVlYzE1NDMwOTlmM2ViYTBjYmU2MWZkYmVhODQ4NWQzNjdlMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -243,6 +243,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-16T08:05:50.355Z"
   }
 }

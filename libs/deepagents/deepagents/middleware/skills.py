@@ -308,10 +308,10 @@ class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
     skills_metadata: list[SkillMetadata]
-    """List of loaded skill metadata to write into state, replacing any previous list."""
+    """List of loaded skill metadata to merge into state."""
 
-    skills_load_errors: list[str]
-    """Skill source loading errors to write into state, empty when every source loaded."""
+    skills_load_errors: NotRequired[list[str]]
+    """Skill source loading errors to merge into state."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:

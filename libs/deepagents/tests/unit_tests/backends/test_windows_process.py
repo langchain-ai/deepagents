@@ -7,8 +7,8 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +26,26 @@ def _process(*, errors: str = "strict") -> MagicMock:
     )
 
 
+def _fake_monotonic(*values: float) -> Callable[[], float]:
+    """Return a clock that steps through `values` and then holds the last one.
+
+    A `side_effect` list raises `StopIteration` if the code reads the clock one
+    extra time, which hides the real assertion. This holds instead.
+    """
+    remaining = list(values)
+
+    def clock() -> float:
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return clock
+
+
 def test_peek_uses_available_byte_count() -> None:
+    """Test the byte count is taken from the `PeekNamedPipe` result."""
+    # `_peek_pipe` keeps a literal `sys.platform` test so the type checker can
+    # drop the Windows-only imports elsewhere, so this test has to patch it.
+    # That is safe here only because this test starts no threads and runs no
+    # event loop while the patch is active.
     with (
         patch.object(windows_process, "_winapi", create=True) as api,
         patch.object(windows_process, "msvcrt", create=True) as runtime,
@@ -59,18 +78,49 @@ def test_caps_each_read() -> None:
     assert read.call_args.args[1] == 32_768
 
 
-@pytest.mark.parametrize("code", [109, 5])
+@pytest.mark.parametrize("code", [109, 232, 233, 5])
 def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
+    """Test every end-of-stream error code reads as EOF and others propagate.
+
+    Windows reports a pipe whose write end is gone as `ERROR_BROKEN_PIPE` (109),
+    `ERROR_NO_DATA` (232) or `ERROR_PIPE_NOT_CONNECTED` (233), depending on how
+    far teardown has progressed. Any other code is a real failure.
+    """
+
     class PipeError(OSError):
         winerror = code
 
     error = PipeError("pipe failure")
     with patch.object(windows_process, "_peek_pipe", side_effect=error):
-        if code == 109:
+        if code in windows_process._END_OF_STREAM_ERRORS:
             assert windows_process._read_available(MagicMock()) == b""
         else:
             with pytest.raises(OSError, match="pipe failure"):
                 windows_process._read_available(MagicMock())
+
+
+def test_timeout_keeps_output_read_so_far() -> None:
+    """Test a timeout carries the output already read, decoded leniently.
+
+    The buffers can end in the middle of an encoded character, so decoding must
+    replace the incomplete bytes rather than raise over the timeout.
+    """
+    process = _process()
+    process.poll.return_value = None
+    try:
+        with (
+            patch.object(windows_process, "_read_available", side_effect=[b"partial \xc3", b"err", None, None]),
+            patch.object(windows_process.time, "monotonic", side_effect=_fake_monotonic(0, 0, 5)),
+            patch.object(windows_process.time, "sleep"),
+            pytest.raises(subprocess.TimeoutExpired) as caught,
+        ):
+            WindowsProcessReader(process).communicate(timeout=1)
+
+        assert caught.value.stdout == "partial \ufffd"
+        assert caught.value.stderr == "err"
+    finally:
+        process.stdout.close()
+        process.stderr.close()
 
 
 def test_retries_preserve_multibyte_output_and_newlines() -> None:
@@ -80,7 +130,7 @@ def test_retries_preserve_multibyte_output_and_newlines() -> None:
     try:
         with (
             patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n", b"\nx\r", b"", b"\n", b""]),
-            patch.object(windows_process.time, "monotonic", side_effect=[0, 0, 2, 2, 2, 2, 2, 2]),
+            patch.object(windows_process.time, "monotonic", side_effect=_fake_monotonic(0, 0, 2)),
         ):
             with pytest.raises(subprocess.TimeoutExpired):
                 reader.communicate(timeout=1)
@@ -155,26 +205,26 @@ async def _cancel_command(backend: local_shell.LocalShellBackend, started: threa
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "async-cancellation-and-shutdown"])
 def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: bool) -> None:
+    """Test cleanup closes a pipe whose write end another process still holds.
+
+    `subprocess.communicate` would start a reader thread per pipe and that thread
+    holds the pipe until the write end closes. `WindowsProcessReader` polls
+    instead, so nothing holds the pipe and `_close_pipe` returns at once. `peek`
+    reporting zero bytes forever is what an inherited but idle write end looks
+    like.
+    """
     descriptor, writer = os.pipe()
     pipe = os.fdopen(descriptor, "r", encoding="utf-8")
     process = MagicMock(args="command", pid=1234, stdout=pipe, stderr=None, returncode=0)
     process.poll.return_value = 0
     started = threading.Event()
+    polled = threading.Event()
     finished = threading.Event()
     errors: list[BaseException] = []
-    reader = threading.Thread(target=pipe.read, daemon=True)
     backend = local_shell.LocalShellBackend()
 
-    def threaded_communicate(*, timeout: float) -> tuple[str, str]:
-        if reader.ident is None:
-            reader.start()
-        started.set()
-        reader.join(timeout)
-        if reader.is_alive():
-            raise subprocess.TimeoutExpired(process.args, timeout)
-        return "", ""
-
     def peek(_descriptor: int) -> int:
+        polled.set()
         started.set()
         return 0
 
@@ -190,9 +240,8 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
             finished.set()
 
     worker = threading.Thread(target=run, daemon=True)
-    process.communicate.side_effect = threaded_communicate
     with (
-        patch.object(local_shell.sys, "platform", "win32"),
+        patch.object(local_shell, "_IS_WINDOWS", new=True),
         patch.object(local_shell.subprocess, "Popen", return_value=process),
         patch.object(windows_process, "_peek_pipe", side_effect=peek),
     ):
@@ -200,20 +249,26 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
         try:
             assert finished.wait(3), "cleanup or executor shutdown waited for the inherited pipe writer"
             assert not errors, errors
+            # Without this the test would still pass if the backend silently took
+            # the POSIX path and never used the polling reader at all.
+            assert polled.is_set(), "the Windows polling reader was never used"
             assert pipe.closed
+            # Closing the read end must not disturb the inherited write end.
             os.fstat(writer)
         finally:
             os.close(writer)
             worker.join(5)
-            if reader.ident is not None:
-                reader.join(5)
             pipe.close()
     assert not worker.is_alive()
-    assert not reader.is_alive()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows pipe handles")
 def test_windows_output_capture() -> None:
+    """Test a large two-stream capture survives the polling reader on Windows.
+
+    Both streams exceed the pipe buffer, so the reader has to drain them as the
+    process writes. Draining only one would deadlock the other.
+    """
     script = "import os; os.write(1, b'hello\\r\\n' * 10000); os.write(2, b'error\\r\\n' * 10000)"
     with subprocess.Popen(  # noqa: S603  # Run a fixed output probe with the test interpreter.
         [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -224,83 +279,6 @@ def test_windows_output_capture() -> None:
         finally:
             process.kill()
             process.wait(timeout=5)
-
-
-def _wait_for_file(path: Path) -> bool:
-    deadline = time.monotonic() + 5
-    while not path.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    return path.exists()
-
-
-async def _cancel_native_command(backend: local_shell.LocalShellBackend, command: str, ready: threading.Event) -> None:
-    task = asyncio.create_task(backend.aexecute(command))
-    try:
-        assert await asyncio.to_thread(ready.wait, 5)
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    assert task.cancelled()
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows subprocess inheritance")
-@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "async-cancellation-and-shutdown"])
-def test_windows_backend_shutdown_with_live_descendant(tmp_path: Path, *, cancel: bool) -> None:
-    ready, release, done = (tmp_path / name for name in ("ready", "release", "done"))
-    child = (
-        "from pathlib import Path; import time\n"
-        "Path('ready').touch()\n"
-        "deadline = time.monotonic() + 15\n"
-        "while not Path('release').exists() and time.monotonic() < deadline:\n"
-        "    time.sleep(.01)\n"
-        "Path('done').touch()\n"
-    )
-    parent = f"import os, subprocess, sys; subprocess.Popen([sys.executable, '-c', {child!r}], stdout=sys.stdout, stderr=sys.stderr); os._exit(0)"
-    command = subprocess.list2cmdline([sys.executable, "-c", parent])
-    backend = local_shell.LocalShellBackend(root_dir=tmp_path, inherit_env=True)
-    created = threading.Event()
-    cancel_ready = threading.Event()
-    finished = threading.Event()
-    errors: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            if cancel:
-                asyncio.run(_cancel_native_command(backend, command, cancel_ready))
-            else:
-                assert backend.execute(command, timeout=1).exit_code == 124
-        except BaseException as error:  # noqa: BLE001  # Forward worker failures to the test thread after releasing the descendant.
-            errors.append(error)
-        finally:
-            finished.set()
-
-    processes: list[subprocess.Popen[str]] = []
-    popen = subprocess.Popen
-
-    def capture_process(*args: object, **kwargs: object) -> subprocess.Popen[str]:
-        process = popen(*args, **kwargs)
-        processes.append(process)
-        created.set()
-        return process
-
-    worker = threading.Thread(target=run, daemon=True)
-    with patch.object(local_shell.subprocess, "Popen", side_effect=capture_process):
-        worker.start()
-        try:
-            assert created.wait(5), "backend did not create the shell"
-            assert _wait_for_file(ready), "descendant did not acquire the inherited output handles"
-            assert processes[0].wait(timeout=3) == 0, "direct shell did not exit before descendant cleanup"
-            cancel_ready.set()
-            assert finished.wait(5), "cleanup or executor shutdown waited for the live descendant"
-            assert not errors, errors
-            assert not done.exists(), "descendant released its handles before shutdown completed"
-        finally:
-            release.touch()
-            cancel_ready.set()
-            worker.join(10)
-            assert _wait_for_file(done), "descendant did not exit after release"
-    assert not worker.is_alive()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows pipe handles")

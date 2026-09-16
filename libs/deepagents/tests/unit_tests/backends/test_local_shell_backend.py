@@ -10,8 +10,9 @@ import tempfile
 import threading
 import time
 import warnings
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import AbstractContextManager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,6 +24,47 @@ from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 _POSIX_SHELL_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="test requires POSIX shell behavior")
+
+
+@pytest.fixture(autouse=True)
+def _reset_background_workers() -> Iterator[None]:
+    """Keep the module-global worker set from leaking between tests.
+
+    `_BACKGROUND_WORKERS` is process-wide. A worker left behind by a failing test
+    makes a later assertion on the set fail in an unrelated place.
+    """
+    local_shell_module._BACKGROUND_WORKERS.clear()
+    yield
+    local_shell_module._BACKGROUND_WORKERS.clear()
+
+
+def _as_posix() -> AbstractContextManager[bool]:
+    """Select the POSIX cleanup branch for the duration of a test.
+
+    Patching the module constant keeps the choice local. Patching `sys.platform`
+    instead would change it for every library in the process, which breaks
+    anything that resolves platform-specific behavior while the test runs.
+    """
+    return patch.object(local_shell_module, "_IS_WINDOWS", new=False)
+
+
+def _as_windows() -> AbstractContextManager[bool]:
+    """Select the Windows cleanup branch for the duration of a test."""
+    return patch.object(local_shell_module, "_IS_WINDOWS", new=True)
+
+
+def _fake_monotonic(*values: float) -> Callable[[], float]:
+    """Return a clock that steps through `values` and then holds the last one.
+
+    A `side_effect` list raises `StopIteration` if the code reads the clock one
+    extra time, which hides the real assertion. This holds instead.
+    """
+    remaining = list(values)
+
+    def clock() -> float:
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return clock
 
 
 def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
@@ -62,15 +104,15 @@ def _stop_test_descendant(pid_file: Path) -> None:
         os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
 
-def _assert_platform_cleanup(process: MagicMock, killpg: MagicMock) -> None:
-    """Assert cleanup targets the POSIX group or Windows shell process."""
-    if sys.platform == "win32":
-        process.kill.assert_called_once_with()
-        killpg.assert_not_called()
-    else:
-        killpg.assert_called_once_with(1234, signal.SIGKILL)
-        process.kill.assert_not_called()
-    process.wait.assert_called_once_with(timeout=5)
+def _assert_posix_cleanup(process: MagicMock, killpg: MagicMock) -> None:
+    """Assert cleanup killed the POSIX process group and reaped the shell.
+
+    Callers patch `_IS_WINDOWS` to `False`, so this runs on every platform rather
+    than testing only whichever branch the host happens to take.
+    """
+    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    process.kill.assert_not_called()
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
 def _execute_controlling_terminal_probe(directory: Path, result_file: Path) -> None:
@@ -166,12 +208,13 @@ def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
         _stop_test_descendant(pid_file)
 
 
-def test_local_shell_backend_interrupt_cleans_up_platform_process_scope() -> None:
-    """Test an interrupt cleans up the platform's supported process scope."""
+def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
+    """Test an interrupt kills the command's POSIX process group."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = KeyboardInterrupt
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
@@ -179,7 +222,7 @@ def test_local_shell_backend_interrupt_cleans_up_platform_process_scope() -> Non
     ):
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
-    _assert_platform_cleanup(process, killpg)
+    _assert_posix_cleanup(process, killpg)
 
 
 def test_local_shell_backend_polling_interrupt_kills_process_group() -> None:
@@ -205,7 +248,7 @@ def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
     """Test the cancellation-aware polling loop enforces its deadline."""
     process = MagicMock(pid=1234)
     with (
-        patch.object(local_shell_module.time, "monotonic", side_effect=[0, 2]),
+        patch.object(local_shell_module.time, "monotonic", side_effect=_fake_monotonic(0, 2)),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
         pytest.raises(subprocess.TimeoutExpired),
@@ -223,9 +266,9 @@ def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
 def test_local_shell_backend_cleanup_without_process_group_kills_process() -> None:
     """Test cleanup falls back to the direct process without a group."""
     process = MagicMock(pid=1234)
-    local_shell_module._kill_and_reap(process, None)
+    assert local_shell_module._kill_and_reap(process, None) is True
     process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=5)
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
 def test_local_shell_backend_cleanup_accepts_missing_pipes() -> None:
@@ -238,7 +281,7 @@ def test_local_shell_backend_cancelled_background_worker_is_released() -> None:
     worker = MagicMock()
     worker.cancelled.return_value = True
     local_shell_module._BACKGROUND_WORKERS.add(worker)
-    local_shell_module._release_background_worker(worker)
+    local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     worker.result.assert_not_called()
 
@@ -247,7 +290,7 @@ async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(c
     worker = asyncio.get_running_loop().create_future()
     worker.set_exception(asyncio.CancelledError())
     local_shell_module._BACKGROUND_WORKERS.add(worker)
-    local_shell_module._release_background_worker(worker)
+    local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     assert not caplog.records
 
@@ -259,10 +302,12 @@ def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.L
     worker.result.side_effect = RuntimeError("backend exploded")
     local_shell_module._BACKGROUND_WORKERS.add(worker)
     with caplog.at_level("WARNING", logger="deepagents.backends.local_shell"):
-        local_shell_module._release_background_worker(worker)
+        local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
 
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     assert "failed after its caller was cancelled" in caplog.text
+    assert "local-test" in caplog.text
+    assert "echo hi" in caplog.text
 
 
 @_POSIX_SHELL_ONLY
@@ -276,6 +321,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     process.stderr.close.side_effect = OSError
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch("os.killpg", side_effect=PermissionError),
@@ -285,7 +331,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=5)
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
     assert "Failed to terminate local shell process group 1234" in caplog.text
@@ -295,12 +341,13 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     assert "Failed to close stderr for local shell process 1234" in caplog.text
 
 
-def test_local_shell_backend_timeout_cleans_up_platform_process_scope() -> None:
-    """Test a timeout cleans up the platform's supported process scope."""
+def test_local_shell_backend_timeout_cleans_up_posix_process_group() -> None:
+    """Test a timeout kills the command's POSIX process group."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
@@ -308,7 +355,7 @@ def test_local_shell_backend_timeout_cleans_up_platform_process_scope() -> None:
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
-    _assert_platform_cleanup(process, killpg)
+    _assert_posix_cleanup(process, killpg)
 
 
 def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
@@ -317,7 +364,7 @@ def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
-        patch.object(local_shell_module.sys, "platform", "win32"),
+        _as_windows(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process) as popen,
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
@@ -327,7 +374,7 @@ def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
     assert result.exit_code == 124
     assert popen.call_args.kwargs["start_new_session"] is False
     process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=5)
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
     killpg.assert_not_called()
 
 
@@ -346,8 +393,14 @@ def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCa
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
-    process.wait.assert_called_once_with(timeout=5)
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
     assert "did not exit within 5 seconds after termination" in caplog.text
+    # Pipes must close even when the process could not be reaped, or a stuck
+    # command leaks two descriptors.
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+    # The caller cannot see the log, so the response has to carry the warning.
+    assert "could not be stopped and may still be running" in result.output
 
 
 @_POSIX_SHELL_ONLY
@@ -692,7 +745,7 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    _assert_platform_cleanup(process, killpg)
+    _assert_posix_cleanup(process, killpg)
 
 
 @_POSIX_SHELL_ONLY
@@ -759,8 +812,13 @@ def test_local_shell_backend_async_start_race_skips_execution() -> None:
     execute.assert_not_called()
 
 
-async def test_local_shell_backend_async_cancellation_preserves_cancelled_error() -> None:
-    """Test that a worker failure cannot replace async cancellation."""
+async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(caplog: pytest.LogCaptureFixture) -> None:
+    """Test a worker failure cannot replace async cancellation, but is still reported.
+
+    Cancellation wins the race, so the caller sees `CancelledError`. The real
+    failure must still reach the log, or a broken command is indistinguishable
+    from an ordinary cancellation.
+    """
     execution_started = threading.Event()
     release_execution = threading.Event()
 
@@ -771,7 +829,10 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
             msg = "backend exploded"
             raise RuntimeError(msg)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
+    ):
         task = asyncio.create_task(FailingLocalShellBackend(root_dir=tmpdir).aexecute("explode"))
         assert await asyncio.to_thread(execution_started.wait, 1)
         task.cancel()
@@ -780,6 +841,9 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
             await task
 
     assert task.cancelled()
+    assert "failed on backend" in caplog.text
+    assert "explode" in caplog.text
+    assert "backend exploded" in caplog.text
 
 
 async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers() -> None:
@@ -940,3 +1004,226 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+@_POSIX_SHELL_ONLY
+def test_local_shell_backend_polling_loop_keeps_output_from_every_attempt() -> None:
+    """Test the cancellation-aware loop keeps output read by earlier attempts.
+
+    The loop retries `communicate` with a short timeout and depends on each retry
+    keeping the bytes already read. A command that prints across several poll
+    intervals shows this: if a retry reset the buffers, only the last chunk would
+    survive and no other test would notice.
+    """
+    chunks = 8
+    script = f'for i in $(seq 1 {chunks}); do printf "out$i\\n"; printf "err$i\\n" >&2; sleep 0.05; done'
+    process = subprocess.Popen(  # noqa: S602  # Fixed shell probe with no external input.
+        script, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        stdout, stderr = local_shell_module._communicate(process, 30, threading.Event(), process_group=process.pid)
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+    assert stdout == "".join(f"out{index}\n" for index in range(1, chunks + 1))
+    assert stderr == "".join(f"err{index}\n" for index in range(1, chunks + 1))
+
+
+@_POSIX_SHELL_ONLY
+def test_local_shell_backend_polling_loop_drains_more_than_a_pipe_buffer() -> None:
+    """Test output larger than the pipe buffer cannot deadlock the poll loop.
+
+    A pipe holds roughly 64 KB. If the loop stopped draining one stream, the
+    command would block on its write and the command would time out instead of
+    returning.
+    """
+    script = "import sys; sys.stdout.write('o' * 500_000); sys.stderr.write('e' * 200_000)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    process = subprocess.Popen(  # noqa: S602  # Fixed probe that runs the test interpreter.
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        stdout, stderr = local_shell_module._communicate(process, 30, threading.Event(), process_group=process.pid)
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+    assert len(stdout) == 500_000
+    assert len(stderr) == 200_000
+
+
+@_POSIX_SHELL_ONLY
+def test_local_shell_backend_timeout_reports_output_printed_before_it() -> None:
+    """Test a timed-out command still reports what it printed first.
+
+    What a command printed before it wedged is usually the only clue about where
+    it stopped, so the response must carry it.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = LocalShellBackend(root_dir=tmpdir, inherit_env=True).execute('printf "progress line\n"; sleep 30', timeout=1)
+
+    assert result.exit_code == 124
+    assert "timed out" in result.output
+    assert "progress line" in result.output
+
+
+def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:
+    """Test an empty process group counts as success, not as a failed kill.
+
+    Cancellation arriving just after a command finished finds nothing left to
+    kill. Reporting that as a failure would train readers to ignore this logger.
+    """
+    process = MagicMock(pid=1234)
+    with (
+        _as_posix(),
+        patch.object(local_shell_module.os, "killpg", create=True, side_effect=ProcessLookupError),
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
+    ):
+        assert local_shell_module._kill_and_reap(process, 1234) is True
+
+    process.kill.assert_not_called()
+    assert "Failed to terminate" not in caplog.text
+
+
+def test_local_shell_backend_failed_termination_is_reported_to_its_caller() -> None:
+    """Test cleanup reports failure so the caller can warn about an orphan."""
+    process = MagicMock(pid=1234)
+    process.kill.side_effect = PermissionError
+    with (
+        _as_posix(),
+        patch.object(local_shell_module.os, "killpg", create=True, side_effect=PermissionError),
+    ):
+        assert local_shell_module._kill_and_reap(process, 1234) is False
+
+
+def test_local_shell_backend_unexpected_failure_is_reported_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Test an unexpected error becomes an error response and leaves a traceback.
+
+    Exit code 1 is indistinguishable from the command itself failing, so the
+    traceback has to reach the log or the failure is undiagnosable.
+    """
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", side_effect=OSError("boom")),
+        caplog.at_level("ERROR", logger="deepagents.backends.local_shell"),
+    ):
+        result = LocalShellBackend(root_dir=tmpdir).execute("echo hi")
+
+    assert result.exit_code == 1
+    assert "OSError" in result.output
+    assert "boom" in result.output
+    assert "Local shell command failed" in caplog.text
+    assert "echo hi" in caplog.text
+
+
+async def test_local_shell_backend_cancellation_does_not_stop_another_backend() -> None:
+    """Test one backend's cancellation cannot stop a command run by another.
+
+    An override runs inside the cancelling backend's copied context, so a second
+    backend called from that override sees the same context. `execute` must
+    ignore a cancellation event that belongs to a different backend.
+    """
+    observed: list[threading.Event | None] = []
+    execution_started = threading.Event()
+    release_execution = threading.Event()
+    original_execute = LocalShellBackend._execute
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        inner = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        def spy(
+            self: LocalShellBackend,
+            command: str,
+            *,
+            timeout: int | None,
+            cancellation_event: threading.Event | None = None,
+        ) -> ExecuteResponse:
+            if self is inner:
+                observed.append(cancellation_event)
+            return original_execute(self, command, timeout=timeout, cancellation_event=cancellation_event)
+
+        class NestingLocalShellBackend(LocalShellBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                execution_started.set()
+                release_execution.wait(5)
+                return inner.execute("echo nested")
+
+        with patch.object(LocalShellBackend, "_execute", spy):
+            task = asyncio.create_task(NestingLocalShellBackend(root_dir=tmpdir, inherit_env=True).aexecute("outer"))
+            assert await asyncio.to_thread(execution_started.wait, 2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            release_execution.set()
+            for _ in range(200):
+                if observed:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert observed == [None], "the inner backend inherited another backend's cancellation event"
+
+
+@_POSIX_SHELL_ONLY
+async def test_local_shell_backend_cancelling_one_command_leaves_a_sibling_running() -> None:
+    """Test cancelling one async command does not disturb a concurrent one.
+
+    Each worker gets its own cancellation event through `copy_context`. Holding
+    the event on the backend instead would make sibling commands kill each other.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+        survivor = asyncio.create_task(backend.aexecute("sleep 0.5; echo survivor"))
+        doomed = asyncio.create_task(backend.aexecute("sleep 30"))
+        await asyncio.sleep(0.1)
+        doomed.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await doomed
+        result = await survivor
+
+    assert result.exit_code == 0
+    assert "survivor" in result.output
+
+
+async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker(caplog: pytest.LogCaptureFixture) -> None:
+    """Test a second cancellation during the grace period does not skip cleanup.
+
+    If the repeat `CancelledError` escaped, the worker would never be added to
+    `_BACKGROUND_WORKERS` and asyncio would later report its result as never
+    retrieved at an unrelated point.
+    """
+    execution_started = threading.Event()
+    release_execution = threading.Event()
+    tracked: list[int] = []
+
+    class SlowLocalShellBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            execution_started.set()
+            release_execution.wait(5)
+            return ExecuteResponse(output="done", exit_code=0, truncated=False)
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0.3),
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
+    ):
+        task = asyncio.create_task(SlowLocalShellBackend(root_dir=tmpdir).aexecute("slow override"))
+        assert await asyncio.to_thread(execution_started.wait, 2)
+        task.cancel()
+        # Let the coroutine reach the grace-period wait, then cancel again.
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        tracked.append(len(local_shell_module._BACKGROUND_WORKERS))
+
+        release_execution.set()
+        for _ in range(200):
+            if not local_shell_module._BACKGROUND_WORKERS:
+                break
+            await asyncio.sleep(0.01)
+
+    assert task.cancelled()
+    assert tracked == [1], "the repeated cancellation skipped the background-worker bookkeeping"
+    assert "overridden execute method may still be running" in caplog.text
+    assert not local_shell_module._BACKGROUND_WORKERS

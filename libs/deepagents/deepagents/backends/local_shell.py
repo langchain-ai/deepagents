@@ -8,6 +8,7 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import signal
@@ -16,7 +17,6 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import suppress
 from contextvars import ContextVar, copy_context
 from typing import IO, TYPE_CHECKING
 
@@ -29,6 +29,14 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_IS_WINDOWS = sys.platform == "win32"
+"""Whether this process runs on Windows.
+
+Read through this constant instead of `sys.platform` so a test can select the
+other platform's branch without changing `sys.platform` for every other library
+in the process.
+"""
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
@@ -48,15 +56,62 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
 )
 """Owning backend and cancellation event for one async execution thread."""
 
+_COMMAND_LOG_LIMIT = 120
+"""Maximum command characters to repeat in a log line."""
+
 _BACKGROUND_WORKERS: set[asyncio.Future[ExecuteResponse]] = set()
-"""Workers retained until an uncooperative `execute` override finishes."""
+"""Workers retained until an uncooperative `execute` override finishes.
+
+This set holds a strong reference so the worker is not collected before it ends,
+and so its exception is retrieved. Without it, asyncio reports the exception as
+never retrieved at an unrelated point later. Entries are removed by
+`_release_background_worker`.
+"""
 
 
 class _CommandCancelled(BaseException):
-    """Signal async cancellation through synchronous execution wrappers."""
+    """Signal async cancellation through synchronous execution wrappers.
+
+    This derives from `BaseException`, not `Exception`, on purpose. `_execute`
+    catches `Exception` to turn any failure into an `ExecuteResponse`. If this
+    class derived from `Exception`, that catch would convert cancellation into a
+    normal response with exit code 1 and the caller would never see it.
+    """
 
 
-def _release_background_worker(worker: asyncio.Future[ExecuteResponse]) -> None:
+class _CommandTimeout(subprocess.TimeoutExpired):
+    """A command timeout, with the output read before the deadline.
+
+    `subprocess.TimeoutExpired` alone cannot say whether cleanup managed to stop
+    the command, so `terminated` carries that. It is `False` when the process may
+    still be running, which changes the advice given to the caller.
+    """
+
+    def __init__(
+        self,
+        cmd: str,
+        timeout: float,
+        *,
+        output: str = "",
+        stderr: str = "",
+        terminated: bool = True,
+    ) -> None:
+        """Record the partial output and whether the command was stopped."""
+        super().__init__(cmd, timeout, output=output, stderr=stderr)
+        self.terminated = terminated
+
+
+def _command_summary(command: str) -> str:
+    """Shorten a command so a log line stays readable."""
+    return command if len(command) <= _COMMAND_LOG_LIMIT else f"{command[:_COMMAND_LOG_LIMIT]}..."
+
+
+def _release_background_worker(
+    worker: asyncio.Future[ExecuteResponse],
+    *,
+    backend_id: str,
+    command: str,
+) -> None:
     """Consume the result of an execution worker retained after cancellation."""
     _BACKGROUND_WORKERS.discard(worker)
     if worker.cancelled():
@@ -66,52 +121,101 @@ def _release_background_worker(worker: asyncio.Future[ExecuteResponse]) -> None:
     except asyncio.CancelledError:
         return
     except BaseException:  # noqa: BLE001  # Done callbacks cannot propagate worker control-flow exceptions.
-        logger.warning("Local shell execution failed after its caller was cancelled", exc_info=True)
+        logger.warning(
+            "Local shell execution failed after its caller was cancelled on backend %s: %s",
+            backend_id,
+            _command_summary(command),
+            exc_info=True,
+        )
 
 
 async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> bool:
-    """Wait through repeated cancellation up to the cleanup grace period."""
+    """Wait through repeated cancellation up to the cleanup grace period.
+
+    Args:
+        worker: The executor future that runs the command.
+
+    Returns:
+        `True` if the worker finished inside the grace period, `False` if the
+        grace period expired first.
+    """
     deadline = asyncio.get_running_loop().time() + _ASYNC_CANCELLATION_GRACE_PERIOD
     while not worker.done():
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             return False
-        with suppress(asyncio.CancelledError):
+        try:
             await asyncio.wait({worker}, timeout=remaining)
+        except asyncio.CancelledError:
+            # A second cancellation must not abort cleanup. The caller already
+            # raises `CancelledError` once the grace period ends, so absorbing
+            # this one only stops the bookkeeping below from being skipped.
+            logger.debug("Ignored a repeated cancellation while local shell cleanup was in progress")
     return True
 
 
-def _terminate_process(process: subprocess.Popen[str], process_group: int | None) -> None:
-    """Best-effort termination of a shell process or its POSIX group."""
+def _terminate_process(process: subprocess.Popen[str], process_group: int | None) -> bool:
+    """Kill a shell process, or its process group on POSIX.
+
+    Args:
+        process: The shell process started by `execute`.
+        process_group: POSIX process group id, or `None` to kill only `process`.
+
+    Returns:
+        `True` if nothing this function can reach is still running.
+    """
     target = f"process group {process_group}" if process_group is not None else f"process {process.pid}"
     try:
-        if sys.platform == "win32" or process_group is None:
+        if _IS_WINDOWS or process_group is None:
             process.kill()
         else:
             os.killpg(process_group, signal.SIGKILL)
-    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+    except ProcessLookupError:
+        # The group is empty, or the process was already reaped. This is the
+        # ordinary result when cancellation arrives just after a command ends,
+        # so it is a success, not a failure.
+        logger.debug("Local shell %s had already exited before cleanup", target)
+        return True
+    except OSError:
         logger.warning("Failed to terminate local shell %s", target, exc_info=True)
     else:
-        return
-    if process_group is not None:
-        try:
-            process.kill()
-        except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
-            logger.warning("Failed to terminate local shell process %s after group cleanup failed", process.pid, exc_info=True)
+        return True
+    # Only reached when the group kill failed. Kill the shell itself so at least
+    # the direct process goes away.
+    if process_group is None:
+        return False
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return True
+    except OSError:
+        logger.warning("Failed to terminate local shell process %s after group cleanup failed", process.pid, exc_info=True)
+        return False
+    return True
 
 
-def _reap_process(process: subprocess.Popen[str]) -> None:
-    """Wait briefly for a terminated shell without blocking indefinitely."""
+def _reap_process(process: subprocess.Popen[str]) -> bool:
+    """Wait briefly for a terminated shell without blocking indefinitely.
+
+    Args:
+        process: The shell process that was just terminated.
+
+    Returns:
+        `True` if the process exited inside `_PROCESS_REAP_TIMEOUT` seconds.
+    """
     try:
         process.wait(timeout=_PROCESS_REAP_TIMEOUT)
     except subprocess.TimeoutExpired:
-        logger.warning(
+        logger.error(  # noqa: TRY400  # There is no active exception to attach; this is a cleanup outcome.
             "Local shell process %s did not exit within %s seconds after termination; abandoning its handle",
             process.pid,
             _PROCESS_REAP_TIMEOUT,
         )
-    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+        return False
+    except OSError:
         logger.warning("Failed to reap local shell process %s", process.pid, exc_info=True)
+        return False
+    return True
 
 
 def _close_pipe(pipe: IO[str] | None, name: str, process_id: int) -> None:
@@ -120,16 +224,61 @@ def _close_pipe(pipe: IO[str] | None, name: str, process_id: int) -> None:
         return
     try:
         pipe.close()
-    except BaseException:  # noqa: BLE001  # Cleanup cannot replace the active control-flow exception.
+    except (OSError, ValueError):
         logger.warning("Failed to close %s for local shell process %s", name, process_id, exc_info=True)
 
 
-def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> None:
-    """Best-effort terminate a command and release its local resources."""
-    _terminate_process(process, process_group)
-    _reap_process(process)
+def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> bool:
+    """Terminate a command and release its local resources.
+
+    The pipes are closed even when the process could not be reaped, so a stuck
+    command cannot leak file descriptors.
+
+    Args:
+        process: The shell process started by `execute`.
+        process_group: POSIX process group id, or `None` on Windows.
+
+    Returns:
+        `True` if the command is known to have exited.
+    """
+    terminated = _terminate_process(process, process_group)
+    reaped = _reap_process(process)
     _close_pipe(process.stdout, "stdout", process.pid)
     _close_pipe(process.stderr, "stderr", process.pid)
+    return terminated and reaped
+
+
+def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
+    """Decode output taken from a `TimeoutExpired` raised by a text-mode process.
+
+    `Popen.communicate` decodes its return value but not the partial output on
+    its `TimeoutExpired`, which stays as bytes even in text mode.
+    `WindowsProcessReader` attaches text, which is returned unchanged.
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    encoding = getattr(pipe, "encoding", None) or "utf-8"
+    errors = getattr(pipe, "errors", None) or "replace"
+    return data.decode(encoding, errors)
+
+
+def _timeout_with_partial_output(
+    process: subprocess.Popen[str],
+    timeout: float,
+    partial: subprocess.TimeoutExpired | None,
+    *,
+    terminated: bool,
+) -> _CommandTimeout:
+    """Build the timeout error, keeping whatever the command printed."""
+    return _CommandTimeout(
+        process.args if isinstance(process.args, str) else str(process.args),
+        timeout,
+        output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
+        stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
+        terminated=terminated,
+    )
 
 
 def _communicate(
@@ -139,24 +288,53 @@ def _communicate(
     *,
     process_group: int | None = None,
 ) -> tuple[str, str]:
-    """Collect output with best-effort cleanup when execution is interrupted."""
-    communicate = WindowsProcessReader(process).communicate if sys.platform == "win32" else process.communicate
+    """Collect command output, cleaning up if execution is interrupted.
+
+    With no `cancellation_event` the output is collected in one call. With one,
+    output is collected in short attempts so cancellation is noticed quickly.
+    Retrying after `TimeoutExpired` is safe: `Popen.communicate` keeps the bytes
+    it has already read, and the `WindowsProcessReader` below is created once so
+    that it reuses its own buffers. Creating a new reader per attempt would drop
+    output and split multi-byte characters.
+
+    Args:
+        process: The running shell process.
+        timeout: Total seconds allowed for the command.
+        cancellation_event: Set by `aexecute` when its caller is cancelled.
+        process_group: POSIX process group id, or `None` on Windows.
+
+    Returns:
+        The decoded stdout and stderr of the command.
+
+    Raises:
+        _CommandTimeout: If the command did not finish inside `timeout`.
+        _CommandCancelled: If `cancellation_event` was set before the command finished.
+        BaseException: Anything raised while output was collected, after cleanup.
+    """
+    collect = WindowsProcessReader(process).communicate if _IS_WINDOWS else process.communicate
     if cancellation_event is None:
         try:
-            return communicate(timeout=timeout)
+            return collect(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            terminated = _kill_and_reap(process, process_group)
+            raise _timeout_with_partial_output(process, timeout, error, terminated=terminated) from None
         except BaseException:
             _kill_and_reap(process, process_group)
             raise
 
     deadline = time.monotonic() + timeout
+    # Each attempt keeps the bytes already read, so the newest `TimeoutExpired`
+    # carries everything the command has printed so far.
+    partial: subprocess.TimeoutExpired | None = None
     while not cancellation_event.is_set():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _kill_and_reap(process, process_group)
-            raise subprocess.TimeoutExpired(process.args, timeout)
+            terminated = _kill_and_reap(process, process_group)
+            raise _timeout_with_partial_output(process, timeout, partial, terminated=terminated)
         try:
-            output = communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
-        except subprocess.TimeoutExpired:
+            output = collect(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
+        except subprocess.TimeoutExpired as error:
+            partial = error
             continue
         except BaseException:
             _kill_and_reap(process, process_group)
@@ -403,11 +581,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             Exception: Any exception raised by an overridden `execute` method.
 
         Note:
-            Cancellation allows synchronous execution one second for cleanup.
-            An overridden `execute` method that does not cooperate may continue
-            running in a background thread after cancellation is raised.
-            The one-second bound applies to this await, not application shutdown:
-            shutting down the default executor still waits for running threads.
+            Cancellation allows synchronous execution a short grace period for
+            cleanup, set by `_ASYNC_CANCELLATION_GRACE_PERIOD`. An overridden
+            `execute` method that does not cooperate may continue running in a
+            background thread after cancellation is raised. That bound applies to
+            this await, not to application shutdown: shutting down the default
+            executor still waits for running threads.
         """
         cancellation_event = threading.Event()
         execution_started = threading.Event()
@@ -429,16 +608,27 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 worker.cancel()
             if not await _wait_for_worker_shutdown(worker):
                 logger.warning(
-                    "Cancellation of local shell backend %s (%s) exceeded %s second; its overridden execute method may still be running",
+                    "Cancellation of local shell backend %s (%s) exceeded %s seconds. "
+                    "Its overridden execute method may still be running, or cleanup is still waiting for a shell process that ignores termination.",
                     self.id,
                     type(self).__name__,
                     _ASYNC_CANCELLATION_GRACE_PERIOD,
                 )
                 _BACKGROUND_WORKERS.add(worker)
-                worker.add_done_callback(_release_background_worker)
+                worker.add_done_callback(
+                    functools.partial(_release_background_worker, backend_id=self.id, command=command),
+                )
                 raise
-            if not worker.cancelled():
-                worker.exception()
+            # The worker lost the race with cancellation, but it may have failed
+            # for an unrelated reason. Report that instead of dropping it, or the
+            # caller only ever sees "cancelled" for a real error.
+            if not worker.cancelled() and (error := worker.exception()) is not None and not isinstance(error, asyncio.CancelledError):
+                logger.warning(
+                    "Local shell command failed on backend %s while its caller was cancelled: %s",
+                    self.id,
+                    _command_summary(command),
+                    exc_info=error,
+                )
             raise
 
     def execute(
@@ -470,13 +660,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         Stdout and stderr are combined into a single output stream.
 
         On POSIX systems, each command starts in a new session without sharing
-        the parent's controlling terminal. Timeout, interruption, and async
-        cancellation terminate the command's entire process group with
-        `SIGKILL`, then wait briefly for the shell process to exit.
+        the parent's controlling terminal. A timeout, an interruption such as
+        `KeyboardInterrupt`, and async cancellation all terminate the command's
+        process group with `SIGKILL`, then wait briefly for the shell process to
+        exit. A descendant that makes its own session or process group, for
+        example with `nohup` or `setsid`, leaves that group and is not killed.
 
         On Windows, commands do not start in a new process group. Cleanup
         terminates only the direct shell process, so descendants may continue
-        running after timeout, interruption, or async cancellation.
+        running after a timeout, an interruption, or async cancellation. A
+        descendant that inherits the output handles also keeps the pipes open, so
+        the command waits for the full timeout even after the shell itself exits.
 
         Args:
             command: Shell command string to execute.
@@ -531,6 +725,30 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         cancellation_event = execution_context[1] if execution_context is not None and execution_context[0] is self else None
         return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
 
+    def _combine_output(self, stdout: str | None, stderr: str | None) -> tuple[str, bool]:
+        r"""Merge the captured streams into one string and apply the size limit.
+
+        Each stderr line is prefixed with `[stderr]` so the source of a line is
+        clear, for example `"hello\n[stderr] error: file not found"`.
+
+        Args:
+            stdout: Captured standard output, or `None`.
+            stderr: Captured standard error, or `None`.
+
+        Returns:
+            The combined text and whether it was truncated.
+        """
+        output_parts: list[str] = []
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            output_parts.extend(f"[stderr] {line}" for line in stderr.strip().split("\n"))
+
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+        if len(output) > self._max_output_bytes:
+            return f"{output[: self._max_output_bytes]}\n\n... Output truncated at {self._max_output_bytes} bytes.", True
+        return output, False
+
     def _execute(
         self,
         command: str,
@@ -552,7 +770,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
-            start_new_session = sys.platform != "win32"
+            start_new_session = not _IS_WINDOWS
             process = subprocess.Popen(  # noqa: S602
                 command,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
@@ -564,6 +782,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=start_new_session,
             )
+            # `start_new_session` runs `setsid()`, which makes the child a
+            # session and group leader, so its process group id equals its pid.
+            # This identity holds only while `start_new_session` is true.
             process_group = process.pid if start_new_session else None
             stdout, stderr = _communicate(
                 process,
@@ -572,24 +793,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 process_group=process_group,
             )
 
-            # Combine stdout and stderr
-            # Prefix each stderr line with [stderr] for clear attribution.
-            # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
-            output_parts = []
-            if stdout:
-                output_parts.append(stdout)
-            if stderr:
-                stderr_lines = stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-            output = "\n".join(output_parts) if output_parts else "<no output>"
-
-            # Check for truncation
-            truncated = False
-            if len(output) > self._max_output_bytes:
-                output = output[: self._max_output_bytes]
-                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-                truncated = True
+            output, truncated = self._combine_output(stdout, stderr)
 
             # Add exit code info if non-zero
             if process.returncode != 0:
@@ -601,19 +805,34 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=truncated,
             )
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             if timeout is not None:
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
+            # What the command printed before it stopped responding is usually the
+            # only clue about where it stopped, so keep it.
+            # `_communicate` attaches decoded text. A `TimeoutExpired` raised
+            # anywhere else still carries bytes, so normalize both here.
+            partial_stdout = _decode_stream(error.stdout, None)
+            partial_stderr = _decode_stream(error.stderr, None)
+            truncated = False
+            if partial_stdout or partial_stderr:
+                partial, truncated = self._combine_output(partial_stdout, partial_stderr)
+                msg = f"{msg}\n\nOutput before the timeout:\n{partial}"
+            if not getattr(error, "terminated", True):
+                msg = f"{msg}\n\nWarning: the command could not be stopped and may still be running. Re-running it may start a second copy."
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,  # Standard timeout exit code
-                truncated=False,
+                truncated=truncated,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # Broad exception catch is intentional: we want to catch all execution errors
-            # and return a consistent ExecuteResponse rather than propagating exceptions
+            # and return a consistent ExecuteResponse rather than propagating exceptions.
+            # Log it, because exit code 1 is otherwise indistinguishable from the
+            # command itself failing and the traceback would be lost.
+            logger.exception("Local shell command failed on backend %s: %s", self.id, _command_summary(command))
             return ExecuteResponse(
                 output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,

@@ -1,18 +1,6 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const { loadConfig } = require('./pr-labeler.js');
-
-// Label colors follow the taxonomy prefix; see `labelColors` in
-// pr-labeler-config.json. Resolved here rather than hardcoded so a color
-// change lands in one place.
-function colorFor(name) {
-  const { labelColor, labelColors } = loadConfig();
-  let best = null;
-  for (const prefix of Object.keys(labelColors)) {
-    if (name.startsWith(prefix) && (!best || prefix.length > best.length)) best = prefix;
-  }
-  return best ? labelColors[best] : labelColor;
-}
+const { loadAndInit } = require('./pr-labeler.js');
 
 const DEFAULT_BYPASS_LABEL = 'ci:keep-open';
 const DEFAULT_PENDING_DELETION_LABEL = 'auto:pending-deletion';
@@ -826,6 +814,10 @@ async function sweepStalePendingDeletionLabels({
 
 async function run({ github, context, core, options = {} }) {
   const { owner, repo } = context.repo;
+  // Label colors follow the taxonomy prefix. Borrow the labeler's resolver
+  // rather than repeating the prefix rule, so a change to how a color is
+  // chosen — not just to a hex — reaches this script too.
+  const { colorFor } = loadAndInit(github, owner, repo, core).h;
   // `||` (not `??`) so an empty string falls back to the default: an
   // empty-named label can never be applied, which would silently disable the
   // bypass or auto:pending-deletion mechanisms.

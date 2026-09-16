@@ -493,6 +493,12 @@ test('label-creating scripts resolve colors from the config', () => {
     const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
     const hits = body.match(/color: ['"][0-9a-f]{6}['"]/g) || [];
     assert.deepEqual(hits, [], `${rel} hardcodes ${hits.join(', ')}`);
+    // A second copy of the prefix rule drifts from this one; a hex-only check
+    // would not notice, because a copy resolves from the config too.
+    assert.ok(
+      !/function colorFor\b/.test(body),
+      `${rel} defines its own colorFor instead of using the exported resolver`,
+    );
   }
 });
 

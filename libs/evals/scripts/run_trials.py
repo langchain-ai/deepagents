@@ -6,8 +6,8 @@ experiment. After all trials complete, per-metric mean / median / stdev / min /
 max are computed across trials and written to `<out-dir>/trials_summary.json`.
 
 Usage:
-    python scripts/run_trials.py --model openai:gpt-5.5 --trials 5
-    python scripts/run_trials.py --model openai:gpt-5.5 --trials 3 \
+    python scripts/run_trials.py --model openai:gpt-6-astra --trials 5
+    python scripts/run_trials.py --model openai:gpt-6-astra --trials 3 \
         --eval-category memory --openai-reasoning-effort medium
 
 Within a single CLI invocation, trials run sequentially in-process — LangSmith
@@ -472,7 +472,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=False,
         default=os.environ.get(_MODEL_ENV_VAR),
         help=(
-            "Model identifier, e.g. openai:gpt-5.5 (passed through to pytest). "
+            "Model identifier, e.g. openai:gpt-6-astra (passed through to pytest). "
             f"Required unless --aggregate-only is set. Defaults to ${_MODEL_ENV_VAR} when set."
         ),
     )

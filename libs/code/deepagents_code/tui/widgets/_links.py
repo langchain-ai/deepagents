@@ -61,17 +61,15 @@ def _notify(
 
 def _url_open_toasts_enabled() -> bool:
     """Return whether successful URL-open clicks should show a toast."""
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("display.show_url_open_toast")
     if option is None:
         return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _notify_url_opened(app: App | None, url: str) -> None:

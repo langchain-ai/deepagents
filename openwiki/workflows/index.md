@@ -1,4 +1,5 @@
 # Files
 
-- [Deep Agents Code runtime, approvals, and MCP trust](deep-agents-code.md) - Maintainer guide to dcode’s Textual client and LangGraph server, human approval modes, experimental Auto policy, sandboxes, and MCP configuration trust.
-- [Evaluation, Harbor scorecards, CI, and releases](evaluation-and-release.md) - How Deep Agents runs unit and live evaluations, aggregates unified Harbor scorecards, compares branches, and turns validated package releases into publications.
+- [Build and Customize a Deep Agent](build-a-deep-agent.md) - Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
+- [Run a dcode Session](run-dcode-session.md) - Trace an interactive or headless dcode session from CLI policy and startup through its workspace-bound LangGraph server, streaming and approvals, persistence and offload, to recovery and cleanup.
+- [Run and Extend Evaluations](run-evals.md) - Run, interpret, and extend the real-model Deep Agents behavioral eval suite, multi-trial reporting, Harbor benchmarks, and the unified cross-model battery.

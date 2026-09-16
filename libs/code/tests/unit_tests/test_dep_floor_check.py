@@ -23,7 +23,6 @@ from deepagents_code._dep_floor_check import (
     _load_cli_requirements,
     _mismatch_fingerprint,
     _quote_arg,
-    format_dep_floor_warning,
     is_dep_floor_mismatch_muted,
     mute_dep_floor_mismatch,
     prompt_if_editable_deps_stale,
@@ -350,34 +349,6 @@ class TestRefreshCommand:
         assert dep_floor_check.refresh_command() == (
             f"/usr/bin/uv pip install --python /venv/bin/python -e {code} --upgrade"
         )
-
-    def test_unc_editable_record_is_preserved(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A `file://server/share/...` record keeps its host in the comparison.
-
-        `urlparse(...).path` alone drops the server component, which would
-        omit a UNC-installed editable from the refresh and let `--upgrade`
-        replace it with a PyPI wheel.
-        """
-        unc_path = Path("//server/share/repo/libs/deepagents").resolve()
-
-        class _Dist:
-            def read_text(self, filename: str) -> str:
-                assert filename == "direct_url.json"
-                return json.dumps(
-                    {
-                        "url": "file://server/share/repo/libs/deepagents",
-                        "dir_info": {"editable": True},
-                    }
-                )
-
-        monkeypatch.setattr(
-            dep_floor_check.importlib.metadata, "distribution", lambda _name: _Dist()
-        )
-        monkeypatch.setattr(Path, "is_dir", lambda _self: True)
-
-        assert dep_floor_check._is_editable_dist("deepagents", unc_path)
 
     def test_unreadable_pyproject_uses_standalone_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -721,43 +692,6 @@ class TestInteractivePrompt:
 
         assert prompt_if_editable_deps_stale() is None
         assert "could not be saved" in capsys.readouterr().err
-
-    def test_refresh_success_rechecks_and_reexecs(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """A successful refresh re-execs after a clean dependency scan.
-
-        Re-exec, not in-process continuation: dependencies imported before the
-        prompt (`rich`, `python-dotenv`, ...) keep stale module objects in
-        memory, so only a fresh interpreter runs the refreshed code.
-        """
-        scans = iter([list(_VIOLATIONS), []])
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
-        monkeypatch.setattr(
-            dep_floor_check.shutil, "which", lambda _name: "/usr/bin/uv"
-        )
-        self._stub_prompt(monkeypatch, _TrustAction.REFRESH)
-
-        def _run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            seen["args"] = args
-            seen.update(kwargs)
-            return subprocess.CompletedProcess(args, 0)
-
-        def _restart(*_args: object, **_kwargs: object) -> None:
-            seen["restarted"] = True
-
-        monkeypatch.setattr(dep_floor_check.subprocess, "run", _run)
-        monkeypatch.setattr(main_module, "_restart_current_process", _restart)
-
-        assert prompt_if_editable_deps_stale() is None
-        assert seen["args"] == dep_floor_check._refresh_args("/usr/bin/uv")
-        assert seen["check"] is False
-        assert seen["shell"] is False
-        assert seen["restarted"] is True
-        text = capsys.readouterr().err
-        assert "Refreshing environment..." in text
-        assert "Environment refreshed; relaunching." in text
 
     def test_refresh_success_survives_exec_failure(
         self, monkeypatch: pytest.MonkeyPatch

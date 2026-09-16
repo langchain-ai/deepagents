@@ -17,16 +17,16 @@ from check_open_release_fanout import (
 
 def test_is_lockfile_only() -> None:
     """Only non-empty all-lockfile lists count."""
-    assert is_lockfile_only(["libs/cli/uv.lock"])
-    assert is_lockfile_only(["libs/cli/uv.lock", "libs/code/uv.lock"])
+    assert is_lockfile_only(["libs/acp/uv.lock"])
+    assert is_lockfile_only(["libs/acp/uv.lock", "libs/code/uv.lock"])
     assert not is_lockfile_only([])
-    assert not is_lockfile_only(["libs/cli/pyproject.toml"])
-    assert not is_lockfile_only(["libs/cli/uv.lock", "libs/cli/main.py"])
+    assert not is_lockfile_only(["libs/acp/pyproject.toml"])
+    assert not is_lockfile_only(["libs/acp/uv.lock", "libs/acp/main.py"])
 
 
 def test_release_tag_matches_repo_convention() -> None:
     """Tags are `{component}=={version}` per release-please config."""
-    assert release_tag("deepagents-cli", "0.2.2") == "deepagents-cli==0.2.2"
+    assert release_tag("deepagents-acp", "0.2.2") == "deepagents-acp==0.2.2"
     assert release_tag("deepagents", "0.6.12", separator="==") == "deepagents==0.6.12"
     assert tag_separator({"tag-separator": "=="}) == "=="
     assert tag_separator({}) == "=="
@@ -80,12 +80,12 @@ def test_find_lockfile_only_components_resolves_version_to_tag(
     config = {
         "tag-separator": "==",
         "packages": {
-            "libs/cli": {"component": "deepagents-cli"},
+            "libs/acp": {"component": "deepagents-acp"},
             "libs/code": {"component": "deepagents-code"},
         },
     }
     manifest = {
-        "libs/cli": "0.2.2",
+        "libs/acp": "0.2.2",
         "libs/code": "0.1.47",
     }
     seen: list[tuple[str, str]] = []
@@ -93,8 +93,8 @@ def test_find_lockfile_only_components_resolves_version_to_tag(
     def fake_diff(path: str, baseline: str, *, repo_root: Path, head: str = "HEAD"):
         del repo_root, head
         seen.append((path, baseline))
-        if path.startswith("libs/cli") and baseline == "deepagents-cli==0.2.2":
-            return ["libs/cli/uv.lock"]
+        if path.startswith("libs/acp") and baseline == "deepagents-acp==0.2.2":
+            return ["libs/acp/uv.lock"]
         if path.startswith("libs/code") and baseline == "deepagents-code==0.1.47":
             return ["libs/code/deepagents_code/x.py", "libs/code/uv.lock"]
         return []
@@ -106,20 +106,20 @@ def test_find_lockfile_only_components_resolves_version_to_tag(
         "check_open_release_fanout.package_unreleased_files", fake_diff
     )
     offenders = find_lockfile_only_components(config, manifest, repo_root=tmp_path)
-    assert ("libs/cli", "deepagents-cli==0.2.2") in seen
+    assert ("libs/acp", "deepagents-acp==0.2.2") in seen
     assert ("libs/code", "deepagents-code==0.1.47") in seen
     assert len(offenders) == 1
-    assert offenders[0]["component"] == "deepagents-cli"
+    assert offenders[0]["component"] == "deepagents-acp"
     assert offenders[0]["version"] == "0.2.2"
-    assert offenders[0]["baseline"] == "deepagents-cli==0.2.2"
-    assert offenders[0]["files"] == ["libs/cli/uv.lock"]
+    assert offenders[0]["baseline"] == "deepagents-acp==0.2.2"
+    assert offenders[0]["files"] == ["libs/acp/uv.lock"]
 
 
 def test_main_missing_manifest_fails_closed(capsys, tmp_path: Path) -> None:
     """Missing manifest fails closed (exit 2)."""
     config_path = tmp_path / "release-please-config.json"
     config_path.write_text(
-        json.dumps({"packages": {"libs/cli": {"component": "x"}}}), encoding="utf-8"
+        json.dumps({"packages": {"libs/acp": {"component": "x"}}}), encoding="utf-8"
     )
     rc = main(
         config_path=config_path,
@@ -135,23 +135,23 @@ def test_main_happy_path(capsys, tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "release-please-config.json"
     manifest_path = tmp_path / ".release-please-manifest.json"
     config_path.write_text(
-        json.dumps({"packages": {"libs/cli": {"component": "deepagents-cli"}}}),
+        json.dumps({"packages": {"libs/acp": {"component": "deepagents-acp"}}}),
         encoding="utf-8",
     )
-    manifest_path.write_text(json.dumps({"libs/cli": "0.2.2"}), encoding="utf-8")
+    manifest_path.write_text(json.dumps({"libs/acp": "0.2.2"}), encoding="utf-8")
     monkeypatch.setattr(
         "check_open_release_fanout._ref_exists", lambda *_a, **_k: True
     )
     monkeypatch.setattr(
         "check_open_release_fanout.package_unreleased_files",
-        lambda *a, **k: ["libs/cli/uv.lock"],
+        lambda *a, **k: ["libs/acp/uv.lock"],
     )
     rc = main(config_path=config_path, manifest_path=manifest_path, repo_root=tmp_path)
     captured = capsys.readouterr()
     assert rc == 0
     payload = json.loads(captured.out)
-    assert payload[0]["component"] == "deepagents-cli"
-    assert payload[0]["baseline"] == "deepagents-cli==0.2.2"
+    assert payload[0]["component"] == "deepagents-acp"
+    assert payload[0]["baseline"] == "deepagents-acp==0.2.2"
 
 
 def test_main_unpublished_tag_is_skipped_not_fatal(
@@ -194,17 +194,17 @@ def test_main_diff_failure_for_existing_tag_fails_closed(
     config_path = tmp_path / "release-please-config.json"
     manifest_path = tmp_path / ".release-please-manifest.json"
     config_path.write_text(
-        json.dumps({"packages": {"libs/cli": {"component": "deepagents-cli"}}}),
+        json.dumps({"packages": {"libs/acp": {"component": "deepagents-acp"}}}),
         encoding="utf-8",
     )
-    manifest_path.write_text(json.dumps({"libs/cli": "0.2.2"}), encoding="utf-8")
+    manifest_path.write_text(json.dumps({"libs/acp": "0.2.2"}), encoding="utf-8")
     monkeypatch.setattr(
         "check_open_release_fanout._ref_exists", lambda *_a, **_k: True
     )
 
     def boom(*_a, **_k):
         raise RuntimeError(
-            "git 'diff --name-only deepagents-cli==0.2.2..HEAD -- libs/cli/' "
+            "git 'diff --name-only deepagents-acp==0.2.2..HEAD -- libs/acp/' "
             "failed (rc=128): fatal: bad object"
         )
 

@@ -1,3 +1,8 @@
+# Applies `package:*` / `integration:*` labels from the issue form's
+# "Area" section, `topic:*` from a small open model, and a default
+# `priority:backlog` on every new issue.
+# Taxonomy: .github/LABELS.md.
+
 name: Auto Label Issues by Package
 
 on:
@@ -9,11 +14,93 @@ permissions:
 
 jobs:
   label-by-package:
+    environment: labeling
     permissions:
+      contents: read
       issues: write
     runs-on: ubuntu-latest
 
     steps:
+      # Checks out the default branch so
+      # `require('./.github/scripts/labeling/pr-labeler.js')` resolves. This
+      # workflow runs on `issues` events, which carry no PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Every new issue starts in the backlog; a maintainer escalates from
+      # there. Runs before the Area sync so an issue opened without the form
+      # (API, blank issue) is still prioritized even though package labeling
+      # does not apply. Skipped when a priority is already
+      # present, so a re-run or a form-applied label is never overwritten and
+      # an escalation is never demoted.
+      - name: Apply default priority
+        if: github.event.action == 'opened'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const DEFAULT_PRIORITY = 'priority:backlog';
+
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number,
+            });
+            const current = (issue.labels ?? []).map(l => l.name ?? l);
+            if (current.some(name => name.startsWith('priority:'))) {
+              console.log(`Issue #${issue_number} already has a priority; leaving it alone.`);
+              return;
+            }
+
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js')
+              .loadAndInit(github, owner, repo, core);
+            await h.ensureLabel(DEFAULT_PRIORITY);
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number, labels: [DEFAULT_PRIORITY],
+            });
+            console.log(`Applied '${DEFAULT_PRIORITY}' to issue #${issue_number}`);
+
+      # `topic:*` from a small open model. Classify on `opened` only. The step
+      # never removes a topic, so re-running on `edited` would re-add one a
+      # maintainer had deliberately removed, with no way to make the removal
+      # stick — and would spend a model call per edit for the same answer.
+      # Matches the priority step above.
+      - name: Apply topic labels
+        if: github.event.action == 'opened'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js')
+              .loadAndInit(github, owner, repo, core);
+            const { classifyTopicLabels, loadTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
+
+            let topics;
+            try {
+              topics = await classifyTopicLabels(
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, loadTopicLabels(),
+              );
+            } catch (error) {
+              core.warning(`Topic classification failed: ${error.message}`);
+              return;
+            }
+            // Safe to trust the payload here, unlike the priority step: this
+            // runs on `opened`, so no earlier run can have set a topic.
+            const current = new Set((issue.labels ?? []).map(l => l.name ?? l));
+            const toAdd = [...topics].filter(name => !current.has(name));
+            if (!toAdd.length) {
+              console.log(`No new topic labels for issue #${issue.number}.`);
+              return;
+            }
+
+            for (const name of toAdd) await h.ensureLabel(name);
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: issue.number, labels: toAdd,
+            });
+            console.log(`Applied [${toAdd.join(', ')}] to issue #${issue.number}`);
+
       - name: Sync package labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -23,35 +110,37 @@ jobs:
             // Extract text under "## Area" or "### Area" (handles " (Required)" suffix and being last section)
             const match = body.match(/#{2,3} Area[^\n]*\n([\s\S]*?)(?:\n#{2,3} |$)/i);
             if (!match) {
-              core.setFailed(
-                `Could not find "## Area" section in issue #${context.issue.number} body. ` +
-                `The issue template may have changed — update the regex in this workflow.`
-              );
+              console.log(`Issue #${context.issue.number} has no Area section; skipping package labels.`);
               return;
             }
 
             const packageSection = match[1].trim();
 
-            // Mapping table for package names to labels
+            // Maps the issue form's "Area" option labels to `package:*` /
+            // `integration:*` labels.
+            // Keys must match the `options:` in .github/ISSUE_TEMPLATE/*.yml
+            // verbatim; the labels must match `scopeToLabel` in
+            // .github/scripts/labeling/pr-labeler-config.json so issues and
+            // PRs for the same package land on the same label.
+            // "Other / not sure / general" is intentionally unmapped.
             const mapping = {
-              "deepagents (SDK)": "deepagents",
-              "cli": "cli",
-              "acp": "acp",
-              "code": "dcode",
-              "dcode": "dcode",
-              "talon": "talon",
-              "evals": "evals",
-              "harbor": "harbor",
-              "daytona": "daytona",
-              "modal": "modal",
-              "quickjs": "quickjs",
-              "runloop": "runloop",
-              "vercel": "vercel",
-              "langsmith-sandbox": "langsmith-sandbox",
+              "deepagents (SDK)": "package:deepagents",
+              "acp": "package:acp",
+              "dcode": "package:dcode",
+              "talon": "package:talon",
+              "evals": "package:evals",
+              "daytona": "integration:daytona",
+              "modal": "integration:modal",
+              "quickjs": "integration:quickjs",
+              "runloop": "integration:runloop",
+              "vercel": "integration:vercel",
+              "langsmith-sandbox": "integration:langsmith",
             };
 
-            // All possible package labels we manage
-            const allPackageLabels = Object.values(mapping);
+            // All package labels we manage. Only these are removed when a
+            // selection is cleared — a label outside this set (applied by
+            // hand) is left alone.
+            const allPackageLabels = [...new Set(Object.values(mapping))];
             const selectedLabels = [];
 
             // Check if this is checkbox format (multiple selection)

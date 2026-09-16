@@ -102,10 +102,41 @@ def _ensure_runtime() -> None:
 
 
 def _default_db_path() -> Path:
+    """Return the sessions DB path dcode itself would use.
+
+    Returns:
+        The default sessions database path.
+
+    Raises:
+        SystemExit: If `DEEPAGENTS_HOME` is set to a value dcode rejects, so
+            this script never reads a database dcode never writes.
+    """
     explicit = os.environ.get("DEEPAGENTS_SESSIONS_DB")
     if explicit:
         return Path(explicit).expanduser()
-    return Path.home() / ".deepagents" / ".state" / "sessions.db"
+    try:
+        from deepagents_code._paths import get_deepagents_home  # noqa: PLC2701
+    except ImportError:
+        # Standalone fallback. It must apply the same rules as
+        # `_paths._resolve_profile_root`: relative paths and `~user` forms are
+        # rejected rather than coerced, because a lenient reading here would
+        # silently inspect a different profile than the app uses.
+        configured = os.environ.get("DEEPAGENTS_HOME")
+        if not configured:
+            home = Path.home() / ".deepagents"
+        elif configured.startswith("~/"):
+            home = Path.home() / configured[2:].lstrip("/")
+        elif configured.startswith("~") or not Path(configured).is_absolute():
+            msg = (
+                f"Invalid DEEPAGENTS_HOME {configured!r}: use an absolute path "
+                "or a path beginning with '~/'."
+            )
+            raise SystemExit(msg) from None
+        else:
+            home = Path(configured)
+    else:
+        home = get_deepagents_home()
+    return home / ".state" / "sessions.db"
 
 
 def _connect_read_only(path: Path) -> sqlite3.Connection:

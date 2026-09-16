@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:f5638ab2b317aae0a2ce7a32c33597b416fe81278c4f7bd8931c206e2b83c1a3",
+  "claims": [
+    {
+      "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
+      "statement": "Normal dcode startup captures a workspace and resolved ServerConfig, scaffolds and starts a loopback LangGraph server on an ephemeral-port default, waits for the agent graph, configures the RemoteAgent workspace policy, and stops the owned server in a finally block if handoff does not complete, including cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
+          "version": "repo-file-v1:sha256:018c6b8b6df71514c17b534374fb36253c9946de043bad744f5d95f7eb18b806"
+        }
+      ]
+    },
+    {
+      "id": "claim_77c1d1acf1554106a19e98b8692b14aa",
+      "statement": "For context-bearing server execution, make_graph requires a nonempty thread ID and workspace context, validates the durable thread workspace binding, and selects a binding-specific runtime; without execution context it returns the configured server runtime.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_40b27e72b5c8466491476f2b545b4c2e",
+      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries that reject configuration-policy drift and prevent a process-wide sandbox from being shared by different workspaces.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_ddfd890f8cf7462782ee70c8f6dbbd6f",
+      "statement": "RemoteAgent delegates SSE parsing, stream negotiation, namespace extraction, and interrupt detection to RemoteGraph, requires a thread ID, forwards workspace context, converts streamed message dictionaries and interrupt updates for the UI, and leaves state snapshots serialized.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+        }
+      ]
+    },
+    {
+      "id": "claim_1a4fd8f55e2346cb914824c0001a3e39",
+      "statement": "RemoteAgent treats a missing remote thread or a no-checkpoint SDK state-shape failure as empty state, but re-raises other state-read failures; it idempotently registers a live HTTP thread so checkpointed state can be mutated after server restart.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+        }
+      ]
+    },
+    {
+      "id": "claim_b8e21cdfd88b41d1b693c7badfaae27d",
+      "statement": "On a remote state-update conflict, RemoteAgent cancels pending and running runs with bounded concurrent waits and retries the update once.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+        }
+      ]
+    },
+    {
+      "id": "claim_f27fe0186de84bcea2e42ad6be1693cb",
+      "statement": "CodeModelRetryMiddleware wraps model-node calls rather than an entire agent turn and reads retry budget from the request model when present; it is installed inside compaction so failed provider attempts do not replay completed tools, summary generation, or archive append.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d958aac6d7946c48b563f23388298ca",
+      "statement": "Model retries re-raise GraphBubbleUp, retry only classified transient failures while budget remains, honor usable Retry-After hints or jittered exponential backoff, and re-raise terminal errors rather than fabricating an AI response; interactive retries have a cumulative delay guard.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca478b16158c4efd8000bd34d19ade28",
+      "statement": "Retry middleware emits correlated model attempt and retry stream events, tracks whether a failed attempt may have streamed visible output, and reports event-emission failures without failing the run so consumers can mark superseded partial output as incomplete.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_282ade9d9271454793f5c9bb49b032c0",
+      "statement": "Recovery abandons stale pending graph work by cancelling active runs, adding error results only for unanswered calls in the trailing AI-message turn, writing __end__, and verifying that no queued node, task, or interrupt remains.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+        }
+      ]
+    },
+    {
+      "id": "claim_f439848b72be4f6f84604a43eecd7571",
+      "statement": "Server graph construction snapshots the selected workspace environment and credentials before building its runtime, offloads blocking setup from the event loop, builds conditional web/MCP tooling, and emits a DEEPAGENTS_STARTUP_ERROR marker before exit on construction failure; parent health checking extracts that marker on early child exit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_7cecde199c494061b0d52a08bca7ee38",
+      "statement": "Focused tests verify cache and startup-marker contracts with injected builders, retry and stream behavior with fake models and transport errors, remote conversion/recovery behavior with doubles, and an in-memory queued-tools graph where abandonment clears pending work without executing the tool.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_pending_work_recovery.py",
+          "version": "repo-file-v1:sha256:70ee64383ee95e04c4ebdb99a324c66c11a071d642ac22d613aa4121fdc65a8e"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py",
+          "version": "repo-file-v1:sha256:4fd29d5fdf713b4555b6414491c26b11be411e51610d8df29cd8446c41cd2f56"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py",
+          "version": "repo-file-v1:sha256:42b784f6ef15656744dd10f8f057c87b4cf196db1ed723f311f5b9674295c27e"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
+          "version": "repo-file-v1:sha256:c06239c3cdc31ff4b2b6655649bc93b69bbbae7276d4bdd7795207862ffb7457"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_server_manager.py",
+          "version": "repo-file-v1:sha256:f77e5754f2ba1d6ba97b27fab3a04fdded54898441ce033f8b95e96989965b76"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec25c3ebdde9484ba001ffe45e69ed6e",
+      "statement": "RemoteAgent keeps workspace policy configuration separate from per-thread durable binding: policy and fingerprint must be supplied together, first use posts the workspace payload to the thread workspace route, and the returned descriptor is cached by thread.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d9126204c2740c0a4c5a1e7acdda194",
+      "statement": "The server child environment strips PYTHONPATH from server startup while relaying it only through a dedicated inherited carrier for downstream execute commands; local launch uses noop auth and generated dcode operation routes opt into custom-route auth when a deployment configures it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        }
+      ]
+    },
+    {
+      "id": "claim_36430fbcfca64fe1b0740593b4480e5a",
+      "statement": "ServerProcess uses a dedicated POSIX process group for graceful group shutdown and SIGKILL escalation, while Windows uses Ctrl+Break then root-process termination and may leave a surviving descendant orphaned.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        }
+      ]
+    },
+    {
+      "id": "claim_5e436f585de3408d9755d04b1b82ca23",
+      "statement": "ServerConfig partitions a workspace payload into a client-claimable session policy and server-resolved project policy, so project settings that can enable checkout-scoped execution are never accepted merely from the client claim.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_server_config.py",
+          "version": "repo-file-v1:sha256:50b93c4306c0a4162ad9112ba68dd87a1da4ddf86b713be8abf33585fcf6be0c"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
+          "version": "repo-file-v1:sha256:018c6b8b6df71514c17b534374fb36253c9946de043bad744f5d95f7eb18b806"
+        }
+      ]
+    },
+    {
+      "id": "claim_b3af139dfdd04320b4b017d21cfb9f11",
+      "statement": "Experimental server extensions are loaded with workspace, mode, project-trust, and explicit-path inputs; extension load errors are warned, and active server extensions are shut down if later graph construction fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-09T08:05:37.706Z"
+  }
+}

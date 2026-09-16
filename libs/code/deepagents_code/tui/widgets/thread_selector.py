@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
 
 from deepagents_code import theme
+from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -1061,8 +1062,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         limit = self._effective_thread_limit()
         if len(self._threads) >= limit:
             lines += (
-                f"\nShowing last {limit} threads. "
-                "Set DA_CLI_RECENT_THREADS to override."
+                f"\nShowing last {limit} threads. Set {RECENT_THREADS} to override."
             )
         return lines
 

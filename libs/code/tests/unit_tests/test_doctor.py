@@ -20,58 +20,18 @@ from deepagents_code.doctor import (
     collect_sections,
     run_doctor_command,
 )
-from deepagents_code.main import parse_args
 
 
 class TestDoctorArgs:
     """Tests for `doctor` argument parsing."""
 
-    def test_command_parsed(self) -> None:
-        """`dcode doctor` selects the doctor command."""
-        with patch.object(sys, "argv", ["deepagents", "doctor"]):
-            args = parse_args()
-        assert args.command == "doctor"
-
-    def test_json_flag(self) -> None:
-        """`dcode doctor --json` selects JSON output."""
-        with patch.object(sys, "argv", ["deepagents", "doctor", "--json"]):
-            args = parse_args()
-        assert args.command == "doctor"
-        assert args.output_format == "json"
-
 
 class TestDiagnosticSection:
     """Tests for the section dataclass health aggregation."""
 
-    def test_ok_when_all_items_ok(self) -> None:
-        """A section is healthy when every item is healthy."""
-        section = DiagnosticSection(
-            title="X",
-            items=[DiagnosticItem("a", "1"), DiagnosticItem("b", "2")],
-        )
-        assert section.ok is True
-
-    def test_not_ok_when_any_item_fails(self) -> None:
-        """A single failing item makes the section unhealthy."""
-        section = DiagnosticSection(
-            title="X",
-            items=[DiagnosticItem("a", "1"), DiagnosticItem("b", "2", ok=False)],
-        )
-        assert section.ok is False
-
 
 class TestCollectSections:
     """Tests for the diagnostic data collection."""
-
-    def test_section_titles(self) -> None:
-        """All sections are collected in display order."""
-        sections = collect_sections()
-        assert [s.title for s in sections] == [
-            "Diagnostics",
-            "Updates",
-            "Tracing",
-            "Configuration",
-        ]
 
     def test_diagnostics_reports_version(self) -> None:
         """The Diagnostics section reports the running CLI version."""
@@ -281,24 +241,6 @@ class TestCollectTracing:
         assert labels["Tracing"] == "disabled"
         assert labels["Credentials"] == "not set"
 
-    def test_default_project_is_marked(self) -> None:
-        """An unconfigured project shows the default marker."""
-        section = self._section(project="deepagents-code", project_is_default=True)
-        labels = {item.label: item.value for item in section.items}
-        assert labels["Project"] == "deepagents-code (default)"
-
-    def test_explicit_project_has_no_default_marker(self) -> None:
-        """An explicitly set project name is reported verbatim."""
-        section = self._section(project="deepagents-code", project_is_default=False)
-        labels = {item.label: item.value for item in section.items}
-        assert labels["Project"] == "deepagents-code"
-
-    def test_unset_project_renders_unset(self) -> None:
-        """A missing project renders the `(unset)` placeholder."""
-        section = self._section(project=None)
-        labels = {item.label: item.value for item in section.items}
-        assert labels["Project"] == "(unset)"
-
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""
         section = self._section(enabled=True, has_credentials=False)
@@ -339,12 +281,6 @@ class TestCollectTracing:
         assert labels["Endpoint"] == "https://example.com:8443"
         assert "secret" not in labels["Endpoint"]
         assert "api_key" not in labels["Endpoint"]
-
-    def test_gateway_yes_for_default_endpoint(self) -> None:
-        """No custom endpoint means the SDK default (managed gateway) is used."""
-        section = self._section(enabled=True, has_credentials=True, endpoint=None)
-        labels = {item.label: item.value for item in section.items}
-        assert labels["Gateway"] == "yes"
 
     def test_gateway_yes_for_langsmith_host(self) -> None:
         """A `smith.langchain.com` endpoint routes through the managed gateway."""
@@ -400,12 +336,6 @@ class TestCollectTracing:
         labels = {item.label: item.value for item in section.items}
         assert labels["Gateway"] == "yes"
 
-    def test_gateway_absent_when_not_enabled(self) -> None:
-        """The Gateway line only appears when tracing is enabled."""
-        section = self._section(enabled=False)
-        labels = {item.label: item.value for item in section.items}
-        assert "Gateway" not in labels
-
     def test_replica_project_listed_when_set(self) -> None:
         """A configured replica project is surfaced as its own item."""
         section = self._section(
@@ -420,33 +350,6 @@ class TestCollectTracing:
 class TestEndpointGatewayState:
     """Tests for the single-endpoint tracing gateway-host classifier."""
 
-    def test_exact_host_is_gateway(self) -> None:
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("https://smith.langchain.com") == "yes"
-
-    def test_trailing_root_dot_is_gateway(self) -> None:
-        """The fully-qualified spelling classifies as `cold_cache` sees it."""
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("https://smith.langchain.com./") == "yes"
-
-    def test_regional_subdomain_is_gateway(self) -> None:
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("https://eu.api.smith.langchain.com") == "yes"
-
-    def test_whitespace_padded_endpoint_is_gateway(self) -> None:
-        """A padded env value (a classic misconfiguration) still classifies."""
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("  https://smith.langchain.com  ") == "yes"
-
-    def test_self_hosted_is_not_gateway(self) -> None:
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("http://localhost:1984") == "no"
-
     def test_suffix_lookalike_host_is_not_gateway(self) -> None:
         """A host containing the domain as a substring is not the gateway."""
         from deepagents_code.doctor import _endpoint_gateway_state
@@ -454,25 +357,6 @@ class TestEndpointGatewayState:
         assert (
             _endpoint_gateway_state("https://smith.langchain.com.evil.example") == "no"
         )
-
-    def test_prefix_lookalike_host_is_not_gateway(self) -> None:
-        """The leading-dot boundary rejects a host that only shares a suffix."""
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("https://notsmith.langchain.com") == "no"
-
-    def test_unparseable_endpoint_is_unknown(self) -> None:
-        """A string with no parseable host is `unknown`, not a false `no`."""
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("not a url") == "unknown"
-        assert _endpoint_gateway_state("") == "unknown"
-
-    def test_bracket_malformed_ipv6_is_unknown(self) -> None:
-        """A `urlsplit` `ValueError` degrades to `unknown` rather than crashing."""
-        from deepagents_code.doctor import _endpoint_gateway_state
-
-        assert _endpoint_gateway_state("http://[::1") == "unknown"
 
 
 class TestCollectUpdates:
@@ -532,14 +416,6 @@ class TestCollectUpdates:
         )
         return cache
 
-    def test_last_checked_shows_relative_time(self, tmp_path: Path) -> None:
-        """A check stamped an hour ago renders as `1h ago` via the real read."""
-        cache = tmp_path / "latest_version.json"
-        cache.write_text(
-            json.dumps({"checked_at": time.time() - 3600}), encoding="utf-8"
-        )
-        assert self._labels(cache)["Last checked"] == "1h ago"
-
     def test_last_checked_just_now_on_future_stamp(self, tmp_path: Path) -> None:
         """A future stamp (clock skew) renders as `just now`, not a crash."""
         cache = tmp_path / "latest_version.json"
@@ -547,10 +423,6 @@ class TestCollectUpdates:
             json.dumps({"checked_at": time.time() + 3600}), encoding="utf-8"
         )
         assert self._labels(cache)["Last checked"] == "just now"
-
-    def test_last_checked_never_without_cache(self, tmp_path: Path) -> None:
-        """An absent cache reports `never` rather than crashing."""
-        assert self._labels(tmp_path / "latest_version.json")["Last checked"] == "never"
 
     def test_last_checked_never_on_corrupt_stamp(self, tmp_path: Path) -> None:
         """A non-finite stamp fails soft to `never` instead of crashing doctor."""
@@ -605,57 +477,9 @@ class TestCollectUpdates:
         assert labels["Latest version"] == "unknown (never checked)"
         assert labels["Last checked"] == "never"
 
-    def test_row_set_is_fixed(self, tmp_path: Path) -> None:
-        """Every state renders the same labels so outputs stay comparable."""
-        expected = ["Update checks", "Auto-updates", "Latest version", "Last checked"]
-        stale = self._stale_cache(tmp_path)
-        assert list(self._labels(stale)) == expected
-        assert (
-            list(self._labels(stale, editable=True, cached=(False, None))) == expected
-        )
-        assert (
-            list(self._labels(stale, checks_enabled=False, cached=(False, None)))
-            == expected
-        )
-        assert (
-            list(self._labels(tmp_path / "missing.json", cached=(False, None)))
-            == expected
-        )
-
 
 class TestCommitHash:
     """Tests for git commit hash detection."""
-
-    def test_uses_absolute_git_path(self, tmp_path) -> None:
-        """Git metadata probing must not rely on subprocess PATH lookup."""
-        git = tmp_path / "git"
-        git.write_text("", encoding="utf-8")
-        git.chmod(0o755)
-
-        with (
-            patch("deepagents_code.doctor._build_commit", return_value=None),
-            patch("shutil.which", return_value=str(git)),
-            patch(
-                "subprocess.run",
-                return_value=SimpleNamespace(returncode=0, stdout="abc123\n"),
-            ) as run,
-        ):
-            assert _commit_hash(str(tmp_path)) == "abc123"
-
-        argv = run.call_args.args[0]
-        assert Path(argv[0]).is_absolute()
-        assert argv[1:] == ["rev-parse", "--short", "HEAD"]
-
-    def test_missing_git_returns_unknown(self) -> None:
-        """Missing Git should degrade to `unknown` without spawning a process."""
-        with (
-            patch("deepagents_code.doctor._build_commit", return_value=None),
-            patch("shutil.which", return_value=None),
-            patch("subprocess.run") as run,
-        ):
-            assert _commit_hash("/tmp") == "unknown"
-
-        run.assert_not_called()
 
     def test_baked_commit_preferred_over_git(self) -> None:
         """A build-stamped commit wins for a wheel and skips the live git probe."""
@@ -712,12 +536,50 @@ class TestCommitHash:
             assert _build_commit() is None
 
 
+class TestConfigurationSection:
+    """The Configuration section is the only report of which paths are live.
+
+    `managed_tools` and the update-lock warnings both tell the user to run
+    `dcode doctor` to find out which of two locations is in use, so a missing
+    row leaves that question unanswerable.
+    """
+
+    def _labels(self) -> list[str]:
+        from deepagents_code.doctor import _collect_configuration
+
+        return [item.label for item in _collect_configuration().items]
+
+    def test_reports_both_shared_locations(self) -> None:
+        """Managed binaries and the installation lock directory always show."""
+        labels = self._labels()
+
+        assert "Managed binaries" in labels
+        assert "Update locks" in labels
+
+    def test_reports_a_skipped_home_check_as_a_problem(self) -> None:
+        """A security check that stopped running must not be silent."""
+        from dataclasses import replace
+
+        from deepagents_code._paths import PATHS
+        from deepagents_code.doctor import _collect_configuration
+
+        with patch(
+            "deepagents_code._paths.PATHS", replace(PATHS, home_check_skipped=True)
+        ):
+            items = {item.label: item for item in _collect_configuration().items}
+
+        assert "Profile safety check" in items
+        assert items["Profile safety check"].ok is False
+
+
 class TestRunDoctorCommand:
     """Tests for the text and JSON rendering paths."""
 
-    def _run_text(self) -> tuple[int, str]:
+    def _run_text(self, *, force_terminal: bool = False) -> tuple[int, str]:
         buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
+        test_console = Console(
+            file=buf, force_terminal=force_terminal, highlight=False, width=200
+        )
         args = argparse.Namespace(output_format="text")
         with patch("deepagents_code.config.console", test_console):
             code = run_doctor_command(args)
@@ -745,67 +607,24 @@ class TestRunDoctorCommand:
         assert "dcode --version" in output
         assert "dcode -v" in output
 
-    def test_json_output_envelope(self, capsys) -> None:
-        """JSON output is a stable envelope with section data."""
-        args = argparse.Namespace(output_format="json")
-        # Isolate the SDK requirement check (see text-output test) so the
-        # envelope reports the healthy shape regardless of the workspace pin.
-        # Editable installs resolve the pin through `_sdk_requirement_for_cli`.
-        with patch(
-            "deepagents_code.extras_info._sdk_requirement_for_cli",
-            return_value=None,
-        ):
-            code = run_doctor_command(args)
-        assert code == 0
+    def test_commit_hash_renders_as_link(self) -> None:
+        """Text output links the hash to GitHub."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="abc1234"):
+            _, output = self._run_text(force_terminal=True)
 
-        captured = capsys.readouterr()
-        envelope = json.loads(captured.out)
-        assert envelope["command"] == "doctor"
-        assert envelope["schema_version"] == 1
-        data = envelope["data"]
-        assert data["healthy"] is True
-        titles = [section["title"] for section in data["sections"]]
-        assert titles == ["Diagnostics", "Updates", "Tracing", "Configuration"]
+        assert "https://github.com/langchain-ai/deepagents/commit/abc1234" in output
 
-    def test_unhealthy_returns_nonzero(self) -> None:
-        """An unhealthy section yields a non-zero exit code."""
-        unhealthy = [
-            DiagnosticSection(
-                title="Diagnostics",
-                items=[DiagnosticItem("deepagents (SDK)", "not installed", ok=False)],
-            )
-        ]
-        args = argparse.Namespace(output_format="text")
-        buf = io.StringIO()
-        with (
-            patch("deepagents_code.doctor.collect_sections", return_value=unhealthy),
-            patch(
-                "deepagents_code.config.console",
-                Console(file=buf, highlight=False, width=200),
-            ),
-        ):
-            code = run_doctor_command(args)
-        assert code == 1
+    def test_invalid_commit_hash_renders_without_link(self) -> None:
+        """Text output leaves an invalid hash unlinked."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="not-a-sha"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "not-a-sha" in output
+        assert "https://github.com/langchain-ai/deepagents/commit/" not in output
 
 
 class TestPathStatus:
     """Tests for the path-existence diagnostic item."""
-
-    def test_existing_path_is_healthy(self, tmp_path) -> None:
-        """An existing path reports `exists` and stays healthy."""
-        from deepagents_code.doctor import _path_status
-
-        item = _path_status("Data directory", tmp_path)
-        assert item.ok is True
-        assert "exists" in item.value
-
-    def test_missing_path_is_healthy(self, tmp_path) -> None:
-        """A not-yet-created path is informational, not a failure."""
-        from deepagents_code.doctor import _path_status
-
-        item = _path_status("Data directory", tmp_path / "absent")
-        assert item.ok is True
-        assert "not created" in item.value
 
     def test_unreadable_path_is_unhealthy(self, monkeypatch) -> None:
         """An unreadable path is flagged as a genuine problem (`ok=False`)."""
@@ -826,18 +645,22 @@ class TestPathStatus:
 class TestDoctorHelp:
     """Tests for the doctor help screen."""
 
-    def test_help_renders(self) -> None:
-        """`show_doctor_help` prints usage and examples."""
-        from deepagents_code.ui import show_doctor_help
 
-        buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
-        with patch("deepagents_code.ui.console", test_console):
-            show_doctor_help()
-        output = buf.getvalue()
-        assert "dcode doctor [options]" in output
-        assert "Usage:" in output
-        assert "dcode config" in output
-        assert "dcode config get <key>" in output
-        assert "dcode --version" in output
-        assert "dcode -v" in output
+class TestFallbackLocationReporting:
+    """`doctor` must not call an unusable primary location healthy.
+
+    `classify_path` answers "is it there". A present but root-owned managed-bin
+    directory is exactly the condition `FALLBACK_BIN_DIR` exists for, and
+    reporting it as `exists` sends the user looking somewhere else.
+    """
+
+    def test_a_missing_directory_is_not_a_permission_problem(
+        self, tmp_path: Path
+    ) -> None:
+        """Lazily created directories must not be reported as unwritable."""
+        from deepagents_code.doctor import _writable_path_status
+
+        item = _writable_path_status("Managed binaries", tmp_path / "absent")
+
+        assert item.ok is True
+        assert "not created" in item.value

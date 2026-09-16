@@ -16,7 +16,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
-from deepagents_code.config import detect_provider, settings
+from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -202,13 +202,13 @@ def _harbor_assistant_id(session_id: str | None) -> str:
 
 
 def _apply_model_identity(model_spec: str, model: object) -> None:
-    """Populate dcode `settings` model identity from the selected model.
+    """Populate dcode runtime model identity from the selected model.
 
     `create_cli_agent` -> `get_system_prompt` builds the prompt's
-    `### Model Identity` section from the global dcode `settings` singleton
+    `### Model Identity` section from the global dcode `runtime_state` singleton
     (`model_name`, `model_provider`, `model_context_limit`,
     `model_unsupported_modalities`). Harbor builds the model itself via
-    `init_chat_model` and never touches those settings, so without this the
+    `init_chat_model` and never populates that state, so without this the
     identity section renders empty and the eval agent never learns which model
     it is. We set them here from Harbor's `configurable.model` spec plus the
     model's resolved profile, mirroring the extraction
@@ -229,10 +229,10 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
         name = model_spec.lstrip(":")
         provider = detect_provider(name) or ""
 
-    settings.model_name = name
-    settings.model_provider = provider
-    settings.model_context_limit = None
-    settings.model_unsupported_modalities = frozenset()
+    runtime_state.model_name = name
+    runtime_state.model_provider = provider
+    runtime_state.model_context_limit = None
+    runtime_state.model_unsupported_modalities = frozenset()
 
     # Mirror create_model: pull context window + unsupported input modalities
     # from the model profile when the provider exposes one.
@@ -252,7 +252,7 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
 
     max_input = profile.get("max_input_tokens")
     if isinstance(max_input, int):
-        settings.model_context_limit = max_input
+        runtime_state.model_context_limit = max_input
     else:
         # A profile that is present but lacks a usable context window is an
         # unexpected shape (e.g. a renamed key); surface it rather than silently
@@ -269,7 +269,7 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
         "video_inputs": "video",
         "pdf_inputs": "pdf",
     }
-    settings.model_unsupported_modalities = frozenset(
+    runtime_state.model_unsupported_modalities = frozenset(
         label for key, label in modality_keys.items() if profile.get(key) is False
     )
 
@@ -296,7 +296,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = _build_model(configurable)
     # Feed the selected model into dcode's system-prompt `### Model Identity`
-    # section (create_cli_agent -> get_system_prompt reads it from `settings`).
+    # section (create_cli_agent -> get_system_prompt reads it from `runtime_state`).
     _apply_model_identity(_model_name(configurable), model)
     assistant_id = _harbor_assistant_id(os.environ.get("HARBOR_SESSION_ID"))
     with _scrub_shell_env():

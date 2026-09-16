@@ -14,6 +14,7 @@ from textual.widgets import Static
 from deepagents_code._session_stats import format_cost_estimate, format_token_count
 from deepagents_code.cold_cache import format_cache_age, format_cache_window
 from deepagents_code.config import get_glyphs
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -310,7 +311,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 self._options.append(option)
                 yield option
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate "
+                f"{modal_navigation_hint(glyphs)} "
                 f"{glyphs.bullet} Enter select "
                 f"{glyphs.bullet} Esc cancel"
             )

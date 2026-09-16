@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from typing import IO, TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -47,7 +47,7 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
 )
 """Owning backend and cancellation event for one async execution thread."""
 
-_BACKGROUND_WORKERS: set[asyncio.Task[ExecuteResponse]] = set()
+_BACKGROUND_WORKERS: set[asyncio.Future[ExecuteResponse]] = set()
 """Workers retained until an uncooperative `execute` override finishes."""
 
 
@@ -55,18 +55,20 @@ class _CommandCancelled(BaseException):
     """Signal async cancellation through synchronous execution wrappers."""
 
 
-def _release_background_worker(worker: asyncio.Task[ExecuteResponse]) -> None:
+def _release_background_worker(worker: asyncio.Future[ExecuteResponse]) -> None:
     """Consume the result of an execution worker retained after cancellation."""
     _BACKGROUND_WORKERS.discard(worker)
     if worker.cancelled():
         return
     try:
         worker.result()
+    except asyncio.CancelledError:
+        return
     except BaseException:  # noqa: BLE001  # Done callbacks cannot propagate worker control-flow exceptions.
         logger.warning("Local shell execution failed after its caller was cancelled", exc_info=True)
 
 
-async def _wait_for_worker_shutdown(worker: asyncio.Task[ExecuteResponse]) -> bool:
+async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> bool:
     """Wait through repeated cancellation up to the cleanup grace period."""
     deadline = asyncio.get_running_loop().time() + _ASYNC_CANCELLATION_GRACE_PERIOD
     while not worker.done():
@@ -363,7 +365,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         """Run a command only if cancellation did not win the start race."""
         # `aexecute` sets `cancellation_event` before inspecting
         # `execution_started`; this worker publishes in the opposite order.
-        # Cancelling `to_thread` cannot stop a running thread, so the handshake
+        # Cancelling the executor future cannot stop a running thread, so the handshake
         # ensures a late worker observes cancellation before calling `execute`.
         execution_started.set()
         if cancellation_event.is_set():
@@ -405,14 +407,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         """
         cancellation_event = threading.Event()
         execution_started = threading.Event()
-        worker = asyncio.create_task(
-            asyncio.to_thread(
-                self._execute_in_thread,
-                command,
-                timeout,
-                cancellation_event,
-                execution_started,
-            )
+        worker = asyncio.get_running_loop().run_in_executor(
+            None,
+            copy_context().run,
+            self._execute_in_thread,
+            command,
+            timeout,
+            cancellation_event,
+            execution_started,
         )
         try:
             await asyncio.wait({worker})

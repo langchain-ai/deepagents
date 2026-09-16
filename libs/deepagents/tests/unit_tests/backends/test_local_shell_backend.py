@@ -12,6 +12,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from contextvars import ContextVar
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -237,6 +238,15 @@ def test_local_shell_backend_cancelled_background_worker_is_released() -> None:
     local_shell_module._release_background_worker(worker)
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     worker.result.assert_not_called()
+
+
+async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    worker = asyncio.get_running_loop().create_future()
+    worker.set_exception(asyncio.CancelledError())
+    local_shell_module._BACKGROUND_WORKERS.add(worker)
+    local_shell_module._release_background_worker(worker)
+    assert worker not in local_shell_module._BACKGROUND_WORKERS
+    assert not caplog.records
 
 
 def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -617,6 +627,41 @@ async def test_local_shell_backend_async_execute_honors_execute_override() -> No
     popen.assert_not_called()
 
 
+async def test_local_shell_backend_async_preserves_context_and_legacy_override() -> None:
+    context: ContextVar[str] = ContextVar("request", default="missing")
+
+    class LegacyBackend(LocalShellBackend):
+        def execute(self, command: str) -> ExecuteResponse:
+            value = context.get()
+            context.set("worker")
+            return ExecuteResponse(output=value, exit_code=0, truncated=False)
+
+    token = context.set("caller")
+    try:
+        response = await LegacyBackend().aexecute("ignored", timeout=5)
+        assert response.output == "caller"
+        assert context.get() == "caller"
+    finally:
+        context.reset(token)
+
+
+@pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit])
+def test_local_shell_backend_async_override_interrupt_is_catchable(exception_type: type[BaseException]) -> None:
+    class InterruptingBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            msg = "override interrupted"
+            raise exception_type(msg)
+
+    async def run() -> None:
+        with pytest.raises(exception_type, match="override interrupted"):
+            await InterruptingBackend().aexecute("ignored")
+
+    try:
+        asyncio.run(run())
+    except exception_type:
+        pytest.fail("The override interruption escaped the caller's exception handler")
+
+
 async def test_local_shell_backend_async_cancellation_cleans_up_platform_process_scope() -> None:
     """Test async cancellation cleans up the platform's supported process scope."""
     communication_started = threading.Event()
@@ -808,9 +853,8 @@ def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
             loop.call_soon_threadsafe(executor_started.set)
             release_executor.wait()
 
-        # `asyncio.to_thread` currently submits to the loop's default executor.
-        # This test intentionally observes that CPython detail to hold the
-        # command queued; the submit-count assertion fails loudly if it changes.
+        # Occupying the default executor keeps the command queued until cancellation.
+        # The submit-count assertion ensures the command reached that queue.
         executor = ThreadPoolExecutor(max_workers=1)
         with patch.object(executor, "submit", wraps=executor.submit) as submit:
             loop.set_default_executor(executor)

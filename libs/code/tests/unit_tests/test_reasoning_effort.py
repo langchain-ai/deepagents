@@ -186,7 +186,7 @@ async def test_effort_selector_explains_unknown_default() -> None:
 
         subtitle = app.screen.query_one(".effort-selector-subtitle", Static)
         options = app.screen.query_one("#effort-options", OptionList)
-        assert "Provider default unknown" in str(subtitle.render())
+        assert "Provider default unknown?" in str(subtitle.render())
         assert all(
             "default" not in str(options.get_option_at_index(index).prompt)
             for index in range(options.option_count)

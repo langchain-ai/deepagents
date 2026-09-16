@@ -420,6 +420,18 @@ test('label-creating scripts resolve colors from the config', () => {
   }
 });
 
+test('topic classifier choices come from live repository labels', async () => {
+  const github = {
+    rest: { issues: { listLabelsForRepo: async () => [
+      { name: 'topic:mcp' }, { name: 'priority:high' }, { name: 'topic:new-area' },
+    ] } },
+    paginate: method => method(),
+  };
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const h = prLabeler.init(github, 'o', 'r', config, core);
+  assert.deepEqual(await h.getTopicLabels(), ['topic:mcp', 'topic:new-area']);
+});
+
 test('topic labels come from the modules a PR touched', () => {
   const h = helpers();
   const f = filename => ({ filename, additions: 1, deletions: 0 });
@@ -447,9 +459,6 @@ test('every topic rule points at a real topic label and compiles', () => {
     assert.ok(declared.has('topic:'), 'topic: must have a prefix color');
     assert.notEqual(h.colorFor(rule.label), config.labelColor,
       `${rule.label} would be created off-palette`);
-  }
-  for (const label of config.topicLabels) {
-    assert.match(label, /^topic:/, `${label} is not a topic label`);
   }
   h.buildRules(config.topicFileRules, 'topicFileRules');
 });

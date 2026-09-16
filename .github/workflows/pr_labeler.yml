@@ -206,7 +206,7 @@ jobs:
             // Let the model classify the title only. PR bodies contain template
             // prose and linked-issue quotes that may be unrelated to the diff.
             try {
-              for (const label of await classifyTopicLabels(title, h.topicLabels)) {
+              for (const label of await classifyTopicLabels(title, await h.getTopicLabels())) {
                 toAdd.add(label);
               }
             } catch (error) {

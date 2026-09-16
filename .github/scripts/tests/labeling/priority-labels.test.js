@@ -255,7 +255,7 @@ function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
       core: { info() {}, warning() {} },
       context: { repo: { owner: 'owner', repo: 'repo' },
                  payload: { issue: { number: 7, labels: labels.map(name => ({ name })) } } },
-      github: { rest: { issues: {
+      github: { paginate: method => method(), rest: { issues: {
         get: async () => ({ data: { labels: [...present].map(name => ({ name })) } }),
         getLabel: async ({ name }) => {
           if (!exists.has(name)) throw Object.assign(new Error('Missing'), { status: 404 });
@@ -321,7 +321,11 @@ function topicApi({ title = '', body = '', labels = [], topics = [] } = {}) {
       core: { info() {}, warning() {} },
       context: { repo: { owner: 'owner', repo: 'repo' },
                  payload: { issue: { number: 42, title, body, labels: labels.map(name => ({ name })) } } },
-      github: { rest: { issues: {
+      github: { paginate: method => method(), rest: { issues: {
+        listLabelsForRepo: async () => [
+          { name: 'topic:mcp' }, { name: 'topic:subagents' },
+          { name: 'topic:async-subagents' },
+        ],
         getLabel: async () => ({}),
         createLabel: async () => ({}),
         addLabels: async ({ labels: names }) => { added.push(...names); names.forEach(n => present.add(n)); },

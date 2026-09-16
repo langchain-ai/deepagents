@@ -274,23 +274,5 @@
       "label": "topic:performance",
       "pattern": "(?:^|/)(?:cost_tracking|cold_cache)\\.py$"
     }
-  ],
-  "topicLabels": [
-    "topic:async-subagents",
-    "topic:subagents",
-    "topic:mcp",
-    "topic:skills",
-    "topic:memory",
-    "topic:filesystem",
-    "topic:backends",
-    "topic:sandboxes",
-    "topic:middleware",
-    "topic:models",
-    "topic:tracing",
-    "topic:streaming",
-    "topic:multimodal",
-    "topic:prompts",
-    "topic:harness",
-    "topic:performance"
   ]
 }

@@ -335,6 +335,25 @@ test('the default priority label is created with the prefix color when absent', 
   assert.deepEqual(a.calls.added, ['priority:backlog']);
 });
 
+// The workflow fires on [opened, edited]. Neither step removes a label, so
+// both must be gated: an ungated re-run re-adds a topic or priority that a
+// maintainer removed, and the removal can never stick.
+test('the issue steps that only add labels run on opened alone', () => {
+  const source = fs.readFileSync(
+    path.join(REPO_ROOT, '.github/workflows/auto-label-by-package.yml'), 'utf8',
+  );
+  assert.match(source, /on:\n  issues:\n    types: \[opened, edited\]/);
+  for (const step of ['Apply default priority', 'Apply topic labels']) {
+    const declaration = source.split(`- name: ${step}\n`)[1];
+    assert.ok(declaration, `Missing step: ${step}`);
+    assert.match(
+      declaration.split('\n')[0].trim() || declaration.split('\n')[0],
+      /^if: github\.event\.action == 'opened'$/,
+      `${step} must be gated on the opened action`,
+    );
+  }
+});
+
 // ── Topic labels on an issue (auto-label-by-package.yml) ─────────────────
 function runTopicStep(globals) {
   const source = fs.readFileSync(

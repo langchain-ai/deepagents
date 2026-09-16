@@ -59,9 +59,14 @@ jobs:
             });
             console.log(`Applied '${DEFAULT_PRIORITY}' to issue #${issue_number}`);
 
-      # `topic:*` from a small open model. Additive and never removed so a
-      # maintainer's hand-applied topic survives later edits.
+      # `topic:*` from a small open model. Classify on `opened` only. The step
+      # never removes a topic, so re-running on `edited` would re-add one a
+      # maintainer had deliberately removed, with no way to make the removal
+      # stick — and would spend a model call per edit for the same answer.
+      # Matches the priority step above, and pr_labeler.yml, which classifies
+      # a PR title rather than re-reading an edited body.
       - name: Apply topic labels
+        if: github.event.action == 'opened'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -82,6 +87,8 @@ jobs:
               core.warning(`Topic classification failed: ${error.message}`);
               return;
             }
+            // Safe to trust the payload here, unlike the priority step: this
+            // runs on `opened`, so no earlier run can have set a topic.
             const current = new Set((issue.labels ?? []).map(l => l.name ?? l));
             const toAdd = [...topics].filter(name => !current.has(name));
             if (!toAdd.length) {

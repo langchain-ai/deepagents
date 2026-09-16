@@ -6,20 +6,69 @@ const test = require('node:test');
 
 const { syncTopicLabels } = require('../../labeling/sync-topic-labels.js');
 
-test('writes sorted topic labels and excludes other namespaces', async () => {
-  const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'topics-')), 'labels.json');
-  const github = {
-    rest: { issues: { listLabelsForRepo: async () => [
-      { name: 'topic:zeta' }, { name: 'priority:high' }, { name: 'topic:alpha' },
-    ] } },
-    paginate: method => method(),
+function topicFixture(t, labels, existing) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'topics-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const output = path.join(directory, 'labels.json');
+  if (existing !== undefined) fs.writeFileSync(output, JSON.stringify(existing));
+  return {
+    output,
+    github: {
+      rest: { issues: { listLabelsForRepo: async () => labels } },
+      paginate: method => method(),
+    },
   };
+}
+
+test('writes sorted unique topic labels and excludes other namespaces', async t => {
+  const { github, output } = topicFixture(t, [
+    { name: 'topic:zeta' }, { name: 'priority:high' },
+    { name: 'topic:alpha' }, { name: 'topic:zeta' },
+  ]);
 
   const topics = await syncTopicLabels(github, 'owner', 'repo', output);
 
   assert.deepEqual(topics, ['topic:alpha', 'topic:zeta']);
   assert.equal(fs.readFileSync(output, 'utf8'), '[\n  "topic:alpha",\n  "topic:zeta"\n]\n');
 });
+
+test('preserves choices not yet created in the repository while discovering new topics', async t => {
+  const { github, output } = topicFixture(t, [{ name: 'topic:mcp' }], ['topic:skills']);
+  await syncTopicLabels(github, 'owner', 'repo', output);
+  assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), ['topic:mcp', 'topic:skills']);
+});
+
+for (const labels of [[], [{ name: 'priority:high' }]]) {
+  test(`rejects a response with no topics (${JSON.stringify(labels)}) without changing the manifest`, async t => {
+    const { github, output } = topicFixture(t, labels, ['topic:skills']);
+    const before = fs.readFileSync(output, 'utf8');
+    await assert.rejects(syncTopicLabels(github, 'owner', 'repo', output), /no topic labels/);
+    assert.equal(fs.readFileSync(output, 'utf8'), before);
+  });
+}
+
+test('does not create an empty manifest when initializing', async t => {
+  const { github, output } = topicFixture(t, []);
+  await assert.rejects(syncTopicLabels(github, 'owner', 'repo', output), /no topic labels/);
+  assert.ok(!fs.existsSync(output));
+});
+
+test('API failure leaves the existing manifest unchanged', async t => {
+  const { github, output } = topicFixture(t, [], ['topic:skills']);
+  github.paginate = async () => { throw new Error('API unavailable'); };
+  const before = fs.readFileSync(output, 'utf8');
+  await assert.rejects(syncTopicLabels(github, 'owner', 'repo', output), /API unavailable/);
+  assert.equal(fs.readFileSync(output, 'utf8'), before);
+});
+
+for (const existing of [{}, ['priority:high'], [null]]) {
+  test(`rejects an invalid existing manifest (${JSON.stringify(existing)}) without overwriting it`, async t => {
+    const { github, output } = topicFixture(t, [{ name: 'topic:mcp' }], existing);
+    const before = fs.readFileSync(output, 'utf8');
+    await assert.rejects(syncTopicLabels(github, 'owner', 'repo', output), /Existing topic manifest/);
+    assert.equal(fs.readFileSync(output, 'utf8'), before);
+  });
+}
 
 const { execFileSync, spawnSync } = require('node:child_process');
 const branch = 'automation/sync-topic-labels';

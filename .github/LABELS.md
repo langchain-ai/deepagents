@@ -59,11 +59,13 @@ Package and integration labels are additive: title edits do not remove them. `pr
 Two signals feed them, both additive — a topic is never removed, so an edit that drops a phrase cannot strip one, and a maintainer's hand-applied topic survives:
 
 - **Changed modules** (`topicFileRules`): a PR touching `middleware/subagents.py` gets `topic:subagents` (and `topic:middleware`, since the whole middleware dir maps too); `backends/sandbox.py` gets `topic:backends` and `topic:sandboxes`; `mcp_*.py` gets `topic:mcp`. Rules name a *module*, not a package, so the label means the diff actually touched that subject.
-- **Wording**: `openai/gpt-oss-20b`, an open-weight production model available on Groq’s Developer plan, classifies an issue's title and body or a PR's title against the cached `.github/topic-labels.json` manifest. PR bodies are excluded because template prose and quoted issues may be unrelated to the diff.
+- **Wording**: `openai/gpt-oss-20b`, an open-weight production model available on Groq's Developer plan, classifies an issue's title and body or a PR's title against the cached `.github/topic-labels.json` manifest. PR bodies are excluded because template prose and quoted issues may be unrelated to the diff.
 
 `topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns; a file or phrase naming async subagents gets both.
 
-A daily workflow reads the repository’s labels and opens or refreshes a PR when `.github/topic-labels.json` changes. Runtime labeling reads that local manifest, so it makes no extra label-list API call. Add a `topicFileRules` entry only when deterministic path-based matching is also useful; model output is filtered against the manifest before labels are applied.
+A daily workflow adds newly discovered repository topics to `.github/topic-labels.json` and opens or refreshes a PR when it changes. Existing choices are preserved because labels are created on demand; a topic absent from the repository may simply not have been used yet. A response containing no topic labels fails the sync without changing the manifest. To retire a topic, remove it explicitly from the manifest, the repository labels, and any `topicFileRules` entries that could recreate it.
+
+Runtime labeling reads the local manifest, so it makes no extra label-list API call. Add a `topicFileRules` entry only when deterministic path-based matching is also useful; model output is filtered against the manifest before labels are applied.
 
 ### `org:*` — `pr_labeler.yml` (PRs), `tag-external-issues.yml` (issues)
 

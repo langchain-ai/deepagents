@@ -242,7 +242,9 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         profile: The provider profile to register.
 
     Raises:
-        ValueError: If `key` is empty or has an empty provider/model component.
+        ValueError: If `key` is malformed. See `validate_profile_key` for the
+            exact conditions: empty key, leading/trailing whitespace,
+            whitespace adjacent to a `:`, or an empty provider/model segment.
     """
     _ensure_provider_profiles_loaded()
     _register_provider_profile_impl(key, profile)

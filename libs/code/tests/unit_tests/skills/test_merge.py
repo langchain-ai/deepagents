@@ -84,7 +84,7 @@ class TestMiddlewareCollisionLogging:
 class TestMiddlewareReloadGuard:
     """Lock the adapter's reload guard to the SDK's `skills_metadata is None` contract.
 
-    `PluginSkillsMiddleware` overrides `before_model`/`abefore_model`, so it does
+    `PluginSkillsMiddleware` overrides `before_agent`/`abefore_agent`, so it does
     not inherit the SDK's guard. A membership check (`"skills_metadata" in state`)
     would treat an explicit `None` as loaded and silently skip the reload.
     """
@@ -104,27 +104,27 @@ class TestMiddlewareReloadGuard:
         """Build a minimal middleware state with the given skills keys."""
         return cast("sdk_skills.SkillsState", {"messages": [], **overrides})
 
-    def test_before_model_reloads_when_metadata_is_none(self, tmp_path: Path) -> None:
+    def test_before_agent_reloads_when_metadata_is_none(self, tmp_path: Path) -> None:
         """A stored `None` means not loaded, so the sync entry point loads."""
         middleware = self._middleware(tmp_path / "skills")
 
-        result = middleware.before_model(
+        result = middleware.before_agent(
             self._state(skills_metadata=None), _RUNTIME, {}
         )
 
         assert result is not None
         assert [skill["name"] for skill in result["skills_metadata"]] == ["review"]
 
-    def test_before_model_skips_when_metadata_is_a_list(self, tmp_path: Path) -> None:
+    def test_before_agent_skips_when_metadata_is_a_list(self, tmp_path: Path) -> None:
         """An existing list (even empty) means loaded, so the load is skipped."""
         middleware = self._middleware(tmp_path / "skills")
 
         assert (
-            middleware.before_model(self._state(skills_metadata=[]), _RUNTIME, {})
+            middleware.before_agent(self._state(skills_metadata=[]), _RUNTIME, {})
             is None
         )
 
-    def test_before_model_clears_stale_load_errors(self, tmp_path: Path) -> None:
+    def test_before_agent_clears_stale_load_errors(self, tmp_path: Path) -> None:
         """Every load rewrites `skills_load_errors`, clearing earlier warnings."""
         middleware = self._middleware(tmp_path / "skills")
         state = self._state(
@@ -132,31 +132,31 @@ class TestMiddlewareReloadGuard:
             skills_load_errors=["Cannot load skills from '/old': denied"],
         )
 
-        result = middleware.before_model(state, _RUNTIME, {})
+        result = middleware.before_agent(state, _RUNTIME, {})
 
         assert result is not None
         assert result["skills_load_errors"] == []
 
-    async def test_abefore_model_reloads_when_metadata_is_none(
+    async def test_abefore_agent_reloads_when_metadata_is_none(
         self, tmp_path: Path
     ) -> None:
         """The async entry point must honour the same reset contract."""
         middleware = self._middleware(tmp_path / "skills")
 
-        result = await middleware.abefore_model(
+        result = await middleware.abefore_agent(
             self._state(skills_metadata=None), _RUNTIME, {}
         )
 
         assert result is not None
         assert [skill["name"] for skill in result["skills_metadata"]] == ["review"]
 
-    async def test_abefore_model_skips_when_metadata_is_a_list(
+    async def test_abefore_agent_skips_when_metadata_is_a_list(
         self, tmp_path: Path
     ) -> None:
         """An existing list (even empty) means loaded, so the async load is skipped."""
         middleware = self._middleware(tmp_path / "skills")
 
-        result = await middleware.abefore_model(
+        result = await middleware.abefore_agent(
             self._state(skills_metadata=[]), _RUNTIME, {}
         )
 

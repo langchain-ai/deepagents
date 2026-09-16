@@ -281,7 +281,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             skills_load_errors=errors,
         )
 
-    def before_model(
+    def before_agent(
         self,
         state: sdk_skills.SkillsState,
         runtime: Runtime,  # noqa: ARG002
@@ -329,7 +329,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         return self._state_update(all_skills, errors)
 
-    async def abefore_model(
+    async def abefore_agent(
         self,
         state: sdk_skills.SkillsState,
         runtime: Runtime,  # noqa: ARG002
@@ -351,7 +351,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
 
-        # See `before_model`: the three sequences are index-aligned by
+        # See `before_agent`: the three sequences are index-aligned by
         # construction, and `strict=True` guards against future length drift.
         for source_path, source_label, namespace in zip(
             self.sources, self.source_labels, self._namespaces, strict=True

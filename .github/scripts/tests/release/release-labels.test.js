@@ -167,7 +167,7 @@ for (const state of [{ fail: PENDING }, { fail: LEGACY }, { malformed: true }]) 
   });
 }
 
-function normalizationApi(issues, { labelExists = true, fail } = {}) {
+function normalizationApi(issues, { labelExists = true, fail, createStatus } = {}) {
   const labels = new Set(labelExists ? [PENDING] : []);
   const api = {
     listForRepo: async options => issues.filter(issue => issue.state === options.state &&
@@ -176,7 +176,12 @@ function normalizationApi(issues, { labelExists = true, fail } = {}) {
       if (fail === 'read') throw Object.assign(new Error('Forbidden'), { status: 403 });
       if (!labels.has(PENDING)) throw Object.assign(new Error('Missing'), { status: 404 });
     },
-    createLabel: async ({ name }) => labels.add(name),
+    createLabel: async ({ name }) => {
+      if (createStatus) {
+        throw Object.assign(new Error('Validation failed'), { status: createStatus });
+      }
+      labels.add(name);
+    },
     addLabels: async ({ issue_number, labels: added }) => {
       if (fail === 'write') throw new Error('Write failed');
       assert.ok(added.every(label => labels.has(label)));
@@ -199,6 +204,57 @@ test('normalization makes legacy PRs discoverable without losing existing labels
   assert.deepEqual(prs[3].labels, [LEGACY]);
   await normalize(api, 'owner', 'repo');
   assert.equal(prs[0].labels.length, 3);
+});
+
+test('normalization tolerates a create-label 422 race', async () => {
+  const prs = [release(1, [LEGACY], { state: 'open', pull_request: {} })];
+  const api = normalizationApi(prs, { labelExists: false, createStatus: 422 });
+  // The first lookup 404s, the create loses the race, and the re-fetch finds
+  // the label a concurrent run just made.
+  let lookups = 0;
+  api.rest.issues.getLabel = async () => {
+    if (lookups++ === 0) throw Object.assign(new Error('Missing'), { status: 404 });
+  };
+  api.rest.issues.addLabels = async ({ issue_number, labels: added }) => {
+    prs.find(issue => issue.number === issue_number).labels.push(...added);
+  };
+  await normalize(api, 'owner', 'repo');
+  assert.equal(lookups, 2, 'the 422 must be re-checked, not assumed to be the race');
+  assert.deepEqual(prs[0].labels, [LEGACY, PENDING]);
+});
+
+test('normalization surfaces a 422 that is not the race', async () => {
+  const prs = [release(1, [LEGACY], { state: 'open', pull_request: {} })];
+  // getLabel keeps 404ing, so the label is genuinely absent: the 422 was a
+  // real validation failure and must not be mistaken for a concurrent create.
+  await assert.rejects(
+    normalize(normalizationApi(prs, { labelExists: false, createStatus: 422 }), 'owner', 'repo'),
+    /Validation failed/,
+  );
+  assert.deepEqual(prs[0].labels, [LEGACY]);
+});
+
+// The script destructures loadConfig at load time, so the stub has to be in
+// place before it is required. Re-requiring in isolation keeps the shared
+// `normalize` above bound to the real config.
+test('normalization fails loudly when the palette has no auto: prefix', async () => {
+  const helperPath = require.resolve('../../labeling/pr-labeler.js');
+  const scriptPath = require.resolve('../../release/normalize-release-labels.js');
+  const helper = require(helperPath);
+  const realLoadConfig = helper.loadConfig;
+  helper.loadConfig = () => ({ ...realLoadConfig(), labelColors: {} });
+  delete require.cache[scriptPath];
+  const prs = [release(1, [LEGACY], { state: 'open', pull_request: {} })];
+  try {
+    await assert.rejects(
+      require(scriptPath)(normalizationApi(prs, { labelExists: false }), 'owner', 'repo'),
+      /labelColors\['auto:'\] is missing/,
+    );
+  } finally {
+    helper.loadConfig = realLoadConfig;
+    delete require.cache[scriptPath];
+  }
+  assert.deepEqual(prs[0].labels, [LEGACY], 'no PR is labeled when the palette is broken');
 });
 
 for (const fail of ['read', 'write']) {

@@ -15,7 +15,6 @@ APP_TOKEN_WORKFLOWS = (
     "pr_labeler.yml",
     "pr_labeler_backfill.yml",
     "tag-external-issues.yml",
-    "openwiki-update.yml",
 )
 INTEGRATION_ENV = {
     "ANTHROPIC_API_KEY": "${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/partners/quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
@@ -121,6 +120,7 @@ def test_release_keeps_disabled_package_scoped_integration_wiring() -> None:
 def test_openwiki_uses_dedicated_environment_and_token() -> None:
     workflow = _load_workflow("openwiki-update.yml")
     update = workflow["jobs"]["update"]
+    assert workflow["permissions"] == {"contents": "read"}
     assert update["environment"] == "openwiki"
 
     checkout = _find_step(workflow, job="update", name="Check out repository")
@@ -139,18 +139,42 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     assert steps.index(token_step) > steps.index(
         _find_step(workflow, job="update", name="Run OpenWiki")
     )
-    assert token_step["with"]["permission-contents"] == "write"
-    assert token_step["with"]["permission-pull-requests"] == "write"
-    assert create_pr["env"]["GH_TOKEN"] == token
+    assert token_step["with"] == {
+        "client-id": "${{ vars.OPENWIKI_APP_CLIENT_ID }}",
+        "private-key": "${{ secrets.OPENWIKI_APP_PRIVATE_KEY }}",
+        "owner": "${{ github.repository_owner }}",
+        "repositories": "${{ github.event.repository.name }}",
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+    }
+    assert create_pr["env"] == {
+        "GH_TOKEN": token,
+        "BRANCH": "openwiki/update",
+        "BASE": "main",
+    }
     assert "gh auth setup-git" in create_pr["run"]
     assert '-f head="${GITHUB_REPOSITORY_OWNER}:${BRANCH}"' in create_pr["run"]
     assert ".head.repo.full_name == $repository" in create_pr["run"]
     assert 'gh pr close "$pr_number" --delete-branch' in create_pr["run"]
     assert 'gh pr close "$BRANCH"' not in create_pr["run"]
-    assert auto_merge["env"]["GH_TOKEN"] == token
+    assert auto_merge["env"] == {
+        "GH_TOKEN": token,
+        "PR_NUMBER": "${{ steps.create-pr.outputs.number }}",
+        "HEAD_SHA": "${{ steps.create-pr.outputs.head-sha }}",
+        "EXPECTED_BASE": "main",
+        "EXPECTED_HEAD": "${{ github.repository_owner }}:openwiki/update",
+    }
     assert auto_merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
     assert '[[ "$PR_NUMBER" =~ ^[0-9]+$ ]]' in auto_merge["run"]
-    assert 'gh pr merge --auto --squash "$PR_NUMBER"' in auto_merge["run"]
+    assert '[[ "$EXPECTED_BASE" == "main" ]]' in auto_merge["run"]
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"' in auto_merge["run"]
+    assert ".head.label" in auto_merge["run"]
+    assert ".head.repo.full_name" in auto_merge["run"]
+    assert ".head.sha" in auto_merge["run"]
+    assert (
+        'gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"'
+        in auto_merge["run"]
+    )
 
 
 def test_issue_topic_classifier_uses_dedicated_environment() -> None:

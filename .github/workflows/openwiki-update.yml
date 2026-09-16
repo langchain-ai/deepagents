@@ -40,8 +40,10 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
-          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.OPENWIKI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OPENWIKI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
 
@@ -50,7 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: openwiki/update
-          BASE: ${{ github.ref_name }}
+          BASE: main
         run: |
           set -euo pipefail
 
@@ -85,6 +87,7 @@ jobs:
           fi
 
           git commit -m "docs(repo): update OpenWiki"
+          head_sha="$(git rev-parse HEAD)"
 
           # Recreate the update branch from the new commit and publish it.
           git branch -f "$BRANCH"
@@ -107,13 +110,27 @@ jobs:
 
           [[ "$pr_number" =~ ^[0-9]+$ ]]
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$head_sha" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge
         if: ${{ steps.create-pr.outputs.number != '' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.number }}
+          HEAD_SHA: ${{ steps.create-pr.outputs.head-sha }}
+          EXPECTED_BASE: main
+          EXPECTED_HEAD: ${{ github.repository_owner }}:openwiki/update
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
-          gh pr merge --auto --squash "$PR_NUMBER"
+          [[ "$EXPECTED_BASE" == "main" ]]
+          [[ "$EXPECTED_HEAD" == "${GITHUB_REPOSITORY_OWNER}:openwiki/update" ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          [[ "$(jq -r '.base.ref' <<< "$pr")" == "$EXPECTED_BASE" ]]
+          [[ "$(jq -r '.head.label' <<< "$pr")" == "$EXPECTED_HEAD" ]]
+          [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(jq -r '.head.sha' <<< "$pr")" == "$HEAD_SHA" ]]
+
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"

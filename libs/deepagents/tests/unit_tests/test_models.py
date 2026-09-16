@@ -378,6 +378,44 @@ class TestModelMatchesSpec:
         model = _make_model({"model_name": "gpt-5"})
         assert model_matches_spec(model, "gpt-5.5") is False
 
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "glm-5.2:cloud",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_bare_spec_matches_colon_containing_identifier(self, identifier: str) -> None:
+        """A bare spec equal to the identifier matches even when it holds colons.
+
+        The spec is not provider-qualified, so it must be compared whole. A
+        partition-first implementation would read the leading segment as a
+        provider and fail these.
+        """
+        model = _make_model({"model_name": identifier})
+        assert model_matches_spec(model, identifier) is True
+
+    def test_qualified_spec_matches_colon_containing_identifier(self) -> None:
+        """Only the first colon separates; the rest belongs to the identifier."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "ollama:glm-5.2:cloud") is True
+
+    def test_qualified_spec_checks_provider_on_colon_containing_identifier(self) -> None:
+        """A matching multi-colon identifier is still refused on provider mismatch."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "openai:glm-5.2:cloud") is False
+
+    def test_qualified_spec_matches_bedrock_arn_identifier(self) -> None:
+        """Bedrock ARNs carry colons throughout, including an empty account field."""
+        arn = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+        model = _make_model({"model_name": arn})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "bedrock_converse"})
+        assert model_matches_spec(model, f"bedrock_converse:{arn}") is True
+        assert model_matches_spec(model, f"openai:{arn}") is False
+
 
 class TestCheckOpenRouterVersion:
     """Tests for `check_openrouter_version`."""

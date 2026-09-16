@@ -172,7 +172,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/effort",
         description="Set reasoning effort for the current model",
-        bypass_tier=BypassTier.IMMEDIATE_UI,
+        bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reasoning thinking level",
         argument_hint="[<level>|clear]",
     ),

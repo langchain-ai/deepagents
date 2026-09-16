@@ -234,7 +234,7 @@ jobs:
 
             for (const name of toRemove) {
               if (toAdd.has(name)) continue;
-            try {
+              try {
                 await github.rest.issues.removeLabel({
                   owner, repo, issue_number: prNumber, name,
                 });

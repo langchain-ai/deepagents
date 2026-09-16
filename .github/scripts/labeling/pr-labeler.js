@@ -173,9 +173,6 @@ function init(github, owner, repo, config, core) {
     return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
   }
 
-
-
-
   // ── Branch-name-based labels ──────────────────────────────────────
 
   function matchBranchLabels(headRef) {

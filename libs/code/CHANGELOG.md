@@ -4,13 +4,12 @@
 
 ## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-16)
 
-
 ### Bug Fixes
 
-* **code:** align prompt clipboard word deletion ([#6345](https://github.com/langchain-ai/deepagents/issues/6345)) ([777d633](https://github.com/langchain-ai/deepagents/commit/777d6336de3c7f1b6759a3f092fbfeddc4c54499))
-* **code:** clarify unknown effort default ([#6337](https://github.com/langchain-ai/deepagents/issues/6337)) ([5ee1073](https://github.com/langchain-ai/deepagents/commit/5ee1073e9ab2fe9a286becb27ec7e694a4b3de4f))
-* **code:** deduplicate footer picker clicks ([#6344](https://github.com/langchain-ai/deepagents/issues/6344)) ([811e927](https://github.com/langchain-ai/deepagents/commit/811e92738ffa491e991b9dea6573fff57a84d938))
-* **code:** delay hook status in footer ([#6322](https://github.com/langchain-ai/deepagents/issues/6322)) ([7f9e8ed](https://github.com/langchain-ai/deepagents/commit/7f9e8ed3a555933902045792da9bb184950ee7b2))
+- Fixed prompt clipboard word deletion behavior. ([#6345](https://github.com/langchain-ai/deepagents/pull/6345))
+- Clarified unknown model effort in footer. ([#6337](https://github.com/langchain-ai/deepagents/pull/6337))
+- Prevented duplicate clicks in the footer model and effort pickers. ([#6344](https://github.com/langchain-ai/deepagents/pull/6344))
+- Delayed hook status display in the footer to reduce UI noise. ([#6322](https://github.com/langchain-ai/deepagents/pull/6322))
 
 ## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
 

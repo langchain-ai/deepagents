@@ -12,11 +12,11 @@ import time
 import warnings
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager, contextmanager, suppress
 from contextvars import ContextVar
 from itertools import chain, repeat
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, sentinel
 
 import pytest
 
@@ -39,14 +39,21 @@ def _reset_background_workers() -> Iterator[None]:
     local_shell_module._BACKGROUND_WORKERS.clear()
 
 
-def _as_posix() -> AbstractContextManager[bool]:
+@contextmanager
+def _as_posix() -> Iterator[None]:
     """Select the POSIX cleanup branch for the duration of a test.
 
     Patching the module constant keeps the choice local. Patching `sys.platform`
     instead would change it for every library in the process, which breaks
     anything that resolves platform-specific behavior while the test runs.
     """
-    return patch.object(local_shell_module, "_IS_WINDOWS", new=False)
+    # Windows lacks SIGKILL. Mock the module-local signal API along with the
+    # platform choice; callers also mock killpg so no real signal is sent.
+    with (
+        patch.object(local_shell_module, "_IS_WINDOWS", new=False),
+        patch.object(local_shell_module, "signal", SIGKILL=sentinel.SIGKILL),
+    ):
+        yield
 
 
 def _as_windows() -> AbstractContextManager[bool]:
@@ -97,7 +104,7 @@ def _assert_posix_cleanup(process: MagicMock, killpg: MagicMock) -> None:
     Callers patch `_IS_WINDOWS` to `False`, so this runs on every platform rather
     than testing only whichever branch the host happens to take.
     """
-    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    killpg.assert_called_once_with(1234, sentinel.SIGKILL)
     process.kill.assert_not_called()
     process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
@@ -710,7 +717,8 @@ def test_local_shell_backend_async_override_interrupt_is_catchable(exception_typ
         pytest.fail("The override interruption escaped the caller's exception handler")
 
 
-async def test_local_shell_backend_async_cancellation_cleans_up_platform_process_scope() -> None:
+@pytest.mark.parametrize("is_windows", [False, True])
+async def test_local_shell_backend_async_cancellation_cleans_up_platform_process_scope(*, is_windows: bool) -> None:
     """Test async cancellation cleans up the platform's supported process scope."""
     communication_started = threading.Event()
     process = MagicMock(pid=1234)
@@ -723,6 +731,7 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
     process.communicate.side_effect = block_communication
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        _as_windows() if is_windows else _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
@@ -733,7 +742,12 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    _assert_posix_cleanup(process, killpg)
+    if is_windows:
+        killpg.assert_not_called()
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
+    else:
+        _assert_posix_cleanup(process, killpg)
 
 
 @_POSIX_SHELL_ONLY
@@ -1136,24 +1150,11 @@ async def test_local_shell_backend_cancellation_does_not_stop_another_backend() 
     backend called from that override sees the same context. `execute` must
     ignore a cancellation event that belongs to a different backend.
     """
-    observed: list[threading.Event | None] = []
     execution_started = threading.Event()
     release_execution = threading.Event()
-    original_execute = LocalShellBackend._execute
 
     with tempfile.TemporaryDirectory() as tmpdir:
         inner = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
-
-        def spy(
-            self: LocalShellBackend,
-            command: str,
-            *,
-            timeout: int | None,
-            cancellation_event: threading.Event | None = None,
-        ) -> ExecuteResponse:
-            if self is inner:
-                observed.append(cancellation_event)
-            return original_execute(self, command, timeout=timeout, cancellation_event=cancellation_event)
 
         class NestingLocalShellBackend(LocalShellBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -1161,19 +1162,25 @@ async def test_local_shell_backend_cancellation_does_not_stop_another_backend() 
                 release_execution.wait(5)
                 return inner.execute("echo nested")
 
-        with patch.object(LocalShellBackend, "_execute", spy):
-            task = asyncio.create_task(NestingLocalShellBackend(root_dir=tmpdir, inherit_env=True).aexecute("outer"))
+        task = asyncio.create_task(NestingLocalShellBackend(root_dir=tmpdir, inherit_env=True).aexecute("outer"))
+        try:
             assert await asyncio.to_thread(execution_started.wait, 2)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            # The override is still blocked, so cancellation retains its worker.
+            (worker,) = local_shell_module._BACKGROUND_WORKERS
+        finally:
             release_execution.set()
-            for _ in range(200):
-                if observed:
-                    break
-                await asyncio.sleep(0.01)
+            with suppress(asyncio.CancelledError):
+                await task
+            # Await the actual worker before deleting its working directory.
+            if local_shell_module._BACKGROUND_WORKERS:
+                await asyncio.wait_for(asyncio.gather(*local_shell_module._BACKGROUND_WORKERS), timeout=5)
 
-    assert observed == [None], "the inner backend inherited another backend's cancellation event"
+    result = worker.result()
+    assert result.exit_code == 0
+    assert "nested" in result.output
 
 
 @_POSIX_SHELL_ONLY

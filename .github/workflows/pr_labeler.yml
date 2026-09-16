@@ -45,6 +45,7 @@ concurrency:
 jobs:
   label:
     runs-on: ubuntu-latest
+    environment: labeling
     permissions:
       contents: read
       pull-requests: write

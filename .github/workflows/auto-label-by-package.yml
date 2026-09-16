@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   label-by-package:
+    environment: labeling
     permissions:
       issues: write
     runs-on: ubuntu-latest

@@ -46,6 +46,23 @@ This environment is selected by `.github/workflows/openwiki-update.yml`.
 
 Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main`.
 
+### `labeling`
+
+Create this environment for the `label` job in `pr_labeler.yml` and the
+`label-by-package` job in `auto-label-by-package.yml`.
+
+| Secret | Purpose |
+| --- | --- |
+| `GROQ_API_KEY` | Classify issue text and PR titles into topic labels. |
+
+Provision a dedicated Groq inference key for labeling, separate from the evals
+credential, with model and spending limits where supported. Store it only in
+this environment; both workflows inject it only into their classification step.
+Do not require reviewers, so automatic labeling can run unattended. Allow the
+default branch and trusted PR base branches supported by this repository;
+`pull_request_target` uses the base branch, and the issue workflow uses the
+default branch. Never check out PR head code in these credentialed jobs.
+
 ### `evals`
 
 This environment is used by standard evals, Harbor evals, unified evals, and clbench.

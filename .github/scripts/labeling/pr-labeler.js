@@ -23,7 +23,7 @@ function loadConfig() {
   const required = [
     'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
-    'topicFileRules', 'topicKeywords',
+    'topicFileRules', 'topicLabels',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
@@ -52,7 +52,7 @@ function init(github, owner, repo, config, core) {
     labelDescriptions,
     fileRules: fileRulesDef,
     topicFileRules: topicFileRulesDef,
-    topicKeywords: topicKeywordsDef,
+    topicLabels,
     branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
@@ -175,16 +175,6 @@ function init(github, owner, repo, config, core) {
   // too much prose to be worth a label).
   function matchTopicFileLabels(files) {
     return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
-  }
-
-  function matchTopicKeywordLabels(...texts) {
-    const haystack = texts.filter(Boolean).join('\n');
-    const labels = new Set();
-    if (!haystack.trim()) return labels;
-    for (const rule of topicKeywordsDef) {
-      if (new RegExp(rule.pattern, 'i').test(haystack)) labels.add(rule.label);
-    }
-    return labels;
   }
 
   // ── Branch-name-based labels ──────────────────────────────────────
@@ -425,7 +415,6 @@ function init(github, owner, repo, config, core) {
     buildRules,
     matchFileLabels,
     matchTopicFileLabels,
-    matchTopicKeywordLabels,
     matchBranchLabels,
     matchTitleLabels,
     getStaleTitleLabels,
@@ -443,6 +432,7 @@ function init(github, owner, repo, config, core) {
     trustedThreshold,
     labelColor,
     labelColors,
+    topicLabels,
   };
 }
 

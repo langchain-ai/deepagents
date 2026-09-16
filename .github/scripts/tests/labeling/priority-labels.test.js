@@ -304,15 +304,20 @@ function runTopicStep(globals) {
   const end = lines.findIndex(line => line.trim() && !line.startsWith('            '));
   const body = (end === -1 ? lines : lines.slice(0, end)).map(l => l.slice(12)).join('\n');
   return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
-    console: { log() {} }, require: sandboxRequire, ...globals,
+    console: { log() {} },
+    require: spec => spec.endsWith('topic-classifier.js')
+      ? { classifyTopicLabels: globals.classifyTopicLabels }
+      : sandboxRequire(spec),
+    ...globals,
   });
 }
 
-function topicApi({ title = '', body = '', labels = [] } = {}) {
+function topicApi({ title = '', body = '', labels = [], topics = [] } = {}) {
   const present = new Set(labels), added = [];
   return {
     added,
     globals: {
+      classifyTopicLabels: async () => new Set(topics),
       core: { info() {}, warning() {} },
       context: { repo: { owner: 'owner', repo: 'repo' },
                  payload: { issue: { number: 42, title, body, labels: labels.map(name => ({ name })) } } },
@@ -326,18 +331,24 @@ function topicApi({ title = '', body = '', labels = [] } = {}) {
 }
 
 test('an issue naming a topic gets the matching topic label', async () => {
-  const a = topicApi({ title: 'async subagents hang on exit', body: 'repro below' });
+  const a = topicApi({
+    title: 'async subagents hang on exit', body: 'repro below',
+    topics: ['topic:async-subagents', 'topic:subagents'],
+  });
   await runTopicStep(a.globals);
   assert.deepEqual(a.added.sort(), ['topic:async-subagents', 'topic:subagents']);
 });
 
-test('topic keywords read the issue body too', async () => {
-  const a = topicApi({ title: 'crash on startup', body: 'happens when the MCP server reconnects' });
+test('model topics from the issue text are applied', async () => {
+  const a = topicApi({
+    title: 'crash on startup', body: 'happens when the MCP server reconnects',
+    topics: ['topic:mcp'],
+  });
   await runTopicStep(a.globals);
   assert.deepEqual(a.added, ['topic:mcp']);
 });
 
-test('unchecked issue-form options do not produce topic labels', async () => {
+test('an empty model classification adds no topic labels', async () => {
   const a = topicApi({
     title: 'SDK call fails',
     body: '## Area\n\n- [x] deepagents\n- [ ] langsmith-sandbox\n',
@@ -352,8 +363,8 @@ test('a topic label already present is not re-applied', async () => {
   assert.deepEqual(a.added, [], 'no duplicate add, so a hand-applied topic survives an edit');
 });
 
-test('prose that merely mentions a common word earns no topic', async () => {
+test('model classifications are not guessed from common words', async () => {
   const a = topicApi({ title: 'the model is slow', body: 'streams of output look fine' });
   await runTopicStep(a.globals);
-  assert.deepEqual(a.added, [], 'keywords must demand the phrase that names the topic');
+  assert.deepEqual(a.added, [], 'only the model classification should apply topics');
 });

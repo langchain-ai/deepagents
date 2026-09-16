@@ -138,6 +138,7 @@ jobs:
       - name: Apply PR labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           IS_EXTERNAL: ${{ steps.check-membership.outputs.is-external }}
           RENAMED_TITLE: ${{ steps.rename-scope.outputs.title }}
         with:
@@ -145,6 +146,7 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { classifyTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
 
             const pr = context.payload.pull_request;
             if (!pr) return;
@@ -201,12 +203,14 @@ jobs:
             for (const label of titleLabels) {
               toAdd.add(label);
             }
-
-            // Topic keywords read the title only. A PR body is mostly template
-            // prose and linked-issue quotes, which produce topics the diff does
-            // not support.
-            for (const label of h.matchTopicKeywordLabels(title)) {
-              toAdd.add(label);
+            // Let the model classify the title only. PR bodies contain template
+            // prose and linked-issue quotes that may be unrelated to the diff.
+            try {
+              for (const label of await classifyTopicLabels(title, h.topicLabels)) {
+                toAdd.add(label);
+              }
+            } catch (error) {
+              core.warning(`Topic classification failed: ${error.message}`);
             }
             for (const label of h.getStaleTitleLabels(title, currentLabels)) {
               toRemove.add(label);
@@ -229,7 +233,7 @@ jobs:
 
             for (const name of toRemove) {
               if (toAdd.has(name)) continue;
-              try {
+            try {
                 await github.rest.issues.removeLabel({
                   owner, repo, issue_number: prNumber, name,
                 });

@@ -59,11 +59,11 @@ Package and integration labels are additive: title edits do not remove them. `pr
 Two signals feed them, both additive — a topic is never removed, so an edit that drops a phrase cannot strip one, and a maintainer's hand-applied topic survives:
 
 - **Changed modules** (`topicFileRules`): a PR touching `middleware/subagents.py` gets `topic:subagents` (and `topic:middleware`, since the whole middleware dir maps too); `backends/sandbox.py` gets `topic:backends` and `topic:sandboxes`; `mcp_*.py` gets `topic:mcp`. Rules name a *module*, not a package, so the label means the diff actually touched that subject.
-- **Wording** (`topicKeywords`): an issue's title and body, and a PR's title only — a PR body is mostly template prose and quoted issues, which produce topics the diff does not support. Patterns demand the phrase that names the topic: `MCP`, `async subagents`, `system prompt`, `harness profile`. A bare "model" or "stream" is deliberately unmatched, since it appears in prose that has nothing to do with the topic.
+- **Wording**: `llama-3.1-8b-instant`, an open-weight 8B model, classifies an issue's title and body or a PR's title against the configured `topicLabels` allowlist. PR bodies are excluded because template prose and quoted issues may be unrelated to the diff.
 
 `topic:async-subagents` stays distinct from `topic:subagents` because async execution has its own implementation and operational concerns; a file or phrase naming async subagents gets both.
 
-To add a topic: add its rules to `topicFileRules` / `topicKeywords` in the labeler config. `pr-labeler.test.js` asserts every rule points at a real `topic:` label and that each keyword pattern compiles.
+To add a topic: add its path rules to `topicFileRules` and its name to the `topicLabels` allowlist in the labeler config. The model output is filtered against that allowlist before labels are applied.
 
 ### `org:*` — `pr_labeler.yml` (PRs), `tag-external-issues.yml` (issues)
 

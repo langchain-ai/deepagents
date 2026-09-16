@@ -1,5 +1,5 @@
 # Applies `package:*` / `integration:*` labels from the issue form's
-# "Area" section, `topic:*` from its words, and a default
+# "Area" section, `topic:*` from a small open model, and a default
 # `priority:backlog` on every new issue.
 # Taxonomy: .github/LABELS.md.
 
@@ -57,24 +57,29 @@ jobs:
             });
             console.log(`Applied '${DEFAULT_PRIORITY}' to issue #${issue_number}`);
 
-      # `topic:*` from the issue's own words. Additive and never removed: an
-      # edit that drops a phrase does not mean the issue stopped being about
-      # the subject, and a maintainer's hand-applied topic must survive.
-      # Keywords live in `topicKeywords` in the labeler config.
+      # `topic:*` from a small open model. Additive and never removed so a
+      # maintainer's hand-applied topic survives later edits.
       - name: Apply topic labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
             const { h } = require('./.github/scripts/labeling/pr-labeler.js')
               .loadAndInit(github, owner, repo, core);
+            const { classifyTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
 
-            const body = (issue.body ?? '')
-              .split('\n')
-              .filter(line => !/^\s*-\s*\[\s\]\s+/.test(line))
-              .join('\n');
-            const topics = h.matchTopicKeywordLabels(issue.title, body);
+            let topics;
+            try {
+              topics = await classifyTopicLabels(
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, h.topicLabels,
+              );
+            } catch (error) {
+              core.warning(`Topic classification failed: ${error.message}`);
+              return;
+            }
             const current = new Set((issue.labels ?? []).map(l => l.name ?? l));
             const toAdd = [...topics].filter(name => !current.has(name));
             if (!toAdd.length) {
@@ -82,8 +87,6 @@ jobs:
               return;
             }
 
-            // Every label must exist before the batch add: addLabels 422s the
-            // whole call if one is missing.
             for (const name of toAdd) await h.ensureLabel(name);
             await github.rest.issues.addLabels({
               owner, repo, issue_number: issue.number, labels: toAdd,

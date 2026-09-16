@@ -275,70 +275,22 @@
       "pattern": "(?:^|/)(?:cost_tracking|cold_cache)\\.py$"
     }
   ],
-  "topicKeywords": [
-    {
-      "label": "topic:async-subagents",
-      "pattern": "\\basync\\s+sub-?agents?\\b"
-    },
-    {
-      "label": "topic:subagents",
-      "pattern": "\\bsub-?agents?\\b"
-    },
-    {
-      "label": "topic:mcp",
-      "pattern": "\\bmcp\\b|\\bmodel context protocol\\b"
-    },
-    {
-      "label": "topic:skills",
-      "pattern": "\\bskills?\\b|\\bprogressive disclosure\\b"
-    },
-    {
-      "label": "topic:memory",
-      "pattern": "\\bmemor(?:y|ies)\\b|\\bpersistent context\\b"
-    },
-    {
-      "label": "topic:filesystem",
-      "pattern": "\\bfile ?system\\b|\\bfile (?:tool|ops|operations)\\b"
-    },
-    {
-      "label": "topic:backends",
-      "pattern": "\\bbackends?\\b|\\bstore backend\\b"
-    },
-    {
-      "label": "topic:sandboxes",
-      "pattern": "\\bsandboxe?s?\\b"
-    },
-    {
-      "label": "topic:middleware",
-      "pattern": "\\bmiddlewares?\\b"
-    },
-    {
-      "label": "topic:models",
-      "pattern": "\\bmodel (?:provider|config|selection|id)\\b|\\bconfigurable model\\b"
-    },
-    {
-      "label": "topic:tracing",
-      "pattern": "\\btracing\\b|\\btelemetry\\b|\\bobservability\\b"
-    },
-    {
-      "label": "topic:streaming",
-      "pattern": "\\bstreaming\\b"
-    },
-    {
-      "label": "topic:multimodal",
-      "pattern": "\\bmultimodal\\b|\\bvision\\b|\\bimage input\\b|\\baudio\\b|\\bvideo\\b"
-    },
-    {
-      "label": "topic:prompts",
-      "pattern": "\\bsystem prompt\\b|\\bprompt (?:construction|template|caching)\\b"
-    },
-    {
-      "label": "topic:harness",
-      "pattern": "\\bharness profiles?\\b|\\bharness config\\b"
-    },
-    {
-      "label": "topic:performance",
-      "pattern": "\\bcost optimi[sz]ation\\b|\\btoken usage\\b|\\blatency\\b|\\bmemory usage\\b"
-    }
+  "topicLabels": [
+    "topic:async-subagents",
+    "topic:subagents",
+    "topic:mcp",
+    "topic:skills",
+    "topic:memory",
+    "topic:filesystem",
+    "topic:backends",
+    "topic:sandboxes",
+    "topic:middleware",
+    "topic:models",
+    "topic:tracing",
+    "topic:streaming",
+    "topic:multimodal",
+    "topic:prompts",
+    "topic:harness",
+    "topic:performance"
   ]
 }

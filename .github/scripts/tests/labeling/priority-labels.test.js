@@ -256,6 +256,7 @@ function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
       context: { repo: { owner: 'owner', repo: 'repo' },
                  payload: { issue: { number: 7, labels: labels.map(name => ({ name })) } } },
       github: { rest: { issues: {
+        get: async () => ({ data: { labels: [...present].map(name => ({ name })) } }),
         getLabel: async ({ name }) => {
           if (!exists.has(name)) throw Object.assign(new Error('Missing'), { status: 404 });
         },
@@ -278,6 +279,7 @@ test('a new issue with no priority gets the backlog default', async () => {
 test('an issue that already carries a priority is left alone', async () => {
   for (const existing of ['priority:high', 'priority:urgent', 'priority:backlog']) {
     const a = issueApi({ labels: [existing] });
+    a.globals.context.payload.issue.labels = [];
     await runDefaultPriorityStep(a.globals);
     assert.deepEqual(a.calls.added, [], `${existing} must not be overwritten`);
     assert.deepEqual(a.labels(), [existing]);
@@ -333,6 +335,15 @@ test('topic keywords read the issue body too', async () => {
   const a = topicApi({ title: 'crash on startup', body: 'happens when the MCP server reconnects' });
   await runTopicStep(a.globals);
   assert.deepEqual(a.added, ['topic:mcp']);
+});
+
+test('unchecked issue-form options do not produce topic labels', async () => {
+  const a = topicApi({
+    title: 'SDK call fails',
+    body: '## Area\n\n- [x] deepagents\n- [ ] langsmith-sandbox\n',
+  });
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added, []);
 });
 
 test('a topic label already present is not re-applied', async () => {

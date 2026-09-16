@@ -166,12 +166,9 @@ function init(github, owner, repo, config, core) {
   }
 
   // ── Topic labels ──────────────────────────────────────────────────
-  // `topic:*` spans packages, so it is derived from two signals: the modules a
-  // PR touched, and the words an issue uses. Both are additive and narrow on
-  // purpose — a topic label should mean the change or report is actually about
-  // that subject, so paths name a module rather than a package, and keywords
-  // demand the phrase that names the topic (a bare "model" or "stream" matches
-  // too much prose to be worth a label).
+  // Match subjects from the modules a PR touched, rather than whole packages.
+  // The live workflows also use topic-classifier.js to classify issue text or
+  // a PR title with a model. Both signals are additive.
   function matchTopicFileLabels(files) {
     return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
   }

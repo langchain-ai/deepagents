@@ -458,12 +458,10 @@ test('every label the config can apply has a prefix color', () => {
   }
 });
 
-// `sync_priority_labels.yml` and `require_issue_link.yml` run their scripts in
-// a sandbox without `require`, so they inline a color instead of calling
-// ensureLabel. This asserts those inlined values still match the config —
-// a stale copy is how `do-not-close` and `pending-deletion` came back in the
-// wrong colors mid-migration.
-test('inlined workflow label colors match labelColors in the config', () => {
+// Priority sync and issue-link enforcement have no checkout of the shared
+// helper. This check rejects inline colors outside the palette; it does not
+// establish that a color belongs to the prefix of the label being created.
+test('inlined workflow label colors belong to the configured palette', () => {
   const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
   const known = new Set(Object.values(config.labelColors));
   for (const rel of ['.github/workflows/sync_priority_labels.yml',

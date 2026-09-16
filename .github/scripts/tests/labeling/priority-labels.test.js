@@ -45,7 +45,7 @@ function api({ prs = [], issues = {} } = {}) {
         return { data: { labels: labels.map(name => ({ name })) } };
       },
       listLabelsOnIssue: async ({ issue_number }) =>
-        [...(prLabels.get(issue_number) ?? [])].map(name => ({ name })),
+        [...(prLabels.get(issue_number) ?? issues[issue_number] ?? [])].map(name => ({ name })),
       removeLabel: async ({ issue_number, name }) => {
         const set = prLabels.get(issue_number);
         if (!set?.has(name)) throw Object.assign(new Error('Label does not exist'), { status: 404 });
@@ -63,6 +63,7 @@ function api({ prs = [], issues = {} } = {}) {
       createLabel: async ({ name }) => known.add(name),
     },
     pulls: { list: async () => prs },
+    search: { issuesAndPullRequests: async () => ({ data: { items: prs } }) },
   };
   const github = { rest, paginate: (method, options) => method(options) };
   return { github, labelsOn: num => [...(prLabels.get(num) ?? [])].sort() };
@@ -75,6 +76,46 @@ function backfill(state) {
   failed.length = 0;
   return runStep('Backfill priority labels on open PRs', {
     ...state, core, context: { repo: { owner: 'owner', repo: 'repo' } },
+  });
+}
+
+function priorityEvent(state, pr, event) {
+  const isPr = ['opened', 'edited'].includes(event);
+  return runStep(isPr ? 'Sync priority label to PR' : 'Propagate priority label to linked PRs', {
+    ...state,
+    core: { warning() {}, setFailed(message) { throw new Error(message); } },
+    context: {
+      repo: { owner: 'owner', repo: 'repo' },
+      payload: {
+        action: event, pull_request: pr,
+        issue: { number: 200, labels: [{ name: 'priority:urgent' }] },
+        label: { name: event === 'unlabeled' ? 'priority:urgent' : 'priority:backlog' },
+      },
+    },
+  });
+}
+
+for (const event of ['opened', 'edited', 'labeled', 'unlabeled']) {
+  for (const labels of [[], ['priority:backlog', 'p2']]) {
+    test(`${event} clears old PR priorities without propagating backlog (existing: ${labels})`, async () => {
+      const pr = { number: 20, body: 'Fixes #200', labels: [...labels, 'package:deepagents'] };
+      const state = api({ prs: [pr], issues: { 200: ['priority:backlog'] } });
+      await priorityEvent(state, pr, event);
+      assert.deepEqual(state.labelsOn(20), ['package:deepagents']);
+    });
+  }
+
+  test(`${event} propagates the highest escalation across all linked issues`, async () => {
+    const pr = {
+      number: 20, body: 'Fixes #200, fixes #201, fixes #202',
+      labels: ['priority:backlog', 'priority:high', 'package:deepagents'],
+    };
+    const state = api({
+      prs: [pr],
+      issues: { 200: ['priority:backlog'], 201: ['priority:high'], 202: ['priority:urgent'] },
+    });
+    await priorityEvent(state, pr, event);
+    assert.deepEqual(state.labelsOn(20), ['package:deepagents', 'priority:urgent']);
   });
 }
 

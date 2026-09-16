@@ -282,7 +282,7 @@ for (const title of ['', undefined, 'not a conventional title', 'unknown(sdk): c
   });
 }
 
-function labelerApi(title, labels) {
+function labelerApi(title, labels, files = [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }]) {
   const assigned = new Set(labels);
   const known = new Map(labels.map(name => [name, {}]));
   const pr = { number: 12, title, user: { login: 'contributor', type: 'User' }, head: { ref: 'feature-branch' } };
@@ -302,7 +302,7 @@ function labelerApi(title, labels) {
   };
   const pulls = {
     get: async () => ({ data: pr }), list: async () => [pr],
-    listFiles: async () => [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }],
+    listFiles: async () => files,
   };
   const github = { rest: { issues, pulls }, paginate: (method, options) => method(options) };
   const h = prLabeler.loadAndInit(github, 'owner', 'repo', core).h;
@@ -380,6 +380,17 @@ test('live topic classification uses the corrected title from scope renaming', a
     return topicResponse(['topic:mcp']);
   } });
   assert.ok(api.assigned.has('topic:mcp'));
+});
+
+// `edited` skips the file block, so the path signal needs a push-like action.
+test('live topics come from the changed modules even when the model returns none', async () => {
+  const api = labelerApi('fix(code): correct behavior', [], [
+    { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
+  ]);
+  await runLabeler('live', api, { action: 'synchronize' });
+  assert.ok(api.assigned.has('topic:mcp'), 'a touched module must contribute its topic');
+  assert.ok(api.known.has('topic:mcp'), 'a path topic is created before it is applied');
+  assert.ok(api.assigned.has('package:dcode'));
 });
 
 test('live empty classification preserves existing topics and applies other labels', async () => {

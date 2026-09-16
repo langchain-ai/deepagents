@@ -835,9 +835,10 @@ class ExecuteArtifact(TypedDict):
     command ran -- a validation or unsupported-backend error, where
     `ToolMessage.status` is `"error"`.
 
-    Note that `status` is `"success"` for any command that ran, including one
-    that exited non-zero: the model is expected to read the output and decide
-    what to do. Use `exit_code`, not `status`, to detect command failure.
+    Note that `status` is `"success"` for commands that ran and exited
+    non-zero, except timeout responses, which use `"error"`. The model is
+    expected to read the output and decide what to do. Use `exit_code`, not
+    `status`, to detect ordinary command failure.
     """
 
     exit_code: NotRequired[int]

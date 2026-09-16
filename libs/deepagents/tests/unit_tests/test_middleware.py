@@ -3153,6 +3153,27 @@ class TestFilesystemMiddleware:
         assert "failed" in result.content
         assert "exit code 127" in result.content
         assert result.artifact == {"exit_code": 127}
+        assert result.status == "success"
+
+    def test_execute_tool_marks_timeout_as_error(self):
+        """Test execute tool marks a timed-out command as an error."""
+
+        class TimeoutMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="timed out", exit_code=124, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-mock-sandbox-backend"
+
+        rt = _runtime("test_timeout_status")
+        middleware = FilesystemMiddleware(backend=TimeoutMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        result = execute_tool.invoke({"command": "sleep 10", "runtime": rt})
+
+        assert result.status == "error"
+        assert result.artifact == {"exit_code": 124}
 
     def test_execute_tool_omits_artifact_exit_code_when_unknown(self):
         """Test execute tool omits `exit_code` when the backend reports none."""

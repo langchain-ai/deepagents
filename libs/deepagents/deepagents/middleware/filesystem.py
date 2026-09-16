@@ -117,6 +117,8 @@ if TYPE_CHECKING:
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 """wcmatch flags enabling brace expansion and `**` globstar recursion."""
 
+_EXECUTE_TIMEOUT_EXIT_CODE = 124
+
 _SYNC_GLOB_WORKERS = 4
 """Thread-pool size for synchronous glob operations."""
 
@@ -3049,7 +3051,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 artifact=self._execute_artifact(response),
-                status="success",
+                status="error" if response.exit_code == _EXECUTE_TIMEOUT_EXIT_CODE else "success",
             )
 
         async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
@@ -3137,7 +3139,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 artifact=self._execute_artifact(response),
-                status="success",
+                status="error" if response.exit_code == _EXECUTE_TIMEOUT_EXIT_CODE else "success",
             )
 
         return StructuredTool.from_function(

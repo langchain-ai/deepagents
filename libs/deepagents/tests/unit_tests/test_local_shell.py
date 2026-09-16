@@ -1,8 +1,6 @@
 """Unit tests for LocalShellBackend per-command timeout features."""
 
-import subprocess
 import sys
-from unittest.mock import patch
 
 import pytest
 
@@ -82,17 +80,31 @@ class TestTimeoutErrorMessage:
     def test_default_timeout_error_includes_retry_guidance(self) -> None:
         """Default timeout error should guide the LLM to use the timeout parameter."""
         backend = LocalShellBackend(timeout=1, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
-            result = backend.execute("sleep 10")
-            assert "timed out" in result.output.lower()
-            assert "timeout parameter" in result.output.lower()
-            assert result.exit_code == 124
+        result = backend.execute("sleep 10")
+        assert "timed out" in result.output.lower()
+        assert "timeout parameter" in result.output.lower()
+        assert result.exit_code == 124
 
     def test_custom_timeout_error_shows_effective_value(self) -> None:
         """Custom timeout error should show the value used and not suggest re-using timeout."""
         backend = LocalShellBackend(timeout=60, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
-            result = backend.execute("sleep 10", timeout=5)
-            assert "5" in result.output
-            assert "custom timeout" in result.output.lower()
-            assert "may be stuck" in result.output.lower()
+        result = backend.execute("sleep 10", timeout=0.05)
+        assert "0.05" in result.output
+        assert "custom timeout" in result.output.lower()
+        assert "may be stuck" in result.output.lower()
+
+    def test_timeout_preserves_incremental_output_and_elapsed_time(self) -> None:
+        """A timeout should retain output written before the process was killed."""
+        backend = LocalShellBackend(timeout=60, inherit_env=True)
+        result = backend.execute("printf before; sleep 10", timeout=0.05)
+        assert result.exit_code == 124
+        assert "before" in result.output
+        assert "Elapsed time:" in result.output
+
+    def test_silent_timeout_keeps_timeout_message_only(self) -> None:
+        """A silent timeout should retain the existing timeout message."""
+        backend = LocalShellBackend(timeout=60, inherit_env=True)
+        result = backend.execute("sleep 10", timeout=0.05)
+        assert result.exit_code == 124
+        assert result.output.startswith("Error: Command timed out")
+        assert "Elapsed time:" not in result.output

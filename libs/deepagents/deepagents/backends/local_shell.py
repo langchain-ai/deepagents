@@ -8,8 +8,10 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -300,58 +302,52 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
 
+        started_at = time.monotonic()
+        process: subprocess.Popen[str] | None = None
         try:
-            result = subprocess.run(  # noqa: S602
+            process = subprocess.Popen(  # noqa: S602
                 command,
-                check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,
-                timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )
+            stdout, stderr = process.communicate(timeout=effective_timeout)
 
-            # Combine stdout and stderr
-            # Prefix each stderr line with [stderr] for clear attribution.
-            # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
-            output_parts = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-            output = "\n".join(output_parts) if output_parts else "<no output>"
-
-            # Check for truncation
-            truncated = False
-            if len(output) > self._max_output_bytes:
-                output = output[: self._max_output_bytes]
-                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-                truncated = True
+            output, truncated = self._format_and_truncate_output(stdout, stderr)
 
             # Add exit code info if non-zero
-            if result.returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+            if process.returncode != 0:
+                output = f"{output.rstrip()}\n\nExit code: {process.returncode}"
 
             return ExecuteResponse(
                 output=output,
-                exit_code=result.returncode,
+                exit_code=process.returncode,
                 truncated=truncated,
             )
 
         except subprocess.TimeoutExpired:
+            if process is not None:
+                self._kill_process_group(process)
+                stdout, stderr = process.communicate()
+            else:
+                stdout, stderr = "", ""
+            output, truncated = self._format_and_truncate_output(stdout, stderr)
             if timeout is not None:
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
+            if output != "<no output>":
+                elapsed = time.monotonic() - started_at
+                msg = f"{msg}\n\n{output}\n\nElapsed time: {elapsed:.2f} seconds."
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,  # Standard timeout exit code
-                truncated=False,
+                truncated=truncated,
             )
         except Exception as e:  # noqa: BLE001
             # Broad exception catch is intentional: we want to catch all execution errors
@@ -361,6 +357,30 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=1,
                 truncated=False,
             )
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen[str]) -> None:
+        if sys.platform == "win32":
+            process.kill()
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            process.kill()
+
+    def _format_and_truncate_output(self, stdout: str | None, stderr: str | None) -> tuple[str, bool]:
+        output_parts = []
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            stderr_lines = stderr.strip().split("\n")
+            output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+        if len(output) <= self._max_output_bytes:
+            return output, False
+        output = output[: self._max_output_bytes]
+        output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+        return output, True
 
 
 __all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]

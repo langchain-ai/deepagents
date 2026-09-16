@@ -31,7 +31,8 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
       body: JSON.stringify({
         model: MODEL,
         temperature: 0,
-        max_completion_tokens: 200,
+        // The completion budget covers reasoning as well as the final JSON.
+        max_completion_tokens: 4096,
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -51,7 +52,11 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
     clearTimeout(timeout);
   }
 
-  const content = payload.choices?.[0]?.message?.content;
+  const choice = payload.choices?.[0];
+  if (choice?.finish_reason === 'length') {
+    throw new Error('Topic classifier exhausted its completion token budget; labels may be incomplete');
+  }
+  const content = choice?.message?.content;
   const labels = JSON.parse(content ?? '{}').labels;
   if (!Array.isArray(labels)) throw new Error('Topic classifier returned invalid labels');
 

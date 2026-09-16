@@ -5,12 +5,12 @@ const { classifyTopicLabels, loadTopicLabels, ENDPOINT, MODEL } = require('../..
 
 const allowed = ['topic:mcp', 'topic:models'];
 
-function response(content, status = 200) {
+function response(content, status = 200, finishReason = 'stop') {
   return {
     ok: status >= 200 && status < 300,
     status,
     async json() {
-      return { choices: [{ message: { content } }] };
+      return { choices: [{ message: { content }, finish_reason: finishReason }] };
     },
   };
 }
@@ -56,6 +56,31 @@ test('keeps the timeout active while reading the response body', async () => {
     { name: 'AbortError' },
   );
 });
+
+test('allows reasoning to consume tokens before the final JSON', async () => {
+  const fetchImpl = async (_url, options) => {
+    const budget = JSON.parse(options.body).max_completion_tokens;
+    // Simulate a completion that needs 2,000 reasoning tokens plus its answer.
+    return budget >= 2100
+      ? response('{"labels":["topic:mcp"]}')
+      : response('', 200, 'length');
+  };
+  const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
+    apiKey: 'secret', fetchImpl,
+  });
+  assert.deepEqual([...labels], ['topic:mcp']);
+});
+
+for (const content of ['', '{"labels":["topic:mcp"', '{"labels":["topic:mcp"]}']) {
+  test(`rejects length-limited output even when it looks valid: ${JSON.stringify(content)}`, async () => {
+    await assert.rejects(
+      classifyTopicLabels('text', allowed, {
+        apiKey: 'secret', fetchImpl: async () => response(content, 200, 'length'),
+      }),
+      /exhausted its completion token budget/,
+    );
+  });
+}
 
 test('returns no labels for empty input without calling the model', async () => {
   const labels = await classifyTopicLabels(' ', allowed, {

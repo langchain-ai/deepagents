@@ -296,8 +296,8 @@ class SkillsState(AgentState):
     skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents.
 
-    Missing or `None` means not loaded; set to `None` to request a reload on the next run.
-    An empty list means loaded with no skills found.
+    Missing or `None` means not loaded; set to `None` to request a reload before
+    the next model call. An empty list means loaded with no skills found.
     """
 
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
@@ -776,8 +776,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     Skills are loaded in source order with later sources overriding
     earlier ones.
 
-    Skills are loaded once per thread and cached in state. To pick up skills
-    added, edited, or deleted since then, set `skills_metadata` to `None`:
+    Skills are loaded on demand and cached in state, and the cache is checked
+    before every model call. Setting `skills_metadata` to `None` anywhere makes
+    the next model call pick up skills added, edited, or deleted since the last
+    load:
 
     ```python
     agent.invoke({"messages": messages, "skills_metadata": None}, config)
@@ -928,7 +930,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if self.system_prompt_template is None:
             return request
 
-        skills_metadata = request.state.get("skills_metadata", [])
+        # `or []` rather than a `get` default: the key is present and `None` when
+        # a reload has been requested but not yet served.
+        skills_metadata = request.state.get("skills_metadata") or []
         skills_load_errors = request.state.get("skills_load_errors", [])
         skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)
@@ -944,13 +948,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
-        """Load skills metadata before agent execution (synchronous).
+    def before_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Load skills metadata before a model call (synchronous).
 
         Loads skills from all configured sources when not yet loaded, meaning
         `skills_metadata` is missing or `None` in state. If it holds a list
-        (from a prior turn or checkpointed session, even if empty), the load
-        is skipped and `None` is returned.
+        (from a prior model call or checkpointed session, even if empty), the
+        load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -989,13 +993,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=list(all_skills.values()), skills_load_errors=skills_load_errors)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
-        """Load skills metadata before agent execution (async).
+    async def abefore_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Load skills metadata before a model call (async).
 
         Loads skills from all configured sources when not yet loaded, meaning
         `skills_metadata` is missing or `None` in state. If it holds a list
-        (from a prior turn or checkpointed session, even if empty), the load
-        is skipped and `None` is returned.
+        (from a prior model call or checkpointed session, even if empty), the
+        load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).

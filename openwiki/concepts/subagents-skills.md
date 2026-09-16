@@ -119,7 +119,7 @@ Clients are lazy and cached by `(url, resolved headers)`. Resolved headers add `
 
 A valid skill requires YAML frontmatter with non-empty `name` and `description`. Loading is defensive: malformed frontmatter or YAML, inaccessible or missing content, non-UTF-8 bytes, and oversized files are skipped with warnings. Invalid name format or directory-name mismatch warns for compatibility but does not prevent loading. Metadata is normalized, overlong descriptions and compatibility values are truncated, and later sources replace earlier skills of the same name.
 
-`skills_metadata` and recoverable `skills_load_errors` are private state. Loading occurs once per session or checkpointed state: if `skills_metadata` exists—even empty—the middleware does not reload. A custom prompt template needs `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`. `system_prompt=None` suppresses prompt injection only, not discovery; source errors are logged and, when rendered, bounded and escaped as untrusted diagnostics.
+`skills_metadata` and recoverable `skills_load_errors` are private state. Loading is cached in state and the cache is checked before every model call: if `skills_metadata` holds a list—even empty—the middleware does not reload, and setting it to `None` makes the next model call reload. A custom prompt template needs `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`. `system_prompt=None` suppresses prompt injection only, not discovery; source errors are logged and, when rendered, bounded and escaped as untrusted diagnostics.
 
 ## dcode: filesystem-defined agents and skills
 

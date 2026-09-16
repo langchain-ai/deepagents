@@ -1013,9 +1013,8 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
 
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,
-            or a full `provider:model` spec for a per-model override. The first
-            colon is the separator: providers must not contain colons, while
-            model identifiers may, as in `"ollama:glm-5.2:cloud"`. Valid shapes:
+            or a full `provider:model` spec for a per-model override. Only the
+            first colon separates the provider from the model identifier:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
@@ -1024,8 +1023,7 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
 
     Raises:
         ValueError: If `key` is malformed. See `validate_profile_key` for the
-            exact conditions: empty key, leading/trailing whitespace,
-            whitespace adjacent to the first `:`, or an empty provider/model half.
+            exact conditions.
     """
     _ensure_harness_profiles_loaded()
     _register_harness_profile_impl(key, profile)
@@ -1069,16 +1067,9 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
-    The first colon separates the provider from the complete model identifier.
-    Providers must not contain colons, while model identifiers may. Malformed
-    specs (empty string or a `:` with an empty provider/model component) return
-    `None` without consulting the registry. This prevents a spec like
-    `"openai:"` from silently matching the provider-wide `"openai"` registration.
-
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier. For example, `"ollama:glm-5.2:cloud"` has provider
-            `ollama` and model identifier `glm-5.2:cloud`.
+            identifier. Only the first colon is a separator.
 
     Returns:
         The matching `HarnessProfile`, or `None` when no registered profile matches.
@@ -1280,20 +1271,18 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     """Look up the `HarnessProfile` for an already-resolved model.
 
     Use `spec` directly when provided. Otherwise resolve the model's provider
-    and identifier, preserving any colons in the identifier, and try:
+    and identifier, and try:
 
     1. The combined `provider:identifier` key, as an exact match.
-    2. The identifier alone, as an exact match, when it contains a colon.
-    3. Provider-wide defaults.
+    2. The model identifier alone, as an exact match, when it contains a colon.
+        This supports models that already report a `provider:model` identifier.
+        Without a colon, the key denotes provider-wide defaults, so looking up
+        a bare model name here could apply an unrelated provider's profile.
+    3. The reported provider's defaults, or the identifier prefix's defaults
+        if the provider is unknown.
 
-    Exact matches inherit unset fields from the matched key's provider prefix
-    via `_get_harness_profile`. For compatibility, step 2 can therefore inherit
-    defaults from a prefix different from the model's reported provider.
-    Step 3 uses the reported provider, falling back to the identifier's prefix
-    only when the provider is unknown.
-
-    Bare identifiers are never looked up alone: a model named `"openai"` must
-    not accidentally match that provider's defaults.
+    Both exact candidates take precedence over provider fallback. An exact
+    match inherits defaults from the provider prefix of its registered key.
 
     Args:
         model: Resolved chat model instance.
@@ -1318,6 +1307,7 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     candidates: list[str] = []
     if provider and identifier:
         candidates.append(f"{provider}:{identifier}")
+    # Compatibility with provider-qualified identifiers; bare keys are providers.
     if identifier is not None and ":" in identifier:
         candidates.append(identifier)
     # Check exact keys before allowing `_get_harness_profile` to fall back.

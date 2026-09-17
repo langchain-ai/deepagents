@@ -12,6 +12,7 @@ import json
 import unicodedata
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -69,6 +70,7 @@ def _chunks(messages: Sequence[BaseMessage], timestamp: str) -> Iterator[Record]
         if isinstance(message, AIMessage) and message.tool_calls:
             text += "\nTool calls: " + json.dumps(message.tool_calls, ensure_ascii=False)
         revision = hashlib.sha256(text.encode()).hexdigest()
+        source = message.additional_kwargs.get("talon_history_source", "user")
         for part, start in enumerate(range(0, len(text), CHUNK_SIZE)):
             yield {
                 "message_id": message.id or f"talon-history:{timestamp}:{index}",
@@ -77,6 +79,8 @@ def _chunks(messages: Sequence[BaseMessage], timestamp: str) -> Iterator[Record]
                 "role": message.type,
                 "text": text[start : start + CHUNK_SIZE],
                 "search_text": text if part == 0 else "",
+                "indexable": (isinstance(message, HumanMessage) and source == "user")
+                or (isinstance(message, AIMessage) and source == "delivered"),
             }
 
 
@@ -163,6 +167,35 @@ class StoreConversationArchive:
         lookup = await self.records.get("session:" + digest(session_id))
         return await self.records.get(str(number(lookup, "cursor"))) if lookup else None
 
+    async def checkpoint_acknowledged(self, session_id: str, checkpoint_id: str) -> bool:
+        """Check successful archive persistence, independently of checkpoint storage.
+
+        Args:
+            session_id: Trusted session identifier.
+            checkpoint_id: Parent checkpoint whose messages may be skipped.
+        """
+        async with self.records.access():
+            session = await self.session(session_id)
+            return bool(
+                checkpoint_id and session and session.get("archived_checkpoint") == checkpoint_id
+            )
+
+    async def acknowledge_checkpoint(self, session_id: str, checkpoint_id: str) -> None:
+        """Record completion only after all committed messages have been archived.
+
+        Args:
+            session_id: Trusted session identifier.
+            checkpoint_id: Successfully archived checkpoint.
+        """
+        async with self.records.access():
+            session = await self.session(session_id)
+            if session is None or session.get("deleting"):
+                msg = "Cannot acknowledge history for a missing or deleting session"
+                raise ValueError(msg)
+            await self.records.commit(
+                [(str(session["cursor"]), {**session, "archived_checkpoint": checkpoint_id})]
+            )
+
     async def _register(self, scope: ArchiveScope, session_id: str, timestamp: str) -> Record:
         session = await self.session(session_id)
         if session is not None:
@@ -223,7 +256,9 @@ class StoreConversationArchive:
     ) -> None:
         identifier, revision = str(chunk["message_id"]), str(chunk["revision"])
         key = "dedup:" + digest(session_id, identifier, revision, str(chunk["part"]))
-        if await self.records.get(key) is not None:
+        if existing := await self.records.get(key):
+            if chunk["indexable"]:
+                await self._promote(scope, number(existing, "cursor"))
             return
         session = cast("Record", await self.session(session_id))
         root, scoped = await self.records.root(), await self.records.get(scope_key(scope)) or {}
@@ -246,6 +281,7 @@ class StoreConversationArchive:
             "dedup": key,
             "message": message_key,
             "search_text": chunk["search_text"],
+            "indexable": chunk["indexable"],
         }
         updated = self._summary_update(session, cursor, timestamp, str(chunk["text"]), fresh=fresh)
         writes: list[Write] = [
@@ -259,7 +295,50 @@ class StoreConversationArchive:
         if previous := number(session, "head"):
             prior = cast("Record", await self.records.get(str(previous)))
             writes.append((str(previous), {**prior, "next_session": cursor}))
+        if chunk["role"] == "ai" and chunk["part"] == 0:
+            reply_key = "reply:" + digest(session_id, revision)
+            record["reply_key"] = reply_key
+            writes.append((reply_key, {"message_id": identifier}))
         await self.records.commit(writes)
+
+    async def record_delivery(self, scope: ArchiveScope, session_id: str, text: str) -> None:
+        """Enable semantic indexing only after the host confirms final-reply delivery.
+
+        Args:
+            scope: Trusted channel/chat receiving the reply.
+            session_id: Agent thread producing the reply.
+            text: Text successfully sent to the channel.
+        """
+        revision = hashlib.sha256(text.encode()).hexdigest()
+        async with self.records.access():
+            reply = await self.records.get("reply:" + digest(session_id, revision))
+        identifier = str(reply["message_id"]) if reply else "delivered:" + revision
+        await self.append(
+            scope,
+            session_id,
+            datetime.now(UTC).isoformat(),
+            [
+                AIMessage(
+                    text, id=identifier, additional_kwargs={"talon_history_source": "delivered"}
+                )
+            ],
+        )
+
+    async def _promote(self, scope: ArchiveScope, cursor: int) -> None:
+        record = await self.records.get(str(cursor))
+        if record is None or record.get("indexable"):
+            return
+        root = await self.records.root()
+        scoped = await self.records.get(scope_key(scope)) or {}
+        event = number(root, "last") + 1
+        await self.records.commit(
+            [
+                (str(cursor), {**record, "indexable": True}),
+                (str(event), {"kind": "index-request", "target": cursor}),
+                (scope_key(scope), {**scoped, "vector_head": event}),
+                ("root", {**root, "last": event}),
+            ]
+        )
 
     @staticmethod
     def _summary_update(
@@ -582,6 +661,10 @@ class StoreConversationArchive:
             links = {key: record[key] for key in ("previous_scope", "previous_session")}
             writes: list[Write] = [(str(cursor), links), (str(session["cursor"]), session)]
             writes.extend((str(record[key]), None) for key in ("dedup", "message"))
+            if key := record.get("vector_content"):
+                writes.append((str(key), None))
+            if key := record.get("reply_key"):
+                writes.append((str(key), None))
             await self.records.commit(writes)
         root = await self.records.root()
         deletions = number(root, "deletions") - 1

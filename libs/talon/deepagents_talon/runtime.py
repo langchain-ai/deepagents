@@ -569,6 +569,24 @@ class DeepAgentRuntime:
         """Whether this runtime uses the persistent conversation archive."""
         return isinstance(self.checkpointer, ConversationSaver)
 
+    async def record_delivered_reply(
+        self, conversation_id: str, channel: str, chat: str, text: str
+    ) -> None:
+        """Make a host-confirmed final reply eligible for semantic history search.
+
+        Args:
+            conversation_id: Agent thread producing the reply.
+            channel: Trusted provider identifier.
+            chat: Destination chat identifier.
+            text: Successfully delivered text.
+        """
+        if isinstance(self.checkpointer, ConversationSaver) and text:
+            await self.checkpointer.archive.record_delivery(
+                ArchiveScope(talon_history_channel=channel, talon_history_chat=chat),
+                conversation_id,
+                text,
+            )
+
     async def clear_history(self, channel: str, chat: str) -> None:
         """Erase all persisted sessions belonging to a channel and chat.
 
@@ -708,6 +726,10 @@ class DeepAgentRuntime:
             _request_model_content(request),
             request,
             activity,
+            source="internal"
+            if request.metadata.get("trigger") == "cron"
+            or request.metadata.get("background_delivery")
+            else "user",
         )
         text = _last_text(state)
         if text:
@@ -733,15 +755,26 @@ class DeepAgentRuntime:
         content: ModelContent,
         conversation_id: str,
         activity: AgentActivityCallback | None,
+        *,
+        source: str = "internal",
     ) -> object:
         return await self._invoke_payload_with_retries(
             {
                 "messages": [
                     *[
-                        {"role": "user", "id": task_id, "content": result}
+                        {
+                            "role": "user",
+                            "id": task_id,
+                            "content": result,
+                            "additional_kwargs": {"talon_history_source": "subagent"},
+                        }
                         for task_id, result in (self._pending_results.get() or {}).items()
                     ],
-                    {"role": "user", "content": content},
+                    {
+                        "role": "user",
+                        "content": content,
+                        "additional_kwargs": {"talon_history_source": source},
+                    },
                 ]
             },
             conversation_id,
@@ -809,8 +842,12 @@ class DeepAgentRuntime:
         content: ModelContent,
         request: AgentRequest,
         activity: AgentActivityCallback | None,
+        *,
+        source: str = "internal",
     ) -> object:
-        state = await self._invoke_with_retries(content, request.conversation_id, activity)
+        state = await self._invoke_with_retries(
+            content, request.conversation_id, activity, source=source
+        )
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)
             if not interrupts:

@@ -288,11 +288,18 @@ class TestReplayStableDispatchIds:
         # A dispatch with an unstable id must not advertise a parent batch.
         assert all("eval_id" not in event for event in rec.events)
 
-    async def test_payload_separators_cannot_collide(self) -> None:
+    @pytest.mark.parametrize("delimiter", ["\x1f", "|", ":", "-", ""])
+    async def test_field_boundaries_are_not_smearable(self, delimiter: str) -> None:
+        """A delimiter inside one field cannot forge the next field's boundary.
+
+        The derivation hashes a JSON array, so fields cannot bleed into each
+        other whatever they contain. This guards a rewrite to a joined string,
+        under which both dispatches below would hash identical bytes.
+        """
         rec = _Recorder()
         tool = _FakeTaskTool()
-        await self._dispatch(rec, tool, description="one\x1ftwo", label="three")
-        await self._dispatch(rec, tool, description="one", label="two\x1fthree")
+        await self._dispatch(rec, tool, description=f"one{delimiter}two", label="three")
+        await self._dispatch(rec, tool, description="one", label=f"two{delimiter}three")
         assert rec.events[0]["id"] != rec.events[2]["id"]
 
     async def test_changed_response_schema_gets_distinct_id(self) -> None:

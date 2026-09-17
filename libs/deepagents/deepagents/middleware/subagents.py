@@ -548,7 +548,6 @@ def create_sub_agent(
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
     if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
-        # Last, so it reads the model a custom middleware selected at runtime.
         middleware.append(UnsupportedContentMiddleware())
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")

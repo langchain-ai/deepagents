@@ -169,21 +169,31 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         session = str(config["configurable"]["thread_id"])
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], [])
+            parent_id = str(config["configurable"].get("checkpoint_id", ""))
+            acknowledged = await self.archive.checkpoint_acknowledged(session, parent_id)
             changed = "messages" in new_versions or "messages" not in checkpoint["channel_versions"]
-            messages = await self._messages(config, checkpoint) if changed else []
+            messages = (
+                await self._messages(config, checkpoint, acknowledged=acknowledged)
+                if changed or not acknowledged
+                else []
+            )
         result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], messages)
+            await self.archive.acknowledge_checkpoint(session, checkpoint["id"])
         return result
 
-    async def _messages(self, config: RunnableConfig, checkpoint: Checkpoint) -> list[BaseMessage]:
+    async def _messages(
+        self, config: RunnableConfig, checkpoint: Checkpoint, *, acknowledged: bool
+    ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
         previous: dict[str, BaseMessage] = {}
         if config["configurable"].get("checkpoint_id"):
             parent = await self.checkpointer.aget_tuple(config)
             if parent is not None:
-                snapshot = _messages(parent.checkpoint["channel_values"].get("messages", []))
-                previous = {message.id: message for message in snapshot if message.id}
+                if acknowledged:
+                    snapshot = _messages(parent.checkpoint["channel_values"].get("messages", []))
+                    previous = {message.id: message for message in snapshot if message.id}
                 for _, channel, value in parent.pending_writes or []:
                     if channel == "messages":
                         messages.extend(_messages(value))

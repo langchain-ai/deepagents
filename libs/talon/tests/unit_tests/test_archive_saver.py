@@ -284,3 +284,38 @@ async def test_snapshot_filter_preserves_edits_and_idless_occurrences() -> None:
     await saver.aput(config, checkpoint, {}, {"messages": "2"})
     entries = await archive.entries(SCOPE, session_id="session")
     assert [entry["text"] for entry in entries] == ["before", "after", "yes", "yes"]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("backend", [InMemorySaver, AsyncSqliteSaver])
+async def test_later_checkpoint_repairs_failed_parent_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend, *, changed: bool
+) -> None:
+    async with aiosqlite.connect(str(tmp_path / "checkpoints.sqlite")) as connection:
+        saver_backend = backend(connection) if backend is AsyncSqliteSaver else backend()
+        path = str(tmp_path / "archive.sqlite")
+        async with open_archive(path) as archive:
+            saver = ConversationSaver(saver_backend, archive=archive)
+
+            async def fail_message(*_args: object) -> None:
+                msg = "archive unavailable"
+                raise OSError(msg)
+
+            monkeypatch.setattr(archive, "_append_chunk", fail_message)
+            with pytest.raises(OSError, match="archive unavailable"):
+                await _save(saver)
+            parent = await saver.aget_tuple(_config())
+            assert parent is not None
+            assert await archive.entries(SCOPE) == []
+        async with open_archive(path) as archive:
+            saver = ConversationSaver(saver_backend, archive=archive)
+            config = {**parent.config, "metadata": SCOPE}
+            checkpoint = _checkpoint()
+            if changed:
+                checkpoint["channel_values"]["messages"].append(HumanMessage("later", id="later"))
+                checkpoint["channel_versions"]["messages"] = "2"
+            await saver.aput(config, checkpoint, {}, {"messages": "2"} if changed else {})
+            entries = await archive.entries(SCOPE, session_id="session")
+            assert [entry["text"] for entry in entries] == (
+                ["orchard", "later"] if changed else ["orchard"]
+            )

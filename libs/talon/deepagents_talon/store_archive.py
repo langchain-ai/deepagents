@@ -163,6 +163,35 @@ class StoreConversationArchive:
         lookup = await self.records.get("session:" + digest(session_id))
         return await self.records.get(str(number(lookup, "cursor"))) if lookup else None
 
+    async def checkpoint_acknowledged(self, session_id: str, checkpoint_id: str) -> bool:
+        """Check successful archive persistence, independently of checkpoint storage.
+
+        Args:
+            session_id: Trusted session identifier.
+            checkpoint_id: Parent checkpoint whose messages may be skipped.
+        """
+        async with self.records.access():
+            session = await self.session(session_id)
+            return bool(
+                checkpoint_id and session and session.get("archived_checkpoint") == checkpoint_id
+            )
+
+    async def acknowledge_checkpoint(self, session_id: str, checkpoint_id: str) -> None:
+        """Record completion only after all committed messages have been archived.
+
+        Args:
+            session_id: Trusted session identifier.
+            checkpoint_id: Successfully archived checkpoint.
+        """
+        async with self.records.access():
+            session = await self.session(session_id)
+            if session is None or session.get("deleting"):
+                msg = "Cannot acknowledge history for a missing or deleting session"
+                raise ValueError(msg)
+            await self.records.commit(
+                [(str(session["cursor"]), {**session, "archived_checkpoint": checkpoint_id})]
+            )
+
     async def _register(self, scope: ArchiveScope, session_id: str, timestamp: str) -> Record:
         session = await self.session(session_id)
         if session is not None:

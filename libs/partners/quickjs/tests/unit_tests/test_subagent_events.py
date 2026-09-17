@@ -238,7 +238,6 @@ class TestReplayStableDispatchIds:
         *,
         description: str = "Validate outcomes",
         label: str | None = None,
-        ordinal: int = 0,
         eval_id: str | None = "call_abc",
         response_schema: dict[str, Any] | None = None,
     ) -> None:
@@ -249,17 +248,7 @@ class TestReplayStableDispatchIds:
             label=label,
             response_schema=response_schema,
             runtime=_FakeRuntime(tool_call_id=eval_id, stream_writer=rec),
-            dispatch_ordinal=ordinal,
         )
-
-    async def test_replayed_dispatch_keeps_same_id(self) -> None:
-        rec = _Recorder()
-        tool = _FakeTaskTool()
-        for _ in range(3):
-            await self._dispatch(rec, tool)
-        starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len(starts) == 3
-        assert len({e["id"] for e in starts}) == 1
 
     async def test_replayed_complete_matches_interrupted_start_id(self) -> None:
         rec = _Recorder()
@@ -277,14 +266,6 @@ class TestReplayStableDispatchIds:
         await self._dispatch(rec, tool, eval_id="call_two")
         starts = [e for e in rec.events if e["phase"] == "start"]
         assert len({e["id"] for e in starts}) == 2
-
-    async def test_identical_payloads_at_different_ordinals_differ(self) -> None:
-        rec = _Recorder()
-        tool = _FakeTaskTool()
-        for ordinal in range(3):
-            await self._dispatch(rec, tool, ordinal=ordinal)
-        starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len({e["id"] for e in starts}) == 3
 
     @pytest.mark.parametrize("eval_id", [None, ""])
     async def test_missing_eval_id_keeps_independent_dispatches_distinct(

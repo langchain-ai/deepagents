@@ -188,6 +188,7 @@ class FakeMCPServer:
         from fastmcp import FastMCP
 
         self.name = name
+        self.calls: list[str] = []
         self.server: Any = FastMCP(name)
         for tool_name, description in tools:
             self.add_tool(tool_name, description)
@@ -203,6 +204,7 @@ class FakeMCPServer:
         name = self.name
 
         def _echo() -> str:
+            self.calls.append(tool_name)
             return f"{name}:{tool_name}"
 
         _echo.__doc__ = description or f"{tool_name} tool"
@@ -762,27 +764,107 @@ class TestGetMCPTools:
         assert metadata["_deepagents_code_mcp_server"] == server_name
         assert metadata["_deepagents_code_mcp_tool"] == original_name
 
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize(
+        "tool_filter", [{"disabledTools": ["b_read"]}, {"allowedTools": ["other"]}]
+    )
     async def test_ambiguous_mount_name_keeps_real_owner_filter(
         self,
         mcp_servers: MCPServerRegistry,
+        reverse: bool,
+        tool_filter: dict[str, list[str]],
     ) -> None:
-        """A mounted name cannot move a disabled tool to another server."""
-        mcp_servers.register("a", "b_read")
-        mcp_servers.register("a_b")
-
-        tools, manager, infos = await _load_tools_from_config(
-            {
-                "mcpServers": {
-                    "a": {"command": "node", "disabledTools": ["b_read"]},
-                    "a_b": {"command": "node"},
-                }
-            }
-        )
-
-        assert tools == []
-        assert [info.name for info in infos] == ["a", "a_b"]
+        """Calling an allowed wrapper never dispatches to a filtered backend tool."""
+        blocked = mcp_servers.register("a", "b_read", "other")
+        allowed = mcp_servers.register("a_b", "read")
+        servers = {
+            "a": {"command": "node", **tool_filter},
+            "a_b": {"command": "node"},
+        }
+        if reverse:
+            servers = dict(reversed(servers.items()))
+        tools, manager, infos = await _load_tools_from_config({"mcpServers": servers})
         assert manager is not None
-        await manager.cleanup()
+        try:
+            assert [info.name for info in infos] == list(servers)
+            assert all(info.status == "ok" for info in infos)
+            assert len(tools) == 2
+            surviving = next(
+                tool
+                for tool in tools
+                if (tool.metadata or {}).get("_deepagents_code_mcp_server") == "a_b"
+            )
+            assert (surviving.metadata or {})["_deepagents_code_mcp_tool"] == "read"
+            await surviving.ainvoke({})
+            assert allowed.calls == ["read"]
+            assert blocked.calls == []
+        finally:
+            await manager.cleanup()
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    async def test_colliding_tools_have_distinct_names_and_routes(
+        self, mcp_servers: MCPServerRegistry, reverse: bool
+    ) -> None:
+        """Every exported name invokes its exact owner, including suffix collisions."""
+        first = mcp_servers.register("a", "b_read")
+        second = mcp_servers.register("a_b", "read", "read_1")
+        servers = {name: {"command": "node"} for name in ("a", "a_b")}
+        if reverse:
+            servers = dict(reversed(servers.items()))
+        tools, manager, infos = await _load_tools_from_config({"mcpServers": servers})
+        assert manager is not None
+        try:
+            assert len({tool.name for tool in tools}) == 3
+            assert {tool.name for info in infos for tool in info.tools} == {
+                tool.name for tool in tools
+            }
+            for tool in tools:
+                assert len(tool.name) <= _MCP_TOOL_NAME_MAX_LENGTH
+                metadata = tool.metadata or {}
+                owner = metadata["_deepagents_code_mcp_server"]
+                original = metadata["_deepagents_code_mcp_tool"]
+                first.calls.clear()
+                second.calls.clear()
+                await tool.ainvoke({})
+                assert first.calls == ([original] if owner == "a" else [])
+                assert second.calls == ([original] if owner == "a_b" else [])
+        finally:
+            await manager.cleanup()
+
+    @pytest.mark.parametrize("filter_field", ["allowedTools", "disabledTools"])
+    async def test_colliding_tool_exported_name_remains_filterable(
+        self, mcp_servers: MCPServerRegistry, filter_field: str
+    ) -> None:
+        """A saved exported name still selects the same tool after reloading."""
+        mcp_servers.register("a", "b_read")
+        mcp_servers.register("a_b", "read", "read_1")
+        config: dict[str, dict[str, dict[str, str | list[str]]]] = {
+            "mcpServers": {name: {"command": "node"} for name in ("a", "a_b")}
+        }
+        tools, manager, _ = await _load_tools_from_config(config)
+        assert manager is not None
+        try:
+            exported_name = next(
+                tool.name
+                for tool in tools
+                if (tool.metadata or {}).get("_deepagents_code_mcp_tool") == "read"
+            )
+        finally:
+            await manager.cleanup()
+        config["mcpServers"]["a_b"][filter_field] = [exported_name]
+        tools, manager, _ = await _load_tools_from_config(config)
+        assert manager is not None
+        try:
+            originals = {
+                (tool.metadata or {})["_deepagents_code_mcp_tool"]
+                for tool in tools
+                if (tool.metadata or {}).get("_deepagents_code_mcp_server") == "a_b"
+            }
+            assert originals == (
+                {"read"} if filter_field == "allowedTools" else {"read_1"}
+            )
+        finally:
+            await manager.cleanup()
 
     async def test_call_normalizes_optional_empty_string(
         self,

@@ -28,6 +28,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+from itertools import starmap
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -1482,13 +1483,12 @@ async def _build_mcp_tool(
     server_name: str,
     client: FastMCPClient[Any],
 ) -> BaseTool:
-    """Adapt one mounted MCP tool, then badge it as this app's.
+    """Adapt one backend MCP tool, then badge it as this app's.
 
     `langchain.mcp.as_langchain_tool` owns everything protocol-facing: schema
     conversion, calling through `client`, and turning an MCP `isError` result
     into a failed `ToolMessage` carrying the server's own content. The tool
-    arrives namespaced by its mount; that name is recomposed here so it stays
-    within the strictest provider limit.
+    keeps its original name; only the adapter receives its internal route.
 
     Args:
         mcp_tool: MCP tool metadata, as returned by `Client.list_tools`.
@@ -1503,7 +1503,10 @@ async def _build_mcp_tool(
     """
     from langchain.mcp import as_langchain_tool
 
-    tool = await as_langchain_tool(mcp_tool, client)
+    routed_tool = mcp_tool.model_copy(
+        update={"name": f"{server_name.encode().hex()}_{mcp_tool.name}"}
+    )
+    tool = await as_langchain_tool(routed_tool, client)
     from langchain_core.tools import StructuredTool
 
     if not isinstance(tool, StructuredTool):
@@ -1520,12 +1523,7 @@ async def _build_mcp_tool(
 
         tool.coroutine = normalized_call
 
-    # Mounting already namespaced the tool as `server_tool`, but that name still
-    # has to satisfy the strictest provider limit, so it is recomposed through
-    # the same capping `main` applies. The bare name is recovered from the mount
-    # prefix and kept in metadata: it is what tool filters and the `/mcp` viewer
-    # show, and it is unrecoverable once the name is truncated and hashed.
-    original_tool_name = _unprefixed_tool_name(mcp_tool.name, server_name)
+    original_tool_name = mcp_tool.name
     tool.name = _mcp_tool_name(server_name, original_tool_name)
     annotations = (
         mcp_tool.annotations.model_dump(by_alias=True, exclude_none=True)
@@ -1542,25 +1540,31 @@ async def _build_mcp_tool(
     return tool
 
 
-def _unprefixed_tool_name(mounted_name: str, server_name: str) -> str:
-    """Recover the server-side tool name from its mounted form.
-
-    Mounting yields `f"{server_name}_{tool}"`. The prefix is stripped back off
-    so the name recorded in metadata -- and matched by tool filters -- is the
-    one the server actually published, which is otherwise unrecoverable once
-    the composed name has been truncated and hashed.
+def _unique_mcp_tool_names(
+    identities: Sequence[tuple[str, str]],
+) -> dict[tuple[str, str], str]:
+    """Allocate provider-safe names independently of configuration order.
 
     Args:
-        mounted_name: Tool name as returned by the router's `list_tools`.
-        server_name: Server the tool was mounted under.
+        identities: Original server and tool name pairs.
 
     Returns:
-        The bare tool name, or `mounted_name` unchanged if it is not prefixed.
+        Unique exported names keyed by their original identities.
     """
-    prefix = f"{server_name}_"
-    if mounted_name.startswith(prefix):
-        return mounted_name[len(prefix) :]
-    return mounted_name
+    names: dict[tuple[str, str], str] = {}
+    reserved = set(starmap(_mcp_tool_name, identities))
+    used: set[str] = set()
+    for identity in sorted(identities):
+        base = _mcp_tool_name(*identity)
+        name = base
+        index = 1
+        while name in used or (name != base and name in reserved):
+            suffix = f"_{index}"
+            name = base[: _MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+            index += 1
+        names[identity] = name
+        used.add(name)
+    return names
 
 
 def _mcp_tool_name(server_name: str, tool_name: str) -> str:
@@ -1884,11 +1888,12 @@ async def _mount_backends(
                 stack.push_async_callback(transport.close)
                 stack.push_async_callback(backend._disconnect, force=True)
                 tools = await backend.list_tools()
-                discovered[server_name] = [
-                    tool.model_copy(update={"name": f"{server_name}_{tool.name}"})
-                    for tool in tools
-                ]
-                router.mount(create_proxy(backend), namespace=server_name)
+                discovered[server_name] = tools
+                # Hex is injective and has no underscores, so namespaces cannot
+                # overlap even when a server or tool name contains underscores.
+                router.mount(
+                    create_proxy(backend), namespace=server_name.encode().hex()
+                )
             except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
                 raise
             except Exception as exc:  # noqa: BLE001 - one server must not sink the rest
@@ -2202,6 +2207,9 @@ async def _load_tools_from_config(
     )
     runtime_manager.adopt(client, stack)
     skipped.update(mount_failures)
+    tool_names = _unique_mcp_tool_names(
+        [(server, tool.name) for server, tools in by_server.items() for tool in tools]
+    )
 
     async def _build_server(
         server_name: str,
@@ -2230,15 +2238,16 @@ async def _load_tools_from_config(
                     for mcp_tool in by_server[server_name]
                 )
             )
+            for tool in server_tools:
+                original_name = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
+                tool.name = tool_names[server_name, original_name]
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
             # Pair each schema by the server-side name retained in the adapted
             # tool's metadata. The provider-safe LangChain name may be sanitized
             # or capped, so it cannot key this lookup reliably.
             schemas = {
-                _unprefixed_tool_name(mcp_tool.name, server_name): copy.deepcopy(
-                    mcp_tool.input_schema
-                )
+                mcp_tool.name: copy.deepcopy(mcp_tool.input_schema)
                 for mcp_tool in by_server[server_name]
             }
 

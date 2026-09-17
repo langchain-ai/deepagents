@@ -53,12 +53,11 @@ defaults, operator authorization, and next-invocation activation, and
 [MCP configuration guidance](../../libs/talon/README.md#mcp-tools) for credential
 restrictions. Out-of-workspace placement is not a same-UID shell isolation boundary.
 
-## Optional Persistent Browser Foundation
+## Optional local browser
 
-See [the browser deployment guide](browser/README.md) for the opt-in Linux Docker
-sidecar, profile persistence, isolated bridge listeners, and filtered egress.
-This is synthetic-only deployment scaffolding; browser tools, remote viewing, and
-human handoff are not yet available. The normal channel-only deployment is unchanged.
+Follow [native Steel setup](../../libs/talon/README.md#local-steel-browser) once,
+then the existing Talon launch command also starts the configured browser.
+Steel runs locally with one persistent profile per assistant workspace.
 
 ## Local Run Without Docker
 

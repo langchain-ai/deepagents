@@ -16997,6 +16997,37 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["second"]
 
+    async def test_repeated_footer_effort_click_queues_once(self) -> None:
+        """Repeated effort clicks during a turn keep one queued picker request."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            await app.action_open_effort_selector()
+            await app.action_open_effort_selector()
+
+            assert [message.text for message in app._pending_messages] == ["/effort"]
+
+    async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
+        """Clicking the model label again does not stack another selector."""
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+            assert isinstance(app.screen, ModelSelectorScreen)
+            stack_size = len(app.screen_stack)
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+
+            assert len(app.screen_stack) == stack_size
+            assert isinstance(app.screen, ModelSelectorScreen)
+
     async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
         """Bare `/auto` and `/auto model` bypass; the mutating forms must not.
 
@@ -25780,6 +25811,72 @@ class TestWelcomeBannerLiveUpdates:
                 mock_runtime_state.model_name = "gpt-5.5"
                 app._sync_status_model()
         assert "Welcome banner not found during model sync" in caplog.text
+
+
+class TestHookStatusReveal:
+    """Hook progress appears only after continuous activity."""
+
+    async def test_fast_hook_status_never_reaches_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Running hook")
+            app._update_hook_status("")
+            await pilot.pause(0.05)
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is False
+
+    async def test_slow_hook_status_appears_after_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            status = app.query_one("#status-message", Static)
+            app._update_hook_status("Checking output")
+            assert status.display is False
+
+            await pilot.pause(0.05)
+
+            assert status.display is True
+            assert str(status.render()) == "Checking output"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is True
+
+    async def test_clearing_revealed_hook_status_restores_agent_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Checking output")
+            await pilot.pause(0.05)
+            assert str(status.render()) == "Checking output"
+
+            app._update_hook_status("")
+            await pilot.pause()
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_visible is False
 
 
 class TestStatusBarConnectionMirroring:

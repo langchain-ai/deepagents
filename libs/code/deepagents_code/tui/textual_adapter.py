@@ -4226,7 +4226,7 @@ async def _handle_interrupt_cleanup(
         )
 
     # Proactively cancel server-side runs before persisting recovery state, so
-    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # the aupdate_state write below doesn't 409 against a still-busy thread. This
     # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
     # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
     # Absent on local agents, so this is a no-op for them.
@@ -4263,7 +4263,7 @@ async def _handle_interrupt_cleanup(
     # (mirroring the HITL-reject branches). The turn does not resume from here,
     # so the returned ids need not be tracked for dedup.
     #
-    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # Dispatched *before* the `aupdate_state` write below (not alongside the
     # `set_rejected` loop after them): those writes await a possibly-slow remote
     # checkpointer, and on an interactive quit the graceful-exit drain in
     # `app.py` snapshots the in-flight hook tasks right after cancelling this
@@ -4292,21 +4292,21 @@ async def _handle_interrupt_cleanup(
 
     try:
         # tracing_context(enabled=False) suppresses only the UpdateState traced
-        # run that each aupdate_state call would otherwise emit in LangSmith — it
-        # does not affect any other tracing in the surrounding turn. These writes
-        # are internal interrupt-recovery mechanics (partial AI message +
-        # cancellation notice), not user-driven agent activity; surfacing them as
-        # standalone peer runs alongside real agent turns clutters the trace view.
+        # run that aupdate_state would otherwise emit in LangSmith — it does not
+        # affect any other tracing in the surrounding turn. This write is internal
+        # interrupt-recovery mechanics (partial AI message + cancellation notice),
+        # not user-driven agent activity; surfacing it as a standalone peer run
+        # alongside real agent turns clutters the trace view.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                if interrupted_msg:
-                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
-
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                     "Previous operation was cancelled."
                 )
-                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                messages = [cancellation_msg]
+                if interrupted_msg:
+                    messages.insert(0, interrupted_msg)
+                cancellation_values: dict[str, Any] = {"messages": messages}
                 # Piggy-back the latest token count on this already-required
                 # write instead of issuing a separate `aupdate_state`.
                 # `after_model` never ran on the partial turn, so without this

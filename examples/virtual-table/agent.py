@@ -10,7 +10,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from langgraph.graph.state import CompiledStateGraph
 
-from virtual_table import VirtualTableMiddleware
+from virtual_table import DeepAgentOperator, VirtualTableMiddleware
 
 FEEDBACK = [
     {"file": "/feedback/acme.txt", "customer": "Acme", "plan": "enterprise"},
@@ -37,7 +37,7 @@ def create_agent(model: str) -> CompiledStateGraph:
     return create_deep_agent(
         model=model,
         backend=backend,
-        middleware=[VirtualTableMiddleware(backend=backend)],
+        middleware=[VirtualTableMiddleware(operator=DeepAgentOperator(model=model, backend=backend))],
     )
 
 
@@ -52,8 +52,8 @@ async def main() -> None:
     files = {path: {"content": content, "encoding": "utf-8"} for path, content in FILES.items()}
     result = await agent.ainvoke({"messages": [{"role": "user", "content": args.question}], "files": files, "virtual_tables": {"feedback": FEEDBACK}})
     print(result["messages"][-1].text)
-    print("\nMaterialized feedback table:")
-    print(json.dumps(result["virtual_tables"]["feedback"], indent=2))
+    print("\nMaterialized tables:")
+    print(json.dumps(result["virtual_tables"], indent=2))
 
 
 if __name__ == "__main__":

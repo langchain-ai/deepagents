@@ -16,7 +16,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.types import Command
 
-from virtual_table import VirtualTableMiddleware, _worker
+from virtual_table import DeepAgentOperator, VirtualTableMiddleware, _worker
 
 
 def _backend(files: dict[str, bytes] | None = None) -> Any:
@@ -40,12 +40,16 @@ def _runtime(state: dict[str, Any], *, tools: list | None = None) -> ToolRuntime
     )
 
 
+def _middleware(*, operator: Any | None = None) -> VirtualTableMiddleware:
+    return VirtualTableMiddleware(operator=operator or AsyncMock())
+
+
 def _tool(middleware: VirtualTableMiddleware, name: str):
     return next(tool for tool in middleware.tools if tool.name == name)
 
 
 def test_create_and_query() -> None:
-    middleware = VirtualTableMiddleware(backend=_backend())
+    middleware = _middleware()
     runtime = _runtime({"messages": []})
     create = _tool(middleware, "virtual_table_create")
 
@@ -77,7 +81,7 @@ def test_create_and_query() -> None:
 
 
 def test_query_rejects_writes_and_unapproved_functions() -> None:
-    middleware = VirtualTableMiddleware(backend=_backend())
+    middleware = _middleware()
     state = middleware.before_agent({"messages": [], "virtual_tables": {"docs": [{"file": "/docs/hello.txt"}]}}, None)
     query = _tool(middleware, "virtual_table_query")
 
@@ -87,68 +91,80 @@ def test_query_rejects_writes_and_unapproved_functions() -> None:
         query.invoke({"name": "docs", "sql": "SELECT random() FROM docs", "parameters": [], "runtime": _runtime(state)})
 
 
-async def test_enrich_defines_a_temporary_row_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enrich_materializes_filtered_derived_table(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
     class Worker:
         async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
             assert payload["files"] == {"/shared/context.txt": {"content": "context", "encoding": "utf-8"}}
             message = payload["messages"][0]
-            assert "<row_data>" in message.content
             row = json.loads(message.content.split("<row_data>\n", 1)[1].split("\n</row_data>", 1)[0])
             calls.append({"row": row, "config": config})
-            assert "file_content" not in row
             return {"structured_response": {"sentiment": "positive", "length": len(row["file"])}}
 
-    def worker(model: Any, prompt: str, schema: dict[str, Any], backend: Any) -> Worker:
-        assert isinstance(model, FakeListChatModel)
-        assert prompt == "Classify sentiment."
-        assert schema["required"] == ["sentiment", "length"]
-        return Worker()
-
-    monkeypatch.setattr("virtual_table._worker", worker)
-    backend = _backend({"/docs/great.txt": b"great", "/docs/good.txt": b"good"})
-    middleware = VirtualTableMiddleware(backend=backend)
-    middleware._model = FakeListChatModel(responses=["unused"])
+    monkeypatch.setattr("virtual_table._worker", lambda *_: Worker())
+    backend = _backend()
+    operator = DeepAgentOperator(model=FakeListChatModel(responses=["unused"]), backend=backend, concurrency=2)
+    middleware = _middleware(operator=operator)
     state = {
         "messages": [],
         "files": {"/shared/context.txt": {"content": "context", "encoding": "utf-8"}},
         **middleware.before_agent(
-            {"messages": [], "virtual_tables": {"docs": [{"file": "/docs/great.txt", "team": "a"}, {"file": "/docs/good.txt", "team": "b"}]}},
+            {
+                "messages": [],
+                "virtual_tables": {
+                    "docs": [
+                        {"file": "/docs/great.txt", "team": "a", "score": 2},
+                        {"file": "/docs/good.txt", "team": "b", "score": 1},
+                    ]
+                },
+            },
             None,
         ),
     }
     enrich = _tool(middleware, "virtual_table_enrich")
 
-    assert enrich._injected_args_keys == frozenset({"runtime"})
-    assert "runtime" not in enrich.get_input_schema().model_json_schema()["properties"]
-    assert enrich.coroutine is not None
     result = await enrich.coroutine(
-        name="docs",
-        enrichment_name="classification",
-        worker_prompt="Classify sentiment.",
+        source_table="docs",
+        output_table="classified_docs",
+        instructions="Classify sentiment.",
         output_schema={
             "type": "object",
             "properties": {"sentiment": {"type": "string"}, "length": {"type": "integer"}},
             "required": ["sentiment", "length"],
         },
-        worker_model=None,
         input_columns=["file", "team"],
-        row_ids=None,
-        concurrency=2,
-        overwrite=False,
+        where="score > ?",
+        parameters=[1],
         runtime=_runtime(state),
     )
 
     assert isinstance(result, Command)
-    rows = result.update["virtual_tables"]["docs"]
-    assert rows[0]["sentiment"] == "positive"
-    assert rows[0]["length"] == len("/docs/great.txt")
-    assert rows[0]["classification_status"] == "succeeded"
-    assert rows[1]["classification_status"] == "succeeded"
-    assert {call["row"]["file"] for call in calls} == {"/docs/great.txt", "/docs/good.txt"}
-    assert {call["row"]["team"] for call in calls} == {"a", "b"}
-    backend.adownload_files.assert_not_awaited()
+    assert result.update["virtual_tables"]["docs"] == state["virtual_tables"]["docs"]
+    rows = result.update["virtual_tables"]["classified_docs"]
+    assert rows == [
+        {
+            "_row_id": 1,
+            "file": "/docs/great.txt",
+            "team": "a",
+            "sentiment": "positive",
+            "length": len("/docs/great.txt"),
+            "_enrichment_status": "succeeded",
+            "_enrichment_error": None,
+        }
+    ]
+    payload = json.loads(result.update["messages"][0].content)
+    assert payload["table"] == "classified_docs"
+    assert set(payload["schema"]) == {
+        "_row_id",
+        "file",
+        "team",
+        "sentiment",
+        "length",
+        "_enrichment_status",
+        "_enrichment_error",
+    }
+    assert calls[0]["row"] == {"_row_id": 1, "file": "/docs/great.txt", "team": "a"}
 
 
 def test_worker_is_a_normal_deep_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,31 +190,27 @@ def test_worker_is_a_normal_deep_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_create_requires_a_file_reference() -> None:
-    middleware = VirtualTableMiddleware(backend=_backend())
+    middleware = _middleware()
     create = _tool(middleware, "virtual_table_create")
 
     with pytest.raises(ValueError, match="must have a non-empty string `file`"):
         create.invoke({"name": "docs", "rows": [{"title": "missing"}], "runtime": _runtime({"messages": []})})
 
 
-async def test_worker_failure_is_materialized_as_a_row_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    worker = SimpleNamespace(ainvoke=AsyncMock(side_effect=OSError("file_not_found")))
-    monkeypatch.setattr("virtual_table._worker", lambda *_: worker)
-    middleware = VirtualTableMiddleware(backend=_backend())
-    middleware._model = FakeListChatModel(responses=["unused"])
+async def test_operator_failure_is_materialized_as_a_row_error() -> None:
+    operator = AsyncMock()
+    operator.enrich.return_value = [{"values": {}, "error": "file_not_found"}]
+    middleware = _middleware(operator=operator)
     enrich = _tool(middleware, "virtual_table_enrich")
 
-    assert enrich.coroutine is not None
     result = await enrich.coroutine(
-        name="docs",
-        enrichment_name="classification",
-        worker_prompt="Classify sentiment.",
+        source_table="docs",
+        output_table="classified_docs",
+        instructions="Classify sentiment.",
         output_schema={"type": "object", "properties": {"sentiment": {"type": "string"}}, "required": ["sentiment"]},
-        worker_model=None,
         input_columns=["file", "team"],
-        row_ids=None,
-        concurrency=1,
-        overwrite=False,
+        where=None,
+        parameters=[],
         runtime=_runtime(
             middleware.before_agent(
                 {"messages": [], "virtual_tables": {"docs": [{"file": "/docs/missing.txt", "team": "a"}]}},
@@ -207,13 +219,14 @@ async def test_worker_failure_is_materialized_as_a_row_error(monkeypatch: pytest
         ),
     )
 
-    row = result.update["virtual_tables"]["docs"][0]
-    assert row["classification_status"] == "error"
-    assert "file_not_found" in row["classification_error"]
+    row = result.update["virtual_tables"]["classified_docs"][0]
+    assert row["sentiment"] is None
+    assert row["_enrichment_status"] == "error"
+    assert row["_enrichment_error"] == "file_not_found"
 
 
 def test_middleware_adds_table_instructions() -> None:
-    middleware = VirtualTableMiddleware(backend=_backend())
+    middleware = _middleware()
     model = FakeListChatModel(responses=["unused"])
     request = ModelRequest(model=model, messages=[], system_message=SystemMessage("Host instructions."))
 
@@ -226,18 +239,17 @@ def test_middleware_adds_table_instructions() -> None:
         assert "virtual_tables` already exist" in updated.system_message.text
         assert "virtual_table_create" in updated.system_message.text
         assert "SELECT * FROM <table> LIMIT 3" in updated.system_message.text
-        assert "Define the\n  row worker" in updated.system_message.text
+        assert "Select a\n  source table" in updated.system_message.text
         return ModelResponse(result=[AIMessage("done")])
 
     response = middleware.wrap_model_call(request, handler)
 
     assert response.result[0].text == "done"
-    assert middleware._model is model
     assert {tool.name for tool in middleware.tools} == {"virtual_table_create", "virtual_table_query", "virtual_table_enrich"}
 
 
 def test_tables_are_supplied_and_normalized_in_invocation_state() -> None:
-    middleware = VirtualTableMiddleware(backend=_backend())
+    middleware = _middleware()
     agent = create_agent(FakeListChatModel(responses=["done"]), middleware=[middleware])
     input_schema = agent.get_input_schema().model_json_schema()
     assert "virtual_tables" in input_schema["$defs"]["InputSchema"]["properties"]

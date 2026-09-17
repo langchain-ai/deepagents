@@ -21,6 +21,7 @@ from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
+from deepagents_talon import commands as chat_commands
 from deepagents_talon.authorization import (
     AuthorizationBinding,
     AuthorizationCompleted,
@@ -30,7 +31,12 @@ from deepagents_talon.authorization import (
     CallbackURLRequested,
     DeviceCode,
 )
-from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
+from deepagents_talon.channels.base import (
+    ChannelExposure,
+    ExposureMode,
+    outbound_media_root_from_env,
+    send_with_retry,
+)
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -44,7 +50,9 @@ from deepagents_talon.interfaces import (
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
+    ProgressMessageHandler,
     ReactionChannelAdapter,
+    SendResult,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -70,24 +78,12 @@ SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 logger = logging.getLogger(__name__)
 
-_STOP_COMMAND = "/stop"
-_NEW_COMMAND = "/new"
-_MCP_RELOAD_COMMAND = "/mcp-reload"
-_HELP_COMMAND = "/help"
-_HELP_MESSAGE = (
-    "Talon is your personal agent in chat. Send a message to ask for help or get work done; "
-    "ask for reminders or recurring tasks to schedule them. "
-    "Each conversation keeps its context.\n\n"
-    "/help — Show this guide.\n"
-    "/new — Stop current work and start a fresh conversation.\n"
-    "/stop — Stop current work.\n"
-    "/mcp-reload — Reload MCP configuration after manual edits.\n\n"
-    "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
-    "then approve the change when prompted. Updated tools are available next turn.\n"
-    "OAuth: Ask to authenticate a configured MCP server. Open the sign-in link, "
-    "follow the prompts, and paste the full callback URL into the same chat when asked. "
-    "Send /stop to cancel."
-)
+_STOP_COMMAND = chat_commands.STOP
+_NEW_COMMAND = chat_commands.NEW
+_MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
+_HELP_COMMAND = chat_commands.HELP
+_RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
+_HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _HISTORY_RESET_FAILURE_MESSAGE = (
     "Could not finish clearing history. Some of it may already be deleted. "
@@ -484,7 +480,7 @@ class TalonHost:
     ) -> bool:
         """Dispatch commands while the caller holds the conversation lock."""
         command = _command_name(message.text)
-        if command == "/reset-all-history":
+        if command == _RESET_ALL_HISTORY_COMMAND:
             await self._reset_all_history(
                 channel,
                 message.conversation_id,
@@ -635,6 +631,7 @@ class TalonHost:
                     await self._replace_agent_turn(
                         replace(
                             route,
+                            metadata={**route.metadata, "background_delivery": True},
                             message=ChannelMessage(
                                 route.message.conversation_id,
                                 _follow_up_prompt(route),
@@ -681,6 +678,7 @@ class TalonHost:
             **route.metadata,
         }
         scheduled = metadata.get("trigger") == "cron"
+        unattended = scheduled or bool(route.metadata.get("background_delivery"))
         if (
             isinstance(self.agent, ConversationHistoryRuntime)
             and self.agent.history_enabled
@@ -697,10 +695,40 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
+        exposure = getattr(getattr(channel, "config", None), "exposure", None)
+        operator = bool(
+            not unattended
+            and isinstance(exposure, ChannelExposure)
+            and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
+            and route.message.sender_id
+            and (
+                route.message.sender_id in exposure.operator_ids
+                or (
+                    exposure.mode == ExposureMode.SELF
+                    and route.message.metadata.get("from_self") is True
+                )
+            )
+        )
+
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
+        active = True
+
+        async def send_progress(text: str) -> SendResult:
+            if (
+                not active
+                or self._generations[agent_conversation_id] != turn.generation
+                or self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
+                or agent_conversation_id in self._terminal_authorizations
+            ):
+                return SendResult(success=False)
+            return await channel.send_message(message.conversation_id, text)
+
+        async def message_handler(text: str) -> SendResult:
+            return await send_with_retry(lambda: send_progress(text))
+
         try:
             result = await self._invoke_agent(
                 conversation_id=agent_conversation_id,
@@ -711,7 +739,7 @@ class TalonHost:
                 # the absent sender rather than reaching anyone, so both are withheld
                 # exactly as `run_scheduled_job` withholds them.
                 approval_handler=None
-                if scheduled
+                if unattended
                 else (
                     lambda approval: self._request_tool_approval(
                         channel,
@@ -722,7 +750,7 @@ class TalonHost:
                     )
                 ),
                 authorization_handler=None
-                if scheduled
+                if unattended
                 else (
                     lambda event: self._handle_authorization_event(
                         channel,
@@ -733,6 +761,8 @@ class TalonHost:
                         sender_id=message.sender_id,
                     )
                 ),
+                tool_approval_operator=operator,
+                message_handler=message_handler,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
             if scheduled and is_silent(result.text):
@@ -746,6 +776,7 @@ class TalonHost:
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
             result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
+            active = False
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
@@ -941,7 +972,7 @@ class TalonHost:
         """
         await send_with_retry(lambda: channel.send_message(job.origin.conversation_id, text))
 
-    async def _invoke_agent(
+    async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
         *,
         conversation_id: str,
@@ -950,7 +981,15 @@ class TalonHost:
         approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
         | None = None,
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
+        tool_approval_operator: bool = False,
+        message_handler: ProgressMessageHandler | None = None,
     ) -> AgentResult:
+        metadata = {
+            **metadata,
+            "tool_approval_operator": tool_approval_operator is True
+            and metadata.get("trigger") != "cron"
+            and not metadata.get("background_delivery"),
+        }
         try:
             with langsmith_trace_context(
                 self.config.env,
@@ -965,6 +1004,7 @@ class TalonHost:
                         metadata=metadata,
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
+                        message_handler=message_handler,
                     ),
                 )
         except asyncio.CancelledError:

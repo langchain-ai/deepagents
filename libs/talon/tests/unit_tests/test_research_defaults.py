@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 
 from deepagents_talon.config import TalonConfig, _install_defaults
 from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.tool_approvals import ToolApprovalStore
 from tests.unit_tests.test_research_subagents import ToolModel, _call, _inventory, _runtime
 
 _FIXTURES = json.loads(
@@ -245,13 +246,16 @@ async def test_main_injection_cannot_fabricate_approval(tmp_path, monkeypatch, f
             AIMessage(content="Friday. The action was not approved."),
         ]
     )
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    snapshot = store.ensure()
+    store.update({"send_email": True}, snapshot.revision)
     runtime = _runtime(
         tmp_path,
         monkeypatch,
         parent,
         parent,
         tools=[send_email],
-        interrupt_on={"send_email": True},
+        approval_store=store,
         include_web_tools=True,
     )
     if fixture["surface"] == "returned-evidence":

@@ -237,7 +237,7 @@ chatty server is capped by dropping the old log rather than rotating it.
 """
 
 
-def _server_stderr_log(server_name: str) -> Path | TextIO:
+def _server_stderr_log(server_name: str) -> TextIO:
     """Return the sink FastMCP writes this server's stderr to.
 
     FastMCP's stdio transport sends server stderr to `sys.stderr` when given no
@@ -249,12 +249,12 @@ def _server_stderr_log(server_name: str) -> Path | TextIO:
         server_name: MCP server name, already validated as path-safe.
 
     Returns:
-        The log path, or an open handle on the null device.
+        An owned open log handle, falling back to the null device.
 
     Raises:
         MCPConfigError: If `server_name` is not path-safe.
     """
-    if not _SERVER_NAME_RE.match(server_name):
+    if not _SERVER_NAME_RE.fullmatch(server_name):
         # Unreachable via `_validate_server_config`; guards the file name here
         # too, since a server name that escaped validation would otherwise
         # choose the path this writes to.
@@ -266,6 +266,7 @@ def _server_stderr_log(server_name: str) -> Path | TextIO:
         path = log_dir / f"{server_name}.log"
         if path.is_file() and path.stat().st_size > _MCP_STDERR_LOG_LIMIT:
             path.unlink()
+        return path.open("a", encoding="utf-8")
     except OSError:
         logger.warning(
             "MCP server %r: stderr log unavailable; discarding server stderr",
@@ -273,7 +274,6 @@ def _server_stderr_log(server_name: str) -> Path | TextIO:
             exc_info=True,
         )
         return cast("TextIO", Path(os.devnull).open("a", encoding="utf-8"))
-    return path
 
 
 def _server_log_handler(server_name: str) -> Callable[[Any], Awaitable[None]]:
@@ -324,7 +324,8 @@ class MCPSessionManager:
     def __init__(self) -> None:
         """Initialize an empty manager."""
         self._client: FastMCPClient[Any] | None = None
-        self._stack: AsyncExitStack | None = None
+        self._loads: list[tuple[FastMCPClient[Any], AsyncExitStack]] = []
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._closed = False
 
     @property
@@ -336,8 +337,8 @@ class MCPSessionManager:
         """Take ownership of a router client and its backend connections.
 
         A previously adopted pair is *not* closed here — closing it would tear
-        down sessions that tools from an earlier load still hold. Callers
-        reloading MCP config call `cleanup` first.
+        down sessions that tools from an earlier load still hold. All adopted
+        loads remain owned until `cleanup`.
 
         Args:
             client: Client in front of the mounted router.
@@ -350,7 +351,7 @@ class MCPSessionManager:
             msg = "Cannot configure a closed MCP session manager"
             raise RuntimeError(msg)
         self._client = client
-        self._stack = stack
+        self._loads.append((client, stack))
 
     async def cleanup(self) -> None:
         """Close the router client and every backend, rejecting later adoption.
@@ -358,25 +359,54 @@ class MCPSessionManager:
         Teardown is bounded at 5 seconds so one unresponsive stdio server cannot
         stall shutdown, and failures are logged rather than raised — but
         `CancelledError` propagates so an enclosing gather still cancels peers.
-        """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+        """
         self._closed = True
-        client, stack = self._client, self._stack
-        self._client = self._stack = None
+        if self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(self._close_loads())
+        await _finish_cleanup(self._cleanup_task)
 
-        for label, close in (
-            ("router client", getattr(client, "close", None)),
-            ("MCP backends", getattr(stack, "aclose", None)),
-        ):
-            if close is None:
-                continue
+    async def _close_loads(self) -> None:
+        """Retain each load until both teardown steps have been handled."""
+        while self._loads:
+            client, stack = self._loads[-1]
             try:
-                await asyncio.wait_for(close(), timeout=5.0)
-            except TimeoutError:
-                logger.warning("MCP %s cleanup timed out after 5s", label)
-            except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
-                raise
-            except Exception:
-                logger.warning("MCP %s cleanup failed", label, exc_info=True)
+                await _close_mcp_resource("router client", client.close)
+            finally:
+                await _close_mcp_resource("MCP backends", stack.aclose)
+                self._loads.pop()
+        self._client = None
+
+
+async def _close_mcp_resource(label: str, close: Callable[[], Awaitable[None]]) -> None:
+    """Bound teardown and isolate ordinary resource failures."""
+    try:
+        await asyncio.wait_for(close(), timeout=5.0)
+    except TimeoutError:
+        logger.warning("MCP %s cleanup timed out after 5s", label)
+    except Exception as exc:  # noqa: BLE001 - cleanup must continue without leaking error details
+        logger.warning("MCP %s cleanup failed (%s)", label, type(exc).__name__)
+
+
+async def _finish_cleanup(task: asyncio.Task[None]) -> None:
+    """Finish owned teardown before propagating caller cancellation.
+
+    Raises:
+        asyncio.CancelledError: After teardown if the caller was cancelled.
+    """
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _close_backend_stack(stack: AsyncExitStack) -> None:
+    """Keep backend teardown alive when its owning load is cancelled."""
+    await _finish_cleanup(asyncio.create_task(stack.aclose()))
 
 
 def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
@@ -1785,7 +1815,7 @@ async def _gather_bounded[T](
 
 
 def _build_transport(
-    server_name: str,
+    server_name: str,  # noqa: ARG001 - retained for transport factory callers
     server_type: str,
     server_config: Mapping[str, Any],
     *,
@@ -1799,9 +1829,8 @@ def _build_transport(
     what picks the transport class — including resolving a bare `url` to
     streamable-HTTP or SSE.
 
-    The one thing the models do not carry is `log_file`, so a stdio server's is
-    attached afterwards: FastMCP writes a server's stderr to `sys.stderr`
-    otherwise, and the TUI owns that terminal.
+    Stderr handles are prepared off the event loop when mounting, where their
+    lifetime can be tied to the backend stack.
 
     Args:
         server_name: MCP server name, used for the stderr log file.
@@ -1814,7 +1843,6 @@ def _build_transport(
     Returns:
         A transport ready to mount on the router.
     """
-    from fastmcp.client.transports import StdioTransport
     from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -1833,12 +1861,7 @@ def _build_transport(
 
     stdio = StdioMCPServer.model_validate(dict(server_config))
     stdio.keep_alive = keep_alive
-    transport = stdio.to_transport()
-    # `to_transport()` is typed as a union, but a stdio server always yields the
-    # stdio transport -- and that is the only one with a stderr sink to point.
-    if isinstance(transport, StdioTransport):
-        transport.log_file = _server_stderr_log(server_name)
-    return transport
+    return stdio.to_transport()
 
 
 async def _mount_backends(
@@ -1865,7 +1888,7 @@ async def _mount_backends(
     Returns:
         The router client, the stack holding every backend open, discovered tools
             keyed by server, and a `(status, error)` entry for each failed server.
-    """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+    """
     from fastmcp import FastMCP
     from fastmcp.client import Client as FastMCPClient
     from fastmcp.server.providers.proxy import StatefulProxyClient
@@ -1875,35 +1898,68 @@ async def _mount_backends(
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
-    async with AsyncExitStack() as stack:
-        for server_name, transport in backends.items():
-            try:
-                backend = StatefulProxyClient(
-                    transport=transport,
-                    log_handler=_server_log_handler(server_name),
-                )
-                await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
-                # `StatefulProxyClient.__aexit__` leaves persistent sessions open, so
-                # own both teardown callbacks explicitly. LIFO closes the client first.
-                stack.push_async_callback(transport.close)
-                stack.push_async_callback(backend._disconnect, force=True)
-                tools = await backend.list_tools()
-                discovered[server_name] = tools
-                # Hex is injective and has no underscores, so namespaces cannot
-                # overlap even when a server or tool name contains underscores.
-                router.mount(
-                    create_proxy(backend), namespace=server_name.encode().hex()
-                )
-            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-                raise
-            except Exception as exc:  # noqa: BLE001 - one server must not sink the rest
-                failures[server_name] = _classify_connect_failure(
-                    server_name,
-                    exc,
-                    redact=redact.get(server_name, False),
-                )
+    from fastmcp.client.transports import StdioTransport
 
-        return FastMCPClient(router), stack.pop_all(), discovered, failures
+    stack = AsyncExitStack()
+    connected: dict[str, StatefulProxyClient[Any]] = {}
+
+    async def connect(server_name: str, transport: ClientTransport) -> None:
+        owned = AsyncExitStack()
+        try:
+            if isinstance(transport, StdioTransport):
+                # Register ownership in the worker too: cancellation must not lose
+                # a handle opened after the awaiting task has been cancelled.
+                def prepare_stderr() -> None:
+                    handle = _server_stderr_log(server_name)
+                    owned.push_async_callback(asyncio.to_thread, handle.close)
+                    transport.log_file = handle
+
+                await _finish_cleanup(
+                    asyncio.create_task(asyncio.to_thread(prepare_stderr))
+                )
+            owned.push_async_callback(_close_mcp_resource, "transport", transport.close)
+            backend = StatefulProxyClient(
+                transport=transport, log_handler=_server_log_handler(server_name)
+            )
+            owned.push_async_callback(
+                _close_mcp_resource,
+                "backend client",
+                functools.partial(backend._disconnect, force=True),
+            )
+            await backend.__aenter__()  # noqa: PLC2801 - explicit forced disconnect above
+            tools = await backend.list_tools()
+            connected[server_name] = backend
+            discovered[server_name] = tools
+            stack.push_async_callback(_close_backend_stack, owned.pop_all())
+        except Exception as exc:  # noqa: BLE001 - isolate each backend
+            failures[server_name] = _classify_connect_failure(
+                server_name, exc, redact=redact.get(server_name, False)
+            )
+        finally:
+            await _close_backend_stack(owned)
+
+    try:
+        await _gather_bounded(
+            [
+                functools.partial(connect, name, transport)
+                for name, transport in backends.items()
+            ],
+            limit=_MCP_LOAD_CONCURRENCY,
+        )
+        for name in backends:
+            if name in connected:
+                router.mount(
+                    create_proxy(connected[name]), namespace=name.encode().hex()
+                )
+        return (
+            FastMCPClient(router),
+            stack.pop_all(),
+            {name: discovered[name] for name in backends if name in discovered},
+            {name: failures[name] for name in backends if name in failures},
+        )
+    except BaseException:
+        await _close_backend_stack(stack)
+        raise
 
 
 def _classify_connect_failure(
@@ -1998,7 +2054,7 @@ async def _load_tools_from_config(
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
-    Discovery always opens throwaway sessions to capture tool metadata only.
+    Discovery sessions remain owned until the load is adopted or closed.
     Runtime tools either:
 
     - bind to a caller-managed `session_manager` (server mode),
@@ -2020,7 +2076,7 @@ async def _load_tools_from_config(
     Raises:
         RuntimeError: If `session_manager` is reconfigured incompatibly with
             sessions already active on it.
-    """  # noqa: DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`
+    """  # noqa: DOC502 - `RuntimeError` surfaces via `MCPSessionManager.adopt`
     # Warm the adapter imports off the event loop *here* (rather than in the
     # caller) so a config with no active MCP servers — which returns before
     # ever reaching this function — never pays the adapter-import cost.
@@ -2147,14 +2203,14 @@ async def _load_tools_from_config(
                     server_type,
                     server_config,
                     auth=auth,
-                    keep_alive=not stateless,
+                    keep_alive=not stateless or session_manager is not None,
                 )
             return _build_transport(
                 server_name,
                 server_type,
                 server_config,
                 auth=None,
-                keep_alive=not stateless,
+                keep_alive=not stateless or session_manager is not None,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
@@ -2199,9 +2255,7 @@ async def _load_tools_from_config(
         else:
             skipped[server_name] = result
 
-    runtime_manager = (
-        session_manager if session_manager is not None else MCPSessionManager()
-    )
+    runtime_manager = MCPSessionManager()
     client, stack, by_server, mount_failures = await _mount_backends(
         backends, redact=redacts
     )
@@ -2318,7 +2372,50 @@ async def _load_tools_from_config(
         raise
 
     all_tools.sort(key=lambda tool: tool.name)
+    if session_manager is not None:
+        try:
+            session_manager.adopt(client, stack)
+        except BaseException:
+            await runtime_manager.cleanup()
+            raise
+        runtime_manager = session_manager
+    elif stateless:
+        await runtime_manager.cleanup()
+        for tool in all_tools:
+            _make_stateless_tool(tool, config)
     return all_tools, None if stateless else runtime_manager, server_infos
+
+
+def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
+    """Give a tool a fresh, locally owned backend for each invocation."""
+    from langchain_core.tools import StructuredTool
+
+    if not isinstance(tool, StructuredTool):
+        return
+    server = (tool.metadata or {})["_deepagents_code_mcp_server"]
+    server_config = copy.deepcopy(config["mcpServers"][server])
+    original = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
+
+    async def call(**arguments: Any) -> Any:  # noqa: ANN401
+        tools, manager, infos = await _load_tools_from_config(
+            {"mcpServers": {server: server_config}}
+        )
+        try:
+            for candidate in tools:
+                if (
+                    isinstance(candidate, StructuredTool)
+                    and candidate.coroutine is not None
+                    and (candidate.metadata or {}).get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+                    == original
+                ):
+                    return await candidate.coroutine(**arguments)
+            msg = infos[0].error or f"MCP tool {original!r} is no longer available"
+            raise RuntimeError(msg)
+        finally:
+            if manager is not None:
+                await manager.cleanup()
+
+    tool.coroutine = call
 
 
 async def get_mcp_tools(

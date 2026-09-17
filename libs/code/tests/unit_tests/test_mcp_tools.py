@@ -4176,13 +4176,14 @@ class TestStderrLogSink:
     """Server stderr goes to a file, never to the terminal the TUI owns."""
 
     def test_log_path_is_per_server(self) -> None:
-        first = _server_stderr_log("alpha")
-        second = _server_stderr_log("beta")
-
-        assert isinstance(first, Path)
-        assert isinstance(second, Path)
-        assert first != second
-        assert first.parent == second.parent
+        with _server_stderr_log("alpha") as first, _server_stderr_log("beta") as second:
+            first.write("alpha diagnostic")
+            second.write("beta diagnostic")
+            first_path, second_path = Path(first.name), Path(second.name)
+        assert first_path != second_path
+        assert first_path.parent == second_path.parent
+        assert first_path.read_text(encoding="utf-8").endswith("alpha diagnostic")
+        assert second_path.read_text(encoding="utf-8").endswith("beta diagnostic")
 
     def test_unsafe_server_name_cannot_choose_the_path(self) -> None:
         with pytest.raises(MCPConfigError, match="unsafe server name"):

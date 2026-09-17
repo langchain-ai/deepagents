@@ -921,9 +921,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
-    # Ends up the innermost `wrap_model_call` layer, so it reads the model a custom
-    # middleware selected at runtime rather than the startup model. Appended before the
-    # custom-middleware merge so a same-named entry replaces it here instead of stacking.
     deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

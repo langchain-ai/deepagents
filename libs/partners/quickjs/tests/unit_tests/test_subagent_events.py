@@ -317,9 +317,23 @@ class TestReplayStableDispatchIds:
         assert rec.events[0]["id"] != rec.events[2]["id"]
 
     async def test_response_schema_key_order_does_not_change_id(self) -> None:
+        """`sort_keys` normalizes nested objects, not just the top level."""
         rec = _Recorder()
         tool = _FakeTaskTool('{"answer": 42}')
-        schema = {"type": "object", "properties": {"answer": {"type": "number"}}}
-        await self._dispatch(rec, tool, response_schema=schema)
-        await self._dispatch(rec, tool, response_schema=dict(reversed(schema.items())))
+        await self._dispatch(
+            rec,
+            tool,
+            response_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "number", "minimum": 0}},
+            },
+        )
+        await self._dispatch(
+            rec,
+            tool,
+            response_schema={
+                "properties": {"answer": {"minimum": 0, "type": "number"}},
+                "type": "object",
+            },
+        )
         assert rec.events[0]["id"] == rec.events[2]["id"]

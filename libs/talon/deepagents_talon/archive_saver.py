@@ -169,7 +169,8 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         session = str(config["configurable"]["thread_id"])
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], [])
-            messages = await self._messages(config, checkpoint)
+            changed = "messages" in new_versions or "messages" not in checkpoint["channel_versions"]
+            messages = await self._messages(config, checkpoint) if changed else []
         result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], messages)
@@ -177,14 +178,17 @@ class ConversationSaver(BaseCheckpointSaver[V]):
 
     async def _messages(self, config: RunnableConfig, checkpoint: Checkpoint) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
+        previous: dict[str, BaseMessage] = {}
         if config["configurable"].get("checkpoint_id"):
             parent = await self.checkpointer.aget_tuple(config)
             if parent is not None:
+                snapshot = _messages(parent.checkpoint["channel_values"].get("messages", []))
+                previous = {message.id: message for message in snapshot if message.id}
                 for _, channel, value in parent.pending_writes or []:
                     if channel == "messages":
                         messages.extend(_messages(value))
         messages.extend(_messages(checkpoint["channel_values"].get("messages", [])))
-        return messages
+        return _changed_messages(messages, previous)
 
     async def aput_writes(
         self,
@@ -281,3 +285,16 @@ def _messages(value: object) -> list[BaseMessage]:
         value = value.value
     values = value if isinstance(value, list) else [value]
     return convert_to_messages(cast("list[MessageLikeRepresentation]", values))
+
+
+def _changed_messages(
+    messages: list[BaseMessage], previous: dict[str, BaseMessage]
+) -> list[BaseMessage]:
+    changed: list[BaseMessage] = []
+    for message in messages:
+        if message.id:
+            if message == previous.get(message.id):
+                continue
+            previous[message.id] = message
+        changed.append(message)
+    return changed

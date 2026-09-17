@@ -12,7 +12,9 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.store_archive import StoreConversationArchive
 from tests.archive_helpers import open_archive
+from tests.unit_tests.test_store_archive import CountingStore
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -240,3 +242,45 @@ async def test_idless_occurrences_survive_checkpoint_retries_and_reopening(tmp_p
         assert len({item["message_id"] for item in entries}) == 5
         assert (await archive.conversations(SCOPE))[0]["message_count"] == 5
     assert [message.id for message in messages] == [None, None, "stable"]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_snapshot_archiving_cost_depends_on_new_messages(*, changed: bool) -> None:
+    metadata = CountingStore()
+    archive = StoreConversationArchive(metadata, namespace=("checkpoint-cost",))
+    saver = ConversationSaver(InMemorySaver(), archive=archive)
+    first = _checkpoint()
+    first["channel_values"]["messages"] = [
+        HumanMessage(f"old-{index}", id=str(index)) for index in range(100)
+    ]
+    config = await saver.aput(_config(), first, {}, {"messages": "1"})
+    config["metadata"] = SCOPE
+    second = _checkpoint()
+    second["channel_values"]["messages"] = list(first["channel_values"]["messages"])
+    versions = {}
+    if changed:
+        added = HumanMessage("new", id="new")
+        await saver.aput_writes(config, [("messages", [added])], "task")
+        second["channel_values"]["messages"].append(added)
+        second["channel_versions"]["messages"] = "2"
+        versions = {"messages": "2"}
+    metadata.reads = 0
+    await saver.aput(config, second, {}, versions)
+    assert metadata.reads < 30  # Independent of the 100 unchanged messages in the snapshot.
+    entries = await archive.entries(SCOPE, session_id="session", query="new")
+    assert [entry["text"] for entry in entries] == (["new"] if changed else [])
+
+
+async def test_snapshot_filter_preserves_edits_and_idless_occurrences() -> None:
+    archive = StoreConversationArchive(CountingStore(), namespace=("snapshot-edits",))
+    saver = ConversationSaver(InMemorySaver(), archive=archive)
+    config = await saver.aput(_config(), _checkpoint("before"), {}, {"messages": "1"})
+    config["metadata"] = SCOPE
+    changed = HumanMessage("after", id="message")
+    await saver.aput_writes(config, [("messages", [changed])], "task")
+    checkpoint = _checkpoint()
+    checkpoint["channel_values"]["messages"] = [changed, HumanMessage("yes"), HumanMessage("yes")]
+    checkpoint["channel_versions"]["messages"] = "2"
+    await saver.aput(config, checkpoint, {}, {"messages": "2"})
+    entries = await archive.entries(SCOPE, session_id="session")
+    assert [entry["text"] for entry in entries] == ["before", "after", "yes", "yes"]

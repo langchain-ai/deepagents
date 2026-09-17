@@ -162,13 +162,6 @@ Remote indexing uses bounded batches and concurrency; errors retain pending work
 for retry. Selecting a remote adapter sends archived text and queries to that
 provider and may incur charges.
 
-Identical chunks within a conversation session share a persisted vector, including
-across message revisions and restarts. Full transcript revisions remain readable;
-semantic search uses a representative archive entry for each distinct chunk.
-This applies to every Store backend and to client- and server-side embeddings.
-Existing indexes gain the content mapping in bounded background batches without
-re-embedding acknowledged history. Deleting a session removes its mappings and vectors.
-
 Vector data uses fingerprint-specific SQLite files, PostgreSQL schemas, or MongoDB
 collections, keeping incompatible dimensions separate. PostgreSQL uses exact vector
 search above 2000 dimensions. Metadata and vectors always use separate Store instances.

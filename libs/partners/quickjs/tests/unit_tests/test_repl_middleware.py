@@ -29,7 +29,12 @@ from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
+from langchain_quickjs._repl import (
+    _MAX_TASK_CALLS_PER_THREAD,
+    _clear_exception_references,
+    _Registry,
+    _ThreadREPL,
+)
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
@@ -979,6 +984,16 @@ async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -
 
 
 class _QueuedFanout:
+    """Saturate the per-REPL task semaphore so the last dispatches must queue.
+
+    Holds every subagent open until `release` is called, which only happens
+    once the semaphore is full. The two dispatches beyond the cap therefore
+    start after a queued wait rather than immediately.
+    """
+
+    #: One more than the semaphore can admit at once, so some dispatches queue.
+    TOTAL_TASKS = _MAX_TASK_CALLS_PER_THREAD + 2
+
     def __init__(self) -> None:
         self.saturated = asyncio.Event()
         self.released = asyncio.Event()
@@ -988,7 +1003,7 @@ class _QueuedFanout:
 
     async def work(self, state: dict[str, Any], config: Any) -> dict[str, Any]:
         self.started += 1
-        if self.started == 32:
+        if self.started == _MAX_TASK_CALLS_PER_THREAD:
             self.saturated.set()
         await self.released.wait()
         return {"messages": [AIMessage(content="done")]}
@@ -1017,7 +1032,7 @@ class _QueuedFanout:
         extra = "await tools.releaseTasks({});" if extra_ptc_call else ""
         return await repl.eval_async(
             "(async () => {"
-            "const tasks = Array.from({length: 34}, () => "
+            f"const tasks = Array.from({{length: {self.TOTAL_TASKS}}}, () => "
             "task({description: 'identical', subagentType: 'worker'}));"
             "await tools.releaseTasks({});"
             "const results = await Promise.all(tasks);"
@@ -1035,12 +1050,14 @@ async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
         fanout = _QueuedFanout()
         outcome = await fanout.run(repl)
         assert outcome.error_type is None
-        assert outcome.result == "34"
+        assert outcome.result == str(_QueuedFanout.TOTAL_TASKS)
         starts = [event["id"] for event in fanout.events if event["phase"] == "start"]
-        assert len(starts) == 34
-        assert len(set(starts)) == 34
+        assert len(starts) == _QueuedFanout.TOTAL_TASKS
+        assert len(set(starts)) == _QueuedFanout.TOTAL_TASKS
         attempts.append(starts)
-    assert attempts[0] == attempts[1]
+    # Membership is the contract; emission order follows semaphore wakeup,
+    # which this test has no business pinning.
+    assert set(attempts[0]) == set(attempts[1])
 
 
 async def test_queued_tasks_do_not_restore_spent_ptc_budget(
@@ -1057,7 +1074,7 @@ async def test_queued_tasks_do_not_restore_spent_ptc_budget(
     fanout = _QueuedFanout()
     outcome = await fanout.run(repl, extra_ptc_call=True)
     assert outcome.error_type == "PTCCallBudgetExceeded"
-    assert fanout.started == 34
+    assert fanout.started == _QueuedFanout.TOTAL_TASKS
     assert fanout.release_calls == 1
 
 

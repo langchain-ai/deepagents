@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.widgets import Input
 
 from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
 
@@ -58,3 +60,17 @@ class TestPromptClipboardScreen:
             await pilot.pause()
 
             assert app.results == ["oldest"]
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_deletes_word_left(self, key: str) -> None:
+        app = _PromptClipboardApp()
+        async with app.run_test() as pilot:
+            screen = app.open(("alpha beta", "alpha gamma"), "alpha beta")
+            await pilot.pause()
+            search = screen.query_one("#prompt-filter", Input)
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert search.value == "alpha "
+            assert screen._filtered == ["alpha beta", "alpha gamma"]

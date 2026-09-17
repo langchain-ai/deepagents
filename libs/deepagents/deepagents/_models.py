@@ -153,7 +153,8 @@ def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
     Provider comparison is normalized, so case, hyphen/underscore spelling, and
     known aliases do not read as a mismatch (see `_normalize_provider`).
 
-    Assumes the `provider:model` convention (single colon separator).
+    Assumes the `provider:model` convention, where the first colon is the
+    separator and the model identifier may contain additional colons.
 
     Args:
         model: Chat model instance to inspect.

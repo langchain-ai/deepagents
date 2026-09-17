@@ -361,6 +361,7 @@ class HistoryVectorIndex:
                 )
             items = cast("list[SearchItem]", results[0])
             keys = [item.key for item in items if item.score is not None]
+            keys = await self.archive.semantic(scope, keys)
         except TimeoutError:
             logger.warning(
                 "History vector search timed out after %ss; using keyword search",

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, TypeVar, cast
 
-from langchain_core.messages import BaseMessage, convert_to_messages
+from langchain_core.messages import BaseMessage, HumanMessage, convert_to_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.types import _DeltaSnapshot
 
@@ -294,7 +294,28 @@ def _messages(value: object) -> list[BaseMessage]:
     if isinstance(value, _DeltaSnapshot):
         value = value.value
     values = value if isinstance(value, list) else [value]
-    return convert_to_messages(cast("list[MessageLikeRepresentation]", values))
+    messages = convert_to_messages(cast("list[MessageLikeRepresentation]", values))
+    return [_archive_message(message) for message in messages]
+
+
+def _archive_message(message: BaseMessage) -> BaseMessage:
+    source = message.additional_kwargs.get("talon_history_source")
+    if isinstance(message, HumanMessage):
+        if source is not None:
+            return message
+        source = "unknown"
+    else:
+        if source != "delivered":
+            return message
+        source = "internal"
+    return message.model_copy(
+        update={
+            "additional_kwargs": {
+                **message.additional_kwargs,
+                "talon_history_source": source,
+            }
+        }
+    )
 
 
 def _changed_messages(

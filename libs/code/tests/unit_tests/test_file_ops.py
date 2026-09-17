@@ -21,6 +21,7 @@ from deepagents_code.file_ops import (
     display_caveat,
     is_sensitive_file_path,
     record_display_caveat,
+    suggest_near_miss_paths,
 )
 
 
@@ -274,6 +275,42 @@ def test_backend_file_not_found_is_not_flagged_as_unreadable() -> None:
     record = tracker.active["new-2"]
     assert record.diff_outcome != "untrusted_before"
     assert record.before_content == ""
+
+
+def test_suggest_near_miss_paths_prefers_tsx_for_ts_request(tmp_path: Path) -> None:
+    target = tmp_path / "module.tsx"
+    target.write_text("export {}")
+
+    assert suggest_near_miss_paths(tmp_path / "module.ts", [tmp_path]) == [str(target)]
+
+
+def test_suggest_near_miss_paths_finds_ts_for_tsx_request(tmp_path: Path) -> None:
+    target = tmp_path / "module.ts"
+    target.write_text("export {}")
+
+    assert suggest_near_miss_paths(tmp_path / "module.tsx", [tmp_path]) == [str(target)]
+
+
+def test_suggest_near_miss_paths_finds_same_basename_deeper(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "module.ts"
+    target.parent.mkdir()
+    target.write_text("export {}")
+
+    assert suggest_near_miss_paths(tmp_path / "module.ts", [tmp_path]) == [str(target)]
+
+
+def test_suggest_near_miss_paths_leaves_empty_when_no_candidates(
+    tmp_path: Path,
+) -> None:
+    assert suggest_near_miss_paths(tmp_path / "module.ts", [tmp_path]) == []
+
+
+def test_suggest_near_miss_paths_skips_ignored_directories(tmp_path: Path) -> None:
+    target = tmp_path / "node_modules" / "module.ts"
+    target.parent.mkdir()
+    target.write_text("export {}")
+
+    assert suggest_near_miss_paths(tmp_path / "module.ts", [tmp_path]) == []
 
 
 def test_backend_read_failure_is_flagged_as_unreadable() -> None:

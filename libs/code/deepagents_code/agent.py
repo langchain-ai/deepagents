@@ -64,7 +64,7 @@ from langchain_core.tools import StructuredTool, tool
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._constants import DEFAULT_AGENT_NAME, FILE_NOT_FOUND
 from deepagents_code._env_vars import (
     EXPERIMENTAL,
     FORKED_SUBAGENTS,
@@ -118,6 +118,7 @@ from deepagents_code.config import (
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
 from deepagents_code.configuration.interpreter import InterpreterConfig
+from deepagents_code.file_ops import suggest_near_miss_paths
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -229,6 +230,7 @@ def _inject_fs_tools_into_subagents(
     fs_tools: list[FsToolName],
     backend: CompositeBackend,
     main_tool_descriptions: dict[str, str],
+    near_miss_roots: Sequence[Path] = (),
 ) -> None:
     """Inject a filesystem-restricted `FilesystemMiddleware` into each subagent.
 
@@ -245,6 +247,7 @@ def _inject_fs_tools_into_subagents(
         backend: Composite backend shared with the main agent's middleware.
         main_tool_descriptions: Harness tool descriptions to use for a subagent
             that inherits the runtime model (no explicit `model` key).
+        near_miss_roots: Repository roots used for missing-file suggestions.
 
     Raises:
         ValueError: If a `CompiledSubAgent` (identified by a `"runnable"` key,
@@ -280,6 +283,7 @@ def _inject_fs_tools_into_subagents(
                     tools=fs_tools,
                     custom_tool_descriptions=subagent_tool_descriptions,
                 ),
+                ReadFileSuggestionMiddleware(near_miss_roots),
             ],
         )
 
@@ -932,6 +936,48 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if (rejection := self._validate_tool_call(request)) is not None:
             return rejection
         return await handler(request)
+
+
+class ReadFileSuggestionMiddleware(AgentMiddleware):
+    """Append bounded near-miss suggestions to missing `read_file` results."""
+
+    def __init__(self, roots: Sequence[Path]) -> None:
+        """Initialize with repository roots to search for suggestions."""
+        super().__init__()
+        self._roots = tuple(roots)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Append suggestions to a missing `read_file` result.
+
+        Returns:
+            The original or augmented tool result.
+        """
+        response = await handler(request)
+        if request.tool_call["name"] != "read_file" or not hasattr(response, "content"):
+            return response
+        content = response.content
+        if not isinstance(content, str) or not _is_file_not_found(content):
+            return response
+        args = request.tool_call.get("args") or {}
+        file_path = args.get("file_path")
+        if not isinstance(file_path, str):
+            return response
+        suggestions = suggest_near_miss_paths(Path(file_path), self._roots)
+        if not suggestions:
+            return response
+        hint = f"\nDid you mean: {', '.join(suggestions)}?"
+        return response.model_copy(update={"content": content + hint})
+
+
+def _is_file_not_found(content: str) -> bool:
+    stripped = content.strip()
+    return stripped == FILE_NOT_FOUND or (
+        stripped.startswith("Error: File ") and stripped.endswith(" not found")
+    )
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
@@ -3242,6 +3288,13 @@ def create_cli_agent(
                 custom_tool_descriptions=main_tool_descriptions,
             )
         )
+        near_miss_roots_list = [
+            Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        ]
+        if project_context is not None and project_context.project_root is not None:
+            near_miss_roots_list.append(Path(project_context.project_root))
+        near_miss_roots = tuple(dict.fromkeys(near_miss_roots_list))
+        agent_middleware.append(ReadFileSuggestionMiddleware(near_miss_roots))
         # dcode always supplies its own `general-purpose` spec, so the SDK's
         # auto-created-GP middleware inheritance path never fires; the
         # restriction must be injected into each subagent's own `middleware`
@@ -3251,6 +3304,7 @@ def create_cli_agent(
             fs_tools=fs_tools,
             backend=composite_backend,
             main_tool_descriptions=main_tool_descriptions,
+            near_miss_roots=near_miss_roots,
         )
 
     if goal_criteria_tools is not None:

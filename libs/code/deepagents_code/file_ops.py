@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -17,8 +19,83 @@ from deepagents_code.diff_utils import (
 
 logger = logging.getLogger(__name__)
 
+_NEAR_MISS_IGNORED_DIRS = frozenset({".git", "node_modules", "dist", "build", ".venv"})
+_NEAR_MISS_MAX_CANDIDATES = 5
+_NEAR_MISS_MAX_DEPTH = 8
+_NEAR_MISS_MAX_SECONDS = 0.05
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from deepagents.backends.protocol import BackendProtocol
+
+
+def _path_within_roots(path: Path, roots: Sequence[Path]) -> bool:
+    resolved = path.resolve(strict=False)
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def _same_directory_candidates(requested: Path, roots: Sequence[Path]) -> list[Path]:
+    directory = requested.parent.resolve(strict=False)
+    if not _path_within_roots(directory, roots) or not directory.is_dir():
+        return []
+    candidates = [
+        path
+        for path in directory.iterdir()
+        if path.is_file()
+        and path.name != requested.name
+        and path.stem == requested.stem
+        and path.suffix != requested.suffix
+        and _path_within_roots(path, roots)
+    ]
+    return sorted(
+        candidates,
+        key=lambda path: (
+            -difflib.SequenceMatcher(None, requested.suffix, path.suffix).ratio(),
+            path.suffix,
+            str(path),
+        ),
+    )
+
+
+def _basename_candidates(
+    requested: Path, roots: Sequence[Path], excluded: set[Path]
+) -> list[Path]:
+    deadline = time.monotonic() + _NEAR_MISS_MAX_SECONDS
+    candidates: list[Path] = []
+    for root in roots:
+        for current, directories, filenames in os.walk(root, topdown=True):
+            if time.monotonic() >= deadline:
+                return candidates
+            current_path = Path(current)
+            depth = len(current_path.relative_to(root).parts)
+            directories[:] = [
+                name
+                for name in directories
+                if name not in _NEAR_MISS_IGNORED_DIRS and depth < _NEAR_MISS_MAX_DEPTH
+            ]
+            for filename in filenames:
+                if filename != requested.name:
+                    continue
+                candidate = current_path / filename
+                if candidate.resolve(strict=False) in excluded:
+                    continue
+                if _path_within_roots(candidate, roots):
+                    candidates.append(candidate)
+    return sorted(candidates, key=str)
+
+
+def suggest_near_miss_paths(requested: Path, roots: Sequence[Path]) -> list[str]:
+    """Return bounded, repository-safe suggestions for a missing path."""
+    bounds = tuple(root.resolve(strict=False) for root in roots)
+    if not bounds:
+        return []
+    requested = Path(requested)
+    same_directory = _same_directory_candidates(requested, bounds)
+    excluded = {path.resolve(strict=False) for path in same_directory}
+    candidates = same_directory + _basename_candidates(requested, bounds, excluded)
+    return [str(path) for path in candidates[:_NEAR_MISS_MAX_CANDIDATES]]
+
 
 FileOpStatus = Literal["pending", "success", "error"]
 

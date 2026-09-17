@@ -4225,17 +4225,29 @@ class TestSessionManagerLifecycle:
 
 
 class TestStderrLogSink:
-    """Server stderr goes to a file, never to the terminal the TUI owns."""
+    """Server stderr cannot fill the disk or corrupt the TUI."""
 
-    def test_log_path_is_per_server(self) -> None:
-        with _server_stderr_log("alpha") as first, _server_stderr_log("beta") as second:
-            first.write("alpha diagnostic")
-            second.write("beta diagnostic")
-            first_path, second_path = Path(first.name), Path(second.name)
-        assert first_path != second_path
-        assert first_path.parent == second_path.parent
-        assert first_path.read_text(encoding="utf-8").endswith("alpha diagnostic")
-        assert second_path.read_text(encoding="utf-8").endswith("beta diagnostic")
+    @pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+    def test_chatty_server_stderr_is_discarded(
+        self, level: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with (
+            caplog.at_level(level, logger="deepagents_code.mcp_tools"),
+            _server_stderr_log("alpha") as sink,
+        ):
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stderr.write('x' * (6 * 1024 * 1024))",
+                ],
+                stderr=sink,
+                check=True,
+                timeout=10,
+            )
+            assert sink.name == os.devnull
+            assert os.fstat(sink.fileno()).st_size == 0
+        assert sink.closed
 
     def test_unsafe_server_name_cannot_choose_the_path(self) -> None:
         with pytest.raises(MCPConfigError, match="unsafe server name"):

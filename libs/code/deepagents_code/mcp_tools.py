@@ -229,27 +229,20 @@ class MCPConfigError(ValueError):
     """
 
 
-_MCP_STDERR_LOG_LIMIT = 5 * 1024 * 1024
-"""Size past which a server's stderr log is discarded when a session opens.
-
-Nothing reads these files but a human debugging a misbehaving server, so a
-chatty server is capped by dropping the old log rather than rotating it.
-"""
-
-
 def _server_stderr_log(server_name: str) -> TextIO:
     """Return the sink FastMCP writes this server's stderr to.
 
     FastMCP's stdio transport sends server stderr to `sys.stderr` when given no
     `log_file`. The TUI owns the terminal, so an unredirected server corrupts
-    the display — every stdio server is pointed at a file under the state
-    directory instead, and at the null device when that file cannot be opened.
+    the display. Use the null device so chatty servers cannot fill the disk,
+    even during long-running sessions. Structured MCP logs remain available
+    through `_server_log_handler`.
 
     Args:
         server_name: MCP server name, already validated as path-safe.
 
     Returns:
-        An owned open log handle, falling back to the null device.
+        An owned open handle to the null device.
 
     Raises:
         MCPConfigError: If `server_name` is not path-safe.
@@ -260,20 +253,7 @@ def _server_stderr_log(server_name: str) -> TextIO:
         # choose the path this writes to.
         msg = f"Refusing to open a stderr log for unsafe server name {server_name!r}"
         raise MCPConfigError(msg)
-    try:
-        log_dir = PATHS.profile.state_dir / "mcp-logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        path = log_dir / f"{server_name}.log"
-        if path.is_file() and path.stat().st_size > _MCP_STDERR_LOG_LIMIT:
-            path.unlink()
-        return path.open("a", encoding="utf-8")
-    except OSError:
-        logger.warning(
-            "MCP server %r: stderr log unavailable; discarding server stderr",
-            server_name,
-            exc_info=True,
-        )
-        return cast("TextIO", Path(os.devnull).open("a", encoding="utf-8"))
+    return Path(os.devnull).open("a", encoding="utf-8")
 
 
 def _server_log_handler(server_name: str) -> Callable[[Any], Awaitable[None]]:
@@ -1833,7 +1813,7 @@ def _build_transport(
     lifetime can be tied to the backend stack.
 
     Args:
-        server_name: MCP server name, used for the stderr log file.
+        server_name: MCP server name, used to validate the stderr sink.
         server_type: Resolved transport type (`stdio`, `http`, or `sse`).
         server_config: That server's config, with `${VAR}` refs already resolved.
         auth: OAuth provider to attach, for a remote server that uses one.

@@ -129,7 +129,12 @@ if (args[1] === 'list') {
 } else if (args[1] === 'create') {
   if (state.open) process.exit(1);
   state.open = true;
+} else if (args[1] === 'edit') {
+  if (!state.open || args[2] !== '42') process.exit(1);
 } else process.exit(1);
+if (['create', 'edit'].includes(args[1])) {
+  state.body = fs.readFileSync(args[args.indexOf('--body-file') + 1], 'utf8');
+}
 fs.writeFileSync(file, JSON.stringify(state));
 `, { mode: 0o755 });
   return {
@@ -137,7 +142,13 @@ fs.writeFileSync(file, JSON.stringify(state));
     state: () => JSON.parse(fs.readFileSync(stateFile, 'utf8')),
     run: () => spawnSync('bash', ['-c', publishScript], {
       cwd, encoding: 'utf8',
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, BRANCH: branch, BASE: 'main', PR_STATE: stateFile },
+      env: {
+        ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        BRANCH: branch, BASE: 'main', PR_STATE: stateFile,
+        GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'owner/repo',
+        GITHUB_WORKFLOW_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '12345',
+        GITHUB_RUN_ATTEMPT: '2', GITHUB_EVENT_NAME: 'workflow_dispatch',
+      },
     }),
   };
 }
@@ -155,6 +166,12 @@ for (const existing of [false, true]) {
       if (changed) {
         assert.ok(remoteRef);
         assert.equal(repo.git('show', `${branch}:${manifest}`), '["topic:added"]');
+        const { body } = repo.state();
+        assert.ok(body.includes('https://github.com/owner/repo/labels?q=topic%3A'));
+        assert.ok(body.includes(`https://github.com/owner/repo/blob/${'a'.repeat(40)}/.github/workflows/sync_topic_labels.yml`));
+        assert.ok(body.includes('https://github.com/owner/repo/actions/runs/12345/attempts/2'));
+        assert.ok(body.includes('trigger: `workflow_dispatch`'));
+        assert.ok(body.includes(`https://github.com/owner/repo/commit/${base}`));
       } else {
         assert.equal(remoteRef, '', 'obsolete automation branch must be removed');
       }

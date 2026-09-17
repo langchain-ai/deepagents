@@ -979,7 +979,7 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.4.0"
-source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=cc%2Fmultimodal-filter-middleware#c029f1364d37977be9f49464c65c4fff8719ec50" }
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=cc%2Fmultimodal-filter-middleware#cf7e5ee341a2a17b476740e0adabe395ba07110b" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -1018,7 +1018,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.6.3"
-source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Fcore&branch=cc%2Fmultimodal-filter-middleware#c029f1364d37977be9f49464c65c4fff8719ec50" }
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Fcore&branch=cc%2Fmultimodal-filter-middleware#cf7e5ee341a2a17b476740e0adabe395ba07110b" }
 dependencies = [
     { name = "httpx" },
     { name = "jsonpatch" },

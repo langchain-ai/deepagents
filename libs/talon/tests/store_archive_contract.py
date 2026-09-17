@@ -152,6 +152,7 @@ async def _wait_for_content_vectors(archive: StoreConversationArchive) -> None:
             vectors = await archive.vectors.store.asearch(
                 archive.vectors.namespace("test", "one"), limit=20
             )
-            if not pending and len(vectors) == 3:
+            if not pending and len(vectors) >= 3:
+                assert len(vectors) == 3
                 return
             await asyncio.sleep(0.02)

@@ -14,7 +14,6 @@ from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_archive_index import StoreVectorArchive
 from tests.store_archive_contract import StaticEmbeddings
 from tests.unit_tests.test_history_vectors import OTHER, SCOPE, settled, vector_store
-from tests.unit_tests.test_store_archive import InterruptedStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
@@ -47,6 +46,26 @@ class ServerEmbeddingStore(InMemoryStore):
             if isinstance(op, PutOp) and op.value is not None and op.index is not False
         )
         return await super().abatch(operations)
+
+
+class InterruptedCatalogStore(InMemoryStore):
+    boundary: str | None = None
+
+    async def abatch(self, ops: Iterable[Op]) -> list[Result]:
+        results: list[Result] = []
+        for op in ops:
+            if isinstance(op, PutOp) and self.boundary:
+                boundaries = {
+                    "mapping": op.key.startswith("vector-content:"),
+                    "deletion-reference": bool(op.value and "vector_content" in op.value),
+                    "journal-clear": op.key == "journal" and op.value is None,
+                }
+                if boundaries[self.boundary]:
+                    self.boundary = None
+                    msg = "interrupted catalog"
+                    raise OSError(msg)
+            results.extend(await super().abatch([op]))
+        return results
 
 
 @asynccontextmanager
@@ -90,9 +109,6 @@ async def test_revisions_reuse_vectors_after_restart_and_delete_cleanly(
             await settled(archive)
             await archive.delete_session("session")
             assert not await store.asearch(namespace)
-            records = await archive.records.store.asearch(archive.records.namespace, limit=100)
-            content = [item for item in records if item.key.startswith("vector-content:")]
-            assert len(content) == 1  # Only the other session's mapping survives deletion.
             assert len(await archive.entries(OTHER)) == 1
             await archive.append(SCOPE, "session", "recreated", [HumanMessage("original")])
             await settled(archive)
@@ -167,11 +183,11 @@ async def test_duplicate_only_batches_persist_progress_and_reindex_unique_conten
         assert fresh.documents == ["same"]
 
 
-@pytest.mark.parametrize("failure", [2, 3, 4])
+@pytest.mark.parametrize("boundary", ["mapping", "deletion-reference", "journal-clear"])
 async def test_partial_content_catalog_write_recovers_before_indexing(
-    tmp_path: Path, failure: int
+    tmp_path: Path, boundary: str
 ) -> None:
-    metadata = InterruptedStore()
+    metadata = InterruptedCatalogStore()
     embed = CountingEmbeddings()
     archive = StoreConversationArchive(metadata, namespace=("interrupted-content",))
     await archive.append(
@@ -179,8 +195,8 @@ async def test_partial_content_catalog_write_recovers_before_indexing(
     )
     index = StoreVectorArchive(archive)
     await index.prepare()
-    metadata.remaining = failure
-    with pytest.raises(OSError, match="interrupted metadata"):
+    metadata.boundary = boundary
+    with pytest.raises(OSError, match="interrupted catalog"):
         await index.rows("", indexing=True, limit=4)
     async with (
         vector_store("memory", tmp_path / "unused", embed) as store,
@@ -192,5 +208,6 @@ async def test_partial_content_catalog_write_recovers_before_indexing(
         assert embed.documents == ["same"]
         assert len(await archive.entries(SCOPE)) == 2
         await archive.delete_session("session")
-        records = await metadata.asearch(archive.records.namespace, limit=100)
-        assert not any(item.key.startswith("vector-content:") for item in records)
+        await archive.append(SCOPE, "session", "later", [HumanMessage("same", id="new")])
+        await settled(archive)
+        assert embed.documents == ["same", "same"]

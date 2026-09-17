@@ -639,7 +639,7 @@ make test
 ## Local Steel browser
 
 Talon can start and stop a native Steel browser with one persistent profile per
-assistant home. This experimental foundation supports macOS with Node.js **24**,
+assistant home. This experimental integration supports macOS with Node.js **24**,
 npm, git, and an installed Google Chrome. Runtime assets ship in the Talon package.
 Browser tools and a local viewer interface are separate follow-up changes.
 
@@ -663,7 +663,7 @@ export TALON_BROWSER_ENABLED=true
 export TALON_BROWSER_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
-From `examples/talon`, launch as before:
+From `examples/talon`, launch Talon:
 
 ```sh
 uv run --directory ../../libs/talon --extra media,history-local deepagents-talon
@@ -684,8 +684,7 @@ cleanup. After an unclean exit, `.talon-dirty` blocks startup: stop all processe
 using the profile, inspect or restore it, and only then remove the marker.
 Talon never silently deletes or repairs an existing profile.
 
-The native launcher replaces the Linux Compose overlay, Dockerfiles, namespace
-firewall, egress proxy, and deployment launcher. It uses upstream configuration
+The native launcher uses upstream configuration
 for executable/profile paths, headless mode, localhost binding, and an enabled
 Chrome sandbox. Remaining pinned-version adaptations prevent profile preference
 overwrites, disable instrumentation and exports, preserve cast connections,
@@ -693,8 +692,7 @@ and close Chrome without an automatic relaunch. This is local browser access
 with ordinary host networking; it provides no remote deployment or network isolation.
 
 The pinned upstream dependency audit currently reports 21 advisories (6 moderate,
-14 high, 1 critical, including development dependencies). This change preserves
-the existing Steel revision; updating that dependency tree requires separate review.
+14 high, 1 critical, including development dependencies).
 
 Native smoke (disposable synthetic profile, public navigation, actual Steel cast
 frames, login persistence across restart, exclusive locking, and child cleanup):

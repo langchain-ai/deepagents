@@ -3674,6 +3674,41 @@ class TestDeviceFlow:
 class TestLogin:
     """Tests for the interactive OAuth login entrypoint."""
 
+    @pytest.mark.parametrize(
+        ("declaration", "endpoint", "expected"),
+        [
+            *[
+                ({field: alias}, "mcp", "sse" if alias == "sse" else "http")
+                for field in ("type", "transport")
+                for alias in ("streamable_http", "streamable-http", "http", "sse")
+            ],
+            ({"type": "sse", "transport": "streamable_http"}, "mcp", "sse"),
+            ({"type": "streamable-http", "transport": "sse"}, "sse", "http"),
+            ({}, "mcp", "http"),
+            ({}, "sse", "sse"),
+        ],
+    )
+    async def test_login_transport_selection(
+        self, declaration: dict[str, str], endpoint: str, expected: str
+    ) -> None:
+        """Login validates aliases and retains transport precedence and inference."""
+        from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        config = {**declaration, "url": f"https://example.com/{endpoint}"}
+        original = config.copy()
+        with patch("deepagents_code.mcp_auth._drive_handshake") as handshake:
+            await login(
+                server_name="api", server_config=config, ui=CliOAuthInteraction()
+            )
+        transport = handshake.call_args.args[0]
+        transport_class = SSETransport if expected == "sse" else StreamableHttpTransport
+        assert isinstance(transport, transport_class)
+        assert isinstance(transport.auth, OAuthClientProvider)
+        assert config == original
+
     async def test_login_persists_tokens(self) -> None:
         """Successful login persists tokens to the server-specific file."""
         from mcp.shared.auth import OAuthToken

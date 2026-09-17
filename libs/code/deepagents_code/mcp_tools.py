@@ -1850,10 +1850,11 @@ def _build_transport(
         # FastMCP infers it from the URL, which is what makes a bare
         # `{"url": ".../sse"}` entry connect over SSE instead of streamable HTTP.
         declared = server_config.get("type") or server_config.get("transport")
-        remote = RemoteMCPServer.model_validate(dict(server_config))
-        remote.transport = (
+        remote_config = dict(server_config)
+        remote_config["transport"] = (
             ("sse" if server_type == "sse" else "http") if declared else None
         )
+        remote = RemoteMCPServer.model_validate(remote_config)
         # The config's `auth` is a mode name (`"oauth"`), not a credential; the
         # resolved provider replaces it.
         remote.auth = auth

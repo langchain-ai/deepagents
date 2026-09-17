@@ -45,6 +45,7 @@ from deepagents_code.mcp_tools import (
     MCPSessionManager,
     MCPToolInfo,
     _apply_tool_filter,
+    _build_transport,
     _check_remote_server,
     _check_stdio_server,
     _gather_bounded,
@@ -288,6 +289,52 @@ def fake_tool_result() -> Any:  # noqa: ANN401
     from mcp.types import CallToolResult, TextContent
 
     return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+
+@pytest.mark.parametrize(
+    ("declaration", "endpoint", "expected"),
+    [
+        *[
+            ({field: alias}, "mcp", "sse" if alias == "sse" else "http")
+            for field in ("type", "transport")
+            for alias in ("streamable_http", "streamable-http", "http", "sse")
+        ],
+        ({"type": "sse", "transport": "streamable_http"}, "mcp", "sse"),
+        ({"type": "streamable-http", "transport": "sse"}, "sse", "http"),
+        ({}, "mcp", "http"),
+        ({}, "sse", "sse"),
+    ],
+)
+async def test_remote_transport_loading(
+    declaration: dict[str, str],
+    endpoint: str,
+    expected: str,
+    write_config: Callable[..., str],
+    mcp_servers: MCPServerRegistry,
+) -> None:
+    """Aliases, precedence, and URL inference survive real transport validation."""
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
+    from deepagents_code.mcp_tools import _resolve_server_type
+
+    config = {**declaration, "url": f"https://example.com/{endpoint}"}
+    original = config.copy()
+    _build_transport(
+        "api", _resolve_server_type(config), config, auth=None, keep_alive=False
+    )
+    assert config == original
+    mcp_servers.register("api", "search")
+    with patch("deepagents_code.mcp_tools._check_remote_server"):
+        tools, manager, _ = await get_mcp_tools(
+            write_config({"mcpServers": {"api": config}})
+        )
+    assert manager is not None
+    try:
+        assert [tool.name for tool in tools] == ["api_search"]
+        transport_class = SSETransport if expected == "sse" else StreamableHttpTransport
+        assert isinstance(mcp_servers.transports[0], transport_class)
+    finally:
+        await manager.cleanup()
 
 
 class TestLoadMCPConfig:

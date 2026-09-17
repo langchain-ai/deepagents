@@ -638,30 +638,24 @@ make test
 
 ## Local Steel browser
 
-Talon can start and stop a native Steel browser with one persistent profile per
-assistant home. This experimental integration supports macOS with Node.js **24**,
-npm, git, and an installed Google Chrome. Runtime assets ship in the Talon package.
-The user and agent share that browser through browser tools and the authenticated
-local Steel viewer. No browser-specific operator ID or channel identity configuration
-is needed; Talon uses its existing channel access and tool approval policies.
+Talon shares one persistent local browser between you and the agent. Install
+Chrome/Chromium, git, and uv, then run setup once from `libs/talon`:
 
-Run this **once** from `libs/talon`, with Node 24 on `PATH`:
-
-```sh
-uv run python -m deepagents_talon.steel_setup
-```
-
-If your default Node version is not 24, macOS Homebrew users can run this instead
-from `libs/talon`:
+**macOS (Homebrew):**
 
 ```sh
 brew install node@24
 PATH="$(brew --prefix node@24)/bin:$PATH" uv run python -m deepagents_talon.steel_setup
 ```
 
-This selects Node 24 for setup without changing your global Node version.
-Other Node versions, including 25, are rejected because the DuckDB native module
-requires the tested Node 24 ABI.
+**Linux (with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) installed):**
+
+```sh
+nvm install 24
+nvm exec 24 uv run python -m deepagents_talon.steel_setup
+```
+
+Both setup commands explicitly select the required Node 24.
 
 Setup installs into `~/.deepagents/steel` by default (`--directory` overrides it).
 It checks out Steel revision `2b41124d8e2953b0afe355c534e3c9aa71edae26`,

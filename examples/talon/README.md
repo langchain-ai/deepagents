@@ -55,21 +55,26 @@ restrictions. Out-of-workspace placement is not a same-UID shell isolation bound
 
 ## Optional local browser
 
-For a local run, install Chrome/Chromium and have **Node.js 24**, npm, and git on
-`PATH`. From `examples/talon`, run the one-time setup:
+Install Chrome/Chromium, git, and uv. From `examples/talon`, run setup once:
+
+**macOS (Homebrew):**
 
 ```sh
-uv run --directory ../../libs/talon python -m deepagents_talon.steel_setup
+brew install node@24
+PATH="$(brew --prefix node@24)/bin:$PATH" uv run --directory ../../libs/talon python -m deepagents_talon.steel_setup
 ```
 
-Set `TALON_BROWSER_ENABLED=true` in your launch environment and restart Talon with
-your usual local command. Chrome is detected automatically; no browser operator ID
-is needed. Open the sign-in link printed in the terminal, click **Take** to control
-the shared browser, and **Release** to return control to the agent. The browser
-profile persists across restarts.
+**Linux (with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) installed):**
 
-See [native Steel setup](../../libs/talon/README.md#local-steel-browser) for installing
-Node 24 with Homebrew and optional configuration.
+```sh
+nvm install 24
+nvm exec 24 uv run --directory ../../libs/talon python -m deepagents_talon.steel_setup
+```
+
+Keep Node 24 installed. Set `TALON_BROWSER_ENABLED=true` in your launch environment
+and restart Talon normally. Chrome is detected automatically. Open the terminal's
+sign-in link; **Take** gives you control and **Release** returns it to the agent.
+See [browser configuration](../../libs/talon/README.md#local-steel-browser) for details.
 
 ## Local Run Without Docker
 

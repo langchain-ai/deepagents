@@ -5167,29 +5167,6 @@ class TestUnsupportedContentMiddlewareCustomization:
         human_message = next(m for m in model.captured_messages[0] if isinstance(m, HumanMessage))
         assert [block["text"] for block in human_message.content_blocks] == ["attachment dropped"]
 
-    def test_on_unsupported_returning_none_drops_the_block(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})
-        agent = create_deep_agent(
-            model=model,
-            middleware=[UnsupportedContentMiddleware(on_unsupported=lambda _block, _message: None)],
-        )
-
-        agent.invoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content=[
-                            {"type": "image", "base64": _image_base64(), "mime_type": "image/png"},
-                            {"type": "text", "text": "describe it"},
-                        ]
-                    )
-                ]
-            }
-        )
-
-        human_message = next(m for m in model.captured_messages[0] if isinstance(m, HumanMessage))
-        assert [block["type"] for block in human_message.content_blocks] == ["text"]
-
     def test_subagents_get_the_filter(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})
         spec: SubAgent = {"name": "researcher", "description": "researches", "model": model, "tools": []}

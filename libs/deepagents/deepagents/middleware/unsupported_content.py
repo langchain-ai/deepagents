@@ -28,7 +28,6 @@ else:
 
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
-    from langchain_core.language_models.model_profile import ModelProfile
 
 _PDF_MIME_TYPE: Final = "application/pdf"
 
@@ -50,23 +49,14 @@ class UnsupportedContentMiddleware(_UnsupportedContentMiddleware):
       which attachment went missing.
     """
 
-    def is_supported(
-        self,
-        block: ContentBlock,
-        *,
-        model: "BaseChatModel",
-        profile: "ModelProfile",
-        in_tool_message: bool,
-    ) -> bool:
+    def is_supported(self, block: ContentBlock, *, model: "BaseChatModel", in_tool_message: bool) -> bool:
         """Gate non-PDF `file` blocks on the provider class, else defer to the profile."""
         if block["type"] == "file" and "base64" in block and block.get("mime_type") != _PDF_MIME_TYPE:
             return _model_tolerates_non_pdf_files(model)
-        return super().is_supported(block, model=model, profile=profile, in_tool_message=in_tool_message)
+        return super().is_supported(block, model=model, in_tool_message=in_tool_message)
 
-    def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock | None:
+    def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock:
         """Name the `read_file` path in the placeholder the model sees."""
-        if self.on_unsupported is not None:
-            return super().replace(block, message)
         mime_type = block.get("mime_type", "unknown")
         path = message.additional_kwargs.get("read_file_path", "the requested file")
         return cast(

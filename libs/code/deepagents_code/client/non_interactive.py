@@ -39,6 +39,7 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code.integrations.sandbox_factory import owned_sandbox
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
 from deepagents_code._content_blocks import reasoning_text
@@ -2918,7 +2919,12 @@ async def run_non_interactive(
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
-        async with server_session(
+        async with owned_sandbox(
+            sandbox_type,
+            sandbox_id=sandbox_id,
+            snapshot_name=sandbox_snapshot_name,
+            quiet=quiet,
+        ) as sandbox_id, server_session(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,

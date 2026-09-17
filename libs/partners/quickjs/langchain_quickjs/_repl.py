@@ -132,7 +132,12 @@ class _PTCState:
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
     task_dispatch_count: int = 0
-    """Next dispatch ordinal, reset when an eval starts or replays."""
+    """Ordinal for the next `task()` dispatch in this eval.
+
+    Starts at 0 for every eval, so a replayed eval that dispatches in the
+    same order reproduces the same ordinals and therefore the same derived
+    dispatch ids.
+    """
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None

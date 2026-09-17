@@ -53,7 +53,11 @@ _EVENT_LABEL_FALLBACK_MAX_CHARS = 60
 """Character cap on a label derived from the description fallback."""
 
 _DISPATCH_ID_SALT: Final = "langchain-quickjs-subagent-dispatch-v1"
-"""Domain-separation salt for derived dispatch ids."""
+"""Domain-separation prefix for derived dispatch ids.
+
+Changing this value changes every derived id, so an eval interrupted before
+the change will not recognize its own events after a resume.
+"""
 
 
 def _derive_dispatch_id(
@@ -106,7 +110,12 @@ def _derive_dispatch_id(
 
 
 class SubagentStartEvent(TypedDict):
-    """A subagent began running inside a `js_eval` call."""
+    """A subagent began running inside a `js_eval` call.
+
+    An interrupted dispatch re-emits `start` with the same `id` when the eval
+    replays, so this means "began, possibly again" rather than "began once".
+    Treat `id` as an idempotency key: upsert on `start`, never append.
+    """
 
     id: str
     """Per-dispatch id, stable across this subagent's start/complete/error."""

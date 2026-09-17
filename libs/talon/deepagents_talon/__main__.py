@@ -268,7 +268,13 @@ async def _agent_runtime(
             logger.warning("MCP server %s failed: %s", server.name, server.error)
         else:
             logger.info("MCP server %s loaded %d tool(s)", server.name, len(server.tools))
-    browser = BrowserClient(env) if _env_enabled(env, "TALON_BROWSER_ENABLED") else None
+    browser = (
+        BrowserClient(
+            {**env, "TALON_BROWSER_TOKEN_FILE": str(config.home / "browser/control-token")}
+        )
+        if _env_enabled(env, "TALON_BROWSER_ENABLED")
+        else None
+    )
     return DeepAgentRuntime(
         browser=browser,
         model=config.model,

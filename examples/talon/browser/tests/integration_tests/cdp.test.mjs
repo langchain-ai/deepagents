@@ -8,16 +8,15 @@ import { createBridge } from '../../bridge.mjs';
 
 const enabled = process.env.TALON_TEST_LIVE_CDP === '1';
 
-test('live Chrome HTTP and external CDP: tabs, flattened sessions, evaluation, file input, handoff', { skip: !enabled, timeout: 60000 }, async () => {
-  const { WebSocket, WebSocketServer } = createRequire('/app/api/package.json')('ws');
+test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, handoff', { skip: !enabled, timeout: 60000 }, async () => {
+  const { WebSocket } = createRequire(`${process.env.TALON_TEST_STEEL_DIR}/package.json`)('ws');
   const coordinator = new Coordinator({ operator: 'test', identities: { telegram: 'synthetic' } });
   const owner = { operator_id: 'test', provider: 'telegram', sender_id: 'synthetic', conversation_id: 'controlled', run_id: 'cdp-test', background: false };
   const token = randomBytes(32).toString('base64url');
-  const bridge = createBridge({ token, coordinator, WebSocket, WebSocketServer, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0,
+  const bridge = createBridge({ token, coordinator, WebSocket, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0,
     ...(process.env.TALON_TEST_CDP_LOOPBACK === '1' ? { discoverURL: async () => 'ws://127.0.0.1:3000/' } : {}) });
-  const file = `/files/jkb90-${randomBytes(8).toString('hex')}.txt`;
+  const file = `/tmp/jkb90-${randomBytes(8).toString('hex')}.txt`;
   await bridge.start();
-  let client;
   try {
     const base = `http://127.0.0.1:${bridge.control.address().port}`;
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -42,17 +41,9 @@ test('live Chrome HTTP and external CDP: tabs, flattened sessions, evaluation, f
     assert.equal((await command('Runtime.evaluate', { expression: 'document.querySelector("#upload").files[0].size', returnByValue: true }, sessionId)).result.value, 16);
     await command('Target.closeTarget', { targetId });
     await post('actions', { ...lease, owner, action: 'release', request_id: 'release' });
-    lease = await post('actions', { action: 'acquire', owner, request_id: 'acquire-ws' });
-    client = new WebSocket(base.replace('http:', 'ws:') + '/internal/browser/cdp', { headers: { Authorization: `Bearer ${token}`, 'X-Browser-Lease': lease.lease_id, 'X-Browser-Generation': String(lease.generation), 'X-Browser-Owner': Buffer.from(JSON.stringify(owner)).toString('base64') } });
-    await new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); });
-    const response = new Promise((resolve) => client.on('message', (data) => { const value = JSON.parse(data); if (value.id === 991) resolve(value); }));
-    client.send(JSON.stringify({ id: 991, method: 'Target.getTargets', params: {} }));
-    assert.ok(Array.isArray((await response).result.targetInfos));
-    const busy = await fetch(`${base}/internal/browser/command`, { method: 'POST', headers, body: JSON.stringify({ ...lease, owner, request_id: 'busy', method: 'Browser.getVersion', params: {} }) });
-    assert.deepEqual(await busy.json(), { error: 'transport_busy' });
+    lease = await post('actions', { action: 'acquire', owner, request_id: 'acquire-again' });
     const handoff = await post('actions', { ...lease, owner, action: 'handoff', request_id: 'handoff' });
     assert.equal(handoff.status, 'viewer_unavailable');
-    assert.equal(client.readyState, WebSocket.CLOSED);
     await coordinator.cancel({ ...handoff, owner }, owner);
-  } finally { client?.terminate(); await bridge.close(); rmSync(file, { force: true }); }
+  } finally { await bridge.close(); rmSync(file, { force: true }); }
 });

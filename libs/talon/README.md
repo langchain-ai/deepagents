@@ -715,10 +715,14 @@ uv run --group test pytest tests/integration_tests/test_steel_native.py
 `TALON_BROWSER_ENABLED=true` enables native `browser_cdp` and
 `browser_request_handoff` tools independently of MCP refresh. The default is off.
 Configure `TALON_BROWSER_OPERATOR_ID`, `TALON_BROWSER_IDENTITIES` as a JSON
-`{"telegram":"explicit-sender-id"}` mapping, and `TALON_BROWSER_TOKEN_FILE`
-pointing to the bridge's 43-character runtime token file (regular file, mode `0400`,
-no symlink). Never put the token itself in configuration. Control is fixed at
-`http://172.30.12.3:8081`; redirects, proxy environment settings and mutation
+`{"telegram":"explicit-sender-id"}` mapping. Talon starts the packaged Node bridge
+inside its managed Steel process and creates/removes an owner-only runtime token
+at `<assistant-home>/browser/control-token`. The CLI supplies this path automatically;
+embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
+Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
+the reserved viewer listener uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
+External CDP-client WebSockets and private-network host/URL settings are removed.
+Redirects, proxy environment settings and mutation
 retries are disabled. Requests and observations are limited to 4 MiB, including
 error responses. Every HTTP request has a 35-second wall deadline, above the
 bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
@@ -755,13 +759,17 @@ disabled-browser graph construction is unchanged. `BrowserError` now accepts an
 optional keyword-only `code` for sanitized bridge error mapping; tool signatures
 are unchanged. Navigation and evaluation remain raw CDP operations, not new tools.
 
-The cross-layer contract test launches the actual example Node bridge and
+The cross-layer contract test launches the packaged Node bridge and
 coordinator on ephemeral loopback ports with a synthetic CDP transport. It exercises
 native HTTP, runtime tools, foreground/background handoff lease versions, release,
 competing owners, and the 256-command quota without internet access. It does not
-exercise Chromium, Docker routing, or real navigation timing. From `libs/talon`,
+exercise Chromium or real navigation timing. Native Steel integration tests cover
+real navigation and input through a Talon invocation. From `libs/talon`,
 with Node.js available, run:
 
 ```bash
 uv run --group test pytest tests/integration_tests/test_browser_bridge.py --color=no
 ```
+
+Uncertain command completion fences ownership until Talon and Steel restart; it
+never silently transfers control. Shutdown closes the bridge before Chrome.

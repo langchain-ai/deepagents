@@ -155,7 +155,6 @@ test('private viewer operations require owner and current fences; done resumes s
   const resumed = await c.done({ ...human, owner, handoff_id: h.handoff_id }, owner);
   assert.equal(resumed.mode, 'AGENT');
   assert.equal(resumed.lease_id, lease.lease_id);
-  assert.equal(c.lease.external, false);
   assert.equal(c.lease.stopping, null);
   await c.action({ ...resumed, owner, action: 'release', request_id: 'r' });
 });

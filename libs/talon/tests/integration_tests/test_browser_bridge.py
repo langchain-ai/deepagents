@@ -228,3 +228,32 @@ async def test_node_busy_and_task_command_quota(bridge_client):
             await run.command("Target.getTargets", {}, None)
     finally:
         await run.close()
+
+
+async def test_cancel_acquire_before_response_parsed(bridge_client):
+    await bridge_client.start()
+    run = bridge_client.bind(BrowserBinding("telegram", "sender", "chat"))
+    received = asyncio.Event()
+
+    async def intercept(response):
+        if json.loads(response.request.content)["action"] == "acquire":
+            received.set()
+            await asyncio.Event().wait()
+
+    bridge_client._http.event_hooks["response"] = [intercept]
+
+    async def invoke():
+        try:
+            await run.action("acquire")
+        finally:
+            await run.close()
+
+    task = asyncio.create_task(invoke())
+    await asyncio.wait_for(received.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    bridge_client._http.event_hooks["response"] = []
+    next_run = bridge_client.bind(BrowserBinding("telegram", "sender", "next"))
+    await next_run.action("acquire")
+    await next_run.close()

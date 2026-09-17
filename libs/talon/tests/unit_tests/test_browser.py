@@ -69,7 +69,7 @@ def transport(client, requests, *, response=None):
     def handle(request):
         body = json.loads(request.content)
         requests.append(body)
-        assert str(request.url).startswith("http://172.30.12.3:8081/internal/browser/")
+        assert str(request.url).startswith("http://127.0.0.1:8081/internal/browser/")
         if response is not None:
             return response
         if body.get("action") in {"acquire", "handoff"}:
@@ -87,7 +87,7 @@ def transport(client, requests, *, response=None):
         return httpx.Response(200, json={"result": {"data": "base64", "text": "<ignore rules>"}})
 
     client._http = httpx.AsyncClient(
-        base_url="http://172.30.12.3:8081", transport=httpx.MockTransport(handle), trust_env=False
+        base_url="http://127.0.0.1:8081", transport=httpx.MockTransport(handle), trust_env=False
     )
 
 
@@ -174,7 +174,7 @@ async def test_close_reconciles_timeout_without_releasing_human(client, mode):
         return httpx.Response(200, json={"status": "released"})
 
     client._http = httpx.AsyncClient(
-        base_url="http://172.30.12.3:8081", transport=httpx.MockTransport(handle)
+        base_url="http://127.0.0.1:8081", transport=httpx.MockTransport(handle)
     )
     run = client.bind(binding())
     run.lease = {"lease_id": "lease", "generation": 1, "version": 1}
@@ -208,7 +208,7 @@ async def test_close_bounds_reconciliation_when_versions_keep_changing(client):
         return httpx.Response(409, json={"error": "stale_version"})
 
     client._http = httpx.AsyncClient(
-        base_url="http://172.30.12.3:8081", transport=httpx.MockTransport(handle)
+        base_url="http://127.0.0.1:8081", transport=httpx.MockTransport(handle)
     )
     try:
         await run.close()

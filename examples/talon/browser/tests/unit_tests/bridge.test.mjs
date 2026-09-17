@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import net from 'node:net';
+import http from 'node:http';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { Coordinator } from '../../coordinator.mjs';
@@ -29,8 +30,8 @@ test('runtime token and exact fixed browser endpoint', () => {
     chmodSync(path, 0o600);
     assert.throws(() => readToken(path), /invalid_token_file/);
   } finally { rmSync(directory, { recursive: true }); }
-  assert.equal(validateSocketURL('ws://172.30.14.2:3000/'), 'ws://172.30.14.2:3000/');
-  for (const url of ['ws://localhost:9222/devtools/browser/a', 'ws://172.30.14.2:3000/devtools/browser/a', 'ws://172.30.14.2:9222/devtools/browser/a?secret=x', 'ws://user@172.30.14.2:9222/devtools/browser/a']) assert.throws(() => validateSocketURL(url));
+  assert.equal(validateSocketURL('ws://127.0.0.1:3000/'), 'ws://127.0.0.1:3000/');
+  for (const url of ['ws://localhost:9222/devtools/browser/a', 'ws://127.0.0.1:3000/devtools/browser/a', 'ws://127.0.0.1:9222/devtools/browser/a?secret=x', 'ws://user@127.0.0.1:9222/devtools/browser/a']) assert.throws(() => validateSocketURL(url));
 });
 
 test('remapped IDs, session routing, sanitized CDP error and command timeout fencing', async () => {
@@ -68,6 +69,11 @@ test('HTTP route isolation, auth, dedup and late response fencing', async () => 
     assert.equal((await fetch(`${viewer}/internal/browser/status`)).status, 404);
     assert.equal((await fetch(`${control}/internal/browser/status`)).status, 401);
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    assert.equal((await fetch(`${control}/internal/browser/status`, { headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
+    const rebound = await new Promise((resolve, reject) => {
+      http.get(`${control}/internal/browser/status`, { headers: { ...headers, Host: 'attacker.example' } }, (response) => { response.resume(); resolve(response.statusCode); }).on('error', reject);
+    });
+    assert.equal(rebound, 403);
     const lease = await (await fetch(`${control}/internal/browser/actions`, { method: 'POST', headers, body: JSON.stringify({ action: 'acquire', owner, request_id: 'a' }) })).json();
       for (const [payload, status] of [
         [{ action: 'nonsense', owner, request_id: 'bad' }, 400],
@@ -112,12 +118,12 @@ test('production discovery validates listing and creates only empty default sess
     calls.push({ url, options });
     return new Response(JSON.stringify(options.method === 'POST' ? created : listing));
   });
-  assert.equal(await discover(), 'ws://172.30.14.2:3000/');
-  assert.deepEqual(calls.map((call) => call.url), Array(2).fill('http://172.30.14.2:3000/v1/sessions'));
+  assert.equal(await discover(), 'ws://127.0.0.1:3000/');
+  assert.deepEqual(calls.map((call) => call.url), Array(2).fill('http://127.0.0.1:3000/v1/sessions'));
   assert.equal(calls[1].options.body, '{}');
   listing = { sessions: [{ id: 'synthetic', status: 'live' }] };
   calls.length = 0;
-  assert.equal(await discover(), 'ws://172.30.14.2:3000/');
+  assert.equal(await discover(), 'ws://127.0.0.1:3000/');
   assert.equal(calls.length, 1);
   listing = { sessions: [null] };
   await assert.rejects(discover(), /upstream_unavailable/);

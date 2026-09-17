@@ -2,6 +2,37 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-16)
+
+### Bug Fixes
+
+- Fixed prompt clipboard word deletion behavior. ([#6345](https://github.com/langchain-ai/deepagents/pull/6345))
+- Clarified unknown model effort in footer. ([#6337](https://github.com/langchain-ai/deepagents/pull/6337))
+- Prevented duplicate clicks in the footer model and effort pickers. ([#6344](https://github.com/langchain-ai/deepagents/pull/6344))
+- Delayed hook status display in the footer to reduce UI noise. ([#6322](https://github.com/langchain-ai/deepagents/pull/6322))
+
+## [0.1.69](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.68...deepagents-code==0.1.69) (2026-09-14)
+
+### Features
+
+- Update `read_file` output formatting. ([#5648](https://github.com/langchain-ai/deepagents/pull/5648))
+- Surface DeepSeek V4.1 Flash in the model picker. ([#6254](https://github.com/langchain-ai/deepagents/pull/6254))
+- Surface locally tracked GitHub stacks in agent context. ([#6290](https://github.com/langchain-ai/deepagents/pull/6290))
+- Copy a model slug with Ctrl+click. ([#6243](https://github.com/langchain-ai/deepagents/pull/6243))
+- Show session length in the Debug Console. ([#6224](https://github.com/langchain-ai/deepagents/pull/6224))
+
+### Bug Fixes
+
+- Price nested usage with its own model and honor completions. ([#6251](https://github.com/langchain-ai/deepagents/pull/6251))
+- Drop stale Anthropic thinking blocks. ([#6300](https://github.com/langchain-ai/deepagents/pull/6300))
+- Isolate credentials used for user shell tracing. ([#6242](https://github.com/langchain-ai/deepagents/pull/6242))
+- Attribute dotenv configuration sources. ([#6222](https://github.com/langchain-ai/deepagents/pull/6222))
+- Expose unknown reasoning effort values. ([#6241](https://github.com/langchain-ai/deepagents/pull/6241))
+- Open the Debug Console at the bottom of the log. ([#6218](https://github.com/langchain-ai/deepagents/pull/6218))
+- Order Debug Console log filters. ([#6217](https://github.com/langchain-ai/deepagents/pull/6217))
+- Show the spinner during pre-stream turn setup. ([#6253](https://github.com/langchain-ai/deepagents/pull/6253))
+- Demote no-output hint suppression messages to debug logging. ([#6245](https://github.com/langchain-ai/deepagents/pull/6245))
+
 ## [0.1.68](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.67...deepagents-code==0.1.68) (2026-09-10)
 
 ### Features

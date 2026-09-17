@@ -61,6 +61,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
 from deepagents_talon.observability import (
     AgentActivityCallback,
     agent_activity_logging_enabled,
@@ -177,8 +178,10 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "connection timed out",
     "read timeout",
     "timed out",
+    "timeout limit",
     "temporarily unavailable",
     "temporary failure",
+    "try again later",
 )
 
 _CONTINUATION_NUDGE = (
@@ -565,8 +568,8 @@ class DeepAgentRuntime:
         history_token = _HISTORY_SCOPE.set(_history_scope(request))
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
-        browser_run = self._browser_run(request)
-        browser_token = set_run(browser_run)
+        browser_token = set_run(browser_run := self._browser_run(request))
+        message_token = MESSAGE_HANDLER.set(request.message_handler)
         try:
             text = await self._invoke_until_text(request, activity)
         except BaseException as error:
@@ -580,6 +583,7 @@ class DeepAgentRuntime:
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
+            MESSAGE_HANDLER.reset(message_token)
             _HISTORY_SCOPE.reset(history_token)
             _HISTORY_SESSION.reset(session_token)
             _CRON_ORIGIN.reset(token)
@@ -718,7 +722,7 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time]
+        tools: list[BaseTool | Callable[..., object]] = [current_time, send_message]
         if isinstance(self.checkpointer, ConversationSaver):
             tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
             tools.append(_delete_conversations_tool(self.checkpointer))

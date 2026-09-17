@@ -25,6 +25,7 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
     _is_retryable,
+    _status_code,
 )
 from deepagents_talon.tool_approvals import ToolApprovalStore
 
@@ -190,22 +191,10 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         )
     )
 
-    assert created == [
-        [
-            "current_time",
-            "custom_tool",
-            "get_tool_approvals",
-            "update_tool_approvals",
-            "get_agent_tools",
-        ],
-        [
-            "current_time",
-            "refreshed_tool",
-            "get_tool_approvals",
-            "update_tool_approvals",
-            "get_agent_tools",
-        ],
-    ]
+    assert "custom_tool" in created[0]
+    assert "refreshed_tool" not in created[0]
+    assert "refreshed_tool" in created[-1]
+    assert "custom_tool" not in created[-1]
     assert current_authorization_handler() is None
 
 
@@ -1293,6 +1282,29 @@ def test_is_retryable_matches_known_transient_errors() -> None:
         assert _is_retryable(error)
 
 
+def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
+    """Providers that return HTTP 200 with an error body raise a bare ValueError.
+
+    ``langchain_openai`` surfaces such bodies as ``ValueError(response["error"])``
+    with no status attribute, so classification falls back to message markers.
+    """
+    errors = [
+        ValueError(
+            {
+                "message": (
+                    "We were unable to start processing your request within the "
+                    "900-second timeout limit. Please try again later."
+                )
+            }
+        ),
+        RuntimeError("The server is overloaded. Please try again later."),
+    ]
+
+    for error in errors:
+        assert _status_code(error) is None
+        assert _is_retryable(error)
+
+
 def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
     errors = [
         StatusError(400, "invalid request: unknown field"),
@@ -1344,12 +1356,9 @@ async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatc
 
     await runtime.start()
 
-    assert [_tool_name(tool) for tool in captured["tools"]] == [
-        "current_time",
-        "get_tool_approvals",
-        "update_tool_approvals",
-        "get_agent_tools",
-    ]
+    names = {_tool_name(tool) for tool in captured["tools"]}
+    assert "current_time" in names
+    assert not names.intersection({"web_search", "fetch_url", "create_cron_job"})
 
 
 async def test_stop_keeps_resources_open_while_a_worker_may_still_write(

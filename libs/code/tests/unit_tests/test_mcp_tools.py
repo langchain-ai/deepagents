@@ -879,12 +879,13 @@ class TestGetMCPTools:
             await manager.cleanup()
 
     @pytest.mark.parametrize("filter_field", ["allowedTools", "disabledTools"])
+    @pytest.mark.parametrize("stateless", [False, True])
     async def test_colliding_tool_exported_name_remains_filterable(
-        self, mcp_servers: MCPServerRegistry, filter_field: str
+        self, mcp_servers: MCPServerRegistry, filter_field: str, stateless: bool
     ) -> None:
         """A saved exported name still selects the same tool after reloading."""
-        mcp_servers.register("a", "b_read")
-        mcp_servers.register("a_b", "read", "read_1")
+        first = mcp_servers.register("a", "b_read")
+        second = mcp_servers.register("a_b", "read", "read_1")
         config: dict[str, dict[str, dict[str, str | list[str]]]] = {
             "mcpServers": {name: {"command": "node"} for name in ("a", "a_b")}
         }
@@ -899,8 +900,7 @@ class TestGetMCPTools:
         finally:
             await manager.cleanup()
         config["mcpServers"]["a_b"][filter_field] = [exported_name]
-        tools, manager, _ = await _load_tools_from_config(config)
-        assert manager is not None
+        tools, manager, _ = await _load_tools_from_config(config, stateless=stateless)
         try:
             originals = {
                 (tool.metadata or {})["_deepagents_code_mcp_tool"]
@@ -910,8 +910,13 @@ class TestGetMCPTools:
             assert originals == (
                 {"read"} if filter_field == "allowedTools" else {"read_1"}
             )
+            for tool in tools:
+                await tool.ainvoke({})
+            assert first.calls == ["b_read"]
+            assert second.calls == list(originals)
         finally:
-            await manager.cleanup()
+            if manager is not None:
+                await manager.cleanup()
 
     async def test_call_normalizes_optional_empty_string(
         self,

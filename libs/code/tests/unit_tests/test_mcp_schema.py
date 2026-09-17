@@ -47,6 +47,9 @@ async def test_open_payload_survives_provider_conversion(
     assert mcp_tool.input_schema == original
 
 
+@pytest.mark.filterwarnings(
+    r"default:`langchain\.mcp` is in beta:langchain_core._api.LangChainBetaWarning"
+)
 @pytest.mark.parametrize(
     "constraint",
     [

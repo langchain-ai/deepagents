@@ -2396,6 +2396,10 @@ def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
     server = (tool.metadata or {})["_deepagents_code_mcp_server"]
     server_config = copy.deepcopy(config["mcpServers"][server])
     original = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
+    # This wrapper passed the full-config filters. A single-server reload has
+    # different exported names, so dispatch only by the authorized original.
+    server_config.pop("allowedTools", None)
+    server_config.pop("disabledTools", None)
 
     async def call(**arguments: Any) -> Any:  # noqa: ANN401
         tools, manager, infos = await _load_tools_from_config(

@@ -6404,6 +6404,15 @@ class TestAgentDirStaysOffTheHeavyImportPath:
 class TestBuildStreamConfigRecursionLimit:
     """`build_stream_config` carries the resolved graph step budget."""
 
+    def test_mcp_schema_estimate_is_trace_metadata(self) -> None:
+        import deepagents_code.config as config_mod
+
+        config = config_mod.build_stream_config(
+            "thread-123", assistant_id=None, mcp_schema_tokens=1234
+        )
+
+        assert config["metadata"]["dcode_mcp_schema_tokens"] == 1234
+
     def test_omitted_when_nothing_is_configured(
         self,
         tmp_path: Path,

@@ -76,6 +76,8 @@ INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
+MCP_MAX_SCHEMA_TOKENS_DEFAULT = 20_000
+MCP_MAX_TOOLS_PER_SERVER_DEFAULT = 25
 
 AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT = 20.0
 """Default wall-clock budget for one Auto classifier decision batch.
@@ -2933,6 +2935,24 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
         merge_strategy=MergeStrategy.UNION,
+    ),
+    ConfigOption(
+        key="mcp.max_schema_tokens",
+        group="MCP",
+        summary="Maximum estimated MCP schema tokens bound to the model.",
+        kind=OptionKind.INT,
+        default=MCP_MAX_SCHEMA_TOKENS_DEFAULT,
+        env_var=_env_vars.MCP_MAX_SCHEMA_TOKENS,
+        toml_keys=("mcp", "max_schema_tokens"),
+    ),
+    ConfigOption(
+        key="mcp.max_tools_per_server",
+        group="MCP",
+        summary="Tool count above which an MCP server requires `allowedTools`.",
+        kind=OptionKind.INT,
+        default=MCP_MAX_TOOLS_PER_SERVER_DEFAULT,
+        env_var=_env_vars.MCP_MAX_TOOLS_PER_SERVER,
+        toml_keys=("mcp", "max_tools_per_server"),
     ),
     # --- Plugins --------------------------------------------------------
     ConfigOption(

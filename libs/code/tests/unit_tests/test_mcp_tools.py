@@ -40,6 +40,7 @@ from deepagents_code.mcp_tools import (
     MCPToolInfo,
     _apply_tool_filter,
     _create_mcp_session,
+    _enforce_mcp_schema_limits,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
@@ -5177,6 +5178,74 @@ class TestMCPToolName:
 
     def test_short_name_is_unchanged(self) -> None:
         assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"
+
+
+class TestMCPToolSchemaLimits:
+    """MCP schema budgets remove only unfiltered oversized servers."""
+
+    def test_verbose_unfiltered_server_is_excluded(self) -> None:
+        info = MCPServerInfo(
+            name="verbose",
+            transport="stdio",
+            tools=tuple(
+                MCPToolInfo(
+                    name=f"verbose_tool_{index}",
+                    description="x" * 400,
+                    input_schema={
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    },
+                )
+                for index in range(3)
+            ),
+        )
+        tool = MagicMock()
+        discovered = {"verbose": ([tool], info)}
+
+        result, reasons = _enforce_mcp_schema_limits(
+            discovered,
+            {"verbose": {}},
+            max_schema_tokens=20,
+            max_tools_per_server=25,
+        )
+
+        assert result["verbose"][0] == []
+        assert result["verbose"][1].tools == ()
+        assert reasons
+
+    def test_explicit_allowlist_is_preserved(self) -> None:
+        info = MCPServerInfo(
+            name="allowed",
+            transport="stdio",
+            tools=(MCPToolInfo(name="allowed_tool", description="x" * 400),),
+        )
+        tool = MagicMock()
+        result, reasons = _enforce_mcp_schema_limits(
+            {"allowed": ([tool], info)},
+            {"allowed": {"allowedTools": ["allowed_tool"]}},
+            max_schema_tokens=1,
+            max_tools_per_server=0,
+        )
+
+        assert result["allowed"][0] == [tool]
+        assert reasons == []
+
+    def test_under_budget_tools_are_preserved(self) -> None:
+        info = MCPServerInfo(
+            name="small",
+            transport="stdio",
+            tools=(MCPToolInfo(name="small_tool", description="small"),),
+        )
+        tool = MagicMock()
+        result, reasons = _enforce_mcp_schema_limits(
+            {"small": ([tool], info)},
+            {"small": {}},
+            max_schema_tokens=100,
+            max_tools_per_server=25,
+        )
+
+        assert result["small"][0] == [tool]
+        assert reasons == []
 
 
 def _make_prefixed_tool(name: str, description: str = "") -> MagicMock:

@@ -2649,6 +2649,7 @@ def build_stream_config(
     turn_number: int | None = None,
     auto_approve: bool = False,
     skill_name: str | None = None,
+    mcp_schema_tokens: int | None = None,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
@@ -2715,6 +2716,7 @@ def build_stream_config(
         auto_approve: Whether auto-approve ("YOLO") mode is active for this turn.
             When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
         skill_name: Invoked skill name to record in trace metadata, or `None`.
+        mcp_schema_tokens: Estimated tokens in the bound MCP schemas, or `None`.
 
     Returns:
         Config dict with `configurable` and `metadata` keys, plus
@@ -2750,6 +2752,9 @@ def build_stream_config(
 
     if skill_name:
         metadata["ls_skill_name"] = skill_name
+
+    if mcp_schema_tokens is not None:
+        metadata["dcode_mcp_schema_tokens"] = mcp_schema_tokens
 
     # Record the launch environment so traces are groupable by terminal.
     # Blank is treated as unset, matching the other readers. Not a contract key.

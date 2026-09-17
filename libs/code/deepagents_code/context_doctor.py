@@ -47,6 +47,31 @@ def estimate_text_tokens(text: str) -> int:
     return math.ceil(len(text) / 4)
 
 
+def estimate_mcp_schema_tokens(tools: Sequence[object]) -> int:
+    """Estimate the tokens in MCP tool schemas.
+
+    Returns:
+        Estimated token count.
+    """
+    definitions = [
+        {
+            "type": "function",
+            "function": {
+                "name": getattr(tool, "name", ""),
+                "description": getattr(tool, "description", ""),
+                "parameters": getattr(tool, "input_schema", None)
+                or {"type": "object", "properties": {}},
+            },
+        }
+        for tool in tools
+    ]
+    text = "".join(
+        json.dumps(definition, separators=(",", ":"), sort_keys=True)
+        for definition in definitions
+    )
+    return estimate_text_tokens(text)
+
+
 def _schema_tokens(tools: Sequence[ToolEntry]) -> tuple[int, int]:
     schemas = [tool.schema for tool in tools if tool.schema is not None]
     text = "".join(
@@ -152,25 +177,11 @@ def _mcp_row(server: MCPServerInfo) -> ContextDoctorRow:
     if server.status != "ok":
         detail = _bounded(server.error or server.status.replace("_", " "))
         return ContextDoctorRow(_bounded(f"MCP: {server.name}"), 0, detail)
-    definitions = [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema or {"type": "object", "properties": {}},
-            },
-        }
-        for tool in server.tools
-    ]
-    text = "".join(
-        json.dumps(definition, separators=(",", ":"), sort_keys=True)
-        for definition in definitions
-    )
     count = len(server.tools)
     noun = "tool" if count == 1 else "tools"
     return ContextDoctorRow(
-        _bounded(f"MCP: {server.name} ({count} {noun})"), estimate_text_tokens(text)
+        _bounded(f"MCP: {server.name} ({count} {noun})"),
+        estimate_mcp_schema_tokens(server.tools),
     )
 
 

@@ -23,9 +23,10 @@ import shutil
 import threading
 import unicodedata
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from hashlib import sha256
+from operator import itemgetter
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -2291,6 +2292,67 @@ def _apply_tool_filter(
     ]
 
 
+def _mcp_schema_limits() -> tuple[int, int]:
+    from deepagents_code.config_manifest import (
+        MCP_MAX_SCHEMA_TOKENS_DEFAULT,
+        MCP_MAX_TOOLS_PER_SERVER_DEFAULT,
+        _emit_ranked_diagnostics,
+        _resolve_option,
+        get_option,
+    )
+
+    values = []
+    for key, fallback in (
+        ("mcp.max_schema_tokens", MCP_MAX_SCHEMA_TOKENS_DEFAULT),
+        ("mcp.max_tools_per_server", MCP_MAX_TOOLS_PER_SERVER_DEFAULT),
+    ):
+        option = get_option(key)
+        resolved = _resolve_option(option) if option is not None else None
+        if resolved is not None:
+            _emit_ranked_diagnostics(option, resolved)
+        value = resolved.value if resolved is not None else fallback
+        values.append(value if isinstance(value, int) and value > 0 else fallback)
+    return values[0], values[1]
+
+
+def _enforce_mcp_schema_limits(
+    discovered: dict[str, tuple[list[BaseTool], MCPServerInfo]],
+    server_configs: dict[str, dict[str, Any]],
+    *,
+    max_schema_tokens: int,
+    max_tools_per_server: int,
+) -> tuple[dict[str, tuple[list[BaseTool], MCPServerInfo]], list[str]]:
+    from deepagents_code.context_doctor import estimate_mcp_schema_tokens
+
+    reasons: list[str] = []
+    unfiltered: list[tuple[str, int]] = []
+    for name, (_tools, info) in discovered.items():
+        config = server_configs[name]
+        if len(info.tools) > max_tools_per_server and "allowedTools" not in config:
+            discovered[name] = ([], replace(info, tools=()))
+            reasons.append(f"{name} requires an allowedTools list")
+            continue
+        if "allowedTools" not in config:
+            unfiltered.append((name, estimate_mcp_schema_tokens(info.tools)))
+
+    total = sum(
+        estimate_mcp_schema_tokens(info.tools) for _, info in discovered.values()
+    )
+    if total > max_schema_tokens:
+        for name, tokens in sorted(unfiltered, key=itemgetter(1), reverse=True):
+            if total <= max_schema_tokens:
+                break
+            _tools, info = discovered[name]
+            discovered[name] = ([], replace(info, tools=()))
+            total -= tokens
+            reasons.append(f"{name} exceeds the MCP schema budget (~{tokens:,} tokens)")
+        if total > max_schema_tokens:
+            reasons.append(
+                f"active MCP schemas remain over budget (~{total:,} tokens)"
+            )
+    return discovered, reasons
+
+
 _MCP_LOAD_CONCURRENCY = 8
 """Upper bound on MCP servers preflighted/discovered concurrently.
 
@@ -2886,6 +2948,33 @@ async def _load_tools_from_config(
 
     all_tools: list[BaseTool] = []
     server_infos: list[MCPServerInfo] = []
+    from deepagents_code.context_doctor import estimate_mcp_schema_tokens
+
+    max_schema_tokens, max_tools_per_server = _mcp_schema_limits()
+    discovered, limit_reasons = _enforce_mcp_schema_limits(
+        discovered,
+        dict(server_items),
+        max_schema_tokens=max_schema_tokens,
+        max_tools_per_server=max_tools_per_server,
+    )
+    if limit_reasons:
+        largest = sorted(
+            (
+                (name, estimate_mcp_schema_tokens(info.tools))
+                for name, (_tools, info) in discovered.items()
+                if info.tools
+            ),
+            key=itemgetter(1),
+            reverse=True,
+        )[:3]
+        contributors = ", ".join(f"{name} (~{tokens:,})" for name, tokens in largest)
+        logger.warning(
+            "MCP schemas were limited at session start: %s. Largest active "
+            "servers: %s. Configure each server's allowedTools/disabledTools "
+            "or run /context-doctor.",
+            "; ".join(limit_reasons),
+            contributors or "none",
+        )
     for server_name, _server_config in server_items:
         if server_name in skipped:
             status, error = skipped[server_name]

@@ -454,6 +454,13 @@ async def _make_graphs_in_environment(
         project_context,
         tavily_api_key=workspace_credentials.tavily_api_key,
     )
+    from deepagents_code.context_doctor import estimate_mcp_schema_tokens
+
+    mcp_schema_tokens = sum(
+        estimate_mcp_schema_tokens(server.tools)
+        for server in mcp_server_info or []
+        if server.status == "ok"
+    )
     read_only_context_tools = _criteria_context_tools(
         tools, mcp_tools, read_only_builtins
     )
@@ -566,6 +573,7 @@ async def _make_graphs_in_environment(
             environ=workspace_env,
             credentials_snapshot=workspace_credentials,
             model_result=result,
+            mcp_schema_tokens=mcp_schema_tokens,
         )
         from deepagents_code.offload_middleware import offload_operation_from
 

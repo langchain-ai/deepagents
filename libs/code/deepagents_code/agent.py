@@ -2447,6 +2447,7 @@ def create_cli_agent(
     environ: Mapping[str, str] | None = None,
     credentials_snapshot: CredentialsSnapshot | None = None,
     model_result: ModelResult | None = None,
+    mcp_schema_tokens: int | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2620,6 +2621,7 @@ def create_cli_agent(
         environ: Environment snapshot frozen into local shell execution.
         credentials_snapshot: Credentials resolved from `environ` for this runtime.
         model_result: Workspace model metadata used in the generated prompt.
+        mcp_schema_tokens: Estimated tokens in the bound MCP schemas.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -3498,16 +3500,17 @@ def create_cli_agent(
             subagents=all_subagents or None,
             name=_sanitize_agent_message_name(assistant_id),
         )
-    if effective_recursion_limit is not None:
+    if effective_recursion_limit is not None or mcp_schema_tokens is not None:
         # `Pregel.with_config` uses `merge_configs`, which discards a value equal
         # to LangGraph's environment-derived default. Replace the copied graph's
         # config directly so that inherited default can override the SDK's 9,999.
-        agent = agent.copy(
-            {
-                "config": {
-                    **(agent.config or {}),
-                    "recursion_limit": effective_recursion_limit,
-                }
+        config = {**(agent.config or {})}
+        if effective_recursion_limit is not None:
+            config["recursion_limit"] = effective_recursion_limit
+        if mcp_schema_tokens is not None:
+            config["metadata"] = {
+                **config.get("metadata", {}),
+                "dcode_mcp_schema_tokens": mcp_schema_tokens,
             }
-        )
+        agent = agent.copy({"config": config})
     return agent, composite_backend

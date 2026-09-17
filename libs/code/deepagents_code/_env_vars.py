@@ -125,6 +125,12 @@ project approvals. (`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its
 TOML list, so a deny is never silently emptied.)
 """
 
+MCP_MAX_SCHEMA_TOKENS = "DEEPAGENTS_CODE_MCP_MAX_SCHEMA_TOKENS"
+"""Maximum estimated MCP schema tokens bound to the model."""
+
+MCP_MAX_TOOLS_PER_SERVER = "DEEPAGENTS_CODE_MCP_MAX_TOOLS_PER_SERVER"
+"""Tool count above which an MCP server requires `allowedTools`."""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 

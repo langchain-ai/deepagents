@@ -46,7 +46,7 @@ async function fixture(t, options = {}) {
     handleUpgrade(req, socket, head, callback) { const client = new Socket(); clients.push(client); callback(client); }
     close(callback) { callback(); }
   }
-  const coordinator = new Coordinator({ operator: 'operator', identities: { slack: 'person' } });
+  const coordinator = new Coordinator();
   const viewer = createLocalViewer({ coordinator, WebSocket, WebSocketServer, origin, token, fetchHTML: async () => template, createInput, ...options });
   const server = createServer(viewer.handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -119,7 +119,7 @@ test('login, exact HTTP allowlist, host/origin/CSRF and private state', async (t
 test('Take never steals an agent lease', async (t) => {
   const f = await fixture(t);
   const auth = await f.login();
-  const owner = { operator_id: 'operator', provider: 'slack', sender_id: 'person', conversation_id: 'agent-conversation', run_id: 'agent-run', background: false };
+  const owner = { run_id: 'agent-run', background: false };
   await f.coordinator.action({ action: 'acquire', owner, request_id: 'acquire' });
   const lease = f.coordinator.lease;
   assert.equal((await auth.mutate('/take')).status, 409);

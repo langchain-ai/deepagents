@@ -8,7 +8,9 @@ import json
 import math
 import os
 import secrets
+import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +22,18 @@ _READY = b'{"event":"talon_steel_ready"}\n'
 _SHUTDOWN_TIMEOUT = 30
 _MAX_PORT = 65535
 _BOOTSTRAP = Path(__file__).with_name("steel_runtime") / "bootstrap.mjs"
+
+
+def _default_chrome() -> str:
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "linux":
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            executable = shutil.which(name)
+            if executable:
+                return str(Path(executable).absolute())
+    msg = "Chrome was not found; install Chrome/Chromium or set TALON_BROWSER_CHROME"
+    raise RuntimeError(msg)
 
 
 class SteelProcess:
@@ -37,7 +51,7 @@ class SteelProcess:
             .expanduser()
             .resolve()
         )
-        self.chrome = config.env.get("TALON_BROWSER_CHROME", "")
+        self.chrome = config.env.get("TALON_BROWSER_CHROME") or _default_chrome()
         self.port = int(config.env.get("TALON_BROWSER_PORT", "3000"))
         self.timeout = float(config.env.get("TALON_BROWSER_START_TIMEOUT", "60"))
         if not 1 <= self.port <= _MAX_PORT or not math.isfinite(self.timeout) or self.timeout <= 0:
@@ -48,8 +62,6 @@ class SteelProcess:
             for key, value in config.env.items()
             if key
             in {
-                "TALON_BROWSER_OPERATOR_ID",
-                "TALON_BROWSER_IDENTITIES",
                 "TALON_BROWSER_CONTROL_PORT",
                 "TALON_BROWSER_VIEWER_PORT",
                 "TALON_BROWSER_LEASE_TTL_SECONDS",
@@ -134,13 +146,12 @@ class SteelProcess:
         node = self._prepare()
         try:
             self._acquire()
-            if self._bridge_env.get("TALON_BROWSER_IDENTITIES"):
-                if self._viewer_enabled == "true":
-                    self._viewer_token = secrets.token_urlsafe(32)
-                self._token_path.unlink(missing_ok=True)
-                fd = os.open(self._token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-                with os.fdopen(fd, "w") as token:
-                    token.write(secrets.token_urlsafe(32))
+            if self._viewer_enabled == "true":
+                self._viewer_token = secrets.token_urlsafe(32)
+            self._token_path.unlink(missing_ok=True)
+            fd = os.open(self._token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            with os.fdopen(fd, "w") as token:
+                token.write(secrets.token_urlsafe(32))
             spawn = asyncio.create_task(self._spawn(node))
             try:
                 self._process = await asyncio.shield(spawn)

@@ -1,6 +1,6 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
 
-export const OWNER_FIELDS = ['operator_id', 'provider', 'conversation_id', 'sender_id', 'run_id', 'background'];
+export const OWNER_FIELDS = ['run_id', 'background'];
 export const fail = (code) => { throw new BridgeError(code); };
 export class BridgeError extends Error {}
 export const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -11,17 +11,8 @@ export function canonical(value) {
   return JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(canonical(value[key]))])));
 }
 
-export function configuration(operator, identities) {
-  if (!text(operator) || !object(identities) || !Object.keys(identities).length) fail('invalid_config');
-  for (const [provider, sender] of Object.entries(identities)) {
-    if (!text(provider) || !text(sender)) fail('invalid_config');
-  }
-  return Object.freeze({ operator, identities: Object.freeze({ ...identities }) });
-}
-
 export class Coordinator {
-  constructor({ operator, identities, ttl = 1800000, now = Date.now, timer = setTimeout, clear = clearTimeout, drainMs = 10000 }) {
-    this.config = configuration(operator, identities);
+  constructor({ ttl = 1800000, now = Date.now, timer = setTimeout, clear = clearTimeout, drainMs = 10000 } = {}) {
     if (!Number.isSafeInteger(ttl) || ttl < 1) fail('invalid_config');
     Object.assign(this, { ttl, now, timer, clear, drainMs });
     this.generation = randomInt(1, 2 ** 48 - 1);
@@ -34,8 +25,6 @@ export class Coordinator {
         !OWNER_FIELDS.every((key) => Object.hasOwn(owner, key))) fail('invalid_owner');
     if (!OWNER_FIELDS.filter((key) => key !== 'background').every((key) => text(owner[key])) ||
         typeof owner.background !== 'boolean') fail('invalid_owner');
-    if (owner.operator_id !== this.config.operator || !Object.hasOwn(this.config.identities, owner.provider) ||
-        owner.sender_id !== this.config.identities[owner.provider]) fail('invalid_owner');
     return canonical(owner);
   }
 

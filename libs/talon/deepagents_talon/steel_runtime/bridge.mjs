@@ -259,8 +259,7 @@ export async function main(env = process.env) {
     if (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65535) fail('invalid_config');
     addresses[`${name.toLowerCase()}Port`] = configuredPort;
   }
-  const coordinator = new Coordinator({ operator: env.TALON_BROWSER_OPERATOR_ID,
-    identities: JSON.parse(env.TALON_BROWSER_IDENTITIES), ttl: Number(env.TALON_BROWSER_LEASE_TTL_SECONDS ?? 1800) * 1000 });
+  const coordinator = new Coordinator({ ttl: Number(env.TALON_BROWSER_LEASE_TTL_SECONDS ?? 1800) * 1000 });
   const { WebSocket, WebSocketServer } = createRequire(`${process.argv[2]}/package.json`)('ws');
   if (!['false', 'true'].includes(env.TALON_BROWSER_LOCAL_VIEWER ?? 'true')) fail('invalid_config');
   const localViewer = env.TALON_BROWSER_LOCAL_VIEWER !== 'false' ? createLocalViewer({

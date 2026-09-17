@@ -56,6 +56,43 @@ def assert_gone(pid: int) -> None:
         os.kill(pid, 0)
 
 
+@pytest.mark.parametrize("chrome", [None, "", "/custom/chrome"])
+def test_chrome_default_and_override(
+    config: TalonConfig, chrome: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "darwin")
+    config.env.pop("TALON_BROWSER_CHROME")
+    if chrome is not None:
+        config.env["TALON_BROWSER_CHROME"] = chrome
+    browser = steel.SteelProcess(config)
+    assert browser._environment()["CHROME_EXECUTABLE_PATH"] == (
+        chrome or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+)
+def test_linux_chrome_discovery(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "linux")
+    monkeypatch.setattr(
+        steel.shutil, "which", lambda candidate: f"/usr/bin/{name}" if candidate == name else None
+    )
+    assert steel._default_chrome() == f"/usr/bin/{name}"
+
+
+@pytest.mark.parametrize("platform", ["linux", "unknown"])
+def test_missing_chrome_requires_override(
+    config: TalonConfig, platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", platform)
+    monkeypatch.setattr(steel.shutil, "which", lambda _: None)
+    assert steel.SteelProcess(config).chrome == sys.executable
+    config.env.pop("TALON_BROWSER_CHROME")
+    with pytest.raises(RuntimeError, match="set TALON_BROWSER_CHROME"):
+        steel.SteelProcess(config)
+
+
 async def test_exclusive_profile_and_restart(config: TalonConfig) -> None:
     first, second = steel.SteelProcess(config), steel.SteelProcess(config)
     try:
@@ -172,7 +209,6 @@ async def test_viewer_link_is_terminal_only_and_rotates(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    config.env.update({"TALON_BROWSER_IDENTITIES": '{"test":"sender"}'})
     original = Path.open
     terminals: list[io.StringIO] = []
 

@@ -193,8 +193,7 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
 
   async function take(value) {
     if (local || coordinator.status().mode !== 'IDLE' || coordinator.failedLatch) throw new Error('unavailable');
-    const [provider, sender_id] = Object.entries(coordinator.config.identities)[0];
-    const owner = { operator_id: coordinator.config.operator, provider, sender_id, conversation_id: `local:${randomUUID()}`, run_id: `local:${randomUUID()}`, background: false };
+    const owner = { run_id: `local:${randomUUID()}`, background: false };
     const acquired = await coordinator.action({ action: 'acquire', request_id: randomUUID(), owner });
     local = { session: value, lease: coordinator.lease, draining: null, input: null, pending: new Set(), queue: Promise.resolve() };
     const current = local;

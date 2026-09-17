@@ -134,8 +134,6 @@ async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
         "TALON_BROWSER_PORT": str(port),
         "TALON_BROWSER_CONTROL_PORT": str(control_port),
         "TALON_BROWSER_VIEWER_PORT": str(viewer_port),
-        "TALON_BROWSER_OPERATOR_ID": "test",
-        "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
     }
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -255,8 +253,6 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
             "TALON_BROWSER_PORT": str(_port()),
             "TALON_BROWSER_CONTROL_PORT": str(_port()),
             "TALON_BROWSER_VIEWER_PORT": str(_port()),
-            "TALON_BROWSER_OPERATOR_ID": "test",
-            "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
         },
     )
     client = BrowserClient(

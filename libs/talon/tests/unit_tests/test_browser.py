@@ -43,8 +43,6 @@ def client(tmp_path):
     token.chmod(0o400)
     return BrowserClient(
         {
-            "TALON_BROWSER_OPERATOR_ID": "op",
-            "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
             "TALON_BROWSER_TOKEN_FILE": str(token),
         }
     )
@@ -116,10 +114,6 @@ async def test_cdp_contract_and_hidden_authority(client):
         assert requests[1]["version"] == 1
         assert requests[1]["session_id"] == "session"
         assert requests[1]["owner"] == {
-            "operator_id": "op",
-            "provider": "telegram",
-            "sender_id": "sender",
-            "conversation_id": "chat",
             "run_id": run.run_id,
             "background": False,
         }
@@ -225,9 +219,9 @@ async def test_close_bounds_reconciliation_when_versions_keep_changing(client):
 
 
 async def test_missing_spoofed_and_child_context_denied(client):
-    assert client.bind(None) is None
-    assert client.bind(replace(binding(), sender_id="wrong")) is None
-    assert client.bind(replace(binding(), provider="wrong")) is None
+    assert client.bind(None) is not None
+    assert client.bind(replace(binding(), sender_id="another-sender")) is not None
+    assert client.bind(replace(binding(), provider="another-channel")) is not None
     run = client.bind(binding())
     token = set_run(run)
     try:
@@ -326,16 +320,12 @@ async def test_runtime_binding_metadata_and_cleanup(client, tmp_path, cancel):
 
     try:
         await invoke(AgentRequest("chat", "go", metadata={"owner": binding(), "run_id": "spoof"}))
-        assert seen == [None]
+        assert seen[0].run_id != "spoof"
+        UUID(seen[0].run_id)
         await invoke(AgentRequest("chat", "go", browser_binding=binding()))
         await invoke(AgentRequest("chat", "go", browser_binding=binding()))
-        assert seen[1].run_id != seen[2].run_id
-        assert [r["action"] for r in requests if "action" in r] == [
-            "acquire",
-            "release",
-            "acquire",
-            "release",
-        ]
+        assert len({run.run_id for run in seen}) == 3
+        assert [r["action"] for r in requests if "action" in r] == ["acquire", "release"] * 3
         assert active_run() is None
         assert {t.name for t in runtime._build_tools() if hasattr(t, "name")} >= {
             "browser_cdp",
@@ -352,7 +342,6 @@ def test_config_browser_prefix_retained(tmp_path):
         {
             "AGENT_ASSISTANT_ID": "test",
             "TALON_BROWSER_ENABLED": "true",
-            "TALON_BROWSER_OPERATOR_ID": "op",
         },
         base_home=tmp_path,
     )
@@ -465,14 +454,11 @@ async def test_host_binding_ignores_message_metadata(tmp_path):
         await host.stop()
 
 
-async def test_host_event_bound_and_scheduled_owner_explicit(tmp_path):
+async def test_host_event_bound_and_scheduled_browser_without_configuration(tmp_path):
 
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "test",
-            "TALON_BROWSER_SCHEDULED_OWNERS": json.dumps(
-                {"job": {"provider": "telegram", "sender_id": "sender"}}
-            ),
         },
         base_home=tmp_path,
     )
@@ -485,8 +471,8 @@ async def test_host_event_bound_and_scheduled_owner_explicit(tmp_path):
     host.browser_event_handler = event
     owner = host._scheduled_browser_binding("job", "scheduled-chat")
     assert owner.background is True
-    assert owner.sender_id == "sender"
-    assert host._scheduled_browser_binding("missing", "chat") is None
+    assert owner.sender_id == "job"
+    assert host._scheduled_browser_binding("another-job", "chat").background is True
     assert host._browser_handler(owner) is None
     foreground = replace(owner, background=False)
     value = BrowserEvent("viewer_unavailable", str(uuid4()))

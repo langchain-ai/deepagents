@@ -55,9 +55,21 @@ restrictions. Out-of-workspace placement is not a same-UID shell isolation bound
 
 ## Optional local browser
 
-Follow [native Steel setup](../../libs/talon/README.md#local-steel-browser) once,
-then the existing Talon launch command also starts the configured browser.
-Steel runs locally with one persistent profile per assistant workspace.
+For a local run, install Chrome/Chromium and have **Node.js 24**, npm, and git on
+`PATH`. From `examples/talon`, run the one-time setup:
+
+```sh
+uv run --directory ../../libs/talon python -m deepagents_talon.steel_setup
+```
+
+Set `TALON_BROWSER_ENABLED=true` in your launch environment and restart Talon with
+your usual local command. Chrome is detected automatically; no browser operator ID
+is needed. Open the sign-in link printed in the terminal, click **Take** to control
+the shared browser, and **Release** to return control to the agent. The browser
+profile persists across restarts.
+
+See [native Steel setup](../../libs/talon/README.md#local-steel-browser) for installing
+Node 24 with Homebrew and optional configuration.
 
 ## Local Run Without Docker
 

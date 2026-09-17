@@ -16997,6 +16997,37 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["second"]
 
+    async def test_repeated_footer_effort_click_queues_once(self) -> None:
+        """Repeated effort clicks during a turn keep one queued picker request."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            await app.action_open_effort_selector()
+            await app.action_open_effort_selector()
+
+            assert [message.text for message in app._pending_messages] == ["/effort"]
+
+    async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
+        """Clicking the model label again does not stack another selector."""
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+            assert isinstance(app.screen, ModelSelectorScreen)
+            stack_size = len(app.screen_stack)
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+
+            assert len(app.screen_stack) == stack_size
+            assert isinstance(app.screen, ModelSelectorScreen)
+
     async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
         """Bare `/auto` and `/auto model` bypass; the mutating forms must not.
 

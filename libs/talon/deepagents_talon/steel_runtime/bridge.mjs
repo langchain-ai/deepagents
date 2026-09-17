@@ -28,11 +28,6 @@ export function readToken(path) {
   } finally { closeSync(fd); }
 }
 
-export function validateSocketURL(value) {
-  if (value !== SOCKET) fail('invalid_upstream');
-  return SOCKET;
-}
-
 async function fixedJSON(url, method = 'GET') {
   const response = await fetch(url, { method, redirect: 'error', signal: AbortSignal.timeout(2000),
     ...(method === 'POST' ? { body: '{}', headers: { 'Content-Type': 'application/json' } } : {}) });
@@ -54,12 +49,12 @@ export async function discover() {
     const session = await fixedJSON(`${STEEL}/v1/sessions`, 'POST');
     if (!object(session) || !text(session.id) || session.status !== 'live') fail('upstream_unavailable');
   }
-  return validateSocketURL(SOCKET);
+  return SOCKET;
 }
 
 export class Transport {
-  constructor({ WebSocket, coordinator, lease, discoverURL = discover, events = () => {}, timer = setTimeout, clear = clearTimeout }) {
-    Object.assign(this, { WebSocket, coordinator, lease, discoverURL, events, timer, clear });
+  constructor({ WebSocket, coordinator, lease, discoverURL = discover, timer = setTimeout, clear = clearTimeout }) {
+    Object.assign(this, { WebSocket, coordinator, lease, discoverURL, timer, clear });
     this.pending = new Map();
     this.nextId = 0;
     this.closed = false;
@@ -97,7 +92,7 @@ export class Transport {
         this.clear(entry.timer);
         if (message.error) entry.reject(new BridgeError('cdp_error'));
         else entry.resolve(message.result ?? {});
-      } else if (this.lease.mode === 'AGENT') this.events(data.toString());
+      }
     } catch { this.break(); }
   }
 
@@ -139,13 +134,13 @@ export class Transport {
 
   async close() {
     this.closed = true;
-    const sockets = [this.socket].filter(Boolean);
-    await Promise.all(sockets.map((socket) => new Promise((resolve, reject) => {
-      if (socket.readyState === 3) return resolve();
+    const socket = this.socket;
+    if (!socket || socket.readyState === 3) return;
+    await new Promise((resolve, reject) => {
       const timer = this.timer(() => { socket.terminate(); reject(new BridgeError('close_timeout')); }, 1000);
       socket.once('close', () => { this.clear(timer); resolve(); });
       socket.close();
-    })));
+    });
   }
 }
 

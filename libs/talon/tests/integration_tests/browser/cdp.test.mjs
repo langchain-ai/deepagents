@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { writeFileSync, rmSync } from 'node:fs';
-import { Coordinator } from '../../coordinator.mjs';
-import { createBridge } from '../../bridge.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
+import { createBridge } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
 const enabled = process.env.TALON_TEST_LIVE_CDP === '1';
 
@@ -44,6 +44,6 @@ test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, ha
     lease = await post('actions', { action: 'acquire', owner, request_id: 'acquire-again' });
     const handoff = await post('actions', { ...lease, owner, action: 'handoff', request_id: 'handoff' });
     assert.equal(handoff.status, 'viewer_unavailable');
-    await coordinator.cancel({ ...handoff, owner }, owner);
+    await coordinator.stop(coordinator.lease, true);
   } finally { await bridge.close(); rmSync(file, { force: true }); }
 });

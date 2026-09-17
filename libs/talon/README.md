@@ -703,12 +703,7 @@ TALON_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 uv run --group test pytest tests/integration_tests/test_steel_native.py
 ```
 
-## Resources
-
-- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
-- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
-
-## Native browser (opt-in)
+### Browser tools and coordination
 
 `TALON_BROWSER_ENABLED=true` enables native `browser_cdp` and
 `browser_request_handoff` tools independently of MCP refresh. The default is off.
@@ -719,13 +714,12 @@ at `<assistant-home>/browser/control-token`. The CLI supplies this path automati
 embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
 Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
 the reserved viewer listener uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
-External CDP-client WebSockets and private-network host/URL settings are removed.
 Redirects, proxy environment settings and mutation
 retries are disabled. Requests and observations are limited to 4 MiB, including
 error responses. Every HTTP request has a 35-second wall deadline, above the
 bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
-10-second deadline. Exact bridge codes `lease_busy`, `transport_busy`, and
-`pending_limit` become `browser_busy`; all other failures become
+10-second deadline. Exact bridge codes `lease_busy` and `pending_limit` become
+`browser_busy`; all other failures become
 `browser_unavailable`, without remote error details. The bridge owns concurrency
 and task quotas; the native client serializes CDP commands within each run.
 
@@ -746,16 +740,12 @@ host file transfer tool and no automatic login screenshot capture. All CDP resul
 are explicitly wrapped as untrusted JSON observations.
 
 Handoff returns only sanitized status/UUID and `PAUSED`: foreground
-`viewer_unavailable`, background `human_required`. No viewer/channel URL exists
-in this slice. Embedders may supply `host.browser_event_handler`, receiving
+`viewer_unavailable`, background `human_required`. No viewer or channel URL is available.
+Embedders may supply `host.browser_event_handler`, receiving
 the bound host identity and sanitized event outside model context. Actual channel
 delivery is deferred. `AgentRequest` also accepts optional keyword-only
-`browser_binding` and `browser_event_handler`; existing positional arguments are
-unchanged. The main entry point delegates client start/stop to the runtime lifecycle.
-The graph receives `BrowserContext` only when a browser client is configured;
-disabled-browser graph construction is unchanged. `BrowserError` now accepts an
-optional keyword-only `code` for sanitized bridge error mapping; tool signatures
-are unchanged. Navigation and evaluation remain raw CDP operations, not new tools.
+`browser_binding` and `browser_event_handler`.
+The graph receives `BrowserContext` only when a browser client is configured.
 
 The cross-layer contract test launches the packaged Node bridge and
 coordinator on ephemeral loopback ports with a synthetic CDP transport. It exercises
@@ -771,3 +761,8 @@ uv run --group test pytest tests/integration_tests/test_browser_bridge.py --colo
 
 Uncertain command completion fences ownership until Talon and Steel restart; it
 never silently transfers control. Shutdown closes the bridge before Chrome.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

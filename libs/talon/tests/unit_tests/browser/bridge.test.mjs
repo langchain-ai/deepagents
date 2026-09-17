@@ -7,12 +7,11 @@ import net from 'node:net';
 import http from 'node:http';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { Coordinator } from '../../coordinator.mjs';
-import { createBridge, discover, Transport, validateSocketURL, readToken, MAX_BYTES } from '../../bridge.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
+import { createBridge, discover, Transport, readToken, MAX_BYTES } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
 const owner = { operator_id: 'op', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
 const make = () => new Coordinator({ operator: 'op', identities: { telegram: 'sender' } });
-class WSS { close() {} }
 class Socket extends EventEmitter {
   constructor() { super(); this.readyState = 1; this.sent = []; queueMicrotask(() => this.emit('open')); }
   send(value) { this.sent.push(JSON.parse(value)); }
@@ -20,7 +19,7 @@ class Socket extends EventEmitter {
   close() { this.terminate(); }
 }
 
-test('runtime token and exact fixed browser endpoint', () => {
+test('runtime token requires owner-only permissions', () => {
   const directory = mkdtempSync(`${tmpdir()}/jkb90-`);
   try {
     const path = `${directory}/token`;
@@ -30,8 +29,6 @@ test('runtime token and exact fixed browser endpoint', () => {
     chmodSync(path, 0o600);
     assert.throws(() => readToken(path), /invalid_token_file/);
   } finally { rmSync(directory, { recursive: true }); }
-  assert.equal(validateSocketURL('ws://127.0.0.1:3000/'), 'ws://127.0.0.1:3000/');
-  for (const url of ['ws://localhost:9222/devtools/browser/a', 'ws://127.0.0.1:3000/devtools/browser/a', 'ws://127.0.0.1:9222/devtools/browser/a?secret=x', 'ws://user@127.0.0.1:9222/devtools/browser/a']) assert.throws(() => validateSocketURL(url));
 });
 
 test('remapped IDs, session routing, sanitized CDP error and command timeout fencing', async () => {
@@ -60,7 +57,7 @@ test('remapped IDs, session routing, sanitized CDP error and command timeout fen
 test('HTTP route isolation, auth, dedup and late response fencing', async () => {
   const coordinator = make();
   const token = randomBytes(32).toString('base64url');
-  const bridge = createBridge({ token, coordinator, WebSocket: Socket, WebSocketServer: WSS, discoverURL: async () => 'fixed', healthy: async () => true, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0 });
+  const bridge = createBridge({ token, coordinator, WebSocket: Socket, discoverURL: async () => 'fixed', healthy: async () => true, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0 });
   await bridge.start();
   try {
     const control = `http://127.0.0.1:${bridge.control.address().port}`;
@@ -134,7 +131,7 @@ test('production discovery validates listing and creates only empty default sess
 
 
 test('connection cap is shared by control and viewer and enforced before HTTP headers', async () => {
-  const bridge = createBridge({ token: randomBytes(32).toString('base64url'), coordinator: make(), WebSocket: Socket, WebSocketServer: WSS,
+  const bridge = createBridge({ token: randomBytes(32).toString('base64url'), coordinator: make(), WebSocket: Socket,
     controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0 });
   const sockets = [];
   await bridge.start();

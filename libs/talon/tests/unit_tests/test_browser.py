@@ -539,7 +539,6 @@ async def test_real_foreground_graph(client, tmp_path, monkeypatch):
     ("code", "expected"),
     [
         ("lease_busy", "browser_busy"),
-        ("transport_busy", "browser_busy"),
         ("pending_limit", "browser_busy"),
         ("request_limit", "browser_unavailable"),
         ("lease_busy secret", "browser_unavailable"),

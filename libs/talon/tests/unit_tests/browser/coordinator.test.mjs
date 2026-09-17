@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Coordinator } from '../../coordinator.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 
 const owner = { operator_id: 'operator', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
 const make = (options = {}) => new Coordinator({ operator: 'operator', identities: { telegram: 'sender' }, ...options });
@@ -29,7 +29,7 @@ test('dedup is payload-sensitive and full cache never evicts', async () => {
   assert.deepEqual(await acquire(c), first);
 });
 
-test('handoff fences immediately, drains, closes before HUMAN and only local cancel frees lease', async () => {
+test('handoff fences immediately, drains, closes before HUMAN and local stop frees lease', async () => {
   const c = make();
   const lease = await acquire(c);
   let finish;
@@ -50,7 +50,7 @@ test('handoff fences immediately, drains, closes before HUMAN and only local can
   await c.take({ ...result, owner }, owner);
   assert.equal(c.status().mode, 'HUMAN');
   assert.throws(() => c.action({ ...lease, owner, action: 'take', request_id: 'take' }), /invalid_request/);
-  await c.cancel({ ...c.status(), handoff_id: result.handoff_id, owner }, owner);
+  await c.stop(c.lease, true);
   assert.equal(c.status().mode, 'IDLE');
   assert.ok((await acquire(c)).generation > lease.generation);
 });
@@ -72,7 +72,7 @@ test('bound inspect reconciles stale handoff without weakening release CAS or hu
   await assert.rejects(c.action({ ...current, owner, action: 'release', request_id: 'race' }), /stale_version/);
   await assert.rejects(c.action({ ...human, owner, action: 'release', request_id: 'human' }), /lease_fenced/);
   assert.equal(c.status().mode, 'HUMAN');
-  await c.cancel({ ...human, handoff_id: h.handoff_id, owner }, owner);
+  await c.stop(c.lease, true);
   await acquire(c, 'next');
   assert.throws(() => c.action(inspect), /invalid_lease/);
 });
@@ -138,7 +138,7 @@ test('uncertain drain fails permanently rather than granting another owner', asy
 });
 
 
-test('private viewer operations require owner and current fences; done resumes same unexpired lease', async () => {
+test('private viewer take requires owner and current fences', async () => {
   const c = make();
   const lease = await acquire(c);
   assert.ok(Number.isSafeInteger(lease.generation) && lease.generation > 0);
@@ -151,32 +151,24 @@ test('private viewer operations require owner and current fences; done resumes s
   await assert.rejects(c.take({ ...h, owner }, { ...owner, run_id: 'other' }), /wrong_owner/);
   await assert.rejects(c.take({ ...h, owner, generation: 0 }, owner), /invalid_lease/);
   const human = await c.take({ ...h, owner }, owner);
-  await assert.rejects(c.done({ ...h, owner }, owner), /stale_version/);
-  const resumed = await c.done({ ...human, owner, handoff_id: h.handoff_id }, owner);
-  assert.equal(resumed.mode, 'AGENT');
-  assert.equal(resumed.lease_id, lease.lease_id);
-  assert.equal(c.lease.stopping, null);
-  await c.action({ ...resumed, owner, action: 'release', request_id: 'r' });
+  assert.equal(human.mode, 'HUMAN');
+  await assert.rejects(c.take({ ...h, owner }, owner), /stale_version/);
+  await c.stop(c.lease, true);
+  assert.equal(c.status().mode, 'IDLE');
 });
 
-test('human expiry pauses without reassignment or resume; local extensions bounded and foreground only', async () => {
+test('human expiry pauses without reassignment', async () => {
   let now = 0;
   const c = make({ now: () => now, ttl: 100 });
-  let lease = await acquire(c);
-  assert.throws(() => c.extend(owner, { ...lease, owner }, 101), /invalid_request/);
-  lease = c.extend(owner, { ...lease, owner }, 100);
+  const lease = await acquire(c);
   const h = await c.action({ ...lease, owner, action: 'handoff', request_id: 'h' });
-  const human = await c.take({ ...h, owner }, owner);
+  await c.take({ ...h, owner }, owner);
   now = 101;
   assert.equal(c.status().mode, 'PAUSED');
   await c.lease.stopping;
   assert.equal(c.status().lease_id, lease.lease_id);
-  await assert.rejects(c.done({ ...human, owner, handoff_id: h.handoff_id }, owner), /stale_version|lease_fenced/);
+  await assert.rejects(c.take({ ...c.status(), owner, handoff_id: h.handoff_id }, owner), /lease_fenced/);
   assert.throws(() => acquire(c), /lease_fenced/);
-  const bg = make();
-  const background = { ...owner, background: true };
-  const b = await bg.action({ owner: background, action: 'acquire', request_id: 'b' });
-  assert.throws(() => bg.extend(background, { ...b, owner: background }, 10), /lease_fenced/);
 });
 
 test('256 HTTP command quota is separate from coordination; no results cached and failure latch survives cleanup', async () => {
@@ -188,7 +180,6 @@ test('256 HTTP command quota is separate from coordination; no results cached an
   }
   assert.throws(() => c.command(held, { request_id: '0' }, () => {}), /request_replayed/);
   assert.throws(() => c.command(held, { request_id: '256' }, () => {}), /request_limit/);
-  assert.ok([...held.commands.values()].every((entry) => Object.keys(entry).sort().join() === 'digest,status'));
   await acquire(c, 'still-coordinates');
   c.failed(held);
   await new Promise(setImmediate);

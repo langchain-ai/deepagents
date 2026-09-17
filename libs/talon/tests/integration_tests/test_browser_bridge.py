@@ -17,7 +17,7 @@ from tests.unit_tests.test_background_runtime import ToolModel
 
 pytestmark = pytest.mark.allow_hosts(["127.0.0.1"])
 
-_SOURCE = Path(__file__).resolve().parents[4] / "examples/talon/browser"
+_SOURCE = Path(__file__).resolve().parents[2] / "deepagents_talon/steel_runtime"
 _SERVER = """
 const { createBridge } = await import(process.argv[1]);
 const { Coordinator } = await import(process.argv[2]);
@@ -30,8 +30,7 @@ coordinator.create = (...args) => {
     close: async () => {}, abort: () => {},
   };
 };
-class WebSocketServer { close() {} }
-const bridge = createBridge({ token: 'x'.repeat(43), coordinator, WebSocketServer,
+const bridge = createBridge({ token: 'x'.repeat(43), coordinator,
   controlHost: '127.0.0.1', controlPort: 0, viewerHost: '127.0.0.1', viewerPort: 0 });
 await bridge.start();
 console.log(`http://127.0.0.1:${bridge.control.address().port}`);

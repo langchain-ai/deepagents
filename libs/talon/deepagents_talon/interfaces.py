@@ -102,6 +102,9 @@ class SendResult:
     retryable: bool = False
 
 
+ProgressMessageHandler = Callable[[str], Awaitable[SendResult]]
+
+
 ToolApprovalDecision = Literal["approve", "reject"]
 
 
@@ -133,6 +136,7 @@ class AgentRequest:
         metadata: Runtime context supplied by the triggering component.
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
+        message_handler: Optional callback for progress updates to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
     """
@@ -151,6 +155,13 @@ class AgentRequest:
         compare=False,
     )
     authorization_handler: AuthorizationHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+
+    message_handler: ProgressMessageHandler | None = field(
         default=None,
         kw_only=True,
         repr=False,

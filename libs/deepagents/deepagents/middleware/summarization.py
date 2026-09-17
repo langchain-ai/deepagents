@@ -72,7 +72,7 @@ import uuid
 import warnings
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -495,6 +495,29 @@ def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
     if error is None:
         return None
     return str(error)
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    """Recognize context errors without retrying unrelated bad requests."""
+    if isinstance(exc, ContextOverflowError):
+        return True
+    if getattr(exc, "status_code", None) not in {400, 413, 422}:
+        return False
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "context_length_exceeded",
+            "contextwindowexceedederror",
+            "maximum context length",
+            "exceeds the context window",
+            "exceeds the available context size",
+            "context window exceeded",
+            "context limit exceeded",
+            "input tokens exceed the configured limit",
+            "prompt is too long",
+        )
+    )
 
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
@@ -1342,6 +1365,110 @@ A condensed summary follows:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
 
+    @staticmethod
+    def _with_replacements(response: ModelResponse, replacements: list[AnyMessage]) -> ModelResponse | ExtendedModelResponse:
+        if replacements:
+            return ExtendedModelResponse(model_response=response, command=Command(update={"messages": replacements}))
+        return response
+
+    @staticmethod
+    def _raise_recovery_exhausted(error: Exception) -> Never:
+        """Expose a terminal model error instead of another retryable HTTP response."""
+        msg = "Model input still does not fit after recovery; reduce input, tools, or configured output tokens."
+        raise ContextOverflowError(msg) from error
+
+    def _input_budget(self, request: ModelRequest) -> int | None:
+        """Reserve configured output and 5% headroom from the advertised input limit."""
+        profile = request.model.profile
+        limit = profile.get("max_input_tokens") if isinstance(profile, dict) else None
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            return None
+        output = 0
+        for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+            value = request.model_settings.get(key, getattr(request.model, key, None))
+            if isinstance(value, int) and not isinstance(value, bool):
+                output = max(output, value)
+        return max(0, int(limit * 0.95) - output)
+
+    def _over_budget(self, request: ModelRequest, total_tokens: int | None = None) -> bool:
+        budget = self._input_budget(request)
+        if budget is None:
+            return False
+        count = total_tokens if total_tokens is not None else self._count_tokens(request.messages, request.system_message, request.tools)
+        return count > budget
+
+    def _check_reduction(self, original: ModelRequest, reduced: ModelRequest, error: Exception | None) -> None:
+        """Never resend an unchanged rejected request or a known oversized request."""
+        count = self._count_tokens(reduced.messages, reduced.system_message, reduced.tools)
+        if error is not None and count >= self._count_tokens(original.messages, original.system_message, original.tools):
+            self._raise_recovery_exhausted(error)
+        budget = self._input_budget(reduced)
+        if budget is not None and count > budget:
+            msg = "Context remains above the input budget after compaction; reduce input, tools, or configured output tokens."
+            raise ContextOverflowError(msg)
+
+    def _call_with_budget(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+        *,
+        error: Exception | None = None,
+        rejected: ModelRequest | None = None,
+    ) -> tuple[ModelResponse, list[AnyMessage]]:
+        """Check the complete request and allow one strictly smaller tail recovery."""
+        original = rejected if rejected is not None else request
+        replacements: list[AnyMessage] = []
+        if error is not None or self._over_budget(request):
+            messages, replacements = _clip_overflow_tail(
+                request.messages,
+                self._backend,
+                keep=("tokens", 1),
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            request = request.override(messages=messages)
+            self._check_reduction(original, request, error)
+        try:
+            return handler(request), replacements
+        except Exception as exc:
+            if not _is_context_overflow(exc):
+                raise
+            if error is not None or replacements:
+                self._raise_recovery_exhausted(exc)
+            return self._call_with_budget(request, handler, error=exc)
+
+    async def _acall_with_budget(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        *,
+        error: Exception | None = None,
+        rejected: ModelRequest | None = None,
+    ) -> tuple[ModelResponse, list[AnyMessage]]:
+        """Check the complete request and allow one strictly smaller tail recovery."""
+        original = rejected if rejected is not None else request
+        replacements: list[AnyMessage] = []
+        if error is not None or self._over_budget(request):
+            messages, replacements = await _aclip_overflow_tail(
+                request.messages,
+                self._backend,
+                keep=("tokens", 1),
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            request = request.override(messages=messages)
+            self._check_reduction(original, request, error)
+        try:
+            return await handler(request), replacements
+        except Exception as exc:
+            if not _is_context_overflow(exc):
+                raise
+            if error is not None or replacements:
+                self._raise_recovery_exhausted(exc)
+            return await self._acall_with_budget(request, handler, error=exc)
+
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -1357,22 +1484,23 @@ A condensed summary follows:
 
         - If thresholds say "do not summarize", we still attempt one normal
             model call with the current effective/truncated messages.
-        - If that call raises `ContextOverflowError`, we immediately fall back to
-            the summarization path and retry the model call with
-            `summary_message + preserved_recent_messages`.
+        - Recognized provider context errors fall back to summarization and
+            offloading large trailing tool results. At most one smaller retry
+            is sent, including when the first request was already summarized.
+        - The complete request is checked against the input budget after
+            summarization. Irreducible input raises `ContextOverflowError`.
 
-        Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        History is condensed through a summary event rather than removing raw
+        messages. Offloaded tail results are persisted by message ID.
 
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            A plain `ModelResponse` when no summarization event is created, or
-                an `ExtendedModelResponse` that updates `_summarization_event`
-                with `cutoff_index`, `summary_message`, and `file_path`.
+            A plain `ModelResponse` when no state updates are needed, or an
+                `ExtendedModelResponse` with the summary event and/or offloaded
+                tool result replacements.
 
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
@@ -1393,38 +1521,28 @@ A condensed summary follows:
         # Step 2: Check if summarization should happen
         if truncate_modified:
             total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
 
         # If no summarization needed, return with truncated messages
-        overflow_triggered = False
+        overflow_error: Exception | None = None
         if not should_summarize:
             try:
                 return handler(request.override(messages=truncated_messages))
-            except ContextOverflowError:
-                overflow_triggered = True
+            except Exception as exc:
+                if not _is_context_overflow(exc):
+                    raise
+                overflow_error = exc
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
-            return handler(request.override(messages=truncated_messages))
+            response, replacements = self._call_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
+            return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._backend
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
-        new_state_tail: list[AnyMessage] = []
-        if overflow_triggered:
-            preserved_messages, new_state_tail = _clip_overflow_tail(
-                preserved_messages,
-                backend,
-                keep=self._lc_helper.keep,
-                max_input_tokens=self._get_profile_limits(),
-                token_counter=self.token_counter,
-                large_tool_results_prefix=self._large_tool_results_prefix,
-            )
-
         # Upload inline media once so both offload and summary see path references.
         offloaded_media_messages, failed_media = self._offload_inline_media(backend, messages_to_summarize)
 
@@ -1468,7 +1586,13 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = handler(request.override(messages=modified_messages))
+        modified_request = request.override(messages=modified_messages)
+        response, new_state_tail = self._call_with_budget(
+            modified_request,
+            handler,
+            error=overflow_error,
+            rejected=request.override(messages=truncated_messages),
+        )
 
         update: dict[str, Any] = {
             SUMMARIZATION_EVENT_KEY: new_event,
@@ -1498,22 +1622,23 @@ A condensed summary follows:
 
         - If thresholds say "do not summarize", we still attempt one normal
             model call with the current effective/truncated messages.
-        - If that call raises `ContextOverflowError`, we immediately fall back
-            to the summarization path and retry the model call with
-            `summary_message + preserved_recent_messages`.
+        - Recognized provider context errors fall back to summarization and
+            offloading large trailing tool results. At most one smaller retry
+            is sent, including when the first request was already summarized.
+        - The complete request is checked against the input budget after
+            summarization. Irreducible input raises `ContextOverflowError`.
 
-        Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        History is condensed through a summary event rather than removing raw
+        messages. Offloaded tail results are persisted by message ID.
 
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            A plain `ModelResponse` when no summarization event is created, or
-                an `ExtendedModelResponse` that updates `_summarization_event`
-                with `cutoff_index`, `summary_message`, and `file_path`.
+            A plain `ModelResponse` when no state updates are needed, or an
+                `ExtendedModelResponse` with the summary event and/or offloaded
+                tool result replacements.
 
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
@@ -1534,38 +1659,28 @@ A condensed summary follows:
         # Step 2: Check if summarization should happen
         if truncate_modified:
             total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
 
         # If no summarization needed, return with truncated messages
-        overflow_triggered = False
+        overflow_error: Exception | None = None
         if not should_summarize:
             try:
                 return await handler(request.override(messages=truncated_messages))
-            except ContextOverflowError:
-                overflow_triggered = True
+            except Exception as exc:
+                if not _is_context_overflow(exc):
+                    raise
+                overflow_error = exc
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
-            return await handler(request.override(messages=truncated_messages))
+            response, replacements = await self._acall_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
+            return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._backend
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
-        new_state_tail: list[AnyMessage] = []
-        if overflow_triggered:
-            preserved_messages, new_state_tail = await _aclip_overflow_tail(
-                preserved_messages,
-                backend,
-                keep=self._lc_helper.keep,
-                max_input_tokens=self._get_profile_limits(),
-                token_counter=self.token_counter,
-                large_tool_results_prefix=self._large_tool_results_prefix,
-            )
-
         # Upload inline media once so both offload and summary see path references.
         # This must complete before the gather since both methods consume the result.
         offloaded_media_messages, failed_media = await self._aoffload_inline_media(backend, messages_to_summarize)
@@ -1610,7 +1725,13 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = await handler(request.override(messages=modified_messages))
+        modified_request = request.override(messages=modified_messages)
+        response, new_state_tail = await self._acall_with_budget(
+            modified_request,
+            handler,
+            error=overflow_error,
+            rejected=request.override(messages=truncated_messages),
+        )
 
         update: dict[str, Any] = {
             SUMMARIZATION_EVENT_KEY: new_event,

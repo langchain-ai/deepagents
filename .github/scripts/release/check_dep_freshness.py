@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from packaging.specifiers import SpecifierSet
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BYPASS_LABEL = "release-deps: acknowledged"
+BYPASS_LABEL = "ci:ack-release-deps"
 COMMENT_MARKER = "<!-- dep-freshness-check -->"
 PRERELEASE_POLICY_ENV = "DEP_FRESHNESS_PRERELEASE_POLICY"
 MAX_FETCH_WORKERS = 8

@@ -40,7 +40,9 @@ text, tool-call arguments, and distinct message revisions are retained.
 - `/reset-all-history` stops active work, deletes this chat's archived sessions and
   checkpoints, and starts a fresh context. Other chats are unaffected. Cancellation
   timeouts leave history intact; deletion failures may leave a partial reset that
-  you can retry.
+  you can retry. Because the deletion cannot be undone and Talon does not ask for
+  confirmation, this command is deliberately left out of `/help` and is not
+  registered as a Discord slash command: type it in full to use it.
 
 Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
 Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
@@ -357,6 +359,12 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --discord
 ```
 
+Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, and `/mcp-reload` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
+
+Registration needs the **`applications.commands`** scope alongside `bot` in the bot's invite URL. A bot invited with only `bot` still receives messages, but a guild-scoped registration is rejected. Registration runs once per process, the first time the Gateway reports ready; a failure is logged and leaves the channel connected and usable. Because Discord requires a response to every slash command, an invocation that the exposure policy refuses now receives a brief private refusal, where a typed command is silently ignored — slash commands are visible to anyone who can see the bot, so the exposure policy, not their visibility, is what restricts use.
+
+`DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
+
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Tracing
@@ -373,9 +381,19 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## Chat commands
 
+The agent can call `send_message(text)` to post a progress update to the same chat
+while continuing to work. Updates do not end the turn; the final reply is sent
+normally. The destination is fixed by the host, and sending is disabled once the
+originating turn finishes or is superseded. Runs without a channel cannot send updates.
+
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
 and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
+
+Commands work as ordinary message text on every channel, and are case-insensitive
+with an optional `@bot` suffix. On Discord they are additionally registered as
+native slash commands, so typing `/` offers them with autocomplete and the reply
+arrives as that command's own response; see [Discord](#discord) below.
 
 ## MCP Tools
 

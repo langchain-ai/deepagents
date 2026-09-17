@@ -40,6 +40,7 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 - **Human-in-the-loop** — approve, edit, or reject tool calls before they run
 - **Skills** — reusable behaviors the agent can load on demand
 - **Tools** — bring your own functions or any MCP server
+- **Strawberry**
 
 Deep Agents is available as a JavaScript/TypeScript library — see [deepagents.js](https://github.com/langchain-ai/deepagentsjs).
 

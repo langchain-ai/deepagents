@@ -391,6 +391,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 when `langchain-aws` is installed (no-ops for non-Bedrock models)
             - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
                 when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
+            - `VertexPromptCachingMiddleware` when a version of `langchain-google-vertexai` that provides it is installed
+                (no-ops for non-Vertex models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 

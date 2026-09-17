@@ -33,6 +33,7 @@ from deepagents.graph import (
 from deepagents.middleware._prompt_caching import (
     _create_bedrock_prompt_caching_middleware,
     _create_fireworks_prompt_caching_middleware,
+    _create_vertex_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
@@ -525,6 +526,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_vertex_prompt_caching_middleware", return_value=None),
             patch(
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
@@ -604,6 +606,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_vertex_prompt_caching_middleware", return_value=None),
             patch(
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),
@@ -633,6 +636,63 @@ class TestPromptCachingWiring:
 
         with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
             result = _create_fireworks_prompt_caching_middleware()
+
+        assert result is middleware
+        middleware_cls.assert_called_once_with(unsupported_model_behavior="ignore")
+
+    def test_main_and_general_purpose_agents_get_vertex_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_vertex_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_vertex_prompt_caching_is_optional_when_middleware_unavailable(self) -> None:
+        with patch(
+            "deepagents.middleware._prompt_caching.import_module",
+            side_effect=ModuleNotFoundError(name="langchain_google_vertexai.middleware.prompt_caching"),
+        ):
+            result = _create_vertex_prompt_caching_middleware()
+
+        assert result is None
+
+    def test_vertex_prompt_caching_is_optional_when_class_unavailable(self) -> None:
+        module = MagicMock(spec=[])
+
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
+            result = _create_vertex_prompt_caching_middleware()
+
+        assert result is None
+
+    def test_vertex_prompt_caching_preserves_unrelated_import_errors(self) -> None:
+        with (
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
+            pytest.raises(ImportError),
+        ):
+            _create_vertex_prompt_caching_middleware()
+
+    def test_vertex_prompt_caching_ignores_unsupported_models(self) -> None:
+        middleware = MagicMock()
+        middleware_cls = MagicMock(return_value=middleware)
+        module = MagicMock(VertexPromptCachingMiddleware=middleware_cls)
+
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
+            result = _create_vertex_prompt_caching_middleware()
 
         assert result is middleware
         middleware_cls.assert_called_once_with(unsupported_model_behavior="ignore")

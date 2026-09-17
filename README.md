@@ -56,7 +56,7 @@ uv add deepagents
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-6-astra",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )

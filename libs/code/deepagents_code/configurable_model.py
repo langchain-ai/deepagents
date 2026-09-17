@@ -723,7 +723,8 @@ def _effective_cache_params(
     """
     if not model_spec or ":" not in model_spec:
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
+    from deepagents_code.config import _compose_openai_reasoning_effort
     from deepagents_code.model_config import ModelConfig
 
     _, _, model_name = model_spec.partition(":")
@@ -744,13 +745,20 @@ def _effective_cache_params(
             exc_info=True,
         )
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
     if not isinstance(kwargs, dict):
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
+    # Match constructor precedence when config uses native nested reasoning.
+    overrides = runtime_overrides or {}
+    kwargs = _compose_openai_reasoning_effort(
+        provider, kwargs, overrides.get("reasoning_effort"), overrides.get("reasoning")
+    )
     # `base_url` is tracked separately as the endpoint identity; keeping it out
     # of the params avoids a double-counted identity change.
-    result = cache_identity_params({k: v for k, v in kwargs.items() if k != "base_url"})
+    result = cache_identity_params(
+        {k: v for k, v in kwargs.items() if k != "base_url"}, model_spec=model_spec
+    )
     return result or None
 
 
@@ -819,7 +827,12 @@ def _checkpoint_command(
         update["_last_cache_params"] = (
             cache_params
             if cache_params is not None
-            else (cache_identity_params(resolved.model_params) or None)
+            else (
+                cache_identity_params(
+                    resolved.model_params, model_spec=resolved.model_spec
+                )
+                or None
+            )
         )
     return Command(update=update)
 

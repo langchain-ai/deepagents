@@ -256,6 +256,10 @@ def test_fetch_pypi_json_builds_canonical_request() -> None:
     request, timeout = opener.requests[0]
     assert request.full_url == "https://pypi.org/pypi/demo-package/json"
     assert request.get_header("Accept") == "application/json"
+    # PyPI's CDN caches this endpoint for 15 minutes; the revalidation headers
+    # are what keep a just-published release from reading as "up to date".
+    assert request.get_header("Cache-control") == "no-cache"
+    assert request.get_header("Pragma") == "no-cache"
     assert "deepagents" in request.get_header("User-agent")
     assert timeout == 5.0
 

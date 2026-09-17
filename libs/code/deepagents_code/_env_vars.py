@@ -506,6 +506,9 @@ hostile values the dotenv denylist does not yet enumerate. The global
 repo file, so a project `.env` cannot disable itself.
 """
 
+RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
+"""Maximum number of recent threads loaded and displayed (default: 20)."""
+
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 

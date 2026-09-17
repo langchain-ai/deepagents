@@ -49,28 +49,28 @@ async def test_review_apply_verify_and_rollback(tmp_path, monkeypatch, fixture):
     untouched = unrelated.read_bytes()
     await runtime.start()
     try:
-        before = _inventory(runtime)
+        before = await _inventory(runtime)
         old_inventory = runtime._attachment_tool(runtime._attachments)
         path.write_text(original.replace("tools: []", f"tools: {json.dumps(fixture['tools'])}"))
-        assert _inventory(runtime)["saved_changes_inactive"]
+        assert (await _inventory(runtime))["saved_changes_inactive"]
         result = await runtime._subagent_reload_tool().ainvoke({})
         assert result["status"] == fixture["status"]
-        after = _inventory(runtime)
+        after = await _inventory(runtime)
         agents = {agent["name"]: agent["tools"] for agent in after["latest_agents"]}
         assert agents["internal-research"] == fixture["expected"]
         assert after["saved_changes_inactive"] == (fixture["status"] == "failed")
-        assert old_inventory.invoke({})["current_turn_uses_previous_graph"] == (
+        assert (await old_inventory.ainvoke({}))["current_turn_uses_previous_graph"] == (
             fixture["status"] == "reloaded"
         )
         assert not {"execute", "write_file", "task"} & set(agents["internal-research"])
         assert "execute" in agents["main"]
         assert unrelated.read_bytes() == untouched
         graph = runtime._graph
-        assert _inventory(runtime) == after
+        assert await _inventory(runtime) == after
         assert runtime._graph is graph
         path.write_text(original)
         await runtime.reload_subagent_configuration()
-        assert _inventory(runtime)["agents"] == before["agents"]
-        assert not _inventory(runtime)["saved_changes_inactive"]
+        assert (await _inventory(runtime))["agents"] == before["agents"]
+        assert not (await _inventory(runtime))["saved_changes_inactive"]
     finally:
         await runtime.stop()

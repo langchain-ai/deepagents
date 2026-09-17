@@ -92,6 +92,7 @@ async def _adapter(
         from deepagents_talon.history_embeddings import HistoryEmbeddings  # noqa: PLC0415
 
         return HistoryEmbeddings(
+            config=config,
             model=profile.model,
             max_input_tokens=profile.max_input_tokens,
             batch_size=profile.batch_size,
@@ -265,7 +266,9 @@ class BoundedEmbeddings(Embeddings):
         return output
 
     async def _batch(self, texts: list[str]) -> list[list[float]]:
-        async with self.slots, asyncio.timeout(_REQUEST_TIMEOUT):
+        # CPU inference includes cold model loading; the Store batch deadline bounds it.
+        timeout = None if self.profile.adapter == "local" else _REQUEST_TIMEOUT
+        async with self.slots, asyncio.timeout(timeout):
             vectors = await self.embed.aembed_documents(texts)
         self._validate(vectors, len(texts))
         return vectors

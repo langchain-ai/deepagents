@@ -35,6 +35,16 @@ jobs:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
+      # Fail before the loop, not once per PR. An empty token makes every
+      # getContributorInfo() throw, and the per-PR catch would turn a total
+      # outage into a wall of warnings. Mirrors pr_labeler.yml.
+      - name: Verify App token
+        run: |
+          if [ -z "${{ steps.app-token.outputs.token }}" ]; then
+            echo "::error::GitHub App token generation failed — cannot classify contributors"
+            exit 1
+          fi
+
       - name: Backfill labels on open PRs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -62,19 +72,35 @@ jobs:
             });
 
             let processed = 0;
+            let updated = 0;
             let failures = 0;
             for (const pr of prs) {
               if (processed >= maxItems) break;
+              // Counted before the work, not after it: a PR that throws still
+              // consumed an attempt, and leaving it uncounted let a run whose
+              // every PR failed (an empty app token, say) walk the whole open
+              // backlog while reporting `Processed 0`.
+              processed++;
               try {
                 const author = pr.user.login;
                 const info = await h.getContributorInfo(contributorCache, author, pr.user.type);
                 const labels = new Set();
 
-                labels.add(info.isExternal ? 'external' : 'internal');
+                labels.add(info.isExternal ? 'org:external' : 'org:internal');
+                // The merged-PR search failed, so we do not know this author's
+                // tier. Leave their tier labels alone rather than reconciling
+                // against an incomplete set, and count it as a failure so the
+                // run goes red instead of reporting a clean migration.
+                if (!info.tierKnown) {
+                  failures++;
+                  core.warning(
+                    `PR #${pr.number}: contributor tier unknown for ${author} — leaving tier labels untouched`,
+                  );
+                }
                 if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
-                  labels.add('trusted-contributor');
+                  labels.add(h.tierLabelsByTier.trusted);
                 } else if (info.isExternal && info.mergedCount === 0) {
-                  labels.add('new-contributor');
+                  labels.add(h.tierLabelsByTier.new);
                 }
 
                 // Size + file labels
@@ -108,9 +134,12 @@ jobs:
                   { owner, repo, issue_number: pr.number, per_page: 100 },
                 )).map(l => l.name ?? '');
 
-                const managed = [...h.sizeLabels, ...h.tierLabels, ...h.allTypeLabels];
+                const managed = info.tierKnown
+                  ? [...h.sizeLabels, ...h.tierLabels]
+                  : [...h.sizeLabels];
+                const staleTitleLabels = h.getStaleTitleLabels(pr.title ?? '', currentLabels);
                 for (const name of currentLabels) {
-                  if (managed.includes(name) && !labels.has(name)) {
+                  if ((managed.includes(name) || staleTitleLabels.includes(name)) && !labels.has(name)) {
                     try {
                       await github.rest.issues.removeLabel({
                         owner, repo, issue_number: pr.number, name,
@@ -125,11 +154,18 @@ jobs:
                   owner, repo, issue_number: pr.number, labels: [...labels],
                 });
                 console.log(`PR #${pr.number} (${author}): ${[...labels].join(', ')}`);
-                processed++;
+                updated++;
               } catch (e) {
                 failures++;
                 core.warning(`Failed to process PR #${pr.number}: ${e.message}`);
               }
             }
 
-            console.log(`\nBackfill complete. Processed ${processed} PRs, ${failures} failures. ${contributorCache.size} unique authors.`);
+            console.log(`\nBackfill complete. Scanned ${processed} PRs, updated ${updated}, ${failures} failures. ${contributorCache.size} unique authors.`);
+            // Without this the job is green however many PRs threw, and this
+            // is the workflow an operator runs to apply the taxonomy to the
+            // existing backlog — a false success reads as "migration done".
+            // Matches the backfill in sync_priority_labels.yml.
+            if (failures > 0) {
+              core.setFailed(`${failures} PR(s) failed to process — check warnings above`);
+            }

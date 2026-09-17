@@ -13,13 +13,15 @@ import os
 import signal
 import tempfile
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
+from deepagents_talon import commands as chat_commands
 from deepagents_talon.authorization import (
     AuthorizationBinding,
     AuthorizationCompleted,
@@ -29,7 +31,13 @@ from deepagents_talon.authorization import (
     CallbackURLRequested,
     DeviceCode,
 )
-from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
+from deepagents_talon.channels.base import (
+    ChannelExposure,
+    ExposureMode,
+    outbound_media_root_from_env,
+    send_with_retry,
+)
+from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -42,7 +50,9 @@ from deepagents_talon.interfaces import (
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
+    ProgressMessageHandler,
     ReactionChannelAdapter,
+    SendResult,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -61,32 +71,24 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from deepagents_talon.config import TalonConfig
-    from deepagents_talon.cron.jobs import CronJob
+    from deepagents_talon.cron.jobs import CronJob, CronOrigin
     from deepagents_talon.speech import VoiceTranscriber
 
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 logger = logging.getLogger(__name__)
 
-_STOP_COMMAND = "/stop"
-_NEW_COMMAND = "/new"
-_MCP_RELOAD_COMMAND = "/mcp-reload"
-_HELP_COMMAND = "/help"
-_HELP_MESSAGE = (
-    "Talon is your personal agent in chat. Send a message to ask for help or get work done; "
-    "ask for reminders or recurring tasks to schedule them. "
-    "Each conversation keeps its context.\n\n"
-    "/help — Show this guide.\n"
-    "/new — Stop current work and start a fresh conversation.\n"
-    "/stop — Stop current work.\n"
-    "/mcp-reload — Reload MCP configuration after manual edits.\n\n"
-    "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
-    "then approve the change when prompted. Updated tools are available next turn.\n"
-    "OAuth: Ask to authenticate a configured MCP server. Open the sign-in link, "
-    "follow the prompts, and paste the full callback URL into the same chat when asked. "
-    "Send /stop to cancel."
-)
+_STOP_COMMAND = chat_commands.STOP
+_NEW_COMMAND = chat_commands.NEW
+_MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
+_HELP_COMMAND = chat_commands.HELP
+_RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
+_HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
+_HISTORY_RESET_FAILURE_MESSAGE = (
+    "Could not finish clearing history. Some of it may already be deleted. "
+    "Send /reset-all-history to finish clearing."
+)
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
@@ -101,6 +103,17 @@ _CANCEL_TIMEOUT_MESSAGE = (
     "Could not stop the current run within 30 seconds. Your new message was not started. "
     "Restart Talon to recover."
 )
+_AGENT_FAILURE_MESSAGE = "Something went wrong while working on that. Check Talon logs."
+_SCHEDULED_PREEMPT_FAILURE = (
+    "Could not stop the previous run on this job's thread; restart Talon to recover."
+)
+_BACKGROUND_FOLLOW_UP = "Process the completed background subagent results."
+_SCHEDULED_FOLLOW_UP = (
+    f"{_BACKGROUND_FOLLOW_UP} Report what the user needs to know, or reply "
+    f"{SILENT_SENTINEL} if there is nothing worth sending."
+)
+_BACKGROUND_RETRY_BASE_SECONDS = 2.0
+_BACKGROUND_RETRY_MAX_SECONDS = 60.0
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -130,9 +143,41 @@ class _Turn:
 
 
 @dataclass(slots=True)
-class _CronControl:
+class _ConversationLock:
     lock: asyncio.Lock
-    users: int = 0
+    holders: int = 0
+
+
+@dataclass(slots=True)
+class _BackgroundRetry:
+    attempts: int
+    deadline: float
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundRoute:
+    """Everything needed to start another main-agent turn for one conversation.
+
+    `metadata` is carried here rather than on `message` because a route is stored
+    before the inbound message is prepared, so a channel message's own metadata
+    still describes its media and voice attachments. The dispatcher drops that when
+    it synthesizes the follow-up message; host-set turn metadata has to survive it.
+
+    Args:
+        channel: Channel that receives this conversation's replies.
+        message: Message identifying the reply conversation and its sender.
+        conversation_root: Lock key shared by every turn of this conversation.
+        conversation_id: Agent thread that owns the background workers.
+        provider: Channel provider name, when the adapter reports one.
+        metadata: Turn metadata; a scheduled turn pins its cron identity here.
+    """
+
+    channel: ChannelAdapter
+    message: ChannelMessage
+    conversation_root: str
+    conversation_id: str
+    provider: str | None
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -198,8 +243,7 @@ class TalonHost:
         self.channels = tuple(channels)
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
-        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._cron_controls: dict[str, _CronControl] = {}
+        self._locks: dict[str, _ConversationLock] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
@@ -210,11 +254,55 @@ class TalonHost:
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
         self._background_loop: asyncio.Task[None] | None = None
-        self._background_routes: dict[
-            str, tuple[ChannelAdapter, ChannelMessage, str, str | None]
-        ] = {}
+        self._background_routes: dict[str, _BackgroundRoute] = {}
+        self._background_retries: dict[str, _BackgroundRetry] = {}
         self._stopped = asyncio.Event()
         self._running = False
+
+    @asynccontextmanager
+    async def _conversation_lock(self, conversation_root: str) -> AsyncIterator[None]:
+        """Serialize one conversation's work and forget it once nothing is left.
+
+        Args:
+            conversation_root: Conversation whose turns must not overlap.
+        """
+        control = self._locks.setdefault(conversation_root, _ConversationLock(asyncio.Lock()))
+        control.holders += 1
+        try:
+            async with control.lock:
+                yield
+        finally:
+            control.holders -= 1
+            # Nothing holds or awaits this lock, so replacing it cannot split
+            # mutual exclusion between an old object and a new one.
+            if control.holders == 0 and self._locks.get(conversation_root) is control:
+                del self._locks[conversation_root]
+                for conversation_id in {
+                    conversation_root,
+                    self._agent_conversation_id(conversation_root),
+                }:
+                    self._forget_idle_conversation(conversation_id)
+
+    def _forget_idle_conversation(self, conversation_id: str) -> None:
+        """Drop turn state for a conversation with nothing left in flight.
+
+        Args:
+            conversation_id: Agent conversation whose turn state may be dropped.
+        """
+        task = self._tasks.get(conversation_id)
+        if (
+            (task is not None and not task.done())
+            or conversation_id in self._conversation_tasks
+            or conversation_id in self._blocked
+            or conversation_id in self._background_routes
+            or conversation_id in self._pending_tool_approvals
+            or conversation_id in self._pending_authorizations
+            or conversation_id in self._authorization_flows
+            or conversation_id in self._terminal_authorizations
+        ):
+            return
+        self._tasks.pop(conversation_id, None)
+        self._generations.pop(conversation_id, None)
 
     @property
     def running(self) -> bool:
@@ -222,25 +310,35 @@ class TalonHost:
         return self._running
 
     async def start(self) -> None:
-        """Start the agent runtime, scheduler, and channels."""
+        """Start the agent runtime, scheduler, and channels.
+
+        Raises:
+            Exception: Whatever a managed component raised while starting. The
+                components already started are stopped in reverse order first,
+                so a partial start never leaves connections or subprocesses open.
+        """
         if self._running:
             return
 
         self.config.ensure_home()
         await self.agent.start()
-
-        for channel in self.channels:
-            channel.set_message_handler(
-                lambda message, current=channel: self.receive_message(current, message),
-            )
-            if isinstance(channel, ReactionChannelAdapter):
-                channel.set_reaction_handler(
-                    lambda reaction, current=channel: self.receive_reaction(current, reaction),
-                )
-            await channel.start()
-
-        if self.scheduler is not None:
-            await self.scheduler.start()
+        started: list[ChannelAdapter] = []
+        scheduler: CronScheduler | None = None
+        try:
+            for channel in self.channels:
+                self._bind_channel(channel)
+                # Tracked before starting, not after: a channel that raises partway
+                # through `start()` may already hold a subprocess or polling tasks,
+                # and only its own `stop()` releases them. `_stop_component`
+                # tolerates a channel that never got that far.
+                started.append(channel)
+                await channel.start()
+            if self.scheduler is not None:
+                await self.scheduler.start()
+                scheduler = self.scheduler
+        except BaseException:
+            await self._unwind_start(started, scheduler)
+            raise
 
         self._stopped.clear()
         self._running = True
@@ -249,7 +347,11 @@ class TalonHost:
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
-        """Stop managed components and cancel in-flight agent work."""
+        """Stop managed components and cancel in-flight agent work.
+
+        Every component is stopped even when an earlier one fails, so shutdown
+        always completes and always releases the host.
+        """
         if not self._running:
             self._stopped.set()
             return
@@ -257,19 +359,48 @@ class TalonHost:
         self._running = False
         if self._background_loop is not None:
             self._background_loop.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._background_loop
+            await asyncio.gather(self._background_loop, return_exceptions=True)
         await self._cancel_all()
 
         for channel in reversed(self.channels):
-            await channel.stop()
+            await self._stop_component(channel.stop, "channel")
 
         if self.scheduler is not None:
-            await self.scheduler.stop()
+            await self._stop_component(self.scheduler.stop, "scheduler")
 
-        await self.agent.stop()
+        await self._stop_component(self.agent.stop, "agent runtime")
         self._stopped.set()
         logger.info("Talon host stopped for assistant %s", self.config.assistant_id)
+
+    def _bind_channel(self, channel: ChannelAdapter) -> None:
+        channel.set_message_handler(
+            lambda message, current=channel: self.receive_message(current, message),
+        )
+        if isinstance(channel, ReactionChannelAdapter):
+            channel.set_reaction_handler(
+                lambda reaction, current=channel: self.receive_reaction(current, reaction),
+            )
+
+    async def _unwind_start(
+        self,
+        channels: list[ChannelAdapter],
+        scheduler: CronScheduler | None,
+    ) -> None:
+        if scheduler is not None:
+            await self._stop_component(scheduler.stop, "scheduler")
+        for channel in reversed(channels):
+            await self._stop_component(channel.stop, "channel")
+        await self._stop_component(self.agent.stop, "agent runtime")
+
+    async def _stop_component(
+        self,
+        stop: Callable[[], Awaitable[None]],
+        component: str,
+    ) -> None:
+        try:
+            await stop()
+        except Exception:
+            logger.exception("Failed to stop Talon %s", component)
 
     async def run_until_stopped(self) -> None:
         """Start the host and keep it alive until shutdown is requested."""
@@ -305,7 +436,7 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        async with self._locks[conversation_root]:
+        async with self._conversation_lock(conversation_root):
             agent_conversation_id = self._agent_conversation_id(conversation_root)
 
             if await self._handle_conversation_command(
@@ -330,11 +461,13 @@ class TalonHost:
                 return
 
             await self._replace_agent_turn(
-                channel,
-                message,
-                conversation_root,
-                agent_conversation_id,
-                provider,
+                _BackgroundRoute(
+                    channel=channel,
+                    message=message,
+                    conversation_root=conversation_root,
+                    conversation_id=agent_conversation_id,
+                    provider=provider,
+                ),
             )
 
     async def _handle_conversation_command(
@@ -347,7 +480,7 @@ class TalonHost:
     ) -> bool:
         """Dispatch commands while the caller holds the conversation lock."""
         command = _command_name(message.text)
-        if command == "/reset-all-history":
+        if command == _RESET_ALL_HISTORY_COMMAND:
             await self._reset_all_history(
                 channel,
                 message.conversation_id,
@@ -420,14 +553,10 @@ class TalonHost:
             env=self.config.env,
         )
 
-    async def _replace_agent_turn(
-        self,
-        channel: ChannelAdapter,
-        message: ChannelMessage,
-        conversation_root: str,
-        conversation_id: str,
-        provider: str | None,
-    ) -> None:
+    async def _replace_agent_turn(self, route: _BackgroundRoute) -> None:
+        conversation_id = route.conversation_id
+        channel = route.channel
+        message = route.message
         if conversation_id in self._blocked:
             await send_with_retry(
                 lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
@@ -444,22 +573,16 @@ class TalonHost:
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
         if isinstance(self.agent, BackgroundRuntime):
-            self._background_routes[conversation_id] = (
-                channel,
-                message,
-                conversation_root,
-                provider,
-            )
+            self._background_routes[conversation_id] = route
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
         task = asyncio.create_task(
             self._run_agent_turn(
-                channel,
-                message,
+                route,
                 _Turn(
-                    conversation_root,
+                    route.conversation_root,
                     conversation_id,
-                    provider,
+                    route.provider,
                     generation,
                     recovery_degraded,
                 ),
@@ -472,50 +595,95 @@ class TalonHost:
     async def _process_background_results(self) -> None:
         while self._running:
             await asyncio.sleep(1)
-            await self._dispatch_background_results()
+            try:
+                await self._dispatch_background_results()
+            except Exception:
+                logger.exception("Failed to deliver background subagent results")
 
     async def _dispatch_background_results(self) -> None:
         if not isinstance(self.agent, BackgroundRuntime):
             return
-        for owner, (channel, message, root, provider) in list(self._background_routes.items()):
-            async with self._locks[root]:
+        for owner, route in list(self._background_routes.items()):
+            root = route.conversation_root
+            control = self._locks.get(root)
+            # Nothing may await between this check and the acquire below. A scheduled
+            # job holds its conversation lock for the whole of a run that can last
+            # minutes, so a suspension point here would let this sequential loop block
+            # on that lock and stall delivery for every other conversation.
+            if control is not None and control.lock.locked():
+                # A turn or a command owns this conversation, and cancelling one can
+                # take 30 seconds. Leave it and retry on the next tick.
+                continue
+            async with self._conversation_lock(root):
                 active = self._tasks.get(owner)
                 if active is not None and not active.done():
                     continue
                 if owner not in self.agent.background.owners():
                     self._background_routes.pop(owner, None)
+                    self._background_retries.pop(owner, None)
                     continue
                 if owner in self._blocked or self._agent_conversation_id(root) != owner:
                     continue
-                if self.agent.background.results(owner):
+                if not self.agent.background.results(owner):
+                    self._background_retries.pop(owner, None)
+                    continue
+                if self._claim_background_turn(owner):
                     await self._replace_agent_turn(
-                        channel,
-                        ChannelMessage(
-                            message.conversation_id,
-                            "Process the completed background subagent results.",
-                            sender_id=message.sender_id,
+                        replace(
+                            route,
+                            metadata={**route.metadata, "background_delivery": True},
+                            message=ChannelMessage(
+                                route.message.conversation_id,
+                                _follow_up_prompt(route),
+                                sender_id=route.message.sender_id,
+                            ),
                         ),
-                        root,
-                        owner,
-                        provider,
                     )
+
+    def _claim_background_turn(self, owner: str) -> bool:
+        """Take a delivery slot for one conversation, spacing out repeat attempts.
+
+        Args:
+            owner: Conversation whose pending results need a main-agent turn.
+
+        Returns:
+            Whether a turn may start now. A conversation that keeps failing to
+            consume its results waits longer before each further attempt.
+        """
+        now = asyncio.get_running_loop().time()
+        retry = self._background_retries.get(owner)
+        if retry is not None and now < retry.deadline:
+            return False
+        attempts = 0 if retry is None else retry.attempts + 1
+        delay = min(_BACKGROUND_RETRY_BASE_SECONDS * 2**attempts, _BACKGROUND_RETRY_MAX_SECONDS)
+        self._background_retries[owner] = _BackgroundRetry(attempts, now + delay)
+        return True
 
     async def _run_agent_turn(
         self,
-        channel: ChannelAdapter,
-        message: ChannelMessage,
+        route: _BackgroundRoute,
         turn: _Turn,
     ) -> None:
+        channel = route.channel
         agent_conversation_id = turn.conversation_id
-        message = await transcribe_voice_message(self.voice_transcriber, message)
+        message = await transcribe_voice_message(self.voice_transcriber, route.message)
         message = _prepare_inbound_message(message)
         metadata: dict[str, object] = {
             "channel": turn.provider,
             "sender_id": message.sender_id,
             "message_id": message.message_id,
             **message.metadata,
+            # Last, so channel-supplied inbound metadata can never restate a field the
+            # host sets. A scheduled turn's cron identity is what its tools scope by.
+            **route.metadata,
         }
-        if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
+        scheduled = metadata.get("trigger") == "cron"
+        unattended = scheduled or bool(route.metadata.get("background_delivery"))
+        if (
+            isinstance(self.agent, ConversationHistoryRuntime)
+            and self.agent.history_enabled
+            and not scheduled
+        ):
             metadata["history_channel"] = _channel_key(channel, turn.provider)
             metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
@@ -527,44 +695,161 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
+        exposure = getattr(getattr(channel, "config", None), "exposure", None)
+        operator = bool(
+            not unattended
+            and isinstance(exposure, ChannelExposure)
+            and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
+            and route.message.sender_id
+            and (
+                route.message.sender_id in exposure.operator_ids
+                or (
+                    exposure.mode == ExposureMode.SELF
+                    and route.message.metadata.get("from_self") is True
+                )
+            )
+        )
+
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
+        active = True
+
+        async def send_progress(text: str) -> SendResult:
+            if (
+                not active
+                or self._generations[agent_conversation_id] != turn.generation
+                or self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
+                or agent_conversation_id in self._terminal_authorizations
+            ):
+                return SendResult(success=False)
+            return await channel.send_message(message.conversation_id, text)
+
+        async def message_handler(text: str) -> SendResult:
+            return await send_with_retry(lambda: send_progress(text))
+
         try:
             result = await self._invoke_agent(
                 conversation_id=agent_conversation_id,
                 text=message.text,
                 metadata=metadata,
-                approval_handler=lambda approval: self._request_tool_approval(
-                    channel,
-                    approval,
-                    provider=_channel_key(channel, turn.provider),
-                    reply_conversation_id=message.conversation_id,
-                    sender_id=message.sender_id,
+                # A scheduled turn has no operator to ask. Approvals are auto-denied
+                # upstream for `trigger: cron`, and an authorization prompt raises on
+                # the absent sender rather than reaching anyone, so both are withheld
+                # exactly as `run_scheduled_job` withholds them.
+                approval_handler=None
+                if unattended
+                else (
+                    lambda approval: self._request_tool_approval(
+                        channel,
+                        approval,
+                        provider=_channel_key(channel, turn.provider),
+                        reply_conversation_id=message.conversation_id,
+                        sender_id=message.sender_id,
+                    )
                 ),
-                authorization_handler=lambda event: self._handle_authorization_event(
-                    channel,
-                    event,
-                    provider=_channel_key(channel, turn.provider),
-                    reply_conversation_id=message.conversation_id,
-                    agent_conversation_id=agent_conversation_id,
-                    sender_id=message.sender_id,
+                authorization_handler=None
+                if unattended
+                else (
+                    lambda event: self._handle_authorization_event(
+                        channel,
+                        event,
+                        provider=_channel_key(channel, turn.provider),
+                        reply_conversation_id=message.conversation_id,
+                        agent_conversation_id=agent_conversation_id,
+                        sender_id=message.sender_id,
+                    )
                 ),
+                tool_approval_operator=operator,
+                message_handler=message_handler,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
+            if scheduled and is_silent(result.text):
+                log_event(
+                    logger,
+                    "cron.background_suppressed",
+                    job_id=metadata.get("cron_job_id"),
+                    job_name=metadata.get("cron_job_name"),
+                )
+                suppress_result = True
+        except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
+            result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
+            active = False
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
             self._clear_authorization(agent_conversation_id)
-        async with self._locks[turn.conversation_root]:
-            if (
-                self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
-                and self._generations[agent_conversation_id] == turn.generation
-                and not suppress_result
-            ):
-                await self._deliver_agent_result(channel, message.conversation_id, result)
+        await self._settle_agent_turn(
+            turn,
+            result,
+            channel=channel,
+            reply_conversation_id=message.conversation_id,
+            suppress_result=suppress_result,
+        )
+
+    async def _settle_agent_turn(
+        self,
+        turn: _Turn,
+        result: AgentResult,
+        *,
+        channel: ChannelAdapter,
+        reply_conversation_id: str,
+        suppress_result: bool,
+    ) -> None:
+        """Send a finished turn's reply, or return the work behind it to the queue.
+
+        Args:
+            turn: Turn whose model call has completed.
+            result: Output that turn produced.
+            channel: Channel that would carry the reply.
+            reply_conversation_id: Chat the reply is addressed to.
+            suppress_result: Whether the host is withholding this reply on purpose.
+        """
+        agent_conversation_id = turn.conversation_id
+        try:
+            async with self._conversation_lock(turn.conversation_root):
+                if suppress_result:
+                    # Withheld on purpose -- a terminal authorization, or a scheduled
+                    # run that chose silence. The model consumed these results and
+                    # nobody was waiting to hear about them, so they stay acknowledged
+                    # even if a newer turn has since taken the thread.
+                    return
+                if (
+                    self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
+                    or self._generations[agent_conversation_id] != turn.generation
+                ):
+                    # Not a deliberate silence: a newer turn took this thread, so a
+                    # reply nobody asked for any more is dropped. The background work
+                    # behind it was never reported, so it goes back to the queue.
+                    self._requeue_background_results(result)
+                    return
+                await self._deliver_agent_result(channel, reply_conversation_id, result)
+        except asyncio.CancelledError:
+            # Cancelled between the model finishing and this reply going out -- the
+            # same loss, reached by the other route, and the reason this runs while
+            # the cancellation is in flight rather than after it. Suppression still
+            # wins: it was decided before the cancellation and does not become a loss
+            # because of one.
+            if not suppress_result:
+                self._requeue_background_results(result)
+            raise
+
+    def _requeue_background_results(self, result: AgentResult) -> None:
+        """Offer a discarded turn's background results to the next turn.
+
+        Args:
+            result: Turn output that never reached its conversation.
+        """
+        if not result.background_results or not isinstance(self.agent, BackgroundRuntime):
+            return
+        self.agent.background.requeue(result.background_results)
+        log_event(
+            logger,
+            "background.requeued",
+            result_count=len(result.background_results),
+        )
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.
@@ -574,29 +859,103 @@ class TalonHost:
 
         Returns:
             Agent text output for scheduler delivery handling.
+
+        Raises:
+            RuntimeError: If a turn already running on this job's thread could not be
+                stopped first.
         """
         conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
-        control = self._cron_controls.setdefault(job.id, _CronControl(asyncio.Lock()))
-        control.users += 1
-        try:
-            async with control.lock:
-                result = await self._invoke_agent(
-                    conversation_id=conversation_id,
-                    text=job.prompt,
-                    metadata={
-                        "channel": job.origin.channel,
-                        "cron_job_id": job.id,
-                        "cron_job_name": job.name,
-                        "origin_conversation_id": job.origin.conversation_id,
-                        "cron_origin_message_id": job.origin.message_id,
-                        "trigger": "cron",
-                    },
-                )
-                return result.text
-        finally:
-            control.users -= 1
-            if control.users == 0 and self._cron_controls.get(job.id) is control:
-                del self._cron_controls[job.id]
+        # Held across the whole run, as the per-job lock it replaces was. It keeps two
+        # fires off one graph thread, and it keeps the background dispatcher from
+        # popping this job's route before the run has had a chance to delegate.
+        async with self._conversation_lock(conversation_id):
+            await self._preempt_scheduled_turn(conversation_id)
+            self._route_scheduled_background(
+                job,
+                conversation_id,
+                await self.origin_channel(job.origin),
+            )
+            result = await self._invoke_agent(
+                conversation_id=conversation_id,
+                text=job.prompt,
+                metadata=_scheduled_metadata(job),
+            )
+            return result.text
+
+    async def _preempt_scheduled_turn(self, conversation_id: str) -> None:
+        """Clear a background follow-up turn before a new run writes the same thread.
+
+        Args:
+            conversation_id: Scheduled job thread about to be invoked.
+
+        Raises:
+            RuntimeError: If a turn already on this thread could not be stopped, so
+                the scheduler records the run as failed instead of writing the thread
+                underneath a live one.
+        """
+        if conversation_id in self._blocked:
+            raise RuntimeError(_SCHEDULED_PREEMPT_FAILURE)
+        active = self._tasks.get(conversation_id)
+        if active is None or active.done():
+            return
+        # Deliberately not `_cancel_conversation_tasks`: that also cancels this
+        # thread's workers and drops its route, discarding the very results the turn
+        # was consuming. Cancelling the turn alone leaves them unacknowledged -- the
+        # runtime skips `record_delivery_failure` for a cancellation -- so the
+        # dispatcher delivers them again once this run releases the thread.
+        if await self._cancel_active(conversation_id, active, recover=True) is (
+            _CancelOutcome.TIMEOUT
+        ):
+            raise RuntimeError(_SCHEDULED_PREEMPT_FAILURE)
+
+    def _route_scheduled_background(
+        self,
+        job: CronJob,
+        conversation_id: str,
+        channel: ChannelAdapter | None,
+    ) -> None:
+        """Point a scheduled job's background results at its origin conversation.
+
+        Registered before the run, not after: the scheduler swallows whatever
+        `run_scheduled_job` raises, so a run that fails after delegating would
+        otherwise strand its subagent with nothing to deliver it. A route for a job
+        that delegates nothing is dropped by the dispatcher on its next tick.
+
+        Args:
+            job: Claimed cron job about to run.
+            conversation_id: Thread the job runs on, which owns its background work.
+            channel: Channel serving the job's origin, if one does.
+        """
+        if not isinstance(self.agent, BackgroundRuntime):
+            return
+        if channel is None:
+            logger.warning(
+                "No channel serves cron job %s; its background results cannot be delivered",
+                job.id,
+            )
+            return
+        self._background_routes[conversation_id] = _BackgroundRoute(
+            channel=channel,
+            message=ChannelMessage(job.origin.conversation_id, job.prompt),
+            conversation_root=conversation_id,
+            conversation_id=conversation_id,
+            provider=job.origin.channel,
+            metadata=_scheduled_metadata(job),
+        )
+
+    async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
+        """Return the channel serving a scheduled job's origin conversation.
+
+        Args:
+            origin: Conversation that receives a job's results.
+
+        Returns:
+            First channel matching the origin, or `None` when no channel does.
+        """
+        for channel in self.channels:
+            if origin.channel is None or await _channel_provider(channel) == origin.channel:
+                return channel
+        return None
 
     async def deliver_scheduled_result(
         self,
@@ -613,7 +972,7 @@ class TalonHost:
         """
         await send_with_retry(lambda: channel.send_message(job.origin.conversation_id, text))
 
-    async def _invoke_agent(
+    async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
         *,
         conversation_id: str,
@@ -622,7 +981,15 @@ class TalonHost:
         approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
         | None = None,
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
+        tool_approval_operator: bool = False,
+        message_handler: ProgressMessageHandler | None = None,
     ) -> AgentResult:
+        metadata = {
+            **metadata,
+            "tool_approval_operator": tool_approval_operator is True
+            and metadata.get("trigger") != "cron"
+            and not metadata.get("background_delivery"),
+        }
         try:
             with langsmith_trace_context(
                 self.config.env,
@@ -637,6 +1004,7 @@ class TalonHost:
                         metadata=metadata,
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
+                        message_handler=message_handler,
                     ),
                 )
         except asyncio.CancelledError:
@@ -665,22 +1033,52 @@ class TalonHost:
         if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
             await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
             return
+        previous_resets = self._conversation_resets
+        bumped = False
         try:
-            await self.agent.clear_history(channel_key, chat)
+            # Persist the counter before clearing, because the reverse order can erase
+            # history while leaving the conversation on its old thread id. The rollback
+            # below is what makes this order safe: a clear that does not finish must not
+            # leave the chat on a fresh thread while its history is still on disk, which
+            # would read as a completed reset to someone who asked for one.
             next_resets = {
-                **self._conversation_resets,
-                conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+                **previous_resets,
+                conversation_root: previous_resets.get(conversation_root, 0) + 1,
             }
             _save_conversation_resets(self.config.conversation_state_path, next_resets)
             self._conversation_resets = next_resets
+            bumped = True
+            await self.agent.clear_history(channel_key, chat)
         except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
             logger.warning("Conversation history reset failed", exc_info=True)
-            message = "Could not finish clearing history. Please try /reset-all-history again."
+            if bumped:
+                self._roll_back_conversation_resets(previous_resets)
+            message = _HISTORY_RESET_FAILURE_MESSAGE
         else:
             message = (
                 "Cleared all conversation history for this chat. Started a fresh conversation."
             )
         await send_with_retry(lambda: channel.send_message(chat, message))
+
+    def _roll_back_conversation_resets(self, previous: dict[str, int]) -> None:
+        """Undo a counter bump whose history clear did not finish.
+
+        The write is atomic, so it either restores the file or leaves the bumped
+        value in place — the same state as not writing at all. Memory is restored
+        either way, so this process keeps the old thread id even when the disk
+        cannot be corrected.
+
+        Args:
+            previous: Reset counters as they stood before the bump.
+        """
+        self._conversation_resets = previous
+        try:
+            _save_conversation_resets(self.config.conversation_state_path, previous)
+        except Exception:
+            logger.exception(
+                "Could not roll back the conversation reset counter; a restart will move "
+                "this chat to a new conversation with its history still stored",
+            )
 
     async def _start_new_conversation(
         self,
@@ -801,10 +1199,27 @@ class TalonHost:
         channel_key: str,
         conversation_id: str,
     ) -> str:
-        if len(self.channels) <= 1 and not (
-            isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled
-        ):
-            return conversation_id
+        """Key a conversation by its channel, always.
+
+        This value is the LangGraph thread id and the key of the persisted reset
+        counters. It used to be the bare conversation id for a host with one
+        channel and no history, so adding a second channel or enabling history
+        re-keyed every existing conversation. Keying unconditionally costs that
+        migration once instead of on each such change.
+
+        Upgrading a host that had one channel and no history therefore abandons
+        its checkpoints and its reset counters: those rows stay in the stores
+        under the old bare key, unreachable, and every conversation starts
+        empty with its `/new` count back at zero. This is deliberate; there is
+        no migration, and the simplification is not accidental.
+
+        Args:
+            channel_key: Trusted channel provider identifier.
+            conversation_id: Channel-specific conversation identifier.
+
+        Returns:
+            Conversation root shared by every turn of one chat on one channel.
+        """
         return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:
@@ -1254,6 +1669,7 @@ class TalonHost:
             tasks.discard(task)
             if not tasks:
                 del self._conversation_tasks[conversation_id]
+        self._forget_idle_conversation(conversation_id)
         if task.cancelled():
             return
         exc = task.exception()
@@ -1332,6 +1748,44 @@ def _outbound_media_from_refs(
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
+
+
+def _scheduled_metadata(job: CronJob) -> dict[str, object]:
+    """Return the turn metadata identifying one scheduled job's thread.
+
+    One source for both a job's own run and any later background follow-up turn on
+    the same thread, so the two agree on every field the runtime reads from them --
+    `trigger`, which auto-denies tool approvals a scheduled turn has no operator to
+    answer, and `channel`, which the cron tools scope a job's own edits by.
+
+    Args:
+        job: Cron job whose thread the turn runs on.
+
+    Returns:
+        Turn metadata for a scheduled run.
+    """
+    return {
+        "channel": job.origin.channel,
+        "cron_job_id": job.id,
+        "cron_job_name": job.name,
+        "origin_conversation_id": job.origin.conversation_id,
+        "cron_origin_message_id": job.origin.message_id,
+        "trigger": "cron",
+    }
+
+
+def _follow_up_prompt(route: _BackgroundRoute) -> str:
+    """Return the prompt that asks a conversation to process finished background work.
+
+    Args:
+        route: Conversation whose background results are ready.
+
+    Returns:
+        Prompt text; a scheduled conversation is also told how to stay silent.
+    """
+    if route.metadata.get("trigger") == "cron":
+        return _SCHEDULED_FOLLOW_UP
+    return _BACKGROUND_FOLLOW_UP
 
 
 def _conversation_key(provider: str, conversation_id: str) -> str:

@@ -373,6 +373,157 @@ class TestRuntimeDotenvReload:
             config_mod._dotenv_loaded_values.clear()
 
 
+class TestDotenvProvenance:
+    """Dotenv-injected config values identify the file that supplied them."""
+
+    def test_global_dotenv_source_is_rendered_in_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Text output names the global file without echoing the raw dotenv line."""
+        from deepagents_code.client.commands.config import _run_get
+
+        name = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=0\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert _run_get("tracing.langsmith_redact", "text") == 0
+        output = capsys.readouterr().out
+        compact = "".join(output.splitlines())
+        assert f"env ({name}, {global_dotenv})" in compact
+        assert f"{name}=0" not in output
+
+    def test_project_dotenv_source_is_rendered_in_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """JSON output carries the project dotenv path in its source field."""
+        from deepagents_code.client.commands.config import _run_get
+
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        project = tmp_path / "project"
+        project.mkdir()
+        dotenv = project / ".env"
+        dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=project)
+
+        assert _run_get("display.show_header", "json") == 0
+        payload = json.loads(capsys.readouterr().out)["data"]
+        assert payload["source"] == f"env ({name}, {dotenv})"
+
+    def test_shell_env_source_stays_unattributed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A launch environment value remains a bare env source."""
+        from deepagents_code.client.commands.config import _attribute_env_source
+
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        monkeypatch.setenv(name, "true")
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert _attribute_env_source(f"env ({name})") == f"env ({name})"
+        assert name not in config_module._dotenv_provenance
+
+    def test_project_dotenv_provenance_wins_over_global(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """First-file-wins records the project file rather than the global file."""
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        project = tmp_path / "project"
+        project.mkdir()
+        project_dotenv = project / ".env"
+        project_dotenv.write_text(f"{name}=false\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{name}=true\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=project)
+
+        assert config_module._dotenv_provenance[name] == project_dotenv
+
+    def test_denied_dotenv_key_has_no_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Denied values are neither injected nor attributed."""
+        name = "PYTHONPATH"
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(f"{name}=/tmp/forbidden\n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert name not in config_module._dotenv_loaded_values
+        assert name not in config_module._dotenv_provenance
+
+    def test_whitespace_only_dotenv_value_is_attributed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An injected whitespace-only value retains its source path."""
+        name = "DEEPAGENTS_CODE_SHOW_HEADER"
+        (tmp_path / ".env").write_text(f"{name}=   \n", encoding="utf-8")
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        config_module._load_dotenv(start_path=tmp_path)
+
+        assert config_module._dotenv_loaded_values.get(name) == ""
+        assert config_module._dotenv_provenance[name] == tmp_path / ".env"
+
+    def test_preview_does_not_replace_process_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Workspace previews leave process-level attribution untouched."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_SHOW_HEADER=false\n", encoding="utf-8"
+        )
+        existing = {"EXISTING": tmp_path / "existing.env"}
+        monkeypatch.setattr(config_module, "_dotenv_provenance", existing)
+
+        config_module._preview_dotenv_environ(start_path=project)
+
+        assert config_module._dotenv_provenance == existing
+
+    def test_missing_dotenv_leaves_source_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty provenance map preserves source labels byte-for-byte."""
+        from deepagents_code.client.commands.config import _attribute_env_source
+
+        monkeypatch.setattr(config_module, "_dotenv_loaded_values", {})
+        monkeypatch.setattr(config_module, "_dotenv_provenance", {})
+
+        source = "env (DEEPAGENTS_CODE_SHOW_HEADER)"
+        assert _attribute_env_source(source) == source
+
+
 class TestWorkspaceDotenvEnvironment:
     """Workspace previews stay isolated without replacing the process environment."""
 
@@ -500,9 +651,11 @@ class TestWorkspaceDotenvEnvironment:
         )
         monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
 
+        provenance: dict[str, Path] = {}
         from_dotenv = config_mod._dotenv_environment(
             start_path=tmp_path,
             environ={},
+            provenance=provenance,
         )
         from_shell = config_mod._dotenv_environment(
             start_path=tmp_path,
@@ -510,6 +663,7 @@ class TestWorkspaceDotenvEnvironment:
         )
 
         assert from_dotenv["OPENAI_API_KEY"] == "dotenv-key"
+        assert provenance["OPENAI_API_KEY"] == tmp_path / ".env"
         assert "openai_api_key" not in from_dotenv
         assert from_shell["OPENAI_API_KEY"] == "shell-key"
 
@@ -4422,6 +4576,204 @@ class TestCreateModelForwardsProviderProfile:
 
         with pytest.raises(ModelConfigError, match="provider profile"):
             create_model("anthropic:claude-sonnet-4-5")
+
+
+class TestCreateModelAnthropicThinkingBinding:
+    """Tests for Anthropic preserved-thinking defaults."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_defaults_new_models_to_drop_stale_thinking(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5")
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
+
+    @pytest.mark.parametrize("display", [None, "summarized", "omitted"])
+    def test_preserves_reasoning_display_in_anthropic_payload(
+        self, display: str | None
+    ) -> None:
+        """Binding controls retain visible reasoning and explicit display choices."""
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.messages import HumanMessage
+
+        params: dict[str, str | dict[str, str]] = {
+            "api_key": "test-key",
+            "reasoning_effort": "high",
+        }
+        if display is not None:
+            params["thinking"] = {"type": "adaptive", "display": display}
+        model = create_model("anthropic:claude-opus-5", extra_kwargs=params).model
+        assert isinstance(model, ChatAnthropic)
+
+        payload = model._get_request_payload([HumanMessage("Say hello")])
+
+        assert payload["thinking"] == {
+            "type": "adaptive",
+            "display": display or "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        assert payload["output_config"]["effort"] == "high"
+        assert "thinking-binding-controls-2026-08-01" in payload["betas"]
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_opt_out_leaves_thinking_unset(self, mock_init: Mock) -> None:
+        """`bind_preserved_thinking=False` keeps structured output forceable."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5", bind_preserved_thinking=False)
+
+        kwargs = mock_init.call_args.kwargs
+        assert "thinking" not in kwargs
+        assert "betas" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_accepts_betas_sequence(self, mock_init: Mock) -> None:
+        """A tuple of betas is a valid config shape, not a reason to skip."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-opus-5", extra_kwargs={"betas": ("other-beta",)})
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["betas"] == [
+            "other-beta",
+            "thinking-binding-controls-2026-08-01",
+        ]
+        assert kwargs["thinking"]["block_binding"] == {
+            "prefix_mismatch_behavior": "drop_block"
+        }
+
+    @pytest.mark.parametrize(
+        ("extra_kwargs", "expected_log"),
+        [
+            ({"thinking": "adaptive"}, "non-mapping thinking (str)"),
+            (
+                {"thinking": {"type": "adaptive", "block_binding": "drop_block"}},
+                "non-mapping thinking.block_binding (str)",
+            ),
+            ({"betas": "other-beta"}, "non-sequence betas (str)"),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_warns_when_malformed_value_skips_binding(
+        self,
+        mock_init: Mock,
+        extra_kwargs: dict[str, Any],
+        expected_log: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A malformed value must not disable the fix silently."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            create_model("anthropic:claude-opus-5", extra_kwargs=extra_kwargs)
+
+        assert expected_log in caplog.text
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs.get("thinking") == extra_kwargs.get("thinking")
+        assert kwargs.get("betas") == extra_kwargs.get("betas")
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_preserves_block_binding_siblings(self, mock_init: Mock) -> None:
+        """Defaulting one key must not drop the caller's other keys."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "anthropic:claude-opus-5",
+            extra_kwargs={
+                "thinking": {"type": "adaptive", "block_binding": {"scope": "turn"}}
+            },
+        )
+
+        assert mock_init.call_args.kwargs["thinking"]["block_binding"] == {
+            "scope": "turn",
+            "prefix_mismatch_behavior": "drop_block",
+        }
+
+    @pytest.mark.parametrize(
+        ("spec", "extra_kwargs"),
+        [
+            (
+                "google_anthropic_vertex:claude-opus-5",
+                {"project": "p", "location": "us-east5"},
+            ),
+            ("bedrock:us.anthropic.claude-opus-5-v1:0", None),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_skips_non_anthropic_providers(
+        self, mock_init: Mock, spec: str, extra_kwargs: dict[str, Any] | None
+    ) -> None:
+        """The controls beta is not accepted on Bedrock or Vertex."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(spec, extra_kwargs=extra_kwargs)
+
+        kwargs = mock_init.call_args.kwargs
+        assert "thinking" not in kwargs
+        assert "betas" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_preserves_explicit_behavior_and_betas(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "anthropic:claude-fable-5-1",
+            extra_kwargs={
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 4096,
+                    "block_binding": {"prefix_mismatch_behavior": "error"},
+                },
+                "betas": ["other-beta", "thinking-binding-controls-2026-08-01"],
+            },
+        )
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 4096,
+            "block_binding": {"prefix_mismatch_behavior": "error"},
+        }
+        assert kwargs["betas"] == [
+            "other-beta",
+            "thinking-binding-controls-2026-08-01",
+        ]
+
+    @pytest.mark.parametrize(
+        ("model_name", "thinking"),
+        [
+            ("claude-opus-4-7", None),
+            ("claude-3-5-haiku-20241022", None),
+            ("claude-3-5-sonnet-20241022", None),
+            ("claude-3-7-sonnet-20250219", None),
+            ("claude-opus-5", {"type": "disabled"}),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_skips_unsupported_thinking(
+        self, mock_init: Mock, model_name: str, thinking: dict[str, str] | None
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+        extra_kwargs = {"thinking": thinking} if thinking is not None else None
+
+        create_model(f"anthropic:{model_name}", extra_kwargs=extra_kwargs)
+
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs.get("thinking") == thinking
+        assert "betas" not in kwargs
 
 
 class TestCreateModelFromClass:

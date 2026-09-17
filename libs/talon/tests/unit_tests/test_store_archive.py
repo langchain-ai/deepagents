@@ -247,14 +247,17 @@ async def test_remote_message_chunks_and_exclusions():
 class InterruptedStore(InMemoryStore):
     remaining = None
 
-    async def aput(self, namespace, key, value, index=None, *, ttl=None):
-        if self.remaining is not None:
-            self.remaining -= 1
-            if self.remaining == 0:
-                self.remaining = None
-                msg = "interrupted metadata write"
-                raise OSError(msg)
-        await super().aput(namespace, key, value, index=index, ttl=ttl)
+    async def abatch(self, ops):
+        results = []
+        for op in ops:
+            if isinstance(op, PutOp) and self.remaining is not None:
+                self.remaining -= 1
+                if self.remaining == 0:
+                    self.remaining = None
+                    msg = "interrupted metadata write"
+                    raise OSError(msg)
+            results.extend(await super().abatch([op]))
+        return results
 
 
 @pytest.mark.parametrize("failure", [2, 3, 4, 5, 6, 7, 8])
@@ -266,8 +269,10 @@ async def test_partial_chunk_write_recovers_idempotently_on_reopen(failure):
     metadata.remaining = failure
     with pytest.raises(OSError, match="interrupted metadata"):
         await archive.append(SCOPE, "session", "time", message)
+    assert await archive.records.get("journal") is not None
     archive = StoreConversationArchive(metadata, namespace=("recovery",))
     await archive.append(SCOPE, "session", "time", message)
+    assert await archive.records.get("journal") is None
     entries = await archive.entries(SCOPE, session_id="session")
     assert [entry["text"] for entry in entries] == ["first", "durable content"]
     assert (await archive.conversations(SCOPE))[0]["message_count"] == 2

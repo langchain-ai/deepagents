@@ -1,14 +1,9 @@
 ---
 type: model configuration concept
-title: Models, Providers, and Harness Profiles
+title: Models, Profiles, and Retries
 description: Explains how Deep Agents profiles adapt model construction and agent harnesses, and how dcode resolves, changes, checkpoints, and retries configured models. Covers precedence, failure boundaries, plugin extension, and provider dependency behavior.
 tags: [profiles, model-resolution, provider-profiles, harness-profiles, dcode, retries, middleware]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
-  - id: openwiki-source-aaf94db4700b8db4f60bdba9
-    resource: repo://libs/code/deepagents_code/_glm_5p2_profile.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-55d5c39401ac52584ce1f973
@@ -19,18 +14,17 @@ sources:
     resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
-    resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
   - id: openwiki-source-59612eea63cbfafbd628feda
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-09T08:05:37.706Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 ---
 
-# Models, Providers, and Harness Profiles
+# Models, Profiles, and Retries
 
 Three layers have intentionally different ownership:
 

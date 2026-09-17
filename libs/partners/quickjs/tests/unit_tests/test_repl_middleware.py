@@ -978,109 +978,87 @@ async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -
     assert exc_info.value is interrupt
 
 
-class _IntermittentInterruptRunnable:
-    """Runnable whose async path raises `GraphInterrupt` until told to stop.
-
-    Stands in for a subagent whose PostToolUse hook fires an approval
-    interrupt: the parent eval replays on resume and re-dispatches the
-    same `task()` calls.
-    """
-
+class _QueuedFanout:
     def __init__(self) -> None:
-        self.interrupt = GraphInterrupt([Interrupt(value={"action_requests": []})])
-        self.interrupts_remaining = 1
-        self.starts = 0
+        self.saturated = asyncio.Event()
+        self.released = asyncio.Event()
+        self.started = 0
+        self.release_calls = 0
+        self.events: list[dict[str, Any]] = []
 
-    async def _afail(self, _state: Any, _config: Any) -> dict[str, Any]:
-        raise self.interrupt
+    async def work(self, state: dict[str, Any], config: Any) -> dict[str, Any]:
+        self.started += 1
+        if self.started == 32:
+            self.saturated.set()
+        await self.released.wait()
+        return {"messages": [AIMessage(content="done")]}
 
-    async def _aok(self, _state: Any, _config: Any) -> dict[str, Any]:
-        return {"messages": [AIMessage(content="subagent done")]}
+    async def release(self) -> str:
+        await self.saturated.wait()
+        self.release_calls += 1
+        self.released.set()
+        return "released"
 
-    def __call__(self, state: dict[str, Any], config: Any) -> dict[str, Any]:
-        raise NotImplementedError  # sync path not exercised
+    async def run(self, repl: _ThreadREPL, *, extra_ptc_call: bool = False) -> Any:
+        task_tool = _task_tool_for_runnable(RunnableLambda(self.work))
+        release_tool = StructuredTool.from_function(
+            coroutine=self.release, name="release_tasks", description="Release tasks."
+        )
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=self.events.append,
+            tools=[task_tool, release_tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        repl.install_tools([release_tool])
+        extra = "await tools.releaseTasks({});" if extra_ptc_call else ""
+        return await repl.eval_async(
+            "(async () => {"
+            "const tasks = Array.from({length: 34}, () => "
+            "task({description: 'identical', subagentType: 'worker'}));"
+            "await tools.releaseTasks({});"
+            "const results = await Promise.all(tasks);"
+            f"{extra} return results.length;"
+            "})()",
+            outer_runtime=runtime,
+        )
 
-    @property
-    def afunc(self) -> Any:
-        # RunnableLambda inspects afunc on the callable.
-        return self._aafunc
 
-    async def _aafunc(self, state: Any, config: Any) -> Any:
-        self.starts += 1
-        if self.interrupts_remaining > 0:
-            self.interrupts_remaining -= 1
-            return await self._afail(state, config)
-        return await self._aok(state, config)
+async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
+    repl: _ThreadREPL,
+) -> None:
+    attempts: list[list[str]] = []
+    for _ in range(2):
+        fanout = _QueuedFanout()
+        outcome = await fanout.run(repl)
+        assert outcome.error_type is None
+        assert outcome.result == "34"
+        starts = [event["id"] for event in fanout.events if event["phase"] == "start"]
+        assert len(starts) == 34
+        assert len(set(starts)) == 34
+        attempts.append(starts)
+    assert attempts[0] == attempts[1]
 
 
-async def test_task_dispatch_ids_stable_across_interrupt_resume_replays() -> None:
-    """Resumed evals re-dispatch with the same ids; no duplicate agents.
-
-    Mirrors the field report: a subagent's PostToolUse hook raises
-    `GraphInterrupt` mid-eval, LangGraph replays the parent tool node on
-    resume, and the JavaScript re-runs its fan-out. Every replayed start
-    must carry the id the previous replay used.
-    """
-    captured: list[dict[str, Any]] = []
-    interrupting = _IntermittentInterruptRunnable()
-
-    def _recording_writer(chunk: Any) -> None:
-        if isinstance(chunk, dict) and chunk.get("type") == "subagent":
-            captured.append(chunk)
-
+async def test_queued_tasks_do_not_restore_spent_ptc_budget(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
     repl = _ThreadREPL(
-        ThreadWorker(),
-        Runtime(),
+        worker,
+        runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
+        max_ptc_calls=1,
     )
-    try:
-        task_tool = _task_tool_for_runnable(
-            RunnableLambda(interrupting, afunc=interrupting.afunc)
-        )
-        runtime = _subagent_runtime_from_task_tool(task_tool)
-        runtime = ToolRuntime(
-            state=runtime.state,
-            context=runtime.context,
-            config=runtime.config,
-            stream_writer=_recording_writer,
-            tools=[task_tool],
-            tool_call_id=runtime.tool_call_id,
-            store=runtime.store,
-        )
-
-        js = (
-            "(async () => {"
-            "const results = await Promise.all(["
-            "task({description: 'Validate outcomes', subagentType: 'worker'}),"
-            "task({description: 'Validate reviewers', subagentType: 'worker'}),"
-            "task({description: 'Validate costs', subagentType: 'worker'})"
-            "]); return results.length; })()"
-        )
-
-        # First attempt: all three dispatches interrupt.
-        with pytest.raises(GraphInterrupt):
-            await repl.eval_async(js, outer_runtime=runtime)
-        # Resume: the replays complete.
-        outcome = await repl.eval_async(js, outer_runtime=runtime)
-        assert outcome.error_type is None
-        assert outcome.result == "3"
-    finally:
-        repl.close()
-
-    starts = [e for e in captured if e["phase"] == "start"]
-    completes = [e for e in captured if e["phase"] == "complete"]
-    # Promise.all drives all three dispatches; whichever finishes last
-    # raises the hook's interrupt, so its already-completed siblings emit
-    # start+complete on the interrupting run, and all three emit
-    # start+complete again on the resume — always under the same stable
-    # ids. The interrupting task itself completes only on the resume, so
-    # completions total 5, not 6.
-    assert len({e["id"] for e in starts}) == 3  # three logical agents
-    assert len(completes) == 5
-    # Every terminal event matches a start id — nothing orphaned.
-    assert {e["id"] for e in completes} <= {e["id"] for e in starts}
+    fanout = _QueuedFanout()
+    outcome = await fanout.run(repl, extra_ptc_call=True)
+    assert outcome.error_type == "PTCCallBudgetExceeded"
+    assert fanout.started == 34
+    assert fanout.release_calls == 1
 
 
 def test_runtime_with_response_format_uses_configurable() -> None:

@@ -132,12 +132,7 @@ class _PTCState:
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
     task_dispatch_count: int = 0
-    """Count of `task()` dispatches made during this eval.
-
-    Seeds each dispatch's stable id; because the state is reset at eval
-    start, interrupted-and-resumed evals assign the same ordinals to the
-    same dispatches, keeping ids stable across replays.
-    """
+    """Next dispatch ordinal, reset when an eval starts or replays."""
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -536,6 +531,7 @@ class _ThreadREPL:
         payload: dict[str, Any],
         *,
         state: _PTCState,
+        dispatch_ordinal: int,
     ) -> Any:
         """Validate JS `task()` input and invoke the runner on the right loop.
 
@@ -545,14 +541,6 @@ class _ThreadREPL:
         """
         validated = self._validate_task_payload(payload)
         description, subagent_type, label, response_schema = validated
-
-        # Freeze this dispatch's ordinal before dispatching: consecutive
-        # task() calls in one eval get 0, 1, 2, ... Replays of an interrupted
-        # eval restart the count, so the same logical dispatch keeps the same
-        # stable id across interrupt/resume cycles.
-        state = replace(state, task_dispatch_count=state.task_dispatch_count + 1)
-        self._ptc_state = state
-        dispatch_ordinal = state.task_dispatch_count - 1
 
         async def _call() -> Any:
             runtime = state.outer_runtime
@@ -601,11 +589,14 @@ class _ThreadREPL:
                 raise RuntimeError(msg)
 
             payload = _normalize_tool_input(raw_input)
+            dispatch_ordinal = state.task_dispatch_count
+            self._ptc_state = replace(state, task_dispatch_count=dispatch_ordinal + 1)
             async with task_calls:
                 try:
                     result = await self._ainvoke_task_on_outer_loop(
                         payload,
                         state=state,
+                        dispatch_ordinal=dispatch_ordinal,
                     )
                 except GraphInterrupt:
                     raise

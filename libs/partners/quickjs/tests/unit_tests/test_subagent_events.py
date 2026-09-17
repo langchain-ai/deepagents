@@ -21,7 +21,7 @@ from langchain_quickjs._subagent import call_subagent_task_tool
 class _FakeRuntime:
     """Minimal stand-in for the LangGraph ToolRuntime the bridge passes in."""
 
-    tool_call_id: str = "eval_call_123"
+    tool_call_id: str | None = "eval_call_123"
     stream_writer: Any = None
     config: dict | None = None
 
@@ -231,121 +231,98 @@ async def test_structured_output_path_still_emits_events() -> None:
 
 
 class TestReplayStableDispatchIds:
-    """Dispatch ids survive the replays a hook-driven interrupt causes.
-
-    When a subagent's PostToolUse hook raises `GraphInterrupt`, LangGraph
-    replays the parent tool node on resume, re-running the JavaScript and
-    re-dispatching the same `task()` calls. Ids must stay stable across
-    replays (so a UI updates one row) yet differ between distinct dispatches.
-    """
-
     async def _dispatch(
         self,
         rec: _Recorder,
         tool: _FakeTaskTool,
         *,
         description: str = "Validate outcomes",
+        label: str | None = None,
         ordinal: int = 0,
-        eval_id: str = "call_abc",
-    ) -> bool:
-        """Run one dispatch attempt; True when it completed without raising."""
-        runtime = _FakeRuntime(tool_call_id=eval_id, stream_writer=rec)
-        try:
-            await call_subagent_task_tool(
-                tool,
-                description=description,
-                subagent_type="reviewer",
-                label=description,
-                response_schema=None,
-                runtime=runtime,
-                dispatch_ordinal=ordinal,
-            )
-        except GraphInterrupt:
-            return False
-        return True
+        eval_id: str | None = "call_abc",
+        response_schema: dict[str, Any] | None = None,
+    ) -> None:
+        await call_subagent_task_tool(
+            tool,
+            description=description,
+            subagent_type="reviewer",
+            label=label,
+            response_schema=response_schema,
+            runtime=_FakeRuntime(tool_call_id=eval_id, stream_writer=rec),
+            dispatch_ordinal=ordinal,
+        )
 
     async def test_replayed_dispatch_keeps_same_id(self) -> None:
         rec = _Recorder()
         tool = _FakeTaskTool()
-
-        for _ in range(3):  # original run + two interrupt/resume replays
+        for _ in range(3):
             await self._dispatch(rec, tool)
-
         starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len(starts) == 3  # one start per replay
+        assert len(starts) == 3
         assert len({e["id"] for e in starts}) == 1
 
-    async def test_replayed_complete_matches_replayed_start_id(self) -> None:
-        # A resumed eval that gets far enough to finish must emit a
-        # complete event carrying the same id as every replayed start,
-        # so the terminal event lands on the existing row.
+    async def test_replayed_complete_matches_interrupted_start_id(self) -> None:
         rec = _Recorder()
-        interrupting = _FakeTaskTool(raise_exc=GraphInterrupt())
-        finishing = _FakeTaskTool("done")
+        with pytest.raises(GraphInterrupt):
+            await self._dispatch(rec, _FakeTaskTool(raise_exc=GraphInterrupt()))
+        assert [e["phase"] for e in rec.events] == ["start"]
+        await self._dispatch(rec, _FakeTaskTool("done"))
+        assert [e["phase"] for e in rec.events] == ["start", "start", "complete"]
+        assert len({e["id"] for e in rec.events}) == 1
 
-        await self._dispatch(rec, interrupting)  # interrupted attempt
-        await self._dispatch(rec, finishing)  # resumed attempt completes
-
-        phases = [e["phase"] for e in rec.events]
-        assert phases == ["start", "start", "complete"]
-        ids = {e["id"] for e in rec.events}
-        assert len(ids) == 1
-
-    async def test_parallel_dispatches_get_distinct_ids(self) -> None:
-        # The three-task fan-out from the field report: one js_eval call,
-        # three task() calls at ordinals 0/1/2 — three ids, not one.
+    async def test_identical_payloads_in_different_evals_differ(self) -> None:
         rec = _Recorder()
-        tool = _FakeTaskTool("ok")
-
-        for ordinal in range(3):
-            await self._dispatch(rec, tool, ordinal=ordinal)
-
-        starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len({e["id"] for e in starts}) == 3
-
-    async def test_identical_payloads_at_same_ordinal_in_different_evals_differ(
-        self,
-    ) -> None:
-        # Distinct js_eval calls must never collide, even dispatching the
-        # exact same payload at the same ordinal.
-        rec = _Recorder()
-        tool = _FakeTaskTool("ok")
-
+        tool = _FakeTaskTool()
         await self._dispatch(rec, tool, eval_id="call_one")
         await self._dispatch(rec, tool, eval_id="call_two")
-
         starts = [e for e in rec.events if e["phase"] == "start"]
         assert len({e["id"] for e in starts}) == 2
 
     async def test_identical_payloads_at_different_ordinals_differ(self) -> None:
-        # Two identical task() calls inside one eval are separate agents.
-        rec = _Recorder()
-        tool = _FakeTaskTool("ok")
-
-        await self._dispatch(rec, tool, ordinal=0)
-        await self._dispatch(rec, tool, ordinal=1)
-
-        starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len({e["id"] for e in starts}) == 2
-
-    async def test_no_eval_id_still_yields_stable_replay_ids(self) -> None:
-        # Runtimes without a parent tool-call id still need replay-stable
-        # ids (payload + ordinal identify the dispatch).
         rec = _Recorder()
         tool = _FakeTaskTool()
-
-        for _ in range(2):
-            await self._dispatch(rec, tool, eval_id="")
-
+        for ordinal in range(3):
+            await self._dispatch(rec, tool, ordinal=ordinal)
         starts = [e for e in rec.events if e["phase"] == "start"]
-        assert len({e["id"] for e in starts}) == 1
+        assert len({e["id"] for e in starts}) == 3
 
-    async def test_interrupt_preserves_no_terminal_event(self) -> None:
-        # An interrupted dispatch must not emit complete/error — the row
-        # stays in its pre-interrupt state until a replay settles it.
+    @pytest.mark.parametrize("eval_id", [None, ""])
+    async def test_missing_eval_id_keeps_independent_dispatches_distinct(
+        self, eval_id: str | None
+    ) -> None:
         rec = _Recorder()
-        tool = _FakeTaskTool(raise_exc=GraphInterrupt())
+        tool = _FakeTaskTool()
+        for _ in range(2):
+            await self._dispatch(rec, tool, eval_id=eval_id)
+        assert rec.events[0]["id"] == rec.events[1]["id"]
+        assert rec.events[2]["id"] == rec.events[3]["id"]
+        assert rec.events[0]["id"] != rec.events[2]["id"]
 
-        await self._dispatch(rec, tool)
+    async def test_payload_separators_cannot_collide(self) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool()
+        await self._dispatch(rec, tool, description="one\x1ftwo", label="three")
+        await self._dispatch(rec, tool, description="one", label="two\x1fthree")
+        assert rec.events[0]["id"] != rec.events[2]["id"]
 
-        assert [e["phase"] for e in rec.events] == ["start"]
+    async def test_changed_response_schema_gets_distinct_id(self) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool('{"answer": 42}')
+        for field_type in ("number", "integer"):
+            await self._dispatch(
+                rec,
+                tool,
+                response_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": field_type}},
+                },
+            )
+        assert rec.events[0]["id"] != rec.events[2]["id"]
+
+    async def test_response_schema_key_order_does_not_change_id(self) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool('{"answer": 42}')
+        schema = {"type": "object", "properties": {"answer": {"type": "number"}}}
+        await self._dispatch(rec, tool, response_schema=schema)
+        await self._dispatch(rec, tool, response_schema=dict(reversed(schema.items())))
+        assert rec.events[0]["id"] == rec.events[2]["id"]

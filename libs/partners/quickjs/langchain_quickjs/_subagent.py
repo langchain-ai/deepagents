@@ -249,7 +249,12 @@ async def call_subagent_task_tool(
         response_schema = _ensure_schema_title(response_schema)
         runtime = _runtime_with_response_format(runtime, response_schema)
 
-    eval_id = getattr(runtime, "tool_call_id", None)
+    # Normalize once: a blank or non-string `tool_call_id` is "no parent eval".
+    # The derivation below and the `eval_id is not None` guards on each event
+    # must agree, or an empty id would ship a random dispatch id while still
+    # advertising a parent batch on the wire.
+    raw_eval_id = getattr(runtime, "tool_call_id", None)
+    eval_id = raw_eval_id if isinstance(raw_eval_id, str) and raw_eval_id else None
     stream_writer = getattr(runtime, "stream_writer", None)
     subagent_id = _derive_dispatch_id(
         eval_id=eval_id,

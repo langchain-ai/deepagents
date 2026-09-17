@@ -278,6 +278,8 @@ class TestReplayStableDispatchIds:
         assert rec.events[0]["id"] == rec.events[1]["id"]
         assert rec.events[2]["id"] == rec.events[3]["id"]
         assert rec.events[0]["id"] != rec.events[2]["id"]
+        # A dispatch with an unstable id must not advertise a parent batch.
+        assert all("eval_id" not in event for event in rec.events)
 
     async def test_payload_separators_cannot_collide(self) -> None:
         rec = _Recorder()

@@ -2,8 +2,8 @@
 
 `call_subagent_task_tool` emits start/complete (or error) events via the
 runtime's `stream_writer` so a UI can render a live fan-out panel. These tests
-cover event shape, ordering, id propagation, truncation, and that telemetry
-failures never break the underlying dispatch.
+cover event shape, ordering, id propagation, truncation, replay-stable id
+derivation, and that telemetry failures never break the underlying dispatch.
 """
 
 from __future__ import annotations
@@ -231,6 +231,13 @@ async def test_structured_output_path_still_emits_events() -> None:
 
 
 class TestReplayStableDispatchIds:
+    """Id derivation is deterministic, so a replayed eval reproduces its ids.
+
+    Nothing here actually replays; each test calls the dispatch twice with
+    the inputs a replay would supply. End-to-end replay through a
+    checkpointer is covered in `test_subagent_replay.py`.
+    """
+
     async def _dispatch(
         self,
         rec: _Recorder,

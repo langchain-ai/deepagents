@@ -1693,6 +1693,31 @@ class TestPromptSearchPanel:
             # Seeding the filter does not consume or change the draft.
             assert chat._text_area.text == "second"
 
+    async def test_option_backspace_deletes_word_left(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["alpha beta", "alpha gamma"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("alpha beta")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            search = app.query_one(PromptSearchInput)
+            assert search.value == "alpha beta"
+            assert app.focused is search
+            await pilot.press("alt+backspace")
+            await pilot.pause()
+
+            assert app.query_one(PromptSearchInput).value == "alpha "
+            assert chat._prompt_search_filtered == ["alpha gamma", "alpha beta"]
+
     async def test_typing_filters_results(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
 

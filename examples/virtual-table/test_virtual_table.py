@@ -89,6 +89,8 @@ def test_query_rejects_writes_and_unapproved_functions() -> None:
         query.invoke({"name": "docs", "sql": "DELETE FROM docs", "parameters": [], "runtime": _runtime(state)})
     with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
         query.invoke({"name": "docs", "sql": "SELECT random() FROM docs", "parameters": [], "runtime": _runtime(state)})
+    with pytest.raises(ValueError, match="Use a table key, not the `virtual_tables` state-field name"):
+        query.invoke({"name": "virtual_tables", "sql": "SELECT * FROM virtual_tables", "parameters": [], "runtime": _runtime(state)})
 
 
 async def test_enrich_materializes_filtered_derived_table(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,7 +230,12 @@ async def test_operator_failure_is_materialized_as_a_row_error() -> None:
 def test_middleware_adds_table_instructions() -> None:
     middleware = _middleware()
     model = FakeListChatModel(responses=["unused"])
-    request = ModelRequest(model=model, messages=[], system_message=SystemMessage("Host instructions."))
+    request = ModelRequest(
+        model=model,
+        messages=[],
+        system_message=SystemMessage("Host instructions."),
+        state={"messages": [], "virtual_tables": {"feedback": [{"file": "/feedback/a.txt"}]}},
+    )
 
     def handler(updated: ModelRequest[Any]) -> ModelResponse[Any]:
         assert updated.model is model
@@ -236,7 +243,8 @@ def test_middleware_adds_table_instructions() -> None:
         assert "virtual_table_enrich" in updated.system_message.text
         assert "Do not read every row's file yourself" in updated.system_message.text
         assert "sample one or two files" in updated.system_message.text
-        assert "virtual_tables` already exist" in updated.system_message.text
+        assert "Available table names for this run: `feedback`" in updated.system_message.text
+        assert "not a SQL table name" in updated.system_message.text
         assert "virtual_table_create" in updated.system_message.text
         assert "SELECT * FROM <table> LIMIT 3" in updated.system_message.text
         assert "Select a\n  source table" in updated.system_message.text

@@ -37,8 +37,9 @@ _MAX_PROMPT_CHARS = 50_000
 _MAX_CONCURRENCY = 10
 _VIRTUAL_TABLE_PROMPT = """Use virtual tables for repeated analysis over document rows.
 
-- Tables supplied in invocation state under `virtual_tables` already exist. Create
-  any other table with `virtual_table_create`.
+- The invocation's table mapping already contains the source tables. Its state-field
+  name is not a SQL table name: use an actual table key such as `feedback`. Create
+  any other source table with `virtual_table_create`.
 - Each row represents a document: `file` is its backend path and other columns are queryable metadata.
 - Use `virtual_table_query` to inspect rows and columns
   (`SELECT * FROM <table> LIMIT 3`) and for deterministic filtering, grouping,
@@ -371,7 +372,7 @@ class VirtualTableMiddleware(AgentMiddleware[VirtualTableState, Any, Any]):
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         """Teach the parent model how to use virtual tables."""
-        system_message = append_to_system_message(request.system_message, _VIRTUAL_TABLE_PROMPT)
+        system_message = append_to_system_message(request.system_message, self._prompt(request.state))
         return handler(request.override(system_message=system_message))
 
     async def awrap_model_call(
@@ -380,16 +381,23 @@ class VirtualTableMiddleware(AgentMiddleware[VirtualTableState, Any, Any]):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         """Teach the parent model how to use virtual tables asynchronously."""
-        system_message = append_to_system_message(request.system_message, _VIRTUAL_TABLE_PROMPT)
+        system_message = append_to_system_message(request.system_message, self._prompt(request.state))
         return await handler(request.override(system_message=system_message))
 
     def _table(self, state: dict[str, Any], name: str) -> Table:
         _identifier(name, kind="table name")
         tables = cast("Tables", state.get("virtual_tables", {}))
         if name not in tables:
-            msg = f"Unknown table {name!r}; available tables: {', '.join(sorted(tables)) or 'none'}."
+            available = ", ".join(sorted(tables)) or "none"
+            msg = f"Unknown table {name!r}; available tables: {available}. Use a table key, not the `virtual_tables` state-field name."
             raise ValueError(msg)
         return tables[name]
+
+    @staticmethod
+    def _prompt(state: dict[str, Any]) -> str:
+        tables = cast("Tables", state.get("virtual_tables", {}))
+        available = ", ".join(f"`{name}`" for name in sorted(tables)) or "none"
+        return f"{_VIRTUAL_TABLE_PROMPT}\n\nAvailable table names for this run: {available}."
 
     def _build_tools(self) -> list[BaseTool]:
         middleware = self

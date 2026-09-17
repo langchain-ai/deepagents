@@ -128,7 +128,9 @@ that trade deliberately: predictable execution for expensive, potentially
 agentic work, followed by familiar and side-effect-free SQL.
 
 Tables are passed under `virtual_tables` in invocation state alongside `files`, so
-the document rows and the files they reference enter the run together. The middleware
+the document rows and the files they reference enter the run together. `virtual_tables`
+is the state-field name, not a queryable SQL table; its keys (for example, `feedback`)
+are the table names. The middleware lists those names in its runtime instructions,
 normalizes paths and row IDs before the model runs, and returns materialized rows in
 the same structured state field. Document blobs stay in the configured filesystem
 backend. With a checkpointer, both virtual files and table pointers persist across

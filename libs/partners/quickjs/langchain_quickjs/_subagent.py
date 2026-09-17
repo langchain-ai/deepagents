@@ -66,7 +66,15 @@ def _derive_dispatch_id(
     label: str | None,
     response_schema: dict[str, Any] | None,
 ) -> str:
-    """Identify replays by eval, ordinal, and payload; keep ID-less calls separate."""
+    """Derive a dispatch id that is stable across replays of the same eval.
+
+    The id is a truncated SHA-256 over the parent `eval_id`, the ordinal and
+    the request payload, so a replayed eval reproduces it exactly. When there
+    is no parent `eval_id` there is nothing to replay against, so mint a
+    random id instead — unrelated dispatches must never collide.
+
+    The digest is a determinism device, not a security boundary.
+    """
     if not eval_id:
         return f"ptc_{task_tool_name}_{uuid.uuid4().hex}"
     payload = json.dumps(
@@ -235,9 +243,26 @@ async def call_subagent_task_tool(
 ) -> Any:
     """Call the Deep Agents task tool and return a JavaScript-friendly value.
 
-    Emits lifecycle events whose IDs survive replay when the parent eval has
-    a tool-call ID. `dispatch_ordinal` distinguishes identical tasks within
-    that eval. Without a parent ID, each dispatch receives a fresh ID.
+    This also emits `start` then `complete`/`error` subagent lifecycle
+    events on the custom stream.
+
+    A dispatch id survives replay when the parent eval exposes a tool-call id
+    *and* the script reaches its `task()` calls in the same order, because
+    `dispatch_ordinal` is assigned in host-invocation order. A script that
+    races dispatches behind awaits on other tools can reorder them; that
+    yields fresh ids rather than wrong ones, since the payload is hashed too.
+    Without a parent tool-call id, every dispatch gets a random id.
+
+    Args:
+        task_tool: The Deep Agents task tool to invoke.
+        description: Instructions handed to the subagent.
+        subagent_type: Name of the subagent to dispatch.
+        response_schema: JSON schema for structured output, if any.
+        runtime: The `ToolRuntime` of the enclosing `js_eval` call.
+        label: Short display label; falls back to `description`.
+        dispatch_ordinal: Position of this dispatch within the parent eval.
+            Distinguishes otherwise-identical tasks and makes the id
+            reproducible when the eval replays.
     """
     if runtime is None:
         msg = "task() requires an active ToolRuntime"

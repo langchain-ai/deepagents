@@ -21,8 +21,9 @@ function loadConfig() {
     throw new Error(`Failed to parse pr-labeler-config.json: ${e.message}`);
   }
   const required = [
-    'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
+    'labelColor', 'labelColors', 'sizeThresholds', 'fileRules', 'branchRules',
     'scopeToLabel', 'scopeAliases', 'releaseLabel', 'trustedThreshold',
+    'topicFileRules',
     'typeToLabel', 'breakingLabel', 'labelDescriptions', 'tierLabels',
     'excludedFiles', 'excludedPaths',
   ];
@@ -40,6 +41,7 @@ function init(github, owner, repo, config, core) {
   const {
     trustedThreshold,
     labelColor,
+    labelColors,
     sizeThresholds,
     scopeToLabel,
     scopeAliases,
@@ -49,6 +51,7 @@ function init(github, owner, repo, config, core) {
     tierLabels,
     labelDescriptions,
     fileRules: fileRulesDef,
+    topicFileRules: topicFileRulesDef,
     branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
@@ -64,7 +67,21 @@ function init(github, owner, repo, config, core) {
 
   // ── Label management ──────────────────────────────────────────────
 
-  async function ensureLabel(name, color = labelColor) {
+  // A label's color follows its taxonomy prefix, so a label created on demand
+  // matches the ones already on the repo. Without this every auto-created
+  // label landed on the generic `labelColor`, which is how nine `type:*`
+  // labels ended up off-palette during the taxonomy migration.
+  function colorFor(name) {
+    let best = null;
+    for (const prefix of Object.keys(labelColors)) {
+      if ((name ?? '').startsWith(prefix) && (!best || prefix.length > best.length)) {
+        best = prefix;
+      }
+    }
+    return best ? labelColors[best] : labelColor;
+  }
+
+  async function ensureLabel(name, color = colorFor(name)) {
     try {
       await github.rest.issues.getLabel({ owner, repo, name });
     } catch (e) {
@@ -107,8 +124,8 @@ function init(github, owner, repo, config, core) {
 
   // ── File-based labels ─────────────────────────────────────────────
 
-  function buildFileRules() {
-    return fileRulesDef.map((rule, i) => {
+  function buildRules(defs, source = 'fileRules') {
+    return defs.map((rule, i) => {
       let test;
       if (rule.prefix) test = p => p.startsWith(rule.prefix);
       else if (rule.suffix) test = p => p.endsWith(rule.suffix);
@@ -118,12 +135,16 @@ function init(github, owner, repo, config, core) {
         test = p => re.test(p);
       } else {
         throw new Error(
-          `fileRules[${i}] (label: "${rule.label}") has no recognized matcher ` +
+          `${source}[${i}] (label: "${rule.label}") has no recognized matcher ` +
           `(expected one of: prefix, suffix, exact, pattern)`
         );
       }
       return { label: rule.label, test, skipExcluded: !!rule.skipExcludedFiles };
     });
+  }
+
+  function buildFileRules() {
+    return buildRules(fileRulesDef, 'fileRules');
   }
 
   function matchFileLabels(files, fileRules) {
@@ -142,6 +163,14 @@ function init(github, owner, repo, config, core) {
       }
     }
     return labels;
+  }
+
+  // ── Topic labels ──────────────────────────────────────────────────
+  // Match subjects from the modules a PR touched, rather than whole packages.
+  // The live workflows also use topic-classifier.js to classify issue text or
+  // a PR title with a model. Both signals are additive.
+  function matchTopicFileLabels(files) {
+    return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
   }
 
   // ── Branch-name-based labels ──────────────────────────────────────
@@ -375,10 +404,13 @@ function init(github, owner, repo, config, core) {
 
   return {
     ensureLabel,
+    colorFor,
     getSizeLabel,
     computeSize,
     buildFileRules,
+    buildRules,
     matchFileLabels,
+    matchTopicFileLabels,
     matchBranchLabels,
     matchTitleLabels,
     getStaleTitleLabels,
@@ -395,6 +427,7 @@ function init(github, owner, repo, config, core) {
     releaseLabel,
     trustedThreshold,
     labelColor,
+    labelColors,
   };
 }
 

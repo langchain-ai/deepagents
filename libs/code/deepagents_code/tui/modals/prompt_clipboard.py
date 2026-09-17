@@ -12,7 +12,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.tui.widgets.prompt_search import filter_prompts, prompt_title
+from deepagents_code.tui.widgets.prompt_search import (
+    PromptFilterInput,
+    filter_prompts,
+    prompt_title,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -115,7 +119,9 @@ class PromptClipboardScreen(ModalScreen[str | None]):
         """
         with Vertical():
             yield Static("Prompt Clipboard", classes="prompt-title")
-            yield Input(placeholder="Search submitted prompts", id="prompt-filter")
+            yield PromptFilterInput(
+                placeholder="Search submitted prompts", id="prompt-filter"
+            )
             # Rows mount directly into the scroll container: a nested
             # auto-height wrapper is clamped to the list's max-height, which
             # hides the overflow and leaves the list unscrollable.

@@ -281,7 +281,7 @@ for (const title of ['', undefined, 'not a conventional title', 'unknown(sdk): c
   });
 }
 
-function labelerApi(title, labels) {
+function labelerApi(title, labels, files = [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }]) {
   const assigned = new Set(labels);
   const known = new Map(labels.map(name => [name, {}]));
   const pr = { number: 12, title, user: { login: 'contributor', type: 'User' }, head: { ref: 'feature-branch' } };
@@ -301,7 +301,7 @@ function labelerApi(title, labels) {
   };
   const pulls = {
     get: async () => ({ data: pr }), list: async () => [pr],
-    listFiles: async () => [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }],
+    listFiles: async () => files,
   };
   const github = { rest: { issues, pulls }, paginate: (method, options) => method(options) };
   const h = prLabeler.loadAndInit(github, 'owner', 'repo', core).h;
@@ -319,7 +319,10 @@ function workflowScript(filename, stepName) {
     .map(line => line.slice(12)).join('\n').replace('${{ inputs.max_items }}', '100');
 }
 
-async function runLabeler(mode, api) {
+async function runLabeler(mode, api, {
+  action = 'edited', renamedTitle = '',
+  warning = message => { throw new Error(message); },
+} = {}) {
   if (mode === 'release helper') return api.h.labelPR(api.pr.number);
   const [filename, stepName] = mode === 'live'
     ? ['pr_labeler.yml', 'Apply PR labels']
@@ -328,12 +331,44 @@ async function runLabeler(mode, api) {
   // The script is checked-in workflow code; PR titles remain data in context.
   await vm.runInNewContext(`(async () => { ${script}\n })()`, {
     github: api.github,
-    context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action: 'edited' } },
-    require: () => ({ loadAndInit: () => ({ h: api.h }) }),
-    core: { ...core, setFailed(message) { throw new Error(message); } },
-    process: { env: {} }, console: { log() {} },
+    context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action } },
+    require: spec => {
+      if (spec.endsWith('/pr-labeler.js')) return { loadAndInit: () => ({ h: api.h }) };
+      throw new Error(`Unexpected module: ${spec}`);
+    },
+    core: { ...core, warning, setFailed(message) { throw new Error(message); } },
+    process: { env: { RENAMED_TITLE: renamedTitle } }, console: { log() {} },
   });
 }
+
+for (const action of ['opened', 'synchronize', 'reopened', 'edited']) {
+  test(`live ${action} does not infer topics from PR text and preserves existing topics`, async () => {
+    const api = labelerApi('fix(code): reconnect MCP servers', ['topic:skills']);
+    api.pr.body = 'Fix memory and sandbox issues';
+    await runLabeler('live', api, { action });
+    assert.deepEqual([...api.assigned].filter(name => name.startsWith('topic:')), ['topic:skills']);
+    assert.ok(api.assigned.has('type:bug'));
+    assert.ok(api.assigned.has('package:dcode'));
+  });
+}
+
+test('live title labels use the corrected title from scope renaming', async () => {
+  const api = labelerApi('fix: reconnect MCP servers', []);
+  await runLabeler('live', api, { renamedTitle: 'fix(code): reconnect MCP servers' });
+  assert.ok(api.assigned.has('package:dcode'));
+  assert.ok(api.assigned.has('type:bug'));
+});
+
+// `edited` skips the file block, so the path signal needs a push-like action.
+test('live topics come from the changed modules', async () => {
+  const api = labelerApi('fix(code): correct behavior', [], [
+    { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
+  ]);
+  await runLabeler('live', api, { action: 'synchronize' });
+  assert.ok(api.assigned.has('topic:mcp'), 'a touched module must contribute its topic');
+  assert.ok(api.known.has('topic:mcp'), 'a path topic is created before it is applied');
+  assert.ok(api.assigned.has('package:dcode'));
+});
 
 for (const mode of ['live', 'backfill', 'release helper']) {
   test(`${mode} replaces stale types and breaking labels after a title edit`, async () => {
@@ -364,3 +399,93 @@ for (const mode of ['live', 'backfill', 'release helper']) {
     assert.ok(!api.assigned.has('type:chore'));
   });
 }
+
+test('colorFor resolves a label color from its taxonomy prefix', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  for (const [prefix, color] of Object.entries(config.labelColors)) {
+    assert.equal(h.colorFor(`${prefix}anything`), color, `prefix ${prefix}`);
+  }
+  // A name matching no prefix falls back to the generic color.
+  assert.equal(h.colorFor('unprefixed'), config.labelColor);
+  assert.equal(h.colorFor(undefined), config.labelColor);
+});
+
+test('every label the config can apply has a prefix color', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const applied = new Set([
+    ...Object.values(config.typeToLabel), config.breakingLabel, config.releaseLabel,
+    ...Object.values(config.tierLabels), ...Object.values(config.scopeToLabel),
+    ...config.fileRules.map(r => r.label), ...config.branchRules.map(r => r.label),
+    ...config.sizeThresholds.map(t => t.label),
+  ]);
+  for (const name of applied) {
+    assert.notEqual(
+      h.colorFor(name), config.labelColor,
+      `${name} has no labelColors prefix, so it would be created off-palette`,
+    );
+  }
+});
+
+// Priority sync and issue-link enforcement have no checkout of the shared
+// helper. This check rejects inline colors outside the palette; it does not
+// establish that a color belongs to the prefix of the label being created.
+test('inlined workflow label colors belong to the configured palette', () => {
+  const { config } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const known = new Set(Object.values(config.labelColors));
+  for (const rel of ['.github/workflows/sync_priority_labels.yml',
+                     '.github/workflows/require_issue_link.yml',
+                     '.github/workflows/auto-label-by-package.yml']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    for (const hit of body.match(/color: ['"]([0-9a-f]{6})['"]/g) || []) {
+      const hex = hit.match(/([0-9a-f]{6})/)[1];
+      assert.ok(known.has(hex), `${rel} uses ${hex}, which is not a labelColors value`);
+    }
+  }
+});
+
+// Scripts that CAN require the helper must not carry their own hex.
+test('label-creating scripts resolve colors from the config', () => {
+  for (const rel of ['.github/scripts/labeling/close-old-prs.js',
+                     '.github/scripts/release/normalize-release-labels.js']) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    const hits = body.match(/color: ['"][0-9a-f]{6}['"]/g) || [];
+    assert.deepEqual(hits, [], `${rel} hardcodes ${hits.join(', ')}`);
+    // A second copy of the prefix rule drifts from this one; a hex-only check
+    // would not notice, because a copy resolves from the config too.
+    assert.ok(
+      !/function colorFor\b/.test(body),
+      `${rel} defines its own colorFor instead of using the exported resolver`,
+    );
+  }
+});
+
+test('topic labels come from the modules a PR touched', () => {
+  const h = helpers();
+  const f = filename => ({ filename, additions: 1, deletions: 0 });
+  const cases = [
+    ['libs/deepagents/deepagents/middleware/subagents.py', ['topic:middleware', 'topic:subagents']],
+    ['libs/deepagents/deepagents/middleware/async_subagents.py', ['topic:async-subagents', 'topic:middleware']],
+    ['libs/deepagents/deepagents/backends/sandbox.py', ['topic:backends', 'topic:sandboxes']],
+    ['libs/code/deepagents_code/mcp_tools.py', ['topic:mcp']],
+    ['libs/code/deepagents_code/skills/index.py', ['topic:skills']],
+    ['libs/deepagents/deepagents/profiles/harness/base.py', ['topic:harness']],
+    ['libs/code/deepagents_code/_tracing.py', ['topic:tracing']],
+    ['README.md', []],
+    ['libs/deepagents/pyproject.toml', []],
+  ];
+  for (const [file, expected] of cases) {
+    assert.deepEqual([...h.matchTopicFileLabels([f(file)])].sort(), expected, file);
+  }
+});
+
+test('every topic rule points at a real topic label and compiles', () => {
+  const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
+  const declared = new Set(Object.keys(config.labelColors));
+  for (const rule of config.topicFileRules) {
+    assert.match(rule.label, /^topic:/, `${rule.label} is not a topic label`);
+    assert.ok(declared.has('topic:'), 'topic: must have a prefix color');
+    assert.notEqual(h.colorFor(rule.label), config.labelColor,
+      `${rule.label} would be created off-palette`);
+  }
+  h.buildRules(config.topicFileRules, 'topicFileRules');
+});

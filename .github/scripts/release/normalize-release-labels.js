@@ -1,6 +1,8 @@
 // release-please requires ALL configured labels, so listing both names in its
 // config is not an alias mechanism. Add the canonical label before it looks up
 // open PRs, retaining the legacy name until publishing clears both.
+const { loadConfig } = require('../labeling/pr-labeler.js');
+
 module.exports = async function normalizeReleaseLabels(github, owner, repo) {
   const legacy = 'autorelease: pending';
   const canonical = 'auto:release-pending';
@@ -21,15 +23,33 @@ module.exports = async function normalizeReleaseLabels(github, owner, repo) {
     await github.rest.issues.getLabel({ owner, repo, name: canonical });
   } catch (error) {
     if (error.status !== 404) throw error;
+    // A missing prefix leaves `color` undefined, which GitHub rejects as a 422
+    // — indistinguishable from the race below. Fail on the config instead.
+    const color = loadConfig().labelColors['auto:'];
+    if (!color) {
+      throw new Error(
+        `labelColors['auto:'] is missing from pr-labeler-config.json; ` +
+        `cannot create '${canonical}'.`,
+      );
+    }
     try {
       await github.rest.issues.createLabel({
-        owner, repo, name: canonical, color: 'd9dce0',
+        owner, repo, name: canonical, color,
         description: 'Release PR pending publication and tagging.',
       });
     } catch (createErr) {
-      // 422 = created by a concurrent run between our get and create. Same
-      // race ensureLabel() guards in pr-labeler.js.
       if (createErr.status !== 422) throw createErr;
+      // 422 is GitHub's generic validation error. It usually means a
+      // concurrent run created the label, but it also fires for an invalid
+      // request. Re-fetch to tell them apart, as ensureLabel() does in
+      // close-old-prs.js: a 404 here means the label is genuinely absent, so
+      // surface the original 422, which carries the real reason.
+      try {
+        await github.rest.issues.getLabel({ owner, repo, name: canonical });
+      } catch (verifyErr) {
+        if (verifyErr.status === 404) throw createErr;
+        throw verifyErr;
+      }
     }
   }
   for (const issue of pending) {

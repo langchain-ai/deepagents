@@ -4,8 +4,8 @@ import { createServer, request } from 'node:http';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { Coordinator } from '../../coordinator.mjs';
-import { createLocalViewer } from '../../local-viewer.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
+import { createLocalViewer } from '../../../deepagents_talon/steel_runtime/local-viewer.mjs';
 
 const origin = 'http://127.0.0.1:8765';
 const token = 'x'.repeat(43);

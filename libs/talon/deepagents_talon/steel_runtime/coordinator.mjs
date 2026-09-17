@@ -205,50 +205,13 @@ export class Coordinator {
     return this.status();
   }
 
-  async done(envelope, context) {
-    const lease = this.viewer(envelope, context);
-    if (lease.mode !== 'HUMAN' || lease.expiring) fail('lease_fenced');
-    await this.stop(lease, false);
-    this.expire();
-    if (lease.expiring || this.lease !== lease || lease.mode !== 'PAUSED') fail('lease_fenced');
-    lease.stopping = null;
-    lease.requests.clear();
-    lease.handoff = null;
-    this.fence(lease, 'AGENT');
-    return this.status();
-  }
-
-  async cancel(envelope, context) {
-    const lease = this.viewer(envelope, context);
-    if (!['PAUSED', 'HUMAN'].includes(lease.mode)) fail('invalid_handoff');
-    await this.stop(lease, true);
-    return this.status();
-  }
-
-  extend(owner, envelope, duration) {
-    if (this.owner(owner) !== this.owner(envelope.owner)) fail('wrong_owner');
-    const lease = this.check(envelope, false);
-    if (lease.background || lease.expiring || !['AGENT', 'PAUSED', 'HUMAN'].includes(lease.mode)) fail('lease_fenced');
-    if (!Number.isSafeInteger(duration) || duration < 1 || duration > this.ttl) fail('invalid_request');
-    this.clear(lease.timer);
-    lease.expires = this.now() + duration;
-    lease.timer = this.timer(() => this.expire(), duration);
-    lease.timer?.unref?.();
-    lease.version += 1;
-    return this.status();
-  }
-
   command(lease, envelope, operation) {
     if (!text(envelope.request_id)) fail('invalid_request');
     const digest = createHash('sha256').update(canonical(envelope)).digest('hex');
     const existing = lease.commands.get(envelope.request_id);
     if (existing) fail(existing.digest === digest ? 'request_replayed' : 'request_conflict');
     if (lease.commands.size >= 256) fail('request_limit');
-    const entry = { digest, status: 'pending' };
-    lease.commands.set(envelope.request_id, entry);
-    return Promise.resolve().then(operation).then(
-      (result) => { entry.status = 'complete'; return result; },
-      (error) => { entry.status = 'failed'; throw error; },
-    );
+    lease.commands.set(envelope.request_id, { digest });
+    return Promise.resolve().then(operation);
   }
 }

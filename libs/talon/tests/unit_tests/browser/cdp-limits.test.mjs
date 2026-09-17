@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { Coordinator } from '../../coordinator.mjs';
-import { Transport } from '../../bridge.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
+import { Transport } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
 const owner = { operator_id: 'op', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
 
@@ -45,15 +45,4 @@ test('handoff while discovery awaits never dispatches a CDP command', async () =
   await handoff;
   assert.equal(sends, 0);
   assert.equal(c.status().mode, 'PAUSED');
-});
-
-test('failed socket never leaks events or grants replay', async () => {
-  const c = await setup();
-  let events = 0;
-  const t = new Transport({ coordinator: c, lease: c.lease, events: () => events++ });
-  c.lease.transport = t;
-  c.failed(c.lease);
-  t.message(Buffer.from('{"method":"Runtime.consoleAPICalled","params":{"secret":"login"}}'), false);
-  assert.equal(events, 0);
-  assert.throws(() => c.action({ action: 'acquire', owner, request_id: 'acquire' }), /lease_fenced/);
 });

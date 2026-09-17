@@ -169,7 +169,7 @@ class BrowserError(Exception):
 
     def __init__(self, *, code: object = None) -> None:
         """Map only allowlisted bridge codes, excluding all remote details."""
-        busy = isinstance(code, str) and code in {"lease_busy", "transport_busy", "pending_limit"}
+        busy = isinstance(code, str) and code in {"lease_busy", "pending_limit"}
         super().__init__("browser_busy" if busy else "browser_unavailable")
 
 

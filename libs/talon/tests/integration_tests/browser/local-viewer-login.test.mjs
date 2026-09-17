@@ -4,8 +4,8 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
-import { Coordinator } from '../../coordinator.mjs';
-import { createLocalViewer } from '../../local-viewer.mjs';
+import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
+import { createLocalViewer } from '../../../deepagents_talon/steel_runtime/local-viewer.mjs';
 
 test('Chromium form and fragment login preserve strict origin checks', {
   skip: !process.env.TALON_TEST_STEEL_DIR, timeout: 30000,

@@ -4817,7 +4817,7 @@ def configure_langsmith_secret_redaction() -> bool:
         _fail_closed_disable_tracing()
         return False
 
-    logger.info("LangSmith secret redaction enabled for agent traces.")
+    logger.debug("LangSmith secret redaction enabled for agent traces.")
     return True
 
 

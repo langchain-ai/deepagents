@@ -15,7 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError
+from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError, BrowserRun
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest
@@ -122,7 +122,7 @@ async def test_native_navigation_streaming_and_login_restart(tmp_path: Path) -> 
 
 
 async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
-    port = _port()
+    port, control_port, viewer_port = _port(), _port(), _port()
     environment = {
         "PATH": os.defpath,
         "HOME": str(tmp_path),
@@ -132,6 +132,10 @@ async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
         "TALON_BROWSER_STEEL_DIR": os.environ["TALON_TEST_STEEL_DIR"],
         "TALON_BROWSER_CHROME": os.environ["TALON_TEST_CHROME"],
         "TALON_BROWSER_PORT": str(port),
+        "TALON_BROWSER_CONTROL_PORT": str(control_port),
+        "TALON_BROWSER_VIEWER_PORT": str(viewer_port),
+        "TALON_BROWSER_OPERATOR_ID": "test",
+        "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
     }
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -153,8 +157,9 @@ async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
         process.send_signal(signal.SIGINT)
         assert await asyncio.wait_for(process.wait(), 35) == 0
         assert not (tmp_path / "talon/default/browser/profile/.talon-dirty").exists()
-        with socket.socket() as probe:
-            assert probe.connect_ex(("127.0.0.1", port)) != 0
+        for listener in (port, control_port, viewer_port):
+            with socket.socket() as probe:
+                assert probe.connect_ex(("127.0.0.1", listener)) != 0
     finally:
         if process.returncode is None:
             process.terminate()
@@ -199,17 +204,26 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
             if step == 2:
                 self.session = observations[-1]["sessionId"]
             commands = [
-                ("Target.createTarget", {"url": "about:blank"}),
+                ("Target.getTargets", {}),
                 (
                     "Target.attachToTarget",
                     {
-                        "targetId": observations[0]["targetId"] if observations else "",
+                        "targetId": (
+                            observations[0]["targetInfos"][0]["targetId"] if observations else ""
+                        ),
                         "flatten": True,
                     },
                 ),
+                ("Page.navigate", {"url": "https://example.com"}),
                 (
                     "Page.navigate",
-                    {"url": "data:text/html,<input id=entry autofocus><title>Local</title>"},
+                    {
+                        "url": (
+                            "data:text/html,<body style='height:4000px'>"
+                            "<input id=entry autofocus style='position:absolute;left:20px;"
+                            "top:20px;width:400px;height:80px'><title>Local</title>"
+                        )
+                    },
                 ),
                 ("Runtime.evaluate", {"expression": "document.querySelector('#entry').focus()"}),
                 ("Input.insertText", {"text": "talon works"}),
@@ -273,9 +287,76 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
                 "chat", "browse", browser_binding=BrowserBinding("telegram", "sender", "chat")
             )
         )
-        await background.command("Target.getTargets", {}, None)
+        await foreground.action("acquire")
+        assert host._steel is not None
+        await _viewer_input(host._steel, config, foreground)
+        targets = json.loads(await background.command("Target.getTargets", {}, None))[
+            "untrusted_browser_observation"
+        ]["targetInfos"]
+        result = json.loads(
+            await background.command(
+                "Target.attachToTarget",
+                {
+                    "targetId": next(
+                        target["targetId"]
+                        for target in targets
+                        if target["url"].startswith("data:text/html")
+                    ),
+                    "flatten": True,
+                },
+                None,
+            )
+        )["untrusted_browser_observation"]
+        observed = json.loads(
+            await background.command(
+                "Runtime.evaluate",
+                {
+                    "expression": "[document.querySelector('#entry').value, scrollY]",
+                    "returnByValue": True,
+                },
+                result["sessionId"],
+            )
+        )["untrusted_browser_observation"]
+        assert "value" in observed["result"], observed
+        assert observed["result"]["value"][0] == "human works"
+        assert observed["result"]["value"][1] > 0
         await background.close()
     finally:
         await host.stop()
     assert not (tmp_path / "browser/control-token").exists()
     assert not (tmp_path / "browser/profile/.talon-dirty").exists()
+
+
+async def _viewer_input(browser: SteelProcess, config: TalonConfig, agent: BrowserRun) -> None:
+    source = browser.source
+    node = json.loads((source / ".talon-prepared.json").read_text())["node"]
+    process = await asyncio.create_subprocess_exec(
+        node,
+        str(Path(__file__).with_name("viewer_smoke.mjs")),
+        str(source),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        process.stdin.write(
+            json.dumps(
+                {
+                    "origin": f"http://127.0.0.1:{config.env['TALON_BROWSER_VIEWER_PORT']}",
+                    "token": browser._viewer_token,
+                    "chrome": browser.chrome,
+                }
+            ).encode()
+        )
+        await process.stdin.drain()
+        process.stdin.close()
+        assert await asyncio.wait_for(process.stdout.readline(), 20) == b"waiting\n"
+        await agent.close()
+        assert await asyncio.wait_for(process.stdout.readline(), 30) == b"released\n"
+        assert await asyncio.wait_for(process.wait(), 10) == 0
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()

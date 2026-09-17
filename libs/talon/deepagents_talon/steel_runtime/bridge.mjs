@@ -267,10 +267,10 @@ export async function main(env = process.env) {
   const coordinator = new Coordinator({ operator: env.TALON_BROWSER_OPERATOR_ID,
     identities: JSON.parse(env.TALON_BROWSER_IDENTITIES), ttl: Number(env.TALON_BROWSER_LEASE_TTL_SECONDS ?? 1800) * 1000 });
   const { WebSocket, WebSocketServer } = createRequire(`${process.argv[2]}/package.json`)('ws');
-  if (!['false', 'true'].includes(env.TALON_BROWSER_LOCAL_VIEWER ?? 'false')) fail('invalid_config');
-  const localViewer = env.TALON_BROWSER_LOCAL_VIEWER === 'true' ? createLocalViewer({
-    coordinator, WebSocket, WebSocketServer, origin: 'http://127.0.0.1:8765',
-    token: readToken(env.TALON_BROWSER_VIEWER_TOKEN_FILE),
+  if (!['false', 'true'].includes(env.TALON_BROWSER_LOCAL_VIEWER ?? 'true')) fail('invalid_config');
+  const localViewer = env.TALON_BROWSER_LOCAL_VIEWER !== 'false' ? createLocalViewer({
+    coordinator, WebSocket, WebSocketServer, origin: `http://127.0.0.1:${addresses.viewerPort}`,
+    token: env.TALON_BROWSER_VIEWER_TOKEN,
     createInput: (lease) => new Transport({ WebSocket, coordinator, lease,
       allowed: () => coordinator.lease === lease && ['HUMAN', 'PAUSED'].includes(lease.mode) && !lease.expiring,
     }),

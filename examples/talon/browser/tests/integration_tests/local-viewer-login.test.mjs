@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import test from 'node:test';
 import { Coordinator } from '../../coordinator.mjs';
 import { createLocalViewer } from '../../local-viewer.mjs';
 
 test('Chromium form and fragment login preserve strict origin checks', {
-  skip: process.env.TALON_TEST_VIEWER_LOGIN !== '1', timeout: 30000,
+  skip: !process.env.TALON_TEST_STEEL_DIR, timeout: 30000,
 }, async (t) => {
-  const require = createRequire('/app/api/package.json');
+  const require = createRequire(path.join(process.env.TALON_TEST_STEEL_DIR, 'package.json'));
   const { WebSocket, WebSocketServer } = require('ws');
   const puppeteer = require('puppeteer-core');
   const origin = 'http://127.0.0.1:8765';
@@ -27,8 +28,7 @@ test('Chromium form and fragment login preserve strict origin checks', {
     server.once('error', reject);
     server.listen(8765, '127.0.0.1', resolve);
   });
-  browser = await puppeteer.launch({ executablePath: '/usr/lib/chromium/chromium',
-    headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  browser = await puppeteer.launch({ executablePath: process.env.TALON_TEST_CHROME, headless: true });
   const page = await browser.newPage();
   page.setDefaultTimeout(5000);
   let tokenInRequestURL = false;

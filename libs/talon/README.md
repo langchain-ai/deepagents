@@ -639,9 +639,9 @@ make test
 ## Local Steel browser
 
 Talon can start and stop a native Steel browser with one persistent profile per
-assistant home. This experimental foundation supports macOS with Node.js **24**,
+assistant home. This experimental integration supports macOS with Node.js **24**,
 npm, git, and an installed Google Chrome. Runtime assets ship in the Talon package.
-Browser tools and a local viewer interface are separate follow-up changes.
+Browser tools and the authenticated local Steel viewer share that browser.
 
 Run this **once** from `libs/talon`, with Node 24 on `PATH`:
 
@@ -660,6 +660,8 @@ Configure the existing Talon process environment:
 
 ```sh
 export TALON_BROWSER_ENABLED=true
+export TALON_BROWSER_OPERATOR_ID="your-operator-id"
+export TALON_BROWSER_IDENTITIES='{"telegram":"your-sender-id"}'
 export TALON_BROWSER_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
@@ -705,6 +707,27 @@ TALON_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 uv run --group test pytest tests/integration_tests/test_steel_native.py
 ```
 
+### Local viewer and human control
+
+Normal startup prints a local sign-in link to the controlling terminal. It uses a
+fresh viewer credential per launch, separate from the agent control token. The
+credential stays in the URL fragment until the page exchanges it for an HttpOnly,
+SameSite cookie and removes the fragment. The link never goes through application
+logs or redirected output; a launch without a controlling terminal prints no link.
+
+Open the link and click **Take**. If an agent owns the browser, the page waits for
+that run to release it; **Release** cancels the wait. The viewer shows Steel's first
+tab. Click, type, and scroll there, then **Release** to let Talon acquire the browser
+again. Release waits for dispatched input to finish before freeing ownership.
+Sign out revokes the session. A disconnected viewer pauses ownership until Release
+or session expiry; uncertain input completion blocks reuse until Talon restarts.
+
+Steel, the viewer, and the coordinator run in one managed Node process. No Python
+relay, Docker, or second launcher is needed. The profile remains under
+`~/.deepagents/<assistant-id>/browser/profile`, including logins across graceful
+restarts. Set `TALON_BROWSER_LOCAL_VIEWER=false` to disable the viewer. Tunnels,
+remote sharing, channel-delivered links, and mobile access are deferred.
+
 ## Resources
 
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
@@ -720,7 +743,7 @@ inside its managed Steel process and creates/removes an owner-only runtime token
 at `<assistant-home>/browser/control-token`. The CLI supplies this path automatically;
 embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
 Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
-the reserved viewer listener uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
+the local viewer uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
 External CDP-client WebSockets and private-network host/URL settings are removed.
 Redirects, proxy environment settings and mutation
 retries are disabled. Requests and observations are limited to 4 MiB, including
@@ -748,8 +771,8 @@ host file transfer tool and no automatic login screenshot capture. All CDP resul
 are explicitly wrapped as untrusted JSON observations.
 
 Handoff returns only sanitized status/UUID and `PAUSED`: foreground
-`viewer_unavailable`, background `human_required`. No viewer/channel URL exists
-in this slice. Embedders may supply `host.browser_event_handler`, receiving
+`viewer_unavailable`, background `human_required`. Channel-delivered handoff links
+are deferred; the local viewer takes control only after the agent releases its lease. Embedders may supply `host.browser_event_handler`, receiving
 the bound host identity and sanitized event outside model context. Actual channel
 delivery is deferred. `AgentRequest` also accepts optional keyword-only
 `browser_binding` and `browser_event_handler`; existing positional arguments are

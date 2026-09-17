@@ -9,7 +9,7 @@ import { createLocalViewer } from '../../local-viewer.mjs';
 
 const origin = 'http://127.0.0.1:8765';
 const token = 'x'.repeat(43);
-const template = "<!doctype html><title>Steel</title><script>const singlePageMode = true; const baseWsUrl = 'ws://0.0.0.0:3000/v1/sessions/cast?pageIndex=0';</script>";
+const template = "<!doctype html><title>Steel</title><script>const singlePageMode = true; const baseWsUrl = 'ws://127.0.0.1:3000/v1/sessions/cast?pageIndex=0';</script>";
 
 class Socket extends EventEmitter {
   constructor() {
@@ -83,7 +83,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const mouse = { type: 'mouseEvent', pageId: 'ABC', event: { type: 'mouseMoved', x: 20, y: 30, button: 'none', modifiers: 0 } };
 
 test('configuration rejects non-loopback origins and weak launch secrets', () => {
-  for (const config of [{ origin: 'http://localhost:8765', token }, { origin, token: 'short' }, { origin: `${origin}/`, token }]) {
+  for (const config of [{ origin: 'http://localhost:8765', token }, { origin, token: 'short' }, { origin: `${origin}/`, token }, { origin: 'http://127.0.0.1:65536', token }, { origin: 'http://127.0.0.1:0', token }]) {
     assert.throws(() => createLocalViewer(config), /invalid_local_viewer_config/);
   }
 });
@@ -106,7 +106,7 @@ test('login, exact HTTP allowlist, host/origin/CSRF and private state', async (t
   assert.equal((await auth.get('/viewer')).status, 403);
   assert.equal((await auth.mutate('/take')).status, 200);
   assert.equal(f.coordinator.lease.mode, 'HUMAN');
-  assert.equal((await auth.get('/viewer')).body, template.replace('ws://0.0.0.0:3000', 'ws://127.0.0.1:8765'));
+  assert.equal((await auth.get('/viewer')).body, template.replace('ws://127.0.0.1:3000', 'ws://127.0.0.1:8765'));
   const other = await f.login();
   assert.deepEqual(JSON.parse((await other.get('/state')).body), { available: false, owned: false, controlling: false });
   assert.equal((await other.get('/viewer')).status, 403);
@@ -129,7 +129,7 @@ test('Take never steals an agent lease', async (t) => {
 });
 
 test('template rewrite fails closed on unexpected stock source', async (t) => {
-  const f = await fixture(t, { fetchHTML: async () => template.replace('0.0.0.0', 'localhost') });
+  const f = await fixture(t, { fetchHTML: async () => template.replace('127.0.0.1', 'localhost') });
   const auth = await f.login();
   await auth.mutate('/take');
   assert.equal((await auth.get('/viewer')).status, 409);
@@ -145,8 +145,8 @@ test('upgrades allow only fixed cast targets and two socket roles', async (t) =>
   assert.match(f.upgrade(auth, undefined, { host: 'evil' }).response, /403/);
   assert.equal(f.upgrade(auth, '/v1/sessions/cast?tabInfo=true').response, '');
   assert.equal(f.upgrade(auth).response, '');
-  assert.equal(f.upstreams[0].url, 'ws://172.30.14.2:3000/v1/sessions/cast?tabInfo=true');
-  assert.equal(f.upstreams[1].url, 'ws://172.30.14.2:3000/v1/sessions/cast?pageId=ABC');
+  assert.equal(f.upstreams[0].url, 'ws://127.0.0.1:3000/v1/sessions/cast?tabInfo=true');
+  assert.equal(f.upstreams[1].url, 'ws://127.0.0.1:3000/v1/sessions/cast?pageId=ABC');
   assert.match(f.upgrade(auth, '/v1/sessions/cast?pageIndex=0').response, /403/);
   assert.match(f.upgrade(auth, '/v1/sessions/cast?tabInfo=true').response, /403/);
   assert.equal(f.upstreams[1].config.maxPayload, 2 * 1024 * 1024);
@@ -409,7 +409,7 @@ test('pinned Steel template renders a single interactive page without denied chr
     theme: 'dark',
     singlePageMode: 'true',
     interactive: 'true',
-    wsUrl: 'ws://0.0.0.0:3000/v1/sessions/cast?pageIndex=0',
+    wsUrl: 'ws://127.0.0.1:3000/v1/sessions/cast?pageIndex=0',
     "singlePageMode ? 'data-single-page-mode=\"true\"' : ''": 'data-single-page-mode="true"',
     'interactive ? "pointer" : "default"': 'pointer',
     'interactive ? "var(--tab-hover-bg)" : "transparent"': 'var(--tab-hover-bg)',
@@ -548,4 +548,15 @@ test('logout waits for both sockets before releasing lease', async (t) => {
   assert.equal((await logout).status, 200);
   assert.equal(f.coordinator.status().mode, 'IDLE');
   assert.equal(f.coordinator.failedLatch, false);
+});
+
+
+test('configured viewer port keeps exact Host and Origin checks', async (t) => {
+  const configured = 'http://127.0.0.1:9843';
+  const f = await fixture(t, { origin: configured });
+  assert.equal((await f.http('/')).status, 403);
+  const headers = { Host: '127.0.0.1:9843', Origin: configured, 'Content-Type': 'application/x-www-form-urlencoded' };
+  assert.equal((await f.http('/', { headers })).status, 200);
+  assert.equal((await f.http('/auth/login', { method: 'POST', headers: { ...headers, Origin: origin }, body: `token=${token}` })).status, 403);
+  assert.equal((await f.http('/auth/login', { method: 'POST', headers, body: `token=${token}` })).status, 303);
 });

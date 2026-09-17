@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
-const UPSTREAM = 'http://172.30.14.2:3000';
+const UPSTREAM = `http://127.0.0.1:${process.env.PORT || 3000}`;
 const CAST = '/v1/sessions/cast';
 const COOKIE = 'talon_local';
 const INPUT_LIMIT = 16 * 1024;
@@ -50,7 +50,8 @@ async function defaultFetchHTML() {
 }
 
 export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, origin, token, fetchHTML = defaultFetchHTML, createInput = null }) {
-  if (origin !== 'http://127.0.0.1:8765' || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('invalid_local_viewer_config');
+  if (!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(origin) || Number(origin.split(':').at(-1)) > 65535 || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('invalid_local_viewer_config');
+  const authority = new URL(origin).host;
   const wsOrigin = origin.replace('http:', 'ws:');
   const wss = new WebSocketServer({ noServer: true, maxPayload: INPUT_LIMIT, perMessageDeflate: false });
   const sessions = new Map();
@@ -229,17 +230,32 @@ message.textContent='Invalid or expired sign-in link.';
 addEventListener('hashchange',loginFromLink);loginFromLink();
 </script>`;
     if (!value) return '<!doctype html><title>Local browser login</title><h1>Local browser</h1><form method="post" action="/auth/login"><label>Launch password <input type="password" name="token" required autocomplete="off" maxlength="43"></label><button>Sign in</button></form><p id="login-message" role="status"></p>' + linkLogin;
-    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="take">Take</button> <button id="release">Release</button> <button id="logout">Sign out</button><p>Local exclusive control only; Take requires an idle browser.</p><p id="status" role="status"></p><iframe title="Steel browser viewer" hidden style="width:100%;height:80vh;border:0" sandbox="allow-scripts allow-same-origin"></iframe>${linkLogin}<script>
+    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="take">Take</button> <button id="release">Release</button> <button id="logout">Sign out</button><p>Take waits for the agent to finish. Release returns control to Talon.</p><p id="status" role="status"></p><iframe title="Steel browser viewer" hidden style="width:100%;height:80vh;border:0" sandbox="allow-scripts allow-same-origin"></iframe>${linkLogin}<script>
 const frame=document.querySelector('iframe'), status=document.querySelector('#status');
-async function refresh(){const response=await fetch('/state');if(response.status===401){location.reload();return;}const state=await response.json();document.querySelector('#take').disabled=!state.available;document.querySelector('#release').disabled=!state.owned;status.textContent=state.controlling?'You control this browser':state.owned?'Paused: release to finish':state.available?'Available':'Unavailable';if(state.controlling){if(!frame.hasAttribute('src'))frame.src='/viewer';frame.hidden=false;}else{frame.removeAttribute('src');frame.hidden=true;}}
-for(const action of ['take','release','logout'])document.querySelector('#'+action).onclick=async()=>{const response=await fetch(action==='logout'?'/auth/logout':'/'+action,{method:'POST',headers:{'X-CSRF-Token':'${value.csrf}'}});if(action==='logout'&&response.ok){location.reload();return;}if(!response.ok)status.textContent='Request failed; browser control is unavailable.';await refresh();};
+let waiting=false, refreshing=false;
+async function mutate(action){return fetch('/'+action,{method:'POST',headers:{'X-CSRF-Token':'${value.csrf}'}});}
+async function refresh(){
+if(refreshing)return;refreshing=true;
+try{
+const response=await fetch('/state');if(response.status===401){location.reload();return;}if(!response.ok)throw Error();
+const state=await response.json();
+if(waiting&&state.available){const taken=await mutate('take');if(taken.ok){if(!waiting)await mutate('release');waiting=false;return;}if(taken.status!==409)throw Error();}
+document.querySelector('#take').disabled=waiting||state.owned;
+document.querySelector('#release').disabled=!waiting&&!state.owned;
+status.textContent=waiting?'Waiting for the agent to finish':state.controlling?'You control this browser':state.owned?'Paused: release to finish':state.available?'Available':'Browser is busy';
+if(state.controlling){if(!frame.hasAttribute('src'))frame.src='/viewer';frame.hidden=false;}else{frame.removeAttribute('src');frame.hidden=true;}
+}catch{waiting=false;status.textContent='Browser control is unavailable.';}finally{refreshing=false;}
+}
+document.querySelector('#take').onclick=()=>{waiting=true;void refresh();};
+document.querySelector('#release').onclick=async()=>{if(waiting){waiting=false;}else{await mutate('release');}await refresh();};
+document.querySelector('#logout').onclick=async()=>{waiting=false;if((await mutate('auth/logout')).ok)location.reload();};
 refresh();setInterval(refresh,2000);
 </script>`;
   }
 
   async function handler(request, response) {
     try {
-      if (closed || request.headers.host !== '127.0.0.1:8765') return send(response, 403, 'Forbidden');
+      if (closed || request.headers.host !== authority) return send(response, 403, 'Forbidden');
       const route = request.url;
       if (!['/', '/auth/login', '/auth/logout', '/state', '/take', '/release', '/viewer'].includes(route)) return send(response, 404, 'Not found');
       const mutation = ['/auth/login', '/auth/logout', '/take', '/release'].includes(route);
@@ -267,7 +283,7 @@ refresh();setInterval(refresh,2000);
       if (route === '/viewer') {
         if (!controlling(value)) return send(response, 403, 'Forbidden');
         const html = await fetchHTML();
-        const stock = "const baseWsUrl = 'ws://0.0.0.0:3000/v1/sessions/cast?pageIndex=0';";
+        const stock = `const baseWsUrl = '${UPSTREAM.replace("http:", "ws:")}${CAST}?pageIndex=0';`;
         if (typeof html !== 'string' || Buffer.byteLength(html) > FRAME_LIMIT || html.split(stock).length !== 2 || !html.includes('const singlePageMode = true;') || html.includes('id="url-text"') || html.includes('id="tab-bar"')) throw new Error('unexpected_viewer_template');
         if (!controlling(value)) return send(response, 403, 'Forbidden');
         return send(response, 200, html.replace(stock, `const baseWsUrl = '${wsOrigin}${CAST}?pageIndex=0';`), 'text/html; charset=utf-8');
@@ -297,7 +313,7 @@ refresh();setInterval(refresh,2000);
   function upgrade(request, socket, head) {
     const reject = () => { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); };
     try {
-      if (closed || request.method !== 'GET' || request.headers.host !== '127.0.0.1:8765' || request.headers.origin !== origin || request.headers['sec-websocket-protocol']) return reject();
+      if (closed || request.method !== 'GET' || request.headers.host !== authority || request.headers.origin !== origin || request.headers['sec-websocket-protocol']) return reject();
       const value = session(request);
       if (!controlling(value)) return reject();
       const match = /^\/v1\/sessions\/cast\?(tabInfo=true|pageIndex=0|pageId=([A-Za-z0-9_-]{1,128}))$/.exec(request.url);

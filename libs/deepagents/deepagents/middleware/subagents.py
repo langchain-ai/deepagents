@@ -39,6 +39,7 @@ from deepagents.middleware.summarization import (
     SummarizationEvent,
     _DeepAgentsSummarizationMiddleware,
 )
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -545,6 +546,9 @@ def create_sub_agent(
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
+        middleware.append(UnsupportedContentMiddleware())
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")
     create_agent_kwargs: dict[str, Any] = {

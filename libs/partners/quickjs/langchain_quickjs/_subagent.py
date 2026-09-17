@@ -76,6 +76,16 @@ def _derive_dispatch_id(
     The digest is a determinism device, not a security boundary.
     """
     if not eval_id:
+        # The middleware always supplies a parent tool-call id, so reaching
+        # this branch means a non-LangGraph caller or a changed runtime shim.
+        # Say so: the only other symptom is duplicate subagent identities
+        # after a resume, which surfaces far from the cause.
+        logger.debug(
+            "No parent eval tool_call_id; dispatch id for %s (ordinal %d) will "
+            "be random and will not survive an interrupt replay.",
+            task_tool_name,
+            dispatch_ordinal,
+        )
         return f"ptc_{task_tool_name}_{uuid.uuid4().hex}"
     payload = json.dumps(
         [

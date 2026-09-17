@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 _TOKEN_MODE = 0o400
 _TOKEN_LENGTH = 43
 _LIMIT = 4 * 1024 * 1024
-_CONTROL = "http://172.30.12.3:8081"
+_CONTROL = "http://127.0.0.1:8081"
 _ACTIVE: contextvars.ContextVar[BrowserRun | None] = contextvars.ContextVar("browser", default=None)
 
 
@@ -65,6 +65,7 @@ class BrowserRun:
     binding: BrowserBinding
     handler: BrowserEventHandler | None = None
     context: BrowserContext = field(default_factory=BrowserContext)
+    acquiring: bool = False
     lease: dict[str, object] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -79,6 +80,8 @@ class BrowserRun:
 
     async def action(self, action: str) -> dict[str, object]:
         """Perform one non-retried lease transition."""
+        if action == "acquire":
+            self.acquiring = True
         result = await self.client.post(
             "actions",
             {
@@ -113,7 +116,7 @@ class BrowserRun:
 
     async def close(self) -> None:
         """Release only this invocation's lease without surfacing transport errors."""
-        if not self.lease:
+        if not self.lease and not self.acquiring:
             return
         cleanup = asyncio.create_task(self._release())
         cancelled = False
@@ -131,7 +134,7 @@ class BrowserRun:
             async with asyncio.timeout(35):
                 for attempt in range(3):
                     try:
-                        if attempt:
+                        if attempt or not self.lease:
                             status = await self.client.post(
                                 "actions",
                                 {
@@ -146,9 +149,10 @@ class BrowserRun:
                             if type(status.get("version")) is not int or any(
                                 status.get(key) != self.lease[key]
                                 for key in ("lease_id", "generation")
+                                if key in self.lease
                             ):
                                 return
-                            self.lease["version"] = status["version"]
+                            self.lease = _lease(status)
                         await self.action("release")
                     except BrowserError:
                         continue
@@ -157,6 +161,7 @@ class BrowserRun:
             return
         finally:
             self.lease.clear()
+            self.acquiring = False
 
 
 class BrowserError(Exception):
@@ -185,6 +190,12 @@ class BrowserClient:
                 raise BrowserError
             self.identities: dict[str, str] = identities
             self._token_file = env["TALON_BROWSER_TOKEN_FILE"]
+            port = int(env.get("TALON_BROWSER_CONTROL_PORT", "8081"))
+            if not 1 <= port <= 65535:  # noqa: PLR2004  # TCP port range.
+                raise BrowserError
+            self._control = (
+                f"http://127.0.0.1:{port}" if "TALON_BROWSER_CONTROL_PORT" in env else _CONTROL
+            )
         except (KeyError, ValueError):
             raise BrowserError from None
         self._http: httpx.AsyncClient | None = None
@@ -205,7 +216,7 @@ class BrowserClient:
         except (OSError, UnicodeError):
             raise BrowserError from None
         self._http = httpx.AsyncClient(
-            base_url=_CONTROL,
+            base_url=self._control,
             trust_env=False,
             follow_redirects=False,
             timeout=35,
@@ -267,7 +278,7 @@ def _lease(result: dict[str, object]) -> dict[str, object]:
         not isinstance(result.get("lease_id"), str)
         or type(result.get("generation")) is not int
         or type(result.get("version")) is not int
-        or result.get("mode") not in ("AGENT", "PAUSED", "HUMAN", "FAILED")
+        or result.get("mode") not in ("AGENT", "PAUSED", "HANDOFF_PENDING", "HUMAN", "FAILED")
     ):
         raise BrowserError
     return {key: result[key] for key in ("lease_id", "generation", "version")}

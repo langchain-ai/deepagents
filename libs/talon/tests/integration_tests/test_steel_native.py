@@ -12,11 +12,16 @@ from pathlib import Path
 
 import httpx
 import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
+from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
-from deepagents_talon.runtime import EchoAgentRuntime
+from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
 from deepagents_talon.steel import SteelProcess
+from tests.unit_tests.test_background_runtime import ToolModel
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -177,3 +182,100 @@ async def test_occupied_port_fails_without_orphans(tmp_path: Path) -> None:
         await browser.start()
     finally:
         await browser.stop()
+
+
+async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
+    class BrowserModel(ToolModel):
+        session: str | None = None
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs: object):
+            del stop, run_manager, kwargs
+            observations = [
+                json.loads(message.content)["untrusted_browser_observation"]
+                for message in messages
+                if message.type == "tool" and message.name == "browser_cdp"
+            ]
+            step = len(observations)
+            if step == 2:
+                self.session = observations[-1]["sessionId"]
+            commands = [
+                ("Target.createTarget", {"url": "about:blank"}),
+                (
+                    "Target.attachToTarget",
+                    {
+                        "targetId": observations[0]["targetId"] if observations else "",
+                        "flatten": True,
+                    },
+                ),
+                (
+                    "Page.navigate",
+                    {"url": "data:text/html,<input id=entry autofocus><title>Local</title>"},
+                ),
+                ("Runtime.evaluate", {"expression": "document.querySelector('#entry').focus()"}),
+                ("Input.insertText", {"text": "talon works"}),
+                (
+                    "Runtime.evaluate",
+                    {"expression": "document.querySelector('#entry').value", "returnByValue": True},
+                ),
+            ]
+            if step == len(commands):
+                assert observations[-1]["result"]["value"] == "talon works"
+                message = AIMessage(content="done")
+            else:
+                method, params = commands[step]
+                args = {"method": method, "params": params}
+                if self.session:
+                    args["session_id"] = self.session
+                message = AIMessage(
+                    content="", tool_calls=[{"name": "browser_cdp", "id": str(step), "args": args}]
+                )
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+    config = TalonConfig(
+        "native-tools",
+        tmp_path,
+        env={
+            "TALON_BROWSER_ENABLED": "true",
+            "TALON_BROWSER_STEEL_DIR": os.environ["TALON_TEST_STEEL_DIR"],
+            "TALON_BROWSER_CHROME": os.environ["TALON_TEST_CHROME"],
+            "TALON_BROWSER_PORT": str(_port()),
+            "TALON_BROWSER_CONTROL_PORT": str(_port()),
+            "TALON_BROWSER_VIEWER_PORT": str(_port()),
+            "TALON_BROWSER_OPERATOR_ID": "test",
+            "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
+        },
+    )
+    client = BrowserClient(
+        {**config.env, "TALON_BROWSER_TOKEN_FILE": str(tmp_path / "browser/control-token")}
+    )
+    runtime = DeepAgentRuntime(
+        model=BrowserModel(responses=[]),
+        browser=client,
+        assistant_dir=tmp_path,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={},
+    )
+    host = TalonHost(config=config, agent=runtime)
+    try:
+        await host.start()
+        foreground = client.bind(BrowserBinding("telegram", "sender", "foreground"))
+        background = client.bind(
+            BrowserBinding("telegram", "sender", "background", background=True)
+        )
+        await foreground.action("acquire")
+        with pytest.raises(BrowserError, match="browser_busy"):
+            await background.command("Target.getTargets", {}, None)
+        await foreground.close()
+        await runtime.invoke(
+            AgentRequest(
+                "chat", "browse", browser_binding=BrowserBinding("telegram", "sender", "chat")
+            )
+        )
+        await background.command("Target.getTargets", {}, None)
+        await background.close()
+    finally:
+        await host.stop()
+    assert not (tmp_path / "browser/control-token").exists()
+    assert not (tmp_path / "browser/profile/.talon-dirty").exists()

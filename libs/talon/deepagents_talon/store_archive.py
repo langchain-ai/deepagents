@@ -582,6 +582,8 @@ class StoreConversationArchive:
             links = {key: record[key] for key in ("previous_scope", "previous_session")}
             writes: list[Write] = [(str(cursor), links), (str(session["cursor"]), session)]
             writes.extend((str(record[key]), None) for key in ("dedup", "message"))
+            if key := record.get("vector_content"):
+                writes.append((str(key), None))
             await self.records.commit(writes)
         root = await self.records.root()
         deletions = number(root, "deletions") - 1

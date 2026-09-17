@@ -67,6 +67,7 @@ from deepagents_talon.media import (
 )
 from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
 from deepagents_talon.speech import transcribe_voice_message
+from deepagents_talon.steel import SteelProcess
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -241,6 +242,12 @@ class TalonHost:
         self.channels = tuple(channels)
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
+        self._steel = (
+            SteelProcess(config)
+            if config.env.get("TALON_BROWSER_ENABLED", "").lower() == "true"
+            else None
+        )
+        self._steel_watch: asyncio.Task[None] | None = None
         self._locks: dict[str, _ConversationLock] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
@@ -319,10 +326,14 @@ class TalonHost:
             return
 
         self.config.ensure_home()
-        await self.agent.start()
+        self._stopped.clear()
         started: list[ChannelAdapter] = []
         scheduler: CronScheduler | None = None
         try:
+            if self._steel is not None:
+                await self._steel.start()
+                self._steel_watch = asyncio.create_task(self._watch_steel())
+            await self.agent.start()
             for channel in self.channels:
                 self._bind_channel(channel)
                 # Tracked before starting, not after: a channel that raises partway
@@ -338,7 +349,6 @@ class TalonHost:
             await self._unwind_start(started, scheduler)
             raise
 
-        self._stopped.clear()
         self._running = True
         if isinstance(self.agent, BackgroundRuntime):
             self._background_loop = asyncio.create_task(self._process_background_results())
@@ -367,6 +377,7 @@ class TalonHost:
             await self._stop_component(self.scheduler.stop, "scheduler")
 
         await self._stop_component(self.agent.stop, "agent runtime")
+        await self._stop_steel()
         self._stopped.set()
         logger.info("Talon host stopped for assistant %s", self.config.assistant_id)
 
@@ -389,6 +400,21 @@ class TalonHost:
         for channel in reversed(channels):
             await self._stop_component(channel.stop, "channel")
         await self._stop_component(self.agent.stop, "agent runtime")
+        await self._stop_steel()
+
+    async def _watch_steel(self) -> None:
+        if self._steel is not None:
+            code = await self._steel.wait()
+            logger.error("Talon's Steel process exited unexpectedly (status %d)", code)
+            self.request_shutdown()
+
+    async def _stop_steel(self) -> None:
+        if self._steel_watch is not None:
+            self._steel_watch.cancel()
+            await asyncio.gather(self._steel_watch, return_exceptions=True)
+            self._steel_watch = None
+        if self._steel is not None:
+            await self._stop_component(self._steel.stop, "Steel browser")
 
     async def _stop_component(
         self,
@@ -402,13 +428,20 @@ class TalonHost:
 
     async def run_until_stopped(self) -> None:
         """Start the host and keep it alive until shutdown is requested."""
-        await self.start()
         cleanup = self._install_signal_handlers()
+        startup = asyncio.create_task(self.start())
+        shutdown = asyncio.create_task(self._stopped.wait())
         try:
-            await self._stopped.wait()
+            done, _ = await asyncio.wait((startup, shutdown), return_when=asyncio.FIRST_COMPLETED)
+            if startup in done:
+                await startup
+                await shutdown
         finally:
-            cleanup()
+            startup.cancel()
+            shutdown.cancel()
+            await asyncio.gather(startup, shutdown, return_exceptions=True)
             await self.stop()
+            cleanup()
 
     def request_shutdown(self) -> None:
         """Request graceful host shutdown."""

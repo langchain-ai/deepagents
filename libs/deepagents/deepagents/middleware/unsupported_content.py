@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 _PDF_MIME_TYPE: Final = "application/pdf"
 
 
-def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
+def _model_has_expanded_file_support(model: "BaseChatModel | None") -> bool:
     """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
     return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
 
@@ -52,7 +52,7 @@ class UnsupportedContentMiddleware(_UnsupportedContentMiddleware):
     def is_supported(self, block: ContentBlock, *, model: "BaseChatModel", in_tool_message: bool) -> bool:
         """Gate non-PDF `file` blocks on the provider class, else defer to the profile."""
         if block["type"] == "file" and "base64" in block and block.get("mime_type") != _PDF_MIME_TYPE:
-            return _model_tolerates_non_pdf_files(model)
+            return _model_has_expanded_file_support(model)
         return super().is_supported(block, model=model, in_tool_message=in_tool_message)
 
     def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock:

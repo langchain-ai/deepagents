@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.history_index import VectorArchive
-from deepagents_talon.store_records import number, scope_key
+from deepagents_talon.store_records import digest, number, scope_key
 
 if TYPE_CHECKING:
     from deepagents_talon.archive import ArchiveEntry, ArchiveScope
@@ -23,12 +23,15 @@ class StoreVectorArchive(VectorArchive):
         self.records = archive.records
         self.indexed = 0
         self.scanned = 0
+        self.cataloged = 0
 
     async def prepare(self) -> str:
         """Resume acknowledged progress against the archive's durable vector Store."""
         async with self.records.access():
             root = await self.records.root()
             self.indexed = number(root, "indexed")
+            self.scanned = self.indexed
+            self.cataloged = number(root, "vector_content_cursor")
             await self.records.commit([("root", {**root, "vectors": True})])
         return str(root["identity"])
 
@@ -54,6 +57,9 @@ class StoreVectorArchive(VectorArchive):
                 return await self._deleted_rows(deleting, limit)
             if session or not indexing:
                 return []
+            if self.cataloged < self.indexed:
+                await self._backfill(limit)
+                return []
             last = number(await self.records.root(), "last")
             self.scanned = min(last, self.indexed + limit)
             rows: list[Row] = []
@@ -61,14 +67,48 @@ class StoreVectorArchive(VectorArchive):
                 record = await self.records.get(str(cursor))
                 if record is not None and record.get("kind") == "chunk":
                     owner = await self.records.get(str(number(record, "owner")))
-                    if owner is not None and not owner.get("deleting"):
+                    if (
+                        owner is not None
+                        and not owner.get("deleting")
+                        and await self._canonical(cursor, record) == cursor
+                    ):
                         rows.append(self._row(cursor, record, owner, deleted=False))
-            # Empty ranges contain only registrations or content-free deleted slots.
-            if not rows:
-                self.indexed = self.scanned
-                if self.scanned < last and self.archive.vectors is not None:
-                    self.archive.vectors.wake.set()
+            if not rows and self.scanned < last:
+                self._wake()
             return rows
+
+    def _wake(self) -> None:
+        if self.archive.vectors is not None:
+            self.archive.vectors.wake.set()
+
+    async def _canonical(self, cursor: int, record: Record) -> int:
+        """Journal a session-scoped content identity and its deletion reference."""
+        entry = cast("ArchiveEntry", record["entry"])
+        key = "vector-content:" + digest(entry["session_id"], entry["text"])
+        existing = await self.records.get(key)
+        if existing is not None:
+            return number(existing, "cursor")
+        await self.records.commit(
+            [
+                (key, {"cursor": cursor}),
+                (str(cursor), {**record, "vector_content": key}),
+            ]
+        )
+        return cursor
+
+    async def _backfill(self, limit: int) -> None:
+        """Catalog legacy vectors incrementally without embedding their text again."""
+        stop = min(self.indexed, self.cataloged + limit)
+        for cursor in range(self.cataloged + 1, stop + 1):
+            record = await self.records.get(str(cursor))
+            if record is not None and record.get("kind") == "chunk":
+                owner = await self.records.get(str(number(record, "owner")))
+                if owner is not None and not owner.get("deleting"):
+                    await self._canonical(cursor, record)
+        root = await self.records.root()
+        await self.records.commit([("root", {**root, "vector_content_cursor": stop})])
+        self.cataloged = stop
+        self._wake()
 
     async def _deleted_rows(self, session: Record, limit: int) -> list[Row]:
         rows: list[Row] = []
@@ -96,10 +136,22 @@ class StoreVectorArchive(VectorArchive):
     async def acknowledge(self, rows: list[Row]) -> None:
         """Advance only acknowledged work, with deletion progress durable across restarts."""
         async with self.records.access():
-            if rows and not rows[0][4]:
+            if (not rows or not rows[0][4]) and self.scanned > self.indexed:
                 root = await self.records.root()
-                await self.records.commit([("root", {**root, "indexed": self.scanned})])
+                await self.records.commit(
+                    [
+                        (
+                            "root",
+                            {
+                                **root,
+                                "indexed": self.scanned,
+                                "vector_content_cursor": max(self.cataloged, self.scanned),
+                            },
+                        )
+                    ]
+                )
                 self.indexed = self.scanned
+                self.cataloged = max(self.cataloged, self.scanned)
             for cursor, _, _, session_id, deleted, _ in rows:
                 if deleted:
                     session = cast("Record", await self.archive.session(session_id))

@@ -1078,6 +1078,56 @@ async def test_queued_tasks_do_not_restore_spent_ptc_budget(
     assert fanout.release_calls == 1
 
 
+async def test_failed_dispatch_still_consumes_its_ordinal(
+    repl: _ThreadREPL,
+) -> None:
+    """Ordinals are positional, not success-gated.
+
+    Three dispatches carry identical payloads, so the ordinal is the only
+    thing separating their ids. The second one fails on the first attempt.
+    If a failure released its ordinal, the third dispatch would take it on
+    the replay and inherit the second's id, orphaning the original.
+    """
+
+    async def run(*, explode_on: int | None) -> list[str]:
+        events: list[dict[str, Any]] = []
+        seen = 0
+
+        async def work(state: dict[str, Any], config: Any) -> dict[str, Any]:
+            nonlocal seen
+            seen += 1
+            if seen == explode_on:
+                msg = "subagent exploded"
+                raise RuntimeError(msg)
+            return {"messages": [AIMessage(content="done")]}
+
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=events.append,
+            tools=[_task_tool_for_runnable(RunnableLambda(work))],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        await repl.eval_async(
+            "(async () => {"
+            "const tasks = [0, 1, 2].map(() => "
+            "task({description: 'identical', subagentType: 'worker'}));"
+            "return (await Promise.allSettled(tasks)).length;"
+            "})()",
+            outer_runtime=runtime,
+        )
+        return [e["id"] for e in events if e["phase"] == "start"]
+
+    interrupted = await run(explode_on=2)
+    replayed = await run(explode_on=None)
+
+    assert len(interrupted) == 3
+    assert len(set(interrupted)) == 3
+    assert interrupted == replayed
+
+
 def test_runtime_with_response_format_uses_configurable() -> None:
     runtime = _subagent_runtime(
         RunnableLambda(lambda _state, _config: {"messages": [AIMessage(content="ok")]})

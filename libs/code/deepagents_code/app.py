@@ -2605,8 +2605,10 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    Otherwise a generic "key does not match endpoint" message is shown.
+
+    A workspace refusal that carries server diagnostics gets the allowlisted
+    change summary appended; all other errors return `text` unchanged.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
@@ -2618,9 +2620,23 @@ def _build_agent_error_body(
         A `Content` with a clickable docs link for `PermissionDeniedError`;
             otherwise the plain `text`.
     """
-    from deepagents_code.client.remote_client import agent_error_type
+    from deepagents_code.client.remote_client import (
+        agent_error_type,
+        workspace_conflict_diagnostics,
+    )
 
     if agent_error_type(exc) != "PermissionDeniedError":
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None:
+            from deepagents_code.workspace_diagnostics import (
+                format_diagnostics_content,
+            )
+
+            return Content.assemble(
+                text,
+                "\n\n",
+                format_diagnostics_content(diagnostics),
+            )
         return text
     if key_env:
         detail = (

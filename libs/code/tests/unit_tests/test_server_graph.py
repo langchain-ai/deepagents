@@ -1088,6 +1088,40 @@ class TestWorkspaceRuntime:
 
         make.assert_not_awaited()
 
+    async def test_runtime_drift_refusal_carries_diagnostics_and_logs(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The runtime drift refusal names allowlisted changed fields."""
+        import logging
+
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model", auto_approve=False)
+        binding = _bind(bound_config, tmp_path)
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(model="changed:model", auto_approve=True),
+            ),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            caplog.at_level(logging.WARNING),
+            pytest.raises(WorkspaceConflictError) as exc_info,
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
+        diagnostics = exc_info.value.diagnostics
+        assert diagnostics is not None
+        assert diagnostics.category == "config_drift"
+        changed = {change.name for change in diagnostics.changes}
+        # Model identity is fingerprint-only (never snapshotted); the
+        # allowlisted approval change is reported with its values.
+        assert "auto_approve" in changed
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("auto_approve" in message for message in messages)
+
     async def test_unusable_launch_cwd_emits_startup_marker(
         self, tmp_path, capsys: pytest.CaptureFixture[str]
     ) -> None:

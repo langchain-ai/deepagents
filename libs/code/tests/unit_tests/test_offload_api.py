@@ -332,6 +332,83 @@ class TestWorkspaceRoute:
         assert response.json() == {"detail": detail}
         thread_client.assert_not_called()
 
+    async def test_runtime_conflict_includes_diagnostics_when_present(
+        self, tmp_path
+    ) -> None:
+        """A diagnosed conflict adds a `diagnostics` key; the detail is unchanged."""
+        from deepagents_code.workspace import WorkspaceConflictError
+        from deepagents_code.workspace_diagnostics import (
+            FieldChange,
+            WorkspaceDiagnostics,
+        )
+
+        detail = "Cannot host this workspace because the sandbox is already owned."
+        error = WorkspaceConflictError(
+            detail,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason="server configuration changed",
+                changes=(FieldChange(name="auto_approve", bound=False, current=True),),
+            ),
+        )
+        async with _workspace_route_client(error) as (client, thread_client):
+            response = await client.post(
+                "/dcode/threads/thread-1/workspace",
+                json={"cwd": str(tmp_path)},
+            )
+
+        assert response.status_code == 409
+        body = response.json()
+        assert body["detail"] == detail
+        assert body["diagnostics"] == {
+            "category": "config_drift",
+            "reason": "server configuration changed",
+            "snapshot_status": "current",
+            "changes": [
+                {
+                    "name": "auto_approve",
+                    "state": "changed",
+                    "bound": False,
+                    "current": True,
+                }
+            ],
+        }
+        thread_client.assert_not_called()
+
+    def test_conflict_diagnostics_parse_from_sdk_error(self) -> None:
+        """The client extracts diagnostics from an SDK 409 body."""
+        from deepagents_code.client.remote_client import (
+            workspace_conflict_diagnostics,
+        )
+
+        body = {
+            "detail": "Cannot host this workspace because ...",
+            "diagnostics": {
+                "category": "config_drift",
+                "reason": "server configuration changed",
+                "snapshot_status": "current",
+                "changes": [
+                    {
+                        "name": "auto_approve",
+                        "state": "changed",
+                        "bound": False,
+                        "current": True,
+                    }
+                ],
+            },
+        }
+        exc = SimpleNamespace(body=body)
+
+        diagnostics = workspace_conflict_diagnostics(cast("Any", exc))
+
+        assert diagnostics is not None
+        assert diagnostics.category == "config_drift"
+        assert diagnostics.changes[0].name == "auto_approve"
+        # Older servers omit the field; malformed payloads degrade to None.
+        empty_body = SimpleNamespace(body={})
+        assert workspace_conflict_diagnostics(cast("Any", empty_body)) is None
+        assert workspace_conflict_diagnostics(Exception("plain")) is None
+
     async def test_runtime_build_exit_is_contained_as_503(self, tmp_path) -> None:
         """`_make_graphs` exits on sandbox failure; the route must contain it.
 

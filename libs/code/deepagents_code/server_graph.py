@@ -40,7 +40,13 @@ from deepagents_code.workspace import (
     SERVER_CONFIG_DRIFT_REASON,
     WorkspaceConflictError,
     drifted_project_fields,
+    get_snapshot_for_binding,
     resolve_workspace,
+)
+from deepagents_code.workspace_diagnostics import (
+    WorkspaceDiagnostics,
+    diff_snapshots,
+    snapshot_for_payload,
 )
 
 if TYPE_CHECKING:
@@ -739,7 +745,14 @@ def _claim_sandbox_workspace(
     )
     # Built into a local first: `raise X.from_reason(...)` reads as a
     # `from_reason` raise to ruff's DOC501.
-    conflict = WorkspaceConflictError.from_reason(reason)
+    conflict = WorkspaceConflictError.from_reason(
+        reason,
+        diagnostics=WorkspaceDiagnostics(
+            category="policy_drift",
+            reason=reason,
+            snapshot_status="unavailable",
+        ),
+    )
     raise conflict
 
 
@@ -778,41 +791,79 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     return await asyncio.to_thread(_bind)
 
 
-def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
+async def _resolve_bound_workspace_config(
+    binding: WorkspaceBinding,
+) -> ServerConfig:
     """Resolve current workspace policy and reject drift from its binding.
 
     Refusals name the fields that drifted. This runs on every request, and it
     reads the extension trust store each time, so a transient read failure
     reports as a policy change; without the field names that refusal is not
-    diagnosable. The values are paths and booleans, never secrets.
+    diagnosable. Only allowlisted, non-path policy values reach the attached
+    diagnostics: paths, model parameters, and prompts are never reported.
 
     Returns:
         The current server configuration resolved for the workspace.
     """
-    config = ServerConfig.from_env()
-    current_config = config.resolve_workspace(binding.cwd, binding.project_root)
+    config = await asyncio.to_thread(ServerConfig.from_env)
+
+    def _resolve_current() -> ServerConfig:
+        resolved = config.resolve_workspace(binding.cwd, binding.project_root)
+        return resolved.preserve_bound_extension_trust(binding.workspace_config())
+
+    current_config = await asyncio.to_thread(_resolve_current)
     bound_policy = binding.workspace_config()
-    current_config = current_config.preserve_bound_extension_trust(bound_policy)
+    snapshot = await get_snapshot_for_binding(binding)
+    current_snapshot = snapshot_for_payload(current_config.to_workspace_payload())
+    snapshot_status = "current" if snapshot is not None else "unavailable"
     drifted = drifted_project_fields(
         bound_policy, current_config.to_project_workspace_policy()
     )
     if drifted:
         fields = ", ".join(drifted)
+        changes = diff_snapshots(snapshot, current_snapshot, changed_names=drifted)
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})",
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=PROJECT_POLICY_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
         logger.warning(
             "Workspace %s project policy drifted since binding: %s",
             binding.cwd,
-            fields,
-        )
-        conflict = WorkspaceConflictError.from_reason(
-            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})"
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else fields,
         )
         raise conflict
     if current_config.workspace_fingerprint() != binding.config_fingerprint:
-        logger.warning(
-            "Workspace %s server config fingerprint changed since binding",
-            binding.cwd,
+        payload_drift = sorted(
+            key
+            for key in bound_policy
+            if bound_policy.get(key) != current_config.to_workspace_payload().get(key)
         )
-        conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
+        changes = diff_snapshots(
+            snapshot, current_snapshot, changed_names=payload_drift
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            SERVER_CONFIG_DRIFT_REASON,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason=SERVER_CONFIG_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s server config fingerprint changed since binding: %s",
+            binding.cwd,
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else SERVER_CONFIG_DRIFT_REASON,
+        )
         raise conflict
     return current_config
 
@@ -823,7 +874,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
-    current_config = await asyncio.to_thread(_resolve_bound_workspace_config, binding)
+    current_config = await _resolve_bound_workspace_config(binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached

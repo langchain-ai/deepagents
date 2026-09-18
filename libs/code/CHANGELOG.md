@@ -4,20 +4,18 @@
 
 ## [0.1.71](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.70...deepagents-code==0.1.71) (2026-09-18)
 
-
 ### Features
 
-* **code:** condense status bar cwd from the middle, tail intact ([#6252](https://github.com/langchain-ai/deepagents/issues/6252)) ([f733893](https://github.com/langchain-ai/deepagents/commit/f7338933e5ebd6959820023efb66704d6ab8ce7f))
-* **code:** move MCP onto FastMCP and `langchain.mcp` ([#5922](https://github.com/langchain-ai/deepagents/issues/5922)) ([0692ef1](https://github.com/langchain-ai/deepagents/commit/0692ef1550568a585afe48705d54a4aa07002697))
-
+- Moved MCP support onto FastMCP and `langchain.mcp`. ([#5922](https://github.com/langchain-ai/deepagents/pull/5922))
+- Condensed the current working directory in the status bar from the middle, preserving the end of the path. ([#6252](https://github.com/langchain-ai/deepagents/pull/6252))
 
 ### Bug Fixes
 
-* **code:** keep absolute paths in normal input mode ([#6379](https://github.com/langchain-ai/deepagents/issues/6379)) ([141ce98](https://github.com/langchain-ai/deepagents/commit/141ce9851b876f733ef390ead3edbc509536a8e8))
-* **code:** pin resumed history to newest message ([#6225](https://github.com/langchain-ai/deepagents/issues/6225)) ([9b5ca38](https://github.com/langchain-ai/deepagents/commit/9b5ca384ff727f16c4f66a13308170cfba899b97))
-* **code:** replace composer with prompt search and prevent query feedback ([#6346](https://github.com/langchain-ai/deepagents/issues/6346)) ([a52ecea](https://github.com/langchain-ai/deepagents/commit/a52ecea1f4b159a5ec0c667c6d05e26ea701db30))
-* **code:** scroll overflowing chat input pastes ([#6382](https://github.com/langchain-ai/deepagents/issues/6382)) ([b522fd4](https://github.com/langchain-ai/deepagents/commit/b522fd4a74b2349b25f3f1f630265f7e456430ee))
-* **code:** wrap debug logs before the scrollbar ([#6219](https://github.com/langchain-ai/deepagents/issues/6219)) ([ca7999a](https://github.com/langchain-ai/deepagents/commit/ca7999a8a9984e110a3b80d2e5f71dbe895f58ec))
+- Replaced the composer with prompt search and prevented query feedback. ([#6346](https://github.com/langchain-ai/deepagents/pull/6346))
+- Kept absolute paths intact in normal input mode. ([#6379](https://github.com/langchain-ai/deepagents/pull/6379))
+- Pinned resumed history to the newest message. ([#6225](https://github.com/langchain-ai/deepagents/pull/6225))
+- Improved handling of overflowing pasted content in the chat input so it scrolls correctly. ([#6382](https://github.com/langchain-ai/deepagents/pull/6382))
+- Wrapped debug logs before the scrollbar. ([#6219](https://github.com/langchain-ai/deepagents/pull/6219))
 
 ## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-16)
 

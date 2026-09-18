@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, TaskToolSchema
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -2497,10 +2497,10 @@ class TestSubAgents:
         This test verifies that:
         1. A subagent with SkillsMiddleware loads skills and populates skills_metadata in its state
         2. When the subagent completes, skills_metadata is NOT included in the parent's state
-        3. The PrivateStateAttr annotation correctly filters the field from invoke() output
+        3. The subagent's `OmitFromOutput` annotation filters the field from its `invoke()` output
 
-        This works because PrivateStateAttr (OmitFromSchema with output=True) tells LangGraph
-        to exclude the field from the output schema, which filters it from invoke() results.
+        `_EXCLUDED_STATE_KEYS` also strips the field from the task tool's state update, so a
+        subagent that does return it cannot write it into the parent.
         """
         # Set up filesystem backend with a skill
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -2568,13 +2568,112 @@ class TestSubAgents:
 
         # Verify skills_metadata is NOT in the parent agent's final state
         assert "skills_metadata" not in result, (
-            "Parent agent state should not contain skills_metadata key (PrivateStateAttr should filter it from subagent output)"
+            "Parent agent state should not contain skills_metadata key (the subagent's output should not carry it)"
         )
 
         # Verify the subagent did return a response
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         assert "Subagent processed request" in tool_messages[0].content
+
+    def test_custom_subagent_loads_own_skills_not_parent_skills(self, tmp_path: Path) -> None:
+        """A non-forked subagent with its own `skills` sees those, not the parent's loaded skills."""
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        parent_skills_dir = tmp_path / "skills" / "parent"
+        worker_skills_dir = tmp_path / "skills" / "worker"
+        backend.upload_files(
+            [
+                (str(parent_skills_dir / "parent-skill" / "SKILL.md"), _make_skill_content("parent-skill", "Parent skill").encode("utf-8")),
+                (str(worker_skills_dir / "worker-skill" / "SKILL.md"), _make_skill_content("worker-skill", "Worker skill").encode("utf-8")),
+            ]
+        )
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do the work", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="Worker done.")]))
+
+        parent = create_deep_agent(
+            model=parent_model,
+            backend=backend,
+            skills=[str(parent_skills_dir)],
+            subagents=[
+                SubAgent(
+                    name="worker",
+                    description="A worker with its own skills",
+                    system_prompt="You are a worker.",
+                    model=worker_model,
+                    skills=[str(worker_skills_dir)],
+                )
+            ],
+        )
+
+        parent.invoke({"messages": [HumanMessage(content="Go")]})
+
+        worker_prompt = worker_model.call_history[0]["messages"][0].text
+        assert "worker-skill" in worker_prompt
+        assert "parent-skill" not in worker_prompt
+
+    def test_compiled_subagent_returning_skills_metadata_does_not_replace_parent_skills(self, tmp_path: Path) -> None:
+        """A compiled subagent whose result includes `skills_metadata` leaves the parent's loaded skills intact."""
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        skills_dir = tmp_path / "skills" / "parent"
+        backend.upload_files([(str(skills_dir / "parent-skill" / "SKILL.md"), _make_skill_content("parent-skill", "Parent skill").encode("utf-8"))])
+        raw_skill = SkillMetadata(
+            name="raw-skill",
+            description="Returned by the subagent",
+            path="/raw/SKILL.md",
+            license=None,
+            compatibility=None,
+            metadata={},
+            allowed_tools=[],
+        )
+        raw_subagent = RunnableLambda(lambda _: {"messages": [AIMessage(content="Raw done.")], "skills_metadata": [raw_skill]})
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do the work", "subagent_type": "raw"},
+                                "id": "call_raw",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent = create_deep_agent(
+            model=parent_model,
+            backend=backend,
+            skills=[str(skills_dir)],
+            subagents=[CompiledSubAgent(name="raw", description="Returns skills metadata", runnable=raw_subagent)],
+        )
+
+        parent.invoke({"messages": [HumanMessage(content="Go")]})
+
+        final_parent_prompt = parent_model.call_history[-1]["messages"][0].text
+        assert "parent-skill" in final_parent_prompt
+        assert "raw-skill" not in final_parent_prompt
 
     def test_general_purpose_subagent_inherits_skills_from_main_agent(self, tmp_path: Path) -> None:
         """Test that the general-purpose subagent DOES inherit skills from main agent.

@@ -25,6 +25,7 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
     _is_retryable,
+    _status_code,
 )
 from deepagents_talon.tool_approvals import ToolApprovalStore
 
@@ -1278,6 +1279,29 @@ def test_is_retryable_matches_known_transient_errors() -> None:
     ]
 
     for error in errors:
+        assert _is_retryable(error)
+
+
+def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
+    """Providers that return HTTP 200 with an error body raise a bare ValueError.
+
+    ``langchain_openai`` surfaces such bodies as ``ValueError(response["error"])``
+    with no status attribute, so classification falls back to message markers.
+    """
+    errors = [
+        ValueError(
+            {
+                "message": (
+                    "We were unable to start processing your request within the "
+                    "900-second timeout limit. Please try again later."
+                )
+            }
+        ),
+        RuntimeError("The server is overloaded. Please try again later."),
+    ]
+
+    for error in errors:
+        assert _status_code(error) is None
         assert _is_retryable(error)
 
 

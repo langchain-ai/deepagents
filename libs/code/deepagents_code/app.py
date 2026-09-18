@@ -25246,6 +25246,9 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
+                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
+                    self._session_cost_usd, self._session_cost_breakdown
+                ),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -25340,11 +25343,6 @@ class DeepAgentsApp(App):
             return (
                 f"{stats.input_tokens} in / {stats.output_tokens} out "
                 f"/ {stats.request_count} req"
-            )
-
-        def _cost_breakdown() -> str:
-            return _format_cost_breakdown_table(
-                self._session_cost_usd, self._session_cost_breakdown
             )
 
         def _session_length() -> str:
@@ -25443,7 +25441,6 @@ class DeepAgentsApp(App):
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),
-            _safe("Token/cost breakdown", _cost_breakdown, copyable=True),
             _log_field(),
         ]
 

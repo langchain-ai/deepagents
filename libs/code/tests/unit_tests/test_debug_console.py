@@ -8,11 +8,12 @@ from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Select, Static
 
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
@@ -352,6 +353,27 @@ class TestDebugConsoleScreen:
         assert len(opened) == 1
         assert copied == []
 
+    async def test_cost_breakdown_button_opens_dedicated_modal(self) -> None:
+        breakdown = "Entire-thread estimated breakdown\nInput  12  0.01"
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+
+            assert isinstance(app.screen, CostBreakdownScreen)
+            assert breakdown in _widget_text(
+                app.screen.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is console
+
     async def test_escape_dismisses(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -382,21 +404,21 @@ class TestDebugConsoleToggle:
             await pilot.pause()
             screen = cast("DebugConsoleScreen", app.screen)
             log = screen.query_one("#debug-log", _DebugLogView)
-            select = screen.query_one("#debug-level-filter", Select)
             assert screen.focused is log
             assert app._auto_approve is False
 
             await pilot.press("tab")
             await pilot.pause()
-            assert screen.focused is select
+            breakdown = screen.query_one("#debug-cost-breakdown", Button)
+            assert screen.focused is breakdown
 
             await pilot.press("shift+tab")
             await pilot.pause()
             # This focus move is the discriminating assertion: without the
             # `check_action` step-aside, shift+tab is swallowed and focus stays
-            # on `select`. The `_auto_approve` check below is defense-in-depth
-            # only -- the toggle already no-ops under any modal, so it reads
-            # `False` in both the fixed and broken cases.
+            # on the breakdown button. The `_auto_approve` check below is
+            # defense-in-depth only -- the toggle already no-ops under any modal,
+            # so it reads `False` in both the fixed and broken cases.
             assert screen.focused is log
             assert app._auto_approve is False
 
@@ -472,50 +494,12 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
-    async def test_build_snapshot_has_copyable_raw_entire_thread_breakdown(
-        self,
-    ) -> None:
+    async def test_debug_snapshot_omits_full_cost_breakdown(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._session_cost_usd = 0.000123456789
-        app._session_cost_breakdown = {
-            "version": 1,
-            "request_count": 1,
-            "priced_request_count": 1,
-            "input_tokens": 1234,
-            "output_tokens": 56,
-            "cache_creation_tokens": 100,
-            "cache_read_tokens": 200,
-            "reasoning_tokens": 12,
-            "input_tokens_complete": True,
-            "output_tokens_complete": True,
-            "cache_creation_tokens_complete": True,
-            "cache_read_tokens_complete": True,
-            "reasoning_tokens_complete": True,
-            "input_cost_usd": 0.0001,
-            "output_cost_usd": 0.000023456789,
-            "total_cost_usd": 0.000123456789,
-            "cache_creation_cost_usd": 0.00001,
-            "cache_read_cost_usd": 0.00002,
-            "reasoning_cost_usd": 0.000003,
-            "input_cost_complete": True,
-            "output_cost_complete": True,
-            "cache_creation_cost_complete": True,
-            "cache_read_cost_complete": True,
-            "reasoning_cost_complete": True,
-            "historical_complete": True,
-        }
         async with app.run_test():
-            field = next(
-                field
-                for field in app._build_debug_snapshot()
-                if field.label == "Token/cost breakdown"
-            )
+            labels = {field.label for field in app._build_debug_snapshot()}
 
-        assert field.copyable is True
-        assert "Entire-thread estimated breakdown" in field.value
-        assert "cache creation" in field.value
-        assert "1234" in field.value
-        assert "0.000123456789" in field.value
+        assert "Token/cost breakdown" not in labels
 
     async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
         import time

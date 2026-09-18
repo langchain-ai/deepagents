@@ -49,6 +49,7 @@ malformed usage return `None`; pricing must never interrupt a model turn.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import errno
 import json
@@ -2368,6 +2369,32 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             logger.warning("Cost tracking failed to charge a model step", exc_info=True)
             return None
 
+    async def aafter_model(
+        self, state: CostState, runtime: Runtime[ContextT]
+    ) -> dict[str, Any] | None:
+        """Return model cost updates after off-loop pricing and receipt writes."""
+        return await self._arun_cost_hook(self.after_model, state, runtime)
+
+    async def aafter_agent(
+        self, state: CostState, runtime: Runtime[ContextT]
+    ) -> dict[str, Any] | None:
+        """Return final cost updates after off-loop pricing and receipt writes."""
+        return await self._arun_cost_hook(self.after_agent, state, runtime)
+
+    @staticmethod
+    async def _arun_cost_hook(
+        hook: Callable[[CostState, Runtime[ContextT]], dict[str, Any] | None],
+        state: CostState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Return the cost update only after any in-flight receipt write settles."""
+        invocation = asyncio.create_task(asyncio.to_thread(hook, state, runtime))
+        try:
+            return await asyncio.shield(invocation)
+        finally:
+            if not invocation.done():
+                await invocation
+
     def after_agent(  # ty: ignore[invalid-method-override]
         self,
         state: CostState,
@@ -2488,6 +2515,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 delta_usd += float(transfer["cost_usd"])
                 remaining_transfers.pop(source_scope, None)
                 claimed_transfer = True
+        transferred_usd = delta_usd
         charged_message_ids: set[str] = set()
         charged_count = 0
         pricing_attempted = False
@@ -2562,6 +2590,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     if cost_usd is not None:
                         delta_usd += cost_usd
 
+            if (
+                ensure_config()
+                .get("configurable", {})
+                .get("__deepagents_js_cost_owner")
+            ):
+                from deepagents_code._js_cost import record_cost_receipt
+
+                record_cost_receipt(delta_usd - transferred_usd)
             if not self._nested and (delta_usd > 0 or pricing_attempted):
                 pricing_ok = pricing_data_available()
                 if delta_usd > 0 or not pricing_ok:

@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Strategy and Change Validation](testing-guide.md) - Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.
+- [Testing Strategy and Local Test Guide](testing-guide.md) - Select package-local unit, integration, smoke, benchmark, and real-model evaluation coverage in the Deep Agents monorepo. Use the package Makefiles and CI dependency fan-out to validate changes at the smallest meaningful boundary.

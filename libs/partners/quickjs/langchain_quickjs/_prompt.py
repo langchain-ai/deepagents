@@ -363,7 +363,8 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
         )
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} Only one eval may be in flight at a time; wait for it to "
+        "finish before starting another. No filesystem, network, or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
         "before the call returns."
     )

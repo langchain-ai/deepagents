@@ -80,6 +80,11 @@ on:
         required: false
         type: string
         default: ""
+      use_published_dcode_in_dependents:
+        description: "Resolve published deepagents-code instead of the local source when locking reverse dependents"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -158,14 +163,19 @@ jobs:
         if: steps.raise.outputs.changed == 'true'
         env:
           LOCK_SPECS: ${{ steps.raise.outputs.lock_specs }}
+          USE_PUBLISHED_DCODE_IN_DEPENDENTS: ${{ inputs.use_published_dcode_in_dependents || false }}
         run: |
           set -euo pipefail
           IFS=',' read -ra specs <<< "$LOCK_SPECS"
           for spec in "${specs[@]}"; do
             dir="${spec%%=*}"
             py="${spec##*=}"
+            args=(--directory "$dir" --python "$py")
+            if [ "$USE_PUBLISHED_DCODE_IN_DEPENDENTS" = "true" ] && [ "$dir" != "libs/code" ]; then
+              args+=(--no-sources-package deepagents-code)
+            fi
             echo "Regenerating $dir/uv.lock (python $py)"
-            uv lock --directory "$dir" --python "$py"
+            uv lock "${args[@]}"
             if [ ! -f "$dir/uv.lock" ]; then
               echo "::error::Expected $dir/uv.lock to exist after uv lock"
               exit 1

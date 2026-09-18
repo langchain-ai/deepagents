@@ -3094,7 +3094,7 @@ class ChatInput(Vertical):
         value = self._replace_submitted_paths_with_images(value)
 
         mode = self.mode
-        if mode == "normal":
+        if mode == "normal" and not self._is_existing_path_payload(value):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected

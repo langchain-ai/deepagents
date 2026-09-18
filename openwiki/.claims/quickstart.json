@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2a111b366e371934e4793d696fed62c63759c6005caa125f7d40a881b88ad21c",
+  "pageVersion": "sha256:7c4c7ee642a73253f8d751157ba55087978c530a534c0aed47e95b0831d410ee",
   "claims": [
     {
       "id": "claim_02af55a6152f4eb88b7452398694e90f",
@@ -207,10 +207,68 @@
           "version": "repo-lines-v1:sha256:588a237e0de7f70103568d0e5c07bf569caf93587e9498b8a0e29d96687d40af:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzMjE4OWUyZGI5MzNiNmEyYWQ5NmI0ZGUwODc3ZDE1NTg5YzU4MmMzYjRjM2JlZGNkNDY1MDA0YzQ4OGI5ZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZjMxODYxMTE3NzQxNGJjYTc0ODNmYWQwMmViNDFlZDk2ZDliODA0MGI4ODQ0NmRlZTg1ZTA0ZjBjZGI0NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4ZGZmMTY4Yjk2NDM5MTNjY2VmZTQwZGExMzk4MGZjMzJmMTVlY2RmODA5NzU5NDlmMTUxNTU4MjZmN2QzYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_e13482729d9a43e289ad268ca1d993e5",
+      "statement": "The repository-owned OpenWiki Update workflow runs on a daily schedule or manual dispatch, generates documentation before minting a dedicated GitHub App token, restores its own workflow file, and stages only openwiki and AGENTS.md before it reconciles or publishes the update pull request.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L1-L94",
+          "version": "repo-lines-v1:sha256:7923f269ac4564bc032079630ead7d92d90318e0fcaefc0ccc3d4a0158f32e8a:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2MDI3ODdhZjZkY2MwODM0ZGUxMjFjYmIxY2I5NWY5NDU5YjcyMWVhYjAzNDlmMTA1MDFiOTk2YzFjNzdmZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhNDIwMmQ5YTU3MzRmMjY5OTJmODcwY2Y4NmFkMGZhNWJkOWJhODVkMjgxYzdjZWZkNzQzMmUxMTZlM2E2YmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NjM4NThlNjAxYWQyZjA0YTVkZmEwYzBlNmViYTc4YThlOWEzYTEwZTRiYWMzOWJkNzVmMjI0YzRlMmMwNDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f131c83d4ecd4ad19b53514897dc319a",
+      "statement": "OpenWiki publication uses a restricted credential boundary: the workflow-level GITHUB_TOKEN has contents read permission and checkout does not persist credentials, while a repository-scoped App token with contents and pull-request write permissions is created after generation and injected only into the create-PR and merge steps.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L169",
+          "version": "repo-lines-v1:sha256:ba5245256f4c1097afed479cf3a7c9eb381a46b25ea8b551c75cdc3da554aa9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZDRhMGY5NDMyMDNmOTU0NDYxYzE3MjI2MmYwZTkyMTc3ODkyNjI5YTZlOWFiYWVhOTMxYTZiZDg3YWE3MWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxODY1OGU0NmI2NGZkMzM4MDUzZjcyNGMyNTg1MDlmNTc2MTQ2MjQ0YzdmN2FmNjIyZjJjNWEzODRhYTdkMjIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L115-L123",
+          "version": "repo-lines-v1:sha256:57056c7bdab655722a73311b8aea10e0c3a3b724619e0419f0f1c851b9a55b30:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZkMDQwMGQ5OGMyMDFiOTdkNTkzNzU4OTk2ZTVkNTVkZDczNzFhYTI0N2Q1NWFmZjA2NWEyYzY0ODcyN2JjMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDkwNmFhMzU4OGI2NzNmYjFiMTQ0MTUwZjM0NmUyZmIwMDM1NmMyODkwZGNkMjcxZDU2MDZiZDUzYjc3MDBlNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGRiODdmZGFkNjUxMWJjMzYwMjIwYTYzOTlhZTA1ZDMxZjgzNWYxNjRjZWU3YjY1YWY3YjMwZTBmYjFlNTM3MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTcxMDg5M2E5MDE2NDQyM2VjMTZjYTgxZWQwNGE1YjIxNjBmY2Y1ZTgwZjQwMzdlMzBkY2U3NmQ2ZmRkZDNmOSJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L30-L53",
+          "version": "repo-lines-v1:sha256:c335710a1b9f9df9b7940528da16a62eb62f92253a6216a63ebd5a6c3b70cd1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZThmOWZhNDBlN2JkMDQ5OWQxYzBkODNmZDc1OGFhODViMzA4NDJkYmQ2MWYwZWE2YjdhZTEwZWZlYzc2ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZmRhZDQ5MWRmYzkzYjNlOWE2MjI1OGMzYjg1MjA2YWExMTg3M2RkZWEwYWI0NGZlZTBjNTEyNDAwYzZhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NTJiYTFhNjFkZThhNTlhZjA2OTY2MDIzNDQ4YTM3NTdiYTExODE2YWExMmNlYzhiYmUyNDVlZmRlMDc2YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhM2VhZmJlNWM4Y2RmZTRmNWMyZDM5ZGUxMjRiZjlkNmQ3OWQwZTFlYThhM2RjNmNiYmFlNDUwMGRiZGViZGQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L8-L20",
+          "version": "repo-lines-v1:sha256:8e2f581afce6af62c49993506ab3fd3e67ce1d9f6af2982bf65a16de6e18fb68:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MjYyNDdlZGUwMDZlOWJkYWI5YzY4NTA3Mjg0MjVkMWI0MTY2Y2FmNWNhYzUwY2YwOTU1YzQ0ZDI0YzFhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4OGRjMDI3MDg2OTk0MmI4NWU1Mjk1YmJhNDRjN2IyNDFmYmE3MTdkZjRkZGY3MjJlNTgzY2U2YzQxMGYyMGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1NmRkYjM1NzMyZmE2Y2EzN2RjOTU4ZWYxMWMyNDQyOTI1NzFlZjY0YTk1OGVmYjM0MmVkZGU5NzUwY2YzMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_55e7ce2f515240e0b1aca278230c4a36",
+      "statement": "The OpenWiki workflow contracts combine static credential-scope assertions with an executable merge-shell harness: the latter uses stubbed gh and sleep with real jq to verify SHA-pinned squash merging, fail-closed PR validation, and retrying only HTTP 405 for at most 60 attempts with 15-second waits.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L13-L22",
+          "version": "repo-lines-v1:sha256:5f085be428e5515d6c6f5885054ab8022d68f5b797709db1becab49d3149dc9a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiYTU0YzQwYWM0ZjZmOTM5YWVkYjQ3OTRkMmJjZjY3MzJhYzIwMGQxM2I0Yjg5M2JiZGU5NWM1NzFlODZjNzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MGVhNzI3NDE0MWMwY2FiYzQ1M2M4ZjI1MmQwYTQxMzkxNjk5N2I0ODc5OWZhZDFlMDdiYjQwOTJhZTI2OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlYjljMWQxOWE4OTI3NGIwODk5OTk4NmFkNzcyNjBiOGZiNzcwMTNkMTBhN2U0N2VhYWJkNTBiMzIyMTY4ODcifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L145-L250",
+          "version": "repo-lines-v1:sha256:d92d8fc33a64ab47490ec6eb9b961d8b16daa4db6a260d6f78461f9a107044bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzODg1ODU0MjgzNzVjZjU0MTA0NWI0OWRiMDc0ZjVjZjM1NDkwZTg3ZTJhNmM2NTVkMjkwZGJkZGJiNmMzMWZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzljOWI4NzQ1OWVkNTEzZDRjNzAzZjMyOWFmMjEyMWZhZjJiYjFmMDE0NzgwNzg2MzkwZmRjMGIzM2IxNWQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MGQ4ZWQwNjcyNWQ0MjA1NWQ5Nzg3Zjk5MjgwZjE5MWQ2ZmZmMThlNGYyNmUzZjM3ZWE1MDhhMjE5NzAzNTI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L80-L130",
+          "version": "repo-lines-v1:sha256:a9c5bbf50714989b5fe339576e26789c331e86626257337d676f7877f8fe5ee6:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NWMwOTNkMDUxNjE2Zjc2MDRkY2Q5MTVmZDM2NTAzNThlNzBlOGM0MDBkZjNlMGVlMzg5ZTRiMDY5ZTY1ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmNDI0ODVhNDEyNDAzYzMyZDcwYWVmYWU5MjdiZDUwZDk0MWQ2MTUxNWRjMjViYzI3YWQxYmU0ZGY1ZmJjMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2M2Q3YzhiZjdkMWVjMGJiZmY4N2VkZTMwYmUzZjYxMzBiODNkM2I0NzkwNzJkOTRjODY4YzMxZWI2YzYwNGYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L169",
+          "version": "repo-lines-v1:sha256:ba5245256f4c1097afed479cf3a7c9eb381a46b25ea8b551c75cdc3da554aa9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZDRhMGY5NDMyMDNmOTU0NDYxYzE3MjI2MmYwZTkyMTc3ODkyNjI5YTZlOWFiYWVhOTMxYTZiZDg3YWE3MWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxODY1OGU0NmI2NGZkMzM4MDUzZjcyNGMyNTg1MDlmNTc2MTQ2MjQ0YzdmN2FmNjIyZjJjNWEzODRhYTdkMjIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L125-L162",
+          "version": "repo-lines-v1:sha256:b6d00f7daa7811a0b418d302bb94d87200ed9566e4169116c61dabe62bde308d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5YWQ1NTg1ZThlY2JiYTA0YjRkM2EzMTQ3MmYwOTlhMmUwZTY1YmM0ZTE2YWI2N2E1ZjM3OTg1OWEyNjUzMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyMDhjNDQ0YTllNGY5YjQ5NTRlODQ0ODZiYTI3MzQxMzc1YjM5YTRiNTYyZTE4NzYzZjE4YzMwYWUwYWE5YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-18T18:59:02.504Z"
   }
 }

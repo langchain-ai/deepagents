@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - A task-routing guide for maintainers of the Deep Agents SDK, dcode terminal agent, ACP bridge, Talon host, eval suite, and partner integrations. It summarizes independent package boundaries, Python requirements, and safe local validation entry points.
+- [Deep Agents Repository Quickstart](quickstart.md) - Route a Deep Agents maintenance task to its owning package or repository automation boundary, then choose the focused validation and operational guide. Distinguishes the scheduled OpenWiki publication workflow from the public dcode composite Action.
 
 # Directories
 

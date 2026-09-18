@@ -184,14 +184,8 @@ class ModelInvocationKey:
 
 
 UsageLedgerKey = str | ModelInvocationKey
-"""Key of the recorded-request ledger: a message ID or model invocation.
+"""Model run identities and scoped message aliases for recorded requests."""
 
-Lifecycle attempt identities are preferred because provider and LangChain IDs
-can differ across chunks and the completed callback for one response. The
-LangChain model run ID is the fallback invocation identity when no attempt is
-open. Bare message IDs preserve compatibility when neither identity exists and
-also reject replayed messages after a stream round is finalized.
-"""
 
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
@@ -456,61 +450,36 @@ class RecordedRequest:
     message_ids: frozenset[str] = frozenset()
     """Provider and framework message IDs observed for this invocation."""
 
+    ledger_key: UsageLedgerKey | None = None
+    """Canonical ledger entry, promoted when a model run identity is learned."""
+
+    request_bucket: str | None = None
+    """Stable provisional bucket even when a legacy record gains a run identity."""
+
+    invocation_id: str | None = None
+    """Strong run identity, when supplied by either delivery path."""
+
+    aliases: frozenset[UsageLedgerKey] = frozenset()
+    """Scoped identities pointing to this canonical record."""
+
 
 def finalize_recorded_requests(
     recorded_requests: dict[UsageLedgerKey, RecordedRequest],
 ) -> None:
-    """Close every request in a ledger that outlives its stream round.
-
-    A chunked request is left open between chunks so later ones can revise it.
-    That is only correct *within* one round: when a consumer reuses its ledger
-    across HITL resume passes, the replayed chunks of an already-recorded
-    request would otherwise merge a second time and double its tokens and cost.
-    Closing the ledger at each round boundary makes the replay indistinguishable
-    from the stray-chunk case `record_message_usage` already rejects.
-
-    Attempt-scoped keys need one extra step. A scope identifies one model
-    attempt and is closed when that attempt ends, so the replay on the next
-    resume pass arrives with no scope and keys by the bare message ID -- which
-    would miss the `(attempt_scope, message_id)` entry entirely and count the
-    whole request a second time. Project each scoped entry down to its bare
-    message ID as well, so the replay finds a finalized row whichever shape it
-    keys by. Later attempts overwrite earlier ones, leaving the values from the
-    attempt that actually succeeded; the projected row exists only to reject
-    replays, so its counts are never added to `stats` again.
-
-    Args:
-        recorded_requests: Ledger to close. Mutated in place.
-    """
+    """Finalize canonical records and expose message aliases for unscoped replay."""
     for request_id, recorded in list(recorded_requests.items()):
-        closed = recorded if recorded.finalized else replace(recorded, finalized=True)
-        recorded_requests[request_id] = closed
+        if request_id != recorded.ledger_key:
+            continue
+        closed = replace(recorded, finalized=True)
+        for alias in closed.aliases:
+            if recorded_requests.get(alias) is recorded:
+                recorded_requests[alias] = closed
         for message_id in closed.message_ids:
             recorded_requests[message_id] = closed
 
 
 def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
-    """Return a string key naming the request a provisional delta belongs to.
-
-    The consumer keys a pool of provisional dollars by this value, so it must
-    separate exactly what the ledger separates. An attempt-scoped key therefore
-    keeps its scope: two attempts that reuse one provider message ID are
-    distinct requests, and collapsing them to the bare ID would let one
-    attempt's late retraction draw on the other attempt's deposit.
-
-    Scope cannot change under a request while it still reports deltas. A chunk
-    or completion whose record is already finalized is rejected before any
-    delta is built, and `finalize_recorded_requests` closes every entry at the
-    end of a stream round -- so one request's deltas all carry one scope, and
-    the key stays stable for as long as the pool holds its money.
-
-    Args:
-        request_id: Ledger key for the request, or `None` when the message
-            carried no usable ID.
-
-    Returns:
-        An opaque bucket key, or `None` when there is no ledger key to name.
-    """
+    """Return the initial provisional bucket, retained when run identity improves."""
     if request_id is None:
         return None
     if isinstance(request_id, ModelInvocationKey):
@@ -519,18 +488,28 @@ def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
 
 
 def _usage_ledger_key(
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
     message_id: str | None,
     attempt_scope: Hashable | None,
     invocation_id: str | None,
-) -> UsageLedgerKey | None:
-    """Return the strongest identity available for one model invocation."""
-    if attempt_scope is not None:
-        return ModelInvocationKey(attempt_scope)
-    if invocation_id:
-        return ModelInvocationKey(invocation_id)
-    if message_id and message_id.startswith("lc_run--"):
-        return ModelInvocationKey(message_id.removeprefix("lc_run--"))
-    return message_id
+) -> tuple[UsageLedgerKey | None, frozenset[UsageLedgerKey]]:
+    """Return a canonical key and compatible scoped aliases, never across runs."""
+    message_key = (
+        ModelInvocationKey((attempt_scope, message_id))
+        if attempt_scope is not None and message_id
+        else message_id
+    )
+    run_key = ModelInvocationKey(invocation_id) if invocation_id else None
+    aliases = frozenset(key for key in (run_key, message_key) if key is not None)
+    for key in (run_key, message_key):
+        previous = recorded_requests.get(key) if key is not None else None
+        if previous is not None and (
+            not invocation_id
+            or not previous.invocation_id
+            or previous.invocation_id == invocation_id
+        ):
+            return previous.ledger_key, aliases
+    return run_key or message_key, aliases
 
 
 def _names_a_model(message: object) -> bool:
@@ -990,9 +969,7 @@ def record_message_usage(
     if not isinstance(usage, Mapping) or not usage:
         return None
 
-    # Imported here, not at module scope: this module is deliberately free of
-    # heavy top-level dependencies (see the module docstring).
-    from langchain_core.messages import AIMessageChunk
+    from deepagents_code.cost_tracking import _MODEL_INVOCATION_METADATA_KEY
 
     if recorded_requests is None:
         recorded_requests = {}
@@ -1000,7 +977,74 @@ def record_message_usage(
     message_id = (
         raw_message_id if isinstance(raw_message_id, str) and raw_message_id else None
     )
-    request_id = _usage_ledger_key(message_id, attempt_scope, invocation_id)
+    metadata_id = (request_metadata or {}).get(_MODEL_INVOCATION_METADATA_KEY)
+    invocation_id = invocation_id or (
+        metadata_id if isinstance(metadata_id, str) and metadata_id else None
+    )
+    if not invocation_id and message_id and message_id.startswith("lc_run--"):
+        invocation_id = message_id.removeprefix("lc_run--")
+    request_id, aliases = _usage_ledger_key(
+        recorded_requests, message_id, attempt_scope, invocation_id
+    )
+    previous = recorded_requests.get(request_id) if request_id is not None else None
+    request_bucket = (
+        previous.request_bucket if previous else _provisional_bucket_key(request_id)
+    )
+    if previous is not None and invocation_id:
+        request_id = ModelInvocationKey(invocation_id)
+        recorded_requests[request_id] = previous
+    result = _record_message_usage(
+        stats,
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        request_metadata=request_metadata,
+        kind=kind,
+        recorded_requests=recorded_requests,
+        request_id=request_id,
+    )
+    if request_id is not None and (updated := recorded_requests.get(request_id)):
+        aliases |= (
+            frozenset(
+                alias
+                for alias in previous.aliases
+                if recorded_requests.get(alias) is previous
+            )
+            if previous
+            else frozenset()
+        )
+        updated = replace(
+            updated,
+            ledger_key=request_id,
+            request_bucket=request_bucket,
+            invocation_id=invocation_id
+            or (previous.invocation_id if previous else None),
+            aliases=aliases | {request_id},
+            message_ids=updated.message_ids | ({message_id} if message_id else set()),
+        )
+        for alias in updated.aliases:
+            recorded_requests[alias] = updated
+    return replace(result, request_id=request_bucket) if result else None
+
+
+def _record_message_usage(
+    stats: SessionStats,
+    message: object,
+    *,
+    fallback_model: str,
+    fallback_provider: str,
+    request_metadata: Mapping[str, Any] | None,
+    kind: UsageKind,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    request_id: UsageLedgerKey | None,
+) -> RecordedUsage | None:
+    """Return the usage delta applied to the resolved canonical request."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, Mapping) or not usage:
+        return None
+
+    from langchain_core.messages import AIMessageChunk
+
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
         previous = recorded_requests[request_id]
@@ -1125,8 +1169,7 @@ def record_message_usage(
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,
-            message_ids=(previous.message_ids if previous else frozenset())
-            | (frozenset({message_id}) if message_id else frozenset()),
+            message_ids=previous.message_ids if previous else frozenset(),
         )
     # Provisional pricing needs this message's delta, while the context display
     # needs the request's running token total after folding the message in.

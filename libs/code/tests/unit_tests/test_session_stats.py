@@ -12,6 +12,7 @@ from deepagents_code._session_stats import (
     ModelInvocationKey,
     ModelStats,
     RecordedRequest,
+    RecordedUsage,
     SessionStats,
     UsageLedgerKey,
     finalize_recorded_requests,
@@ -465,8 +466,8 @@ class TestRecordMessageUsage:
         assert stats.request_count == 2
         assert stats.input_tokens == 1_900
         assert stats.output_tokens == 30
-        assert ledger[ModelInvocationKey(1)].finalized is True
-        assert ledger[ModelInvocationKey(2)].finalized is False
+        assert ledger[ModelInvocationKey((1, "run-1"))].finalized is True
+        assert ledger[ModelInvocationKey((2, "run-1"))].finalized is False
 
     def test_missing_response_model_uses_request_specific_configured_model(
         self, monkeypatch: pytest.MonkeyPatch
@@ -864,15 +865,17 @@ class TestRecordModelUsageEvent:
         assert ("openai", "gpt-5.5") in stats.per_model
 
     @pytest.mark.parametrize("completion_first", [False, True])
+    @pytest.mark.parametrize("provider_id", [False, True])
+    @pytest.mark.parametrize("attempt_scope", [None, "attempt-1"])
     def test_deduplicates_mixed_response_ids_by_invocation(
-        self, completion_first: bool
+        self, completion_first: bool, provider_id: bool, attempt_scope: str | None
     ) -> None:
         stats = SessionStats()
         ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         invocation_id = "00000000-0000-0000-0000-000000000123"
         chunk = AIMessageChunk(
             content="",
-            id=f"lc_run--{invocation_id}",
+            id="resp_child" if provider_id else f"lc_run--{invocation_id}",
             usage_metadata={
                 "input_tokens": 900,
                 "output_tokens": 90,
@@ -890,35 +893,27 @@ class TestRecordModelUsageEvent:
             },
         }
 
-        calls = (
-            (
-                lambda: record_model_usage_event(
-                    stats,
-                    event,
-                    active_thread_id="thread-1",
-                    recorded_requests=ledger,
-                ),
-                lambda: record_message_usage(
-                    stats, chunk, kind="subagent", recorded_requests=ledger
-                ),
+        def completion() -> RecordedUsage | None:
+            return record_model_usage_event(
+                stats, event, recorded_requests=ledger, attempt_scope=attempt_scope
             )
-            if completion_first
-            else (
-                lambda: record_message_usage(
-                    stats, chunk, kind="subagent", recorded_requests=ledger
-                ),
-                lambda: record_model_usage_event(
-                    stats,
-                    event,
-                    active_thread_id="thread-1",
-                    recorded_requests=ledger,
-                ),
+
+        def streamed() -> RecordedUsage | None:
+            return record_message_usage(
+                stats,
+                chunk,
+                kind="subagent",
+                recorded_requests=ledger,
+                attempt_scope=attempt_scope,
             )
-        )
+
+        calls = (completion, streamed) if completion_first else (streamed, completion)
         first, second = (call() for call in calls)
 
         assert first is not None
         assert second is None if completion_first else second is not None
+        if second is not None:
+            assert second.request_id == first.request_id
         assert stats.request_count == 1
         assert stats.input_tokens == 1_000
         assert stats.output_tokens == 100
@@ -1089,6 +1084,44 @@ class TestUsageTableEnabled:
 
 class TestAttemptScopedUsage:
     """Attempt-scoped dedupe for retries that reuse a provider message ID."""
+
+    @pytest.mark.parametrize("with_run_id", [False, True])
+    def test_multiple_calls_in_one_attempt_remain_distinct(
+        self, with_run_id: bool
+    ) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        buckets = []
+        for index in range(2):
+            chunk = self._chunk(1_000, 100)
+            chunk.id = "reused" if with_run_id else f"response-{index}"
+            usage = record_message_usage(
+                stats,
+                chunk,
+                recorded_requests=ledger,
+                attempt_scope="attempt",
+                invocation_id=f"run-{index}" if with_run_id else None,
+            )
+            assert usage is not None
+            buckets.append(usage.request_id)
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2_000
+        assert len(set(buckets)) == 2
+        finalize_recorded_requests(ledger)
+        finalize_recorded_requests(ledger)
+        for index in range(2):
+            chunk = self._chunk(1_000, 100)
+            chunk.id = "reused" if with_run_id else f"response-{index}"
+            assert (
+                record_message_usage(
+                    stats,
+                    chunk,
+                    recorded_requests=ledger,
+                    invocation_id=f"run-{index}" if with_run_id else None,
+                )
+                is None
+            )
+        assert stats.request_count == 2
 
     def test_chunks_and_corrections_merge_within_one_attempt(self) -> None:
         stats = SessionStats()

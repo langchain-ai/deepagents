@@ -130,6 +130,9 @@ _CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
 _CONFIGURED_MODEL_METADATA_KEY = "deepagents_code_configured_model"
 """Model metadata key preserving the model selected by `create_model`."""
 
+_MODEL_INVOCATION_METADATA_KEY = "deepagents_code_model_invocation_id"
+"""Model run identity carried by the v1 messages stream metadata."""
+
 _CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
 """Callback metadata key identifying the graph node that made a request."""
 
@@ -1768,7 +1771,9 @@ class _SessionCostRecorder(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,  # noqa: ARG002  # Callback interface.
     ) -> None:
-        """Remember which thread a starting chat-model request belongs to."""
+        """Retain cost context and share run identity with message-stream callbacks."""
+        if metadata is not None:
+            metadata[_MODEL_INVOCATION_METADATA_KEY] = str(run_id)
         self._start(run_id, metadata)
 
     def on_llm_start(

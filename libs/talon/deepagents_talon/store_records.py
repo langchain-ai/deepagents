@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
+from langgraph.store.base import PutOp
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
 
@@ -105,11 +107,12 @@ class StoreRecords:
         journal = await self.get("journal")
         if journal is None:
             return
-        for key, value in cast("list[Write]", journal["writes"]):
-            if value is None:
-                await self.store.adelete(self.namespace, key)
-            else:
-                await self.store.aput(self.namespace, key, value, index=False, ttl=None)
+        await self.store.abatch(
+            [
+                PutOp(self.namespace, key, value, index=False, ttl=None)
+                for key, value in cast("list[Write]", journal["writes"])
+            ]
+        )
         await self.store.adelete(self.namespace, "journal")
 
     async def chain(self, cursor: int, link: str) -> AsyncIterator[tuple[int, Record]]:

@@ -628,16 +628,16 @@ def test_ripgrep_bypass_step_runs_only_where_the_strict_step_does() -> None:
 @pytest.mark.parametrize(
     ("labels", "gh_exit", "expected_bypass", "expect_error"),
     [
-        ("bypass-ripgrep-check", 0, "true", False),
+        ("ci:skip-ripgrep", 0, "true", False),
         ("dependencies\nlgtm", 0, "false", False),
         ("", 0, "false", False),
         # Neither a superstring nor a prefixed variant may arm the bypass.
-        ("bypass-ripgrep-check-v2", 0, "false", False),
-        ("no-bypass-ripgrep-check", 0, "false", False),
+        ("ci:skip-ripgrep-v2", 0, "false", False),
+        ("no-ci:skip-ripgrep", 0, "false", False),
         # Fail closed and say so. Stdout carrying the label is deliberately
         # ignored when the call itself failed: a partial read must never arm a
         # bypass, and a silent enforce is indistinguishable from "label absent".
-        ("bypass-ripgrep-check", 1, "false", True),
+        ("ci:skip-ripgrep", 1, "false", True),
     ],
     ids=[
         "label-present",
@@ -865,7 +865,7 @@ def test_ripgrep_timeout_comment_uses_isolated_workflow_run() -> None:
     assert "listWorkflowRunArtifacts" in script
     assert ARTIFACT_PREFIX in script
     assert "listLabelsOnIssue" in script
-    assert "bypass-ripgrep-check" in script
+    assert "ci:skip-ripgrep" in script
     assert "createComment" in script
     assert "updateComment" in script
     assert "deleteComment" in script

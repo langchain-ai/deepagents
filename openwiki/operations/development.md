@@ -1,12 +1,14 @@
 ---
 type: operations-guide
 title: Development, CI, and Releases
-description: Package-local uv and Make workflows, repository-wide validation, CI routing, hooks, and independently versioned release operations for the Deep Agents monorepo.
+description: Package-scoped uv and Make workflows, repository fan-out validation, contributor gates, CI routing, and independently versioned release operations for the Deep Agents monorepo.
 tags: [development, ci, monorepo, uv, make, release-please]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-09T08:05:37.706Z
 sources:
+  - id: openwiki-source-37e02a57730563a4b4de1690
+    resource: repo://.github/LAYOUT.md
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
   - id: openwiki-source-477b456c1269748d01a9f090
@@ -35,18 +37,20 @@ sources:
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
 ---
 
 # Development, CI, and Releases
 
-This repository is a monorepo of independently versioned Python packages under `libs/`, not one root Python project. Work at the package boundary: its `pyproject.toml`, `uv.lock`, and `Makefile` define dependencies and supported commands. Repository-wide locking and release automation deliberately cross that boundary and therefore have separate safeguards.
+This repository is a monorepo of independently versioned Python packages under `libs/`, rather than one root Python project. Work at the package boundary: its `pyproject.toml`, `uv.lock`, and `Makefile` define dependencies and supported commands. Repository-wide locking and release automation deliberately cross that boundary and therefore have separate safeguards.
 
-For initial setup, see [Quickstart](../quickstart.md). See [Testing Guide](../testing/testing-guide.md) for test conventions, [Run Evals](../workflows/run-evals.md) for evaluation execution, and [Sandbox Partners](../integrations/sandbox-partners.md) for integration context.
+For initial setup, see [Quickstart](../quickstart.md). See [Testing Guide](../testing/testing-guide.md) for test conventions and [Run Evals](../workflows/run-evals.md) for evaluation execution.
 
-## Package-local workflow
+## Contribution and package-local workflow
 
-Use `uv` for interpreters, environments, and dependencies, and `make` for standard tasks. Do not use `pip`, Poetry, or Conda. `uv` provisions an interpreter compatible with the package's `requires-python`; there is no repository-wide Python version to pin. Each package owns its `pyproject.toml`, `Makefile`, README, and tests; sibling package dependencies may be editable local sources.
+External contributors must link a pull request to a maintainer-approved issue or discussion and be assigned to it before opening the PR. Within that constraint, choose the one package being changed. Every package has its own `pyproject.toml`, `Makefile`, and README; local sibling dependencies may be editable, so an in-tree change can be visible to its consumers during development.
+
+Use `uv` for interpreters, environments, and dependencies, and `make` for standard tasks. Do not use `pip`, Poetry, or Conda. `uv` provisions an interpreter compatible with the package's `requires-python`; there is no repository-wide Python version to pin.
 
 Install hooks once, then enter the package being changed:
 
@@ -110,7 +114,7 @@ make -C libs/code check
 make -C libs lock-check
 ```
 
-CI path filters select affected package lint and unit-test jobs for pull requests, while pushes to `main` run package jobs unconditionally. Editable SDK consumers include `libs/deepagents/**` in their filters, so an SDK change validates those consumers before merging.
+CI has entry workflows for pull requests, pushes to `main`, and merge queues. It first computes path-based package impact; PRs run the affected package jobs, while push jobs explicitly also run on every `main` push. Filters include `libs/deepagents/**` for editable SDK consumers, so an SDK change validates those consumers rather than waiting for the full post-merge run. Reusable workflows are named `_*.yml`; extend an existing reusable workflow rather than duplicating setup and checkout steps in a new entry workflow.
 
 The hook configuration requires pre-commit 3.2.0 or later and installs `pre-commit`, `commit-msg`, and `pre-push` hooks. Local package hooks invoke package Makefiles; lock, extras, and selected version checks are file-scoped. The commit-message hook accepts the configured Conventional Commit types, while PR CI validates scopes.
 
@@ -120,7 +124,7 @@ Keep bump-worthy work to one releasable component. Use a separate `chore(deps):`
 
 ### Adding or changing a partner package
 
-A partner package is independently versioned and owns its own environment, metadata, Makefile, and tests. Adding one is a repository-wide wiring change, not merely a new directory: register its issue areas and labels, Dependabot entry, CI change detection/job, allowed scope synchronized among PR lint and both branch-name checks, release setup/detection, release-please config and manifest, release documentation, release-note distribution map, dependency-maintenance list, and secrets. Sandbox-backed partners additionally need Harbor options and credential checks plus integration-test matrix and secret gating. For a first managed release, set the manifest baseline to `0.0.0`.
+A partner package is independently versioned and owns its own environment, metadata, Makefile, and tests. Adding one is a repository-wide wiring change, not merely a new directory: register issue areas and labels, Dependabot, CI change detection and jobs, synchronized allowed scopes, release setup and detection, release-please configuration and manifest, release documentation and notes mapping, dependency-maintenance coverage, and secrets. Sandbox-backed partners additionally need Harbor options and credential checks plus integration-test matrix and secret gating. For a first managed release, set the manifest baseline to `0.0.0`.
 
 ## Lock and public-dependency validation
 
@@ -138,7 +142,7 @@ The manifest is the current released-version baseline, not a source-version file
 | --- | --- |
 | `libs/deepagents` | `0.7.13` |
 | `libs/acp` | `0.0.11` |
-| `libs/code` | `0.1.66` |
+| `libs/code` | `0.1.67` |
 | `libs/talon` | `0.0.7` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |

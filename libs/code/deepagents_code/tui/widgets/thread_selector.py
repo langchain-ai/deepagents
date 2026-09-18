@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
 
 from deepagents_code import theme
+from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.clipboard import copy_text_with_feedback
 from deepagents_code.config import (
     build_langsmith_thread_url,
@@ -680,10 +681,10 @@ class ContainedSelect(Select[str]):
 
 
 class ThreadFilterInput(Input):
-    """Search input that reserves C for copying the highlighted thread ID."""
+    """Search input that supports the modified thread-ID copy shortcut."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("c", "copy_thread_id", "Copy ID", show=False, priority=True)
+        Binding("alt+c", "copy_thread_id", "Copy ID", show=False, priority=True)
     ]
 
     def action_copy_thread_id(self) -> None:
@@ -708,7 +709,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
-        Binding("c", "copy_thread_id", "Copy ID", show=False, priority=True),
+        Binding("alt+c", "copy_thread_id", "Copy ID", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
         Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
@@ -723,7 +724,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     """Key bindings for thread navigation, selection, deletion, and filter focus.
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Enter
-    selects the highlighted thread, C copies its full ID, Ctrl+D opens the
+    selects the highlighted thread, Alt+C copies its full ID, Ctrl+D opens the
     delete-confirmation overlay, Tab/Shift+Tab rotate focus through the filter
     input, the scope/sort/agent dropdowns, and the relative-timestamp and
     column-visibility checkboxes, and Esc dismisses. All bindings use
@@ -1080,7 +1081,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         lines = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} C copy ID"
+            f" {glyphs.bullet} Alt+C copy ID"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
@@ -1089,8 +1090,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         limit = self._effective_thread_limit()
         if len(self._threads) >= limit:
             lines += (
-                f"\nShowing last {limit} threads. "
-                "Set DA_CLI_RECENT_THREADS to override."
+                f"\nShowing last {limit} threads. Set {RECENT_THREADS} to override."
             )
         return lines
 

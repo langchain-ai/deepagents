@@ -393,6 +393,7 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
+    "skills_metadata",
     _FORKED_CONTEXT_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
@@ -405,7 +406,10 @@ When returning updates:
 2. The todos and `structured_response` keys are excluded as they do not have
     a defined reducer and no clear meaning for returning them from a subagent
     to the main agent.
-3. Agent-private fields on middleware state schemas are excluded from both
+3. `skills_metadata` is excluded so a subagent loads skills from its own
+    sources rather than reusing the parent's list, and cannot replace the
+    parent's list with its own.
+4. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """
 

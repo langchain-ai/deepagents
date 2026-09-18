@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 from contextlib import aclosing
 from copy import copy
 from dataclasses import dataclass, replace
@@ -17,8 +18,11 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 from langgraph_sdk import get_client
 
+from deepagents_talon.authorization import set_authorization_handler
+from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 
     from deepagents import CompiledSubAgent, SubAgent
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -27,9 +31,28 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph_sdk.schema import StreamPart
 
+logger = logging.getLogger(__name__)
+
 _IN_SUBAGENT: contextvars.ContextVar[bool] = contextvars.ContextVar("talon_subagent", default=False)
 _MAX_TASKS = 128
 _MAX_RUNNING = 4
+_MAX_DELIVERIES = 3
+_TASK_TIMEOUT_SECONDS = 3600
+_FAILED_RESULT = "Subagent failed before returning a result."
+_TIMED_OUT_RESULT = "Subagent ran out of time before returning a result."
+# Async task tools the main agent never sees, so approval gates on them can never fire.
+HIDDEN_ASYNC_TOOLS = frozenset(
+    {
+        "check_async_task",
+        "list_async_tasks",
+        "cancel_async_task",
+        "update_async_task",
+    }
+)
+_UNDELIVERED_RESULT = (
+    f"The conversation failed to process this result {_MAX_DELIVERIES} times, "
+    "so it was dropped and never reached the user."
+)
 _INSTRUCTIONS = (
     "The task and start_async_task tools launch background subagents and return a task ID. "
     "Keep talking to the user while they work. Use list_subagents to inspect progress and "
@@ -46,6 +69,7 @@ class _Job:
     result: str | None = None
     cancelled: bool = False
     notified: bool = False
+    deliveries: int = 0
     tools: list[str] | None = None
 
     @property
@@ -120,13 +144,7 @@ class BackgroundSubagents(AgentMiddleware):
                 tools=[
                     tool
                     for tool in request.tools
-                    if getattr(tool, "name", "")
-                    not in {
-                        "check_async_task",
-                        "list_async_tasks",
-                        "cancel_async_task",
-                        "update_async_task",
-                    }
+                    if getattr(tool, "name", "") not in HIDDEN_ASYNC_TOOLS
                 ],
             )
         )
@@ -170,7 +188,7 @@ class BackgroundSubagents(AgentMiddleware):
             job.tools = request.tool_call["args"].get("tools")
             self._jobs[task_id] = job
             job.worker = asyncio.create_task(
-                self._run(job, request, task_id), name=task_id, context=contextvars.Context()
+                self._run(job, request, task_id), name=task_id, context=contextvars.copy_context()
             )
         return ToolMessage(
             f"Started background subagent. task_id: {task_id}", tool_call_id=request.tool_call["id"]
@@ -178,11 +196,19 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        APPROVAL_OPERATOR.set(False)
+        # The copied context carries the host's history scope and cron origin, which the
+        # tools a subagent may hold require. It must not carry the authorization handler:
+        # a flow started once the originating turn has ended would outlive the host's
+        # `_clear_authorization`, stranding a pending prompt in the conversation. Enabling
+        # background authorization needs host-side cleanup first.
+        set_authorization_handler(None)
         config: RunnableConfig = {"configurable": {"thread_id": task_id}, "recursion_limit": 500}
         runtime = replace(request.runtime, config=config, state=dict(request.runtime.state))
         call = {**request.tool_call, "args": {**request.tool_call["args"], "runtime": runtime}}
+        timeout = asyncio.timeout(_TASK_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(3600):
+            async with timeout:
                 if request.tool_call["name"] == "start_async_task":
                     job.result = await self._run_remote(request)
                     return
@@ -203,8 +229,10 @@ class BackgroundSubagents(AgentMiddleware):
             job.result = job.result[:64_000]
         except asyncio.CancelledError:
             job.cancelled = True
-        except Exception:  # noqa: BLE001  # report failures without exposing tool arguments or credentials
-            job.result = "Subagent failed before returning a result."
+        except Exception:
+            logger.exception("Background subagent %s failed", task_id)
+            # This result reaches the model and the user: no arguments, no credentials.
+            job.result = _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT
 
     async def _run_remote(self, request: ToolCallRequest) -> str:
         spec = self._remote[request.tool_call["args"]["subagent_type"]]
@@ -249,6 +277,50 @@ class BackgroundSubagents(AgentMiddleware):
             and not job.cancelled
             and not job.notified
         }
+
+    def record_delivery_failure(self, results: dict[str, str]) -> list[str]:
+        """Count one failed delivery and drop results the main agent cannot process.
+
+        Args:
+            results: Result IDs handed to a main-agent turn that then failed.
+
+        Returns:
+            Result IDs dropped after too many failed delivery attempts.
+        """
+        dropped = []
+        for key in results:
+            job = self._jobs.get(key)
+            if job is None or job.notified:
+                continue
+            job.deliveries += 1
+            if job.deliveries < _MAX_DELIVERIES:
+                continue
+            job.notified = True
+            job.result = f"{_UNDELIVERED_RESULT}\n{job.result}"
+            dropped.append(key)
+            logger.warning("Dropped undelivered background subagent result %s", key)
+        return dropped
+
+    def requeue(self, results: Iterable[str]) -> None:
+        """Return acknowledged results to the pending set after an undelivered turn.
+
+        A turn that completed its model work acknowledges the results it consumed,
+        but the host may then discard its reply because a newer turn superseded it.
+        The user therefore never heard about work that is already marked delivered.
+        Clearing the flag offers it to the next turn instead; re-injection is
+        idempotent, because the result is carried as a message keyed by its own id.
+
+        Only the ids handed back are touched, so a result delivered by some earlier
+        turn is never resurrected. An id already pruned or cancelled is skipped:
+        there is nothing left to offer.
+
+        Args:
+            results: Result IDs whose turn produced a reply that was discarded.
+        """
+        for key in results:
+            job = self._jobs.get(key)
+            if job is not None and not job.cancelled:
+                job.notified = False
 
     def acknowledge(self, results: dict[str, str]) -> None:
         """Mark results processed only after the main agent completes a turn.

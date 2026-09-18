@@ -1609,6 +1609,11 @@ class ChatTextArea(PasteBurstTextArea):
             owner.apply_paste_payload(event.text, None)
             return
 
+        # TextArea inserts after this handler returns, before the callback runs.
+        # Re-scroll once auto-height layout has settled so an overflowing paste
+        # leaves its end visible instead of showing the start of the draft.
+        self.call_after_refresh(self.scroll_cursor_visible)
+
         # Don't call super() here — Textual's MRO dispatch already calls
         # TextArea._on_paste after this handler returns. Calling super()
         # would insert the text a second time, duplicating the paste.
@@ -2192,6 +2197,10 @@ class ChatInput(Vertical):
     ChatInput .input-row {
         height: auto;
         width: 100%;
+    }
+
+    ChatInput.prompt-search-active .input-row {
+        display: none;
     }
 
     ChatInput .input-prompt {
@@ -3158,7 +3167,7 @@ class ChatInput(Vertical):
         value = self._replace_submitted_paths_with_images(value)
 
         mode = self.mode
-        if mode == "normal":
+        if mode == "normal" and not self._is_existing_path_payload(value):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected
@@ -3827,6 +3836,7 @@ class ChatInput(Vertical):
             # flow's keyboard assumptions, so the modal serves this case.
             return "modal"
 
+        self.add_class("prompt-search-active")
         self._prompt_search_draft = self._text_area.text
         self._prompt_search_cursor = self._text_area.cursor_location
         # Both tiers go through the public accessor so they always show the
@@ -3871,6 +3881,7 @@ class ChatInput(Vertical):
             refocus: Whether to return focus to the composer. Escalating to the
                 modal skips this so the modal's own filter input takes focus.
         """
+        self.remove_class("prompt-search-active")
         draft = self._prompt_search_draft
         cursor = self._prompt_search_cursor
         self._prompt_search_draft = None
@@ -4044,6 +4055,9 @@ class ChatInput(Vertical):
         if not self._prompt_search_active:
             return
         if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if event.value != event.input.value:
             return
         self.post_message(self.Typing())
         self._prompt_search_query = event.value

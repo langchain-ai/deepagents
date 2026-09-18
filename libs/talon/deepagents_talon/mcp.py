@@ -869,7 +869,6 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
             "url": url,
             "transport": "sse" if transport == "sse" else "http",
             "headers": headers or {},
-            "timeout": 30,
         }
     )
     remote.auth = auth

@@ -65,7 +65,12 @@ async def test_middleware_ignores_unmarked_tools() -> None:
 
 
 async def test_protocol_error_reaches_model_without_error_data() -> None:
-    tool = SimpleNamespace(metadata={MCP_TOOL_METADATA_KEY: True})
+    tool = StructuredTool(
+        name="remote_search",
+        description="Search",
+        args_schema={},
+        metadata={MCP_TOOL_METADATA_KEY: True},
+    )
     request = Request(tool, {"id": "call-8", "name": "remote_search", "args": {}})
 
     async def handler(_request: Request) -> ToolMessage:
@@ -81,7 +86,12 @@ async def test_protocol_error_reaches_model_without_error_data() -> None:
 
 
 async def test_non_protocol_error_propagates() -> None:
-    tool = SimpleNamespace(metadata={MCP_TOOL_METADATA_KEY: True})
+    tool = StructuredTool(
+        name="remote_search",
+        description="Search",
+        args_schema={},
+        metadata={MCP_TOOL_METADATA_KEY: True},
+    )
     request = Request(tool, {"id": "call-8", "name": "remote_search", "args": {}})
 
     async def handler(_request: Request) -> ToolMessage:

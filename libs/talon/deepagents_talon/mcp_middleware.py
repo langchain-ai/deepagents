@@ -27,13 +27,12 @@ def talon_mcp_middleware() -> AgentMiddleware:
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         tool = request.tool
-        metadata = getattr(tool, "metadata", None) or {}
-        if tool is None or not metadata.get(MCP_TOOL_METADATA_KEY):
+        if tool is None or not (tool.metadata or {}).get(MCP_TOOL_METADATA_KEY):
             return await handler(request)
 
         arguments = _normalize_mcp_arguments(
             request.tool_call.get("args") or {},
-            getattr(tool, "args_schema", None),
+            tool.args_schema,
         )
         request = request.override(tool_call={**request.tool_call, "args": arguments})
         try:

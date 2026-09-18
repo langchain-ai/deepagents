@@ -61,6 +61,7 @@ Production agents powered by the LangChain stack:
 | Example | Description |
 |---|---|
 | [**Deep Research**](deep_research/) | Multi-step web research with Tavily, parallel sub-agents, and strategic reflection |
+| [**Browser Agent**](browser-agent/) | Playwright browser automation orchestrated with LangChain's `create_agent` |
 | [**MCP Docs Agent**](deploy-mcp-docs-agent/) | Docs research agent using MCP tools over LangChain documentation |
 
 ### Coding

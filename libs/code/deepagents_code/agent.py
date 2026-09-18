@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import ToolMessage
+    from langchain_quickjs import PTCOption
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
@@ -3023,7 +3024,8 @@ def create_cli_agent(
         from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
             suppress_langchain_beta_warning,
         )
-        from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
+
+        from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware
 
         interpreter = interpreter_config or InterpreterConfig.from_resolver()
         ptc_names = _resolve_ptc_option(
@@ -3040,7 +3042,7 @@ def create_cli_agent(
         # and the warning is not actionable for users, so suppress it.
         with suppress_langchain_beta_warning():
             agent_middleware.append(
-                CodeInterpreterMiddleware(
+                CostAwareCodeInterpreterMiddleware(
                     tool_name="js_eval",
                     timeout=interpreter.timeout_seconds,
                     memory_limit=interpreter.memory_limit_mb * 1024 * 1024,

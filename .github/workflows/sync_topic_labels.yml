@@ -62,13 +62,28 @@ jobs:
             echo "Topic label manifest is current."
             exit 0
           fi
+          base_commit=$(git rev-parse HEAD)
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          body_file=$(mktemp)
+          trap 'rm -f "$body_file"' EXIT
+          {
+            printf '%s\n\n' 'Updates `.github/topic-labels.json`, the cached topic-label choices used by issue classification.'
+            printf '%s\n\n' 'The sync discovers repository `topic:*` labels and merges them into the sorted manifest. Existing choices are preserved; retiring a choice requires an explicit manifest edit.'
+            printf 'Maintained automatically by [Sync topic label manifest](%s/blob/%s/.github/workflows/sync_topic_labels.yml), scheduled daily at 08:17 UTC or run manually.\n\n' "$repo_url" "$GITHUB_WORKFLOW_SHA"
+            printf -- '- Source: [repository topic labels](%s/labels?q=topic%%3A).\n' "$repo_url"
+            printf -- '- Run: [#%s, attempt %s](%s/actions/runs/%s/attempts/%s) (trigger: `%s`).\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$repo_url" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME"
+            printf -- '- Base: [`%s`](%s/commit/%s) (`%s`).\n' "$base_commit" "$repo_url" "$base_commit" "$BASE"
+          } > "$body_file"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(infra): sync topic label manifest"
           git branch -f "$BRANCH"
           git push --force origin "$BRANCH"
-          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+          existing_pr=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[].number')
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" --body-file "$body_file"
+          else
             gh pr create --base "$BASE" --head "$BRANCH" \
               --title "chore(infra): sync topic label manifest" \
-              --body "Updates the cached topic-label choices used by issue classification."
+              --body-file "$body_file"
           fi

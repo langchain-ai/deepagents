@@ -47,6 +47,7 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
+    ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
@@ -825,7 +826,14 @@ class TalonHost:
                     # behind it was never reported, so it goes back to the queue.
                     self._requeue_background_results(result)
                     return
-                await self._deliver_agent_result(channel, reply_conversation_id, result)
+                delivered = await self._deliver_agent_result(channel, reply_conversation_id, result)
+                if delivered:
+                    await self._record_delivery(
+                        agent_conversation_id,
+                        _channel_key(channel, turn.provider),
+                        reply_conversation_id,
+                        delivered,
+                    )
         except asyncio.CancelledError:
             # Cancelled between the model finishing and this reply going out -- the
             # same loss, reached by the other route, and the reason this runs while
@@ -970,7 +978,23 @@ class TalonHost:
             job: Cron job that produced the result.
             text: Message text to send.
         """
-        await send_with_retry(lambda: channel.send_message(job.origin.conversation_id, text))
+        result = await send_with_retry(
+            lambda: channel.send_message(job.origin.conversation_id, text)
+        )
+        if result.success and not is_silent(text):
+            await self._record_delivery(
+                f"{job.id}{_CRON_THREAD_SUFFIX}",
+                _channel_key(channel, job.origin.channel),
+                job.origin.conversation_id,
+                text,
+            )
+
+    async def _record_delivery(self, session: str, provider: str, chat: str, text: str) -> None:
+        if isinstance(self.agent, ConversationDeliveryRuntime):
+            try:
+                await self.agent.record_delivered_reply(session, provider, chat, text)
+            except Exception:
+                logger.exception("Could not record final-reply delivery in history")
 
     async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
@@ -1620,12 +1644,15 @@ class TalonHost:
         channel: ChannelAdapter,
         conversation_id: str,
         result: AgentResult,
-    ) -> None:
+    ) -> str | None:
         cleaned, refs = extract_markdown_media(result.text)
         if not refs:
             if result.text:
-                await send_with_retry(lambda: channel.send_message(conversation_id, result.text))
-            return
+                sent = await send_with_retry(
+                    lambda: channel.send_message(conversation_id, result.text)
+                )
+                return result.text if sent.success else None
+            return None
 
         media, failed = _outbound_media_from_refs(
             refs,
@@ -1633,21 +1660,23 @@ class TalonHost:
             root=outbound_media_root_from_env(self.config.env),
         )
         text = _with_failed_attachment_text(cleaned, failed)
-        sent_media, send_failed = await _send_channel_media(
+        sent_media, send_failed, captions = await _send_channel_media(
             channel,
             conversation_id,
             media,
             fallback_caption=text,
         )
         if text and not sent_media:
-            await send_with_retry(lambda: channel.send_message(conversation_id, text))
-        elif send_failed and sent_media:
+            sent = await send_with_retry(lambda: channel.send_message(conversation_id, text))
+            return text if sent.success else None
+        if send_failed and sent_media:
             await send_with_retry(
                 lambda: channel.send_message(
                     conversation_id,
                     f"_(Could not attach: {', '.join(send_failed)}.)_",
                 )
             )
+        return "\n".join(captions) or None
 
     def _track_conversation_task(
         self,
@@ -1804,14 +1833,17 @@ async def _send_channel_media(
     media: list[ChannelMedia],
     *,
     fallback_caption: str,
-) -> tuple[bool, list[str]]:
+) -> tuple[bool, list[str], list[str]]:
     sent = False
     failed: list[str] = []
+    captions: list[str] = []
     for index, item in enumerate(media):
         payload = _media_with_fallback_caption(item, fallback_caption, is_first=index == 0)
         result = await send_with_retry(lambda p=payload: channel.send_media(conversation_id, p))
         if result.success:
             sent = True
+            if payload.caption:
+                captions.append(payload.caption)
         else:
             logger.warning(
                 "Could not send outbound media: %s (%s)",
@@ -1819,7 +1851,7 @@ async def _send_channel_media(
                 result.error,
             )
             failed.append(payload.caption or payload.path.name)
-    return sent, failed
+    return sent, failed, captions
 
 
 def _media_with_fallback_caption(

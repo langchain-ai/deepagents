@@ -257,6 +257,24 @@ class TestChatInputScrollbar:
     so the bar appears only on genuine overflow.
     """
 
+    async def test_overflowing_paste_scrolls_to_cursor(self) -> None:
+        """A paste taller than the composer leaves its end visible."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            owner = text_area._chat_input_owner
+            assert owner is not None
+            owner._collapse_pastes = False
+            text_area.focus()
+            await pilot.pause()
+
+            pasted = "word " * 200
+            app.post_message(events.Paste(pasted))
+            await pilot.pause()
+
+            assert text_area.cursor_location == (0, len(pasted))
+            assert text_area.scroll_y == text_area.max_scroll_y
+
 
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""
@@ -954,6 +972,33 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
+
+    async def test_submit_non_media_absolute_path_stays_normal(
+        self, tmp_path: Path
+    ) -> None:
+        """An existing absolute path is agent text, not a slash command."""
+        csv_path = tmp_path / "Mobile Documents" / "studio results.csv"
+        csv_path.parent.mkdir()
+        csv_path.write_text("result,score\npass,1\n")
+        pasted = str(csv_path).replace(" ", r"\ ")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = pasted
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == pasted
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == pasted
+            assert app.submitted[0].mode == "normal"
 
     async def test_submit_leading_path_handles_unicode_space_variants(
         self, tmp_path

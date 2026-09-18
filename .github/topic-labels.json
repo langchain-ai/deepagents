@@ -3,6 +3,7 @@
   "topic:backends",
   "topic:filesystem",
   "topic:harness",
+  "topic:harness-profiles",
   "topic:mcp",
   "topic:memory",
   "topic:middleware",

@@ -30593,6 +30593,54 @@ class TestPromptClipboard:
             assert app._prompt_clipboard_block_reason() is None
 
 
+class TestSessionCostWarning:
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_warning_modal_once_per_thread(self, dismiss_key: str) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(5.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            body = str(app.screen.query_one(".body", Static).render())
+            assert "$5.25" in body
+            assert "$5.00" in body
+            assert "/offload" in body
+            assert "/clear" in body
+            app._set_session_cost(6.0)
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+            assert app._session_cost_usd == pytest.approx(6.0)
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._reset_thread_usage()
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press(dismiss_key)
+
+    async def test_zero_threshold_disables_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 0.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._set_session_cost(100.0)
+            await pilot.pause()
+            assert app.screen is screen
+
+
 class TestProvisionalCostReconciliation:
     """Request-keyed provisional deltas survive backend resets correctly."""
 

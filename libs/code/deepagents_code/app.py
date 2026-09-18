@@ -8912,15 +8912,13 @@ class DeepAgentsApp(App):
             not self._session_cost_warning_shown
             and 0 < threshold < self._session_cost_usd
         ):
+            from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
             self._session_cost_warning_shown = True
-            self.notify(
-                f"Estimated session cost is {format_cost(self._session_cost_usd)}, "
-                f"above the configured {format_cost(threshold)} threshold. Consider "
-                "/offload to reduce context usage or /clear to start fresh.",
-                title="Session cost warning",
-                severity="warning",
-                timeout=12,
-                markup=False,
+            self.push_screen(
+                SessionCostWarningScreen(
+                    cost_usd=self._session_cost_usd, threshold=threshold
+                )
             )
 
     @property

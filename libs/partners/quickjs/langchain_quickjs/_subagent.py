@@ -233,6 +233,12 @@ async def call_subagent_task_tool(
         start_event["eval_id"] = eval_id
     _emit_subagent_event(stream_writer, start_event)
 
+    config = getattr(runtime, "config", None)
+    # `BaseTool.arun` takes its handlers from `callbacks`, never from `config`.
+    # Without them the parent's callbacks see neither this dispatch nor the
+    # subagent run it starts.
+    callbacks = config.get("callbacks") if isinstance(config, dict) else None
+
     started_at = time.monotonic()
     try:
         result = await task_tool.arun(
@@ -241,7 +247,8 @@ async def call_subagent_task_tool(
                 "subagent_type": subagent_type,
                 "runtime": runtime,
             },
-            config=getattr(runtime, "config", None),
+            callbacks=callbacks,
+            config=config,
             tool_call_id=subagent_id,
         )
     except GraphInterrupt:

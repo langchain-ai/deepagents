@@ -18,6 +18,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
@@ -920,12 +921,14 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
             self,
             tool_input: dict[str, Any],
             *,
+            callbacks: Any = None,
             config: dict[str, Any] | None = None,
             tool_call_id: str | None = None,
         ) -> str:
             calls.append(
                 {
                     "tool_input": tool_input,
+                    "callbacks": callbacks,
                     "config": config,
                     "tool_call_id": tool_call_id,
                 }
@@ -955,6 +958,53 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
     assert calls[0]["config"] == runtime.config
     assert calls[0]["tool_call_id"].startswith("ptc_task_")
     assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
+
+
+async def test_call_subagent_task_tool_runs_under_parent_callbacks() -> None:
+    class _Recorder(BaseCallbackHandler):
+        def __init__(self) -> None:
+            self.tool_starts: list[str] = []
+            self.chain_starts: list[str] = []
+
+        def on_tool_start(
+            self, serialized: dict[str, Any], input_str: str, **kwargs: Any
+        ) -> None:
+            del input_str, kwargs
+            self.tool_starts.append(serialized["name"])
+
+        def on_chain_start(
+            self, serialized: dict[str, Any], inputs: dict[str, Any], **kwargs: Any
+        ) -> None:
+            del inputs
+            self.chain_starts.append(kwargs.get("name") or serialized.get("name", ""))
+
+    recorder = _Recorder()
+    task_tool = _task_tool_for_runnable(
+        RunnableLambda(
+            lambda _state: {"messages": [AIMessage(content="ok")]},
+        )
+    )
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {}, "callbacks": [recorder]},
+        stream_writer=lambda _chunk: None,
+        tools=[task_tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+
+    result = await call_subagent_task_tool(
+        task_tool,
+        description="work",
+        subagent_type="worker",
+        response_schema=None,
+        runtime=runtime,
+    )
+
+    assert result == "ok"
+    assert recorder.tool_starts == [task_tool.name]
+    assert "worker" in recorder.chain_starts
 
 
 async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -> None:

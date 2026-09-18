@@ -190,6 +190,7 @@ class _PendingToolApproval:
     prompt_text: str
     prompt_message_id: str | None
     sender_id: str | None
+    action_count: int = 1
 
 
 @dataclass(slots=True)
@@ -1555,6 +1556,7 @@ class TalonHost:
             channel_conversation_id=reply_conversation_id,
             agent_conversation_id=approval.conversation_id,
             prompt_text=_format_tool_approval_prompt(approval),
+            action_count=len(approval.action_requests),
             prompt_message_id=None,
             sender_id=sender_id,
         )
@@ -1591,7 +1593,7 @@ class TalonHost:
             )
             return
 
-        decision = _parse_tool_approval_reply(message.text)
+        decision = _parse_tool_approval_reply(message.text, batch=pending.action_count > 1)
         if decision is None:
             await self._send_tool_approval_prompt(channel, pending)
             return
@@ -1903,7 +1905,12 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
             lines.append(f"Args: `{_json_preview(args)}`")
         elif args not in (None, {}, []):
             lines.append(f"Args: `{args}`")
-    lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
+    if len(approval.action_requests) > 1:
+        lines.append(
+            "Reply `👍` / `approve` to run ALL actions or `👎` / `deny` to skip ALL actions."
+        )
+    else:
+        lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
 
 
@@ -1952,9 +1959,11 @@ def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
         raise
 
 
-def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:
+def _parse_tool_approval_reply(text: str, *, batch: bool = False) -> ToolApprovalDecision | None:
     normalized = text.strip().lower().strip(".! ")
     if not normalized:
+        return None
+    if batch and len(normalized.split()) != 1:
         return None
     first = normalized.split(maxsplit=1)[0]
     reaction_decision = _parse_tool_approval_reaction(first)

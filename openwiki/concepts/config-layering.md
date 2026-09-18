@@ -1,16 +1,18 @@
 ---
 type: configuration-model
-title: dcode Configuration Layering
+title: Code Configuration Layering
 description: How dcode resolves ranked configuration sources, maintains coherent file-snapshot generations, protects managed policy and project dotenv trust boundaries, and constructs workspace-scoped server runtimes.
 tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-66c48cb937486d5952df1ca9
+    resource: repo://libs/code/deepagents_code/client/commands/config.py
   - id: openwiki-source-b9ef532d79a0667acf40e58b
     resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
@@ -35,14 +37,14 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-4df2bda291da47157bed7cbb
     resource: repo://libs/code/tests/unit_tests/test_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
-# dcode Configuration Layering
+# Code Configuration Layering
 
 Deep Agents Code (`dcode`) resolves typed settings from ranked sources. Its central consistency choice is to serve one coherent file generation—even if it is stale—rather than mix an edit into only some reads. Managed policy is additionally fail-closed: a bad replacement must not remove a restriction and let a weaker source win.
 
-For model-specific settings, see [profiles and models](/openwiki/concepts/profiles-models.md); for a session lifecycle, see [run a dcode session](/openwiki/workflows/run-dcode-session.md).
+For model-specific settings, see [profiles and models](/openwiki/concepts/profiles-models.md); for runtime lifecycle context, see [runtime behavior](/openwiki/architecture/runtime-behavior.md).
 
 ## Source model and precedence
 
@@ -64,6 +66,12 @@ The standard replacement precedence chain, including the conditional in-memory r
 Managed policy is the trust root: it outranks CLI, runtime retention, environment, and the writable user file. `resolver_from_snapshots()` requires keyword-only `managed=` and `user=` arguments, preventing same-typed snapshots from being transposed and granting user data managed precedence. Providers must have unique ranks. Per-option merge strategies are `replace`, `union`, and `deep_merge`; accumulating strategies retain valid contributions rather than discarding policy restrictions or sibling table leaves.
 
 The parsed command line becomes an immutable `CliProvider` snapshot of the `argparse` namespace. It can be installed before TOML is read, preserving command help and group fast paths. A different CLI provider is rejected: one process has one argv. An ad-hoc snapshot resolver has no CLI tier unless its caller explicitly supplies the installed provider.
+
+### Inspecting effective configuration
+
+`dcode config` and `dcode config get <key-or-prefix>` are diagnostic entrypoints rather than views of the cached resolver. After dotenv bootstrap, each invocation snapshots the user and managed files once, carries over the installed CLI provider, and resolves every displayed option against that one invocation-local generation. `config path` reports the configured on-disk locations. This makes inspection reflect a current edit without publishing it into the runtime's shared generation.
+
+The command reports both the effective source and value, while `--verbose` / `--all` adds catalog information and per-leaf provenance for structured options. Credential and other redacted options never expose their values in either text or JSON: they report presence and source instead. A corrupt `/auth` store is treated as absent for the command but emits a secret-free remediation warning, rather than failing all configuration inspection.
 
 ## Shared resolver generations and reload
 
@@ -136,4 +144,13 @@ Before graph assembly, `_make_graphs()` creates the workspace-specific dotenv ma
 5. Treat project `.env` as untrusted for user-level security controls and preserve explicit environment snapshots.
 6. When adding a server-facing setting, extend the shared `ServerConfig` serialization/deserialization contract and include resource-affecting values in workspace policy and fingerprint validation.
 
-Focused tests in `test_configuration_resolution.py` exercise enforced managed-key failures and snapshot consistency; `test_reload.py` checks fresh previews, retained user configuration, and notices for rejected reload candidates.
+## Focused validation
+
+The configuration tests cover the boundaries that protect safe changes:
+
+- `test_configuration.py` exercises ranked resolution, managed-policy enforcement, coherent snapshot replacement, CLI-tier installation, and write refreshes that do not hold the resolver lock during managed fetches.
+- `test_reload.py` checks that previews use a fresh user candidate without advancing managed policy, and that rejected managed or user candidates retain prior values with notices.
+- `test_config.py` exercises dotenv precedence, interpolation against the winning value, workspace-scoped immutable environments, and the project-dotenv denylist, including Windows case normalization.
+- `test_config_manifest.py` exercises the `dcode config` display contract, including CLI attribution and redaction.
+
+When changing a setting, add or update the test at the decision boundary: rank and merge behavior, reload publication, dotenv trust, server serialization, or introspection redaction—not only the parser for the new value.

@@ -3440,9 +3440,9 @@ class ChatInput(Vertical):
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
                 self.app.notify(msg, severity="warning", timeout=5, markup=False)
+                logger.debug("Could not load media from dropped path: %s", path)
 
             # Not a supported media file, keep as path
-            logger.debug("Could not load media from dropped path: %s", path)
             parts.append(str(path))
 
         if not attached:

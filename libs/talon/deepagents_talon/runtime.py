@@ -40,7 +40,11 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
-from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.background import (
+    _INLINE_TIMEOUT_SECONDS,
+    _SCHEDULED_TURN,
+    BackgroundSubagents,
+)
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
@@ -90,6 +94,7 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
+INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
@@ -345,7 +350,9 @@ class DeepAgentRuntime:
             default=None,
         )
         self._tools_lock = asyncio.Lock()
-        self.background = BackgroundSubagents()
+        self.background = BackgroundSubagents(
+            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS)
+        )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
         )
@@ -534,6 +541,10 @@ class DeepAgentRuntime:
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
+        # Covers a job's own run and any later turn on its thread, both of which carry the
+        # same scheduled metadata. A chat delivery turn is excluded: it has a user waiting,
+        # so its delegations keep detaching.
+        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         history_token = _HISTORY_SCOPE.set(_history_scope(request))
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
@@ -553,6 +564,7 @@ class DeepAgentRuntime:
             MESSAGE_HANDLER.reset(message_token)
             _HISTORY_SCOPE.reset(history_token)
             _HISTORY_SESSION.reset(session_token)
+            _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
             self._pending_results.reset(pending_token)
@@ -1133,6 +1145,24 @@ def _recursion_limit_from_env(env: Mapping[str, str], fallback: int) -> int:
     """
     resolved = _positive_int_from_env(env, RECURSION_LIMIT_ENV_KEY)
     return resolved if resolved is not None else fallback
+
+
+def _inline_timeout_from_env(env: Mapping[str, str], fallback: float) -> float:
+    """Resolve how long a scheduled run may spend in one delegation.
+
+    The `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` env var, when set, overrides the
+    code default so operators can match the bound to their own schedules: the value
+    caps how long one wedged subagent can hold up every other cron job.
+
+    Args:
+        env: Process environment to read.
+        fallback: Value to keep when the variable is unset or unusable.
+
+    Returns:
+        Seconds allowed for one inline delegation.
+    """
+    resolved = _positive_int_from_env(env, INLINE_SUBAGENT_TIMEOUT_ENV_KEY)
+    return float(resolved) if resolved is not None else fallback
 
 
 def _positive_int_from_env(env: Mapping[str, str], key: str) -> int | None:

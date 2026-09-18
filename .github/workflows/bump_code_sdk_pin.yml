@@ -164,9 +164,9 @@ jobs:
           # Every field here is read either by the selector or by the `jq`
           # calls below. A dropped field makes the selector match nothing,
           # which silently opens a duplicate PR.
-          open_prs=$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
-            --jq '[.[][] | {
+          open_prs=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" | \
+            jq -s '[.[][] | {
               body,
               headRefName: .head.ref,
               isCrossRepository: (.head.repo.full_name != .base.repo.full_name),

@@ -2662,6 +2662,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     result = await asyncio.to_thread(
                         create_model,
                         selected,
+                        # One-shot classification never replays thinking blocks,
+                        # so the Anthropic preserved-thinking binding would only
+                        # cost it the forced tool call `with_structured_output`
+                        # relies on.
+                        bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
             except asyncio.CancelledError:
@@ -2829,10 +2834,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                structured = model.with_structured_output(
-                    _classifier_response_model([_tool_call_id(call) for call in calls]),
-                    strict=True,
+                response_model = _classifier_response_model(
+                    [_tool_call_id(call) for call in calls]
                 )
+                thinking = getattr(model, "thinking", None)
+                if (
+                    spec is None
+                    and getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(thinking, dict)
+                    and thinking.get("type") in {"adaptive", "enabled"}
+                ):
+                    structured = model.with_structured_output(
+                        response_model, method="json_schema"
+                    )
+                else:
+                    structured = model.with_structured_output(response_model)
                 messages = [
                     SystemMessage(content=_CLASSIFIER_POLICY),
                     HumanMessage(

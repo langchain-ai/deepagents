@@ -1,0 +1,89 @@
+name: Sync topic label manifest
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-topic-label-manifest
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Refresh topic label manifest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const path = require('node:path');
+            const { owner, repo } = context.repo;
+            const { syncTopicLabels } = require('./.github/scripts/labeling/sync-topic-labels.js');
+            await syncTopicLabels(
+              github, owner, repo, path.resolve('.github/topic-labels.json'),
+            );
+
+      - name: Open or refresh manifest pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: automation/sync-topic-labels
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git add -- .github/topic-labels.json
+          if git diff --cached --quiet; then
+            existing_prs=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[].number')
+            for pr in $existing_prs; do
+              gh pr close "$pr" --delete-branch
+            done
+            echo "Topic label manifest is current."
+            exit 0
+          fi
+          base_commit=$(git rev-parse HEAD)
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          body_file=$(mktemp)
+          trap 'rm -f "$body_file"' EXIT
+          {
+            printf '%s\n\n' 'Updates `.github/topic-labels.json`, the cached topic-label choices used by issue classification.'
+            printf '%s\n\n' 'The sync discovers repository `topic:*` labels and merges them into the sorted manifest. Existing choices are preserved; retiring a choice requires an explicit manifest edit.'
+            printf 'Maintained automatically by [Sync topic label manifest](%s/blob/%s/.github/workflows/sync_topic_labels.yml), scheduled daily at 08:17 UTC or run manually.\n\n' "$repo_url" "$GITHUB_WORKFLOW_SHA"
+            printf -- '- Source: [repository topic labels](%s/labels?q=topic%%3A).\n' "$repo_url"
+            printf -- '- Run: [#%s, attempt %s](%s/actions/runs/%s/attempts/%s) (trigger: `%s`).\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$repo_url" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME"
+            printf -- '- Base: [`%s`](%s/commit/%s) (`%s`).\n' "$base_commit" "$repo_url" "$base_commit" "$BASE"
+          } > "$body_file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(infra): sync topic label manifest"
+          git branch -f "$BRANCH"
+          git push --force origin "$BRANCH"
+          existing_pr=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[].number')
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" --body-file "$body_file"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title "chore(infra): sync topic label manifest" \
+              --body-file "$body_file"
+          fi

@@ -76,10 +76,20 @@ if TYPE_CHECKING:
     class _ProvisionalCostCallback(Protocol):
         """Callback signature for `_on_provisional_cost`.
 
-        Positional-only for the same reason as `_SessionCostCallback`.
+        `cost_usd` is positional-only for the same reason as
+        `_SessionCostCallback`. The rest are keyword-only: an implementation
+        must handle them, so a silent regression to unreconciled deltas is a
+        type error rather than a display bug.
         """
 
-        def __call__(self, cost_usd: float, /) -> None: ...
+        def __call__(
+            self,
+            cost_usd: float,
+            /,
+            *,
+            request_id: str | None,
+            is_correction: bool,
+        ) -> None: ...
 
 
 from deepagents_code import _session_stats
@@ -916,6 +926,10 @@ class TextualUIAdapter:
         Keeps the status bar moving during work whose cost the graph has not
         checkpointed yet — a long subagent run, say — without making the client
         a second authority: every server total replaces what this accumulated.
+        `request_id` names the request the delta belongs to so a late
+        correction only retracts its own contribution, and `is_correction`
+        marks a delta that only revises spend already reported, so one whose
+        subject a backend total has settled is dropped whatever its sign.
         """
 
         self._on_usage_update: Callable[[], None] | None = None
@@ -1512,12 +1526,27 @@ def _apply_recorded_usage(
         adapter._on_usage_update()
     if recorded_usage.cost_usd is None or not adapter._on_provisional_cost:
         return
+    if recorded_usage.cost_usd == 0:
+        # A zero delta changes nothing, so do not forward it.
+        return
     # Display-only: the graph checkpoints the same spend and streams the
-    # authoritative total, which supersedes this estimate.
+    # authoritative total, which supersedes this estimate. The request ID lets
+    # the app reconcile a later correction with its own contribution rather
+    # than the whole running provisional total.
     try:
-        adapter._on_provisional_cost(recorded_usage.cost_usd)
+        adapter._on_provisional_cost(
+            recorded_usage.cost_usd,
+            request_id=recorded_usage.request_id,
+            is_correction=recorded_usage.is_correction,
+        )
     except Exception:
-        logger.warning("on_provisional_cost callback failed", exc_info=True)
+        logger.warning(
+            "on_provisional_cost callback failed; the provisional cost display "
+            "may stall until the next backend total. request_id=%r delta_usd=%r",
+            recorded_usage.request_id,
+            recorded_usage.cost_usd,
+            exc_info=True,
+        )
 
 
 async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
@@ -4197,7 +4226,7 @@ async def _handle_interrupt_cleanup(
         )
 
     # Proactively cancel server-side runs before persisting recovery state, so
-    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # the aupdate_state write below doesn't 409 against a still-busy thread. This
     # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
     # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
     # Absent on local agents, so this is a no-op for them.
@@ -4234,7 +4263,7 @@ async def _handle_interrupt_cleanup(
     # (mirroring the HITL-reject branches). The turn does not resume from here,
     # so the returned ids need not be tracked for dedup.
     #
-    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # Dispatched *before* the `aupdate_state` write below (not alongside the
     # `set_rejected` loop after them): those writes await a possibly-slow remote
     # checkpointer, and on an interactive quit the graceful-exit drain in
     # `app.py` snapshots the in-flight hook tasks right after cancelling this
@@ -4263,21 +4292,21 @@ async def _handle_interrupt_cleanup(
 
     try:
         # tracing_context(enabled=False) suppresses only the UpdateState traced
-        # run that each aupdate_state call would otherwise emit in LangSmith — it
-        # does not affect any other tracing in the surrounding turn. These writes
-        # are internal interrupt-recovery mechanics (partial AI message +
-        # cancellation notice), not user-driven agent activity; surfacing them as
-        # standalone peer runs alongside real agent turns clutters the trace view.
+        # run that aupdate_state would otherwise emit in LangSmith — it does not
+        # affect any other tracing in the surrounding turn. This write is internal
+        # interrupt-recovery mechanics (partial AI message + cancellation notice),
+        # not user-driven agent activity; surfacing it as a standalone peer run
+        # alongside real agent turns clutters the trace view.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                if interrupted_msg:
-                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
-
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                     "Previous operation was cancelled."
                 )
-                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                messages = [cancellation_msg]
+                if interrupted_msg:
+                    messages.insert(0, interrupted_msg)
+                cancellation_values: dict[str, Any] = {"messages": messages}
                 # Piggy-back the latest token count on this already-required
                 # write instead of issuing a separate `aupdate_state`.
                 # `after_model` never ran on the partial turn, so without this

@@ -1,7 +1,7 @@
 """Contract for the warnings-as-errors test policy.
 
 Every package under `libs/` opts in by putting `"error"` first in its pytest
-`filterwarnings`; `_test.yml` keeps the `bypass-warnings-check` label wiring
+`filterwarnings`; `_test.yml` keeps the `ci:allow-warnings` label wiring
 that demotes the policy for a labeled PR.
 
 The bypass step is the single switch that can disable the policy repo-wide, so
@@ -162,16 +162,16 @@ def test_workflow_grants_label_read_permission(workflow_path: Path) -> None:
 @pytest.mark.parametrize(
     ("labels", "gh_exit", "expected_flag", "expect_error_annotation"),
     [
-        pytest.param("bypass-warnings-check", 0, "-W default", False, id="label-present"),
+        pytest.param("ci:allow-warnings", 0, "-W default", False, id="label-present"),
         pytest.param("dependencies\nlgtm", 0, "", False, id="label-absent"),
         pytest.param("", 0, "", False, id="no-labels"),
         # A substring or superstring of the label must not trigger the bypass.
-        pytest.param("bypass-warnings-check-v2", 0, "", False, id="label-superstring"),
-        pytest.param("no-bypass-warnings-check", 0, "", False, id="label-prefixed"),
+        pytest.param("ci:allow-warnings-v2", 0, "", False, id="label-superstring"),
+        pytest.param("no-ci:allow-warnings", 0, "", False, id="label-prefixed"),
         # Fail closed, and say so: an unreadable label list must enforce the
         # policy *and* annotate, or a maintainer cannot tell why the label had
         # no effect. Labels on stdout are ignored when the call itself failed.
-        pytest.param("bypass-warnings-check", 1, "", True, id="api-failure-fails-closed"),
+        pytest.param("ci:allow-warnings", 1, "", True, id="api-failure-fails-closed"),
     ],
 )
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")

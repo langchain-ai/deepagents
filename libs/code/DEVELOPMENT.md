@@ -143,7 +143,7 @@ To send logs elsewhere, also `export DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>`. Ea
 
 The directory is created or tightened to owner-only access, and each file is created or tightened to user-only access. Symlinks are refused. If either cannot be secured, no file handler is attached and a warning goes to stderr. Use the in-app Debug Console in that case.
 
-Stdio MCP server stderr is captured here at `DEBUG`. This keeps server-side failures visible when the TUI cannot show process stderr. Each record is one line, capped at 4096 characters. Characters in the Unicode `C` categories are removed, which includes control and format characters. The ESC byte of an ANSI sequence is removed but the rest stays as literal text, so the log is not free of escape-sequence residue. The text comes from the server. It can contain credentials or other sensitive values. Enable `DEBUG` logging only if you accept that risk, and do not share the log file.
+Raw stdio MCP server stderr is discarded to protect the TUI and prevent unbounded disk growth, including in debug mode. Structured MCP log notifications still reach the application logger with the server name and severity.
 
 ### In-app Debug Console (`Ctrl+\`)
 

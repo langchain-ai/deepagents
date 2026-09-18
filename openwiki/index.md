@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart](quickstart.md) - Route Deep Agents maintainer work to the SDK, dcode product, ACP bridge, Talon host, evaluation suite, partner integrations, and their focused architecture, workflow, operations, and test guides.
+- [Repository Quickstart](quickstart.md) - Route Deep Agents maintenance from the package boundary to the SDK, dcode, ACP, Talon, evals, partner adapters, and the focused design, operations, workflow, and testing pages for each change.
 
 # Directories
 

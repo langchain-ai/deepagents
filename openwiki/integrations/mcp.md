@@ -12,6 +12,8 @@ sources:
     resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
     resource: repo://libs/code/deepagents_code/mcp_auth.py
+  - id: openwiki-source-216ca680d81dc35eb4d3e76e
+    resource: repo://libs/code/deepagents_code/mcp_config.py
   - id: openwiki-source-71cf5dd9cb185a031e8f6442
     resource: repo://libs/code/deepagents_code/mcp_login_service.py
   - id: openwiki-source-f6d553e7afdf54acac36e7d3
@@ -34,10 +36,10 @@ sources:
     resource: repo://libs/talon/tests/test_mcp.py
   - id: openwiki-source-e2be45e59936bfba43c18816
     resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T08:05:29.735Z
 ---
 
 # MCP Integration
@@ -48,6 +50,12 @@ integrations: dcode composes layered sources with project trust and plugins,
 whereas Talon loads one operator-selected file and exposes management tools for
 that fixed path. Configuration approval, credential files, and runtime sessions
 are not shared between them.
+
+| Lifetime | dcode | Talon |
+| --- | --- | --- |
+| Configuration selection | Merges discovered user, plugin, project, and optional explicit layers for each load. Project entries are trust-gated. | Selects one configured path or the default file; no layer merge or project-approval mechanism exists. |
+| Credentials | Per-profile-state `mcp-tokens` entries, keyed by safe server name and resolved URL hash. | Per-user `~/.deepagents/mcp-tokens` entries, keyed by server name and URL hash. |
+| Runtime connections | A load mounts backends in a router retained by an `MCPSessionManager`, unless stateless mode reopens the selected server per call. | `MultiServerMCPClient` loads tool wrappers; the provider reloads tool schemas only on a later refresh. |
 
 ## Configuration contract
 
@@ -129,37 +137,48 @@ sequenceDiagram
     participant Caller
     participant Resolver
     participant Loader
+    participant Router
     participant Remote as MCP server
     Caller->>Resolver: paths and trust inputs
     Resolver->>Resolver: merge and trust filter
     Resolver->>Loader: permitted definitions
-    Loader->>Remote: temporary initialize and list tools
-    Remote-->>Loader: schemas and annotations
-    Loader-->>Caller: sorted tools and statuses
-    Caller->>Remote: invoke through runtime session
+    Loader->>Remote: preflight and construct transport
+    Loader->>Router: mount healthy backends
+    Router->>Remote: initialize and list tools
+    Remote-->>Router: schemas and annotations
+    Router-->>Loader: discovered tools
+    Loader-->>Caller: sorted tools statuses and manager
+    Caller->>Router: invoke adapted tool
 ```
-This shows dcode's throwaway discovery session followed by lazy runtime session use.
+This shows the normal dcode load: one router fronts mounted backend connections retained by its manager.
 
-dcode preflights connections and discovers tools using bounded concurrency.
-Setup, discovery, and conversion failure is isolated to that server; status order
-stays in configuration order and tools are sorted by name. Configurations with
+dcode preflights and constructs transports using bounded concurrency, then mounts
+healthy backends behind one FastMCP router and lists their tools. Setup, mount,
+and conversion failures are isolated to the affected server; status order stays
+in configuration order and exported tools are sorted by name. Configurations with
 environment interpolation receive redacted failure detail to avoid exposing a
 resolved secret.
 
-Tools are wrapped with `{server_name}_{tool_name}` names and metadata recording
-that they are MCP tools, their server, and their original name. Read-only use and
-Auto-mode approval require coherent explicit annotations: `readOnlyHint` must be
-literally true, `destructiveHint` must not be true, and every supplied hint must
-be boolean. Missing or malformed hints do not grant read-only treatment.
+Tools are adapted through the router and carry metadata identifying the MCP
+server and original server-side name. The exported name derives from
+`{server_name}_{tool_name}`, but is sanitized, capped at 64 characters, and
+hash-suffixed when necessary; collisions are allocated deterministically.
+Read-only use and Auto-mode approval require coherent explicit annotations:
+`readOnlyHint` must be literally true, `destructiveHint` must not be true, and
+every supplied hint must be boolean. Missing or malformed hints do not grant
+read-only treatment.
 
-`MCPSessionManager` owns runtime calls, not discovery. It lazily creates one
-persistent initialized session per server and prevents incompatible connection
-reconfiguration once sessions exist. A failed transport can invalidate a cached
-session for later recreation. `cleanup()` prevents new sessions and concurrently
-closes each cached entry with a five-second bound; ordinary teardown failures do
-not block other cleanup, while cancellation propagates. The server graph owns
-its process-wide manager at shutdown; catalog and metadata callers clean up their
-temporary manager in `finally`.
+`MCPSessionManager` owns a router client plus the exit stacks holding mounted
+backend connections. A normal load returns a manager that retains those
+connections for tool calls. An externally supplied manager adopts each load
+without closing earlier ones, so tools from an earlier reload remain usable until
+cleanup. `cleanup()` rejects later adoption and closes every adopted router and
+backend in reverse order, bounding each close at five seconds and logging ordinary
+failures; cancellation is delayed until owned teardown finishes. In stateless
+mode, dcode closes the discovery load and rewrites each tool to reload only its
+own server for each invocation. The server graph supplies a process-wide manager
+for this stateless-discovery/runtime split; catalog metadata callers instead
+clean up the returned manager in `finally`.
 
 ## Talon: isolated loading and tool normalization
 
@@ -261,13 +280,14 @@ command launch or credentials sent to a remote URL.
 
 ## Focused verification
 
-The dcode tests cover OAuth/header exclusion, login behavior, project policy and
-fingerprint gating, plugin composition, per-server failure isolation, annotations,
-and persistent session cleanup/reconfiguration. Talon tests cover its standard
-path, timeout/failure status isolation, OAuth-channel binding and callback
-validation, optional-empty argument normalization, refresh races and cancellation,
-redacted reads, revision conflicts, symlink protection, atomic-write failure, and
-concurrent configuration updates.
+The dcode tests cover OAuth/header exclusion and discovery-based login, project
+policy and fingerprint gating, plugin composition, per-server failure isolation,
+annotations, router-session cleanup, and stateless invocation behavior. Talon
+tests cover its standard path, timeout/failure status isolation, OAuth-channel
+binding and callback validation, optional-empty argument normalization, protocol
+error conversion, refresh races and cancellation, redacted reads, revision
+conflicts, symlink protection, atomic-write failure, and concurrent configuration
+updates.
 
 ## Related pages
 

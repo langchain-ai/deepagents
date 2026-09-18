@@ -5,7 +5,7 @@ description: Maintainer recipe for constructing a Deep Agents LangGraph applicat
 tags: [deepagents, langgraph, middleware, subagents, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T08:05:29.735Z
 sources:
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
@@ -39,7 +39,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
 ---
 
 # Build and Customize a Deep Agent
@@ -54,7 +54,7 @@ Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` 
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-6-astra",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )
@@ -116,7 +116,7 @@ The builder's stack is ordered as follows:
 
 1. Core: optional `SkillsMiddleware`, `FilesystemMiddleware`, optional `SubAgentMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`.
 2. Caller-provided `middleware` is inserted after the core.
-3. Tail: profile `extra_middleware`, tool exclusion, provider prompt-caching middleware, optional `MemoryMiddleware`, and optional `HumanInTheLoopMiddleware`.
+3. Tail: profile `extra_middleware`, provider prompt-caching middleware, optional `MemoryMiddleware`, and optional `HumanInTheLoopMiddleware`. After custom middleware is applied, profile tool exclusion is appended last.
 
 A custom middleware whose `.name` already exists replaces that entry in place; a new name is inserted between core and tail. Profile tool exclusion is applied after custom middleware, so a custom model hook cannot restore an excluded tool.
 

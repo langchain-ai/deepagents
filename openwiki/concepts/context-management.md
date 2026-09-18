@@ -1,11 +1,11 @@
 ---
 type: context-management concept
 title: Context Management and Offload
-description: How deepagents and dcode control model-visible context through result eviction, summarization, recoverable artifacts, local context, and server-owned offload. These mechanisms are distinct from durable checkpoint and memory lifecycle.
+description: How deepagents and dcode control model-visible context through result eviction, summarization, recoverable artifacts, local context, and server-owned offload. These mechanisms preserve session safety while keeping long-running requests within provider limits.
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T08:05:29.735Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -33,21 +33,21 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
 ---
 
 # Context Management and Offload
 
 Long-running agent threads have separate pressures: injected prompt material consumes every request, a tool can return excessive text, and conversation history can exceed a provider window. The SDK manages the latter two with **large-tool-result eviction**, **summarization**, and an overflow-only tail-clipping fallback. dcode adds local-environment context, diagnostics, hook-aware automatic compaction, and a server-owned `/offload` operation.
 
-These controls change what a model receives; they are **not durable memory** and do not delete the raw conversation checkpoint. Summarization stores an event that reconstructs an effective request history, while archives are a best-effort recovery aid in the SDK path. Memory files such as `AGENTS.md` are separately injected prompt content, not a substitute for offloaded history. See [State Persistence](/openwiki/concepts/state-persistence.md) for checkpoint lifecycle and [Cost and Sessions](/openwiki/operations/cost-and-sessions.md) for session accounting.
+These controls change what a model receives; they are **not durable memory**. Summarization records an event which reconstructs an effective request history while ordinarily retaining the raw message log; overflow tail clipping can replace specific persisted tool results with recovery stubs. Memory files such as `AGENTS.md` are separately injected prompt content, not a substitute for offloaded history. See [State Persistence](/openwiki/concepts/state-persistence.md) for checkpoint lifecycle and [Cost and Sessions](/openwiki/operations/cost-and-sessions.md) for session accounting.
 
 ```mermaid
 flowchart TD
     Tool["Tool returns result"] --> Oversize{"Text exceeds budget"}
     Oversize -->|Yes| Evict["Write artifact and retain preview"]
     Oversize -->|No| Keep["Keep result in request context"]
-    Request["Prepare model request"] --> Trigger{"Summary policy fires"}
+    Request["Prepare model request"] --> Trigger{"Summary policy or budget fires"}
     Trigger -->|Yes| Plan["Partition old history"]
     Trigger -->|No| Call["Call model"]
     Plan --> Archive["Archive old history"]
@@ -57,7 +57,7 @@ flowchart TD
     Evict --> Read["read_file reads selected ranges"]
 ```
 
-Caption: The source-verified SDK path evicts a single oversized result independently of compaction; compaction changes the model request while checkpointed raw messages remain available.
+Caption: The SDK evicts a single oversized result independently of compaction; compaction changes the model request through a summary event, while tail recovery may replace individual persisted tool messages.
 
 ## Large tool results: evict text, retain a recovery path
 
@@ -67,13 +67,13 @@ The summarizer derives history and large-result prefixes from its backend. A `Co
 
 ## SDK summarization and overflow recovery
 
-`SummarizationMiddleware.wrap_model_call` reconstructs effective messages from a prior summarization event, counts them with the system message and tool schemas, and can truncate old oversized tool arguments. It evaluates the configured trigger. With a positive cutoff, it partitions old and retained messages, attempts to archive the old portion, creates an LLM summary, and invokes the model with the summary plus the preserved tail. The returned `ExtendedModelResponse` carries a `Command` that updates the event and session id.
+`SummarizationMiddleware.wrap_model_call` reconstructs effective messages from a prior summarization event, counts them with the system message and tool schemas, and can truncate old oversized tool arguments. It evaluates the configured trigger and input budget. With a positive cutoff, it partitions old and retained messages, attempts to archive the old portion, creates an LLM summary, and invokes the model with the summary plus the preserved tail. The returned `ExtendedModelResponse` carries a `Command` that updates the event and session id.
 
-If automatic summarization is not indicated, the middleware first tries the ordinary model request. A `ContextOverflowError` changes to the same compaction path. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive.
+If automatic summarization is not indicated, the middleware first tries the ordinary model request. A `ContextOverflowError` changes to the compaction path. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive. After compaction, the complete request is budget-checked; recovery will not resend an unchanged rejected request, permits at most one smaller tail retry, and raises `ContextOverflowError` if the input remains irreducibly over budget.
 
 ### Conversation archive lifecycle
 
-A session uses one markdown archive at `{artifacts_root}/conversation_history/{session_id}.md`; each compaction appends a timestamped `## Summarized at` XML-rendered section rather than replacing earlier material. Previous summary messages are filtered out because they summarize data already archived. `_summarization_session_id` is reused from state, or a UUID-derived `session_...` id is generated and persisted for later turns.
+A session uses one markdown archive at `{history_path_prefix}/{session_id}.md`; for a `CompositeBackend`, `history_path_prefix` is `{artifacts_root}/conversation_history`. Each compaction appends a timestamped `## Summarized at` XML-rendered section rather than replacing earlier material. Previous summary messages are filtered out because they summarize data already archived. `_summarization_session_id` is reused from state, or a UUID-derived `session_...` id is generated and persisted for later turns.
 
 Before archival, inline base64 media is uploaded under the history media prefix and rewritten to path references for both the archive and summary input. Failed uploads become placeholders; when the archive succeeds, the middleware warns that the original media is unrecoverable.
 

@@ -1,8 +1,8 @@
 ---
 type: runtime behavior
 title: dcode Runtime Behavior and Failure Handling
-description: How dcode launches and owns a workspace-aware LangGraph runtime, constructs its agent resources, selects bounded workspace runtimes, and surfaces startup and request failures.
-tags: [dcode, runtime, server-startup, workspace, sandbox, extensions, mcp, retry, shutdown]
+description: How dcode launches a workspace-aware LangGraph server, binds remote threads to durable workspace policy, caches runtime resources, and handles retries, recovery, and cleanup.
+tags: [dcode, runtime, server-startup, workspace, sandbox, mcp, retry, recovery, shutdown]
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
@@ -18,6 +18,8 @@ sources:
     resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-c8dacdfd6192dd22d24a9362
     resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
   - id: openwiki-source-c04c6318f6e59e0d1c9d6182
@@ -30,17 +32,19 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_server_manager.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+    at: 2026-09-18T08:05:29.735Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
 ---
 
 # dcode Runtime Behavior and Failure Handling
 
-Interactive dcode runs its agent in an owned, loopback `langgraph dev` subprocess and accesses the `agent` graph through `RemoteAgent` over HTTP and SSE. The split is intentional: the client retains UI and session concerns, while the server owns the compiled graph, its backend, MCP sessions, sandbox lifetime, and server-side offload operation. ACP's in-process stdio path is outside this page. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md), [Configuration Layering](/openwiki/concepts/config-layering.md), [State Persistence](/openwiki/concepts/state-persistence.md), [MCP](/openwiki/integrations/mcp.md), [Sandbox partners](/openwiki/integrations/sandbox-partners.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
+Interactive dcode runs its agent in an owned, loopback `langgraph dev` subprocess and uses `RemoteAgent` over HTTP and SSE. The client owns UI/session behavior; the server owns the compiled graph, backend, MCP sessions, sandbox lifetime, and offload operation. This page covers that boundary, not ACP's in-process stdio path. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md), [Configuration Layering](/openwiki/concepts/config-layering.md), [State Persistence](/openwiki/concepts/state-persistence.md), [MCP](/openwiki/integrations/mcp.md), [Sandbox partners](/openwiki/integrations/sandbox-partners.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
 
-## Launch and runtime construction
+## Startup and handoff
 
-`start_server_and_get_agent` captures an explicit or current project context, pre-validates an explicit MCP configuration, derives `ServerConfig` from the invocation, exports its `DEEPAGENTS_CODE_SERVER_*` representation, and scaffolds a temporary server project. It starts `langgraph dev` on `127.0.0.1` and port `0` by default, waits for the `agent` graph, then configures the returned `RemoteAgent` with the workspace's **session** policy claim and fingerprint. Project-scoped policy is not included in that claim: it is resolved and trusted by the server for the target directory.
+`start_server_and_get_agent` captures the explicit or current workspace, pre-validates an explicitly supplied MCP configuration, resolves a `ServerConfig`, writes its `DEEPAGENTS_CODE_SERVER_*` representation, and scaffolds a temporary server directory. The scaffold supplies `langgraph.json`, a SQLite checkpointer module, and a minimal runtime project whose graph reference is `deepagents_code.server_graph:make_graph`.
+
+It starts `langgraph dev` on `127.0.0.1` and an ephemeral port by default, waits until the `agent` graph can be resolved, then creates `RemoteAgent` and configures its workspace claim. The server process is handed to the caller only after that succeeds. Until then the manager owns it and its `finally` calls idempotent `stop()`, including when cancellation interrupts setup. `server_session` extends that ownership through its context-manager lifetime and emits any deferred preserved-log notices after teardown.
 
 ```mermaid
 sequenceDiagram
@@ -51,86 +55,97 @@ sequenceDiagram
     participant Remote as RemoteAgent
     Client->>Manager: start_server_and_get_agent
     Manager->>Manager: capture workspace and resolve ServerConfig
-    Manager->>Manager: validate explicit MCP config and scaffold runtime
+    Manager->>Manager: validate MCP and scaffold runtime
     Manager->>Child: launch loopback server
     Child->>Factory: load make_graph
-    Factory->>Factory: build or retrieve launch runtime
-    Manager->>Child: wait for agent readiness
-    Manager->>Remote: create remote graph client
-    Manager->>Remote: set workspace claim and fingerprint
-    Manager-->>Client: hand off agent and process ownership
+    Factory->>Factory: construct or retrieve runtime
+    Manager->>Child: wait for agent graph
+    Manager->>Remote: create client and set workspace
+    Manager-->>Client: hand off agent and process
 ```
 
-This sequence shows the construction handoff. Before a successful return, the manager owns the child; its `finally` invokes idempotent cleanup after every setup failure, including cancellation. An explicit malformed or missing MCP config fails before process creation, whereas project- and user-discovered MCP configuration is handled by server-side discovery.
+This is the successful launch and ownership handoff. A malformed or unavailable *explicit* MCP file fails before spawning the child; discovered project and user MCP configurations are instead handled by server-side discovery.
 
-`ServerConfig` is the process-boundary contract: the parent serializes it to environment variables and the server reconstructs it from the same prefix. It carries the model and model parameters, interaction and tool choices, sandbox selection, MCP settings, extension settings, and project context. A supplied filesystem-tool allowlist is a security control: malformed, empty, or unknown values received from the environment fail closed, and an explicit list must include `read_file`.
+`ServerConfig` is the process-boundary contract. It partitions the workspace payload into a client-claimable session policy and server-resolved project policy, so client input cannot alone enable checkout-scoped execution. Relative MCP, sandbox-setup, and extension paths are made absolute before serialization because the child runs in the scaffold directory.
 
-At server construction, `_make_graphs` snapshots dotenv-derived workspace environment and credentials before activating that immutable environment for runtime assembly. Blocking path/bootstrap, model, plugin-discovery, and synchronous graph-construction work is moved off the event loop. It creates the configured model; adds built-in `fetch_url` and thread-ID tools; conditionally adds web search when workspace credentials provide a Tavily key; and discovers MCP tools unless `no_mcp` is set. Criteria and rubric agents receive only read-only built-ins and MCP tools explicitly and coherently annotated read-only, rather than a name-based approximation.
+## Server construction and resource ownership
 
-Sandbox creation is server-process lifetime state. A configured provider is opened while building the runtime, held for cleanup through `atexit`, and passed into `create_cli_agent`; unsupported, absent, invalid, or failed sandbox setup emits a startup error and exits. With experimental extensions enabled, the server loads extensions using the workspace path, interactive/headless mode, project-trust decision, and explicit extension paths; load errors are warnings, while an active registry is bound to server extensions and shut down if graph construction later fails.
+The factory reconstructs `ServerConfig` from the environment. Before assembly it snapshots the selected workspace dotenv environment and credentials, activates that immutable environment for the build, and pins process-wide tracing settings. Because LangSmith clients and environment caches are process-wide, a workspace with different tracing/redaction settings is refused rather than rerouting cached or concurrent runtimes.
 
-`create_cli_agent` receives the resolved model, tool/MCP set, sandbox, approval and shell policy, filesystem and interpreter choices, memory/skills/subagents, rubric settings, extension registry, environment, and credential snapshot. The resulting `ServerRuntime` keeps the compiled agent, the exact `CompositeBackend` used to construct it, its MCP metadata, and an offload operation derived from that backend. Failure to expose that operation is a construction failure, not a partially functional server: `/offload` must share the same backend and archive policy as the agent.
+Blocking environment, path, model, and synchronous graph setup run in worker threads rather than the server event loop. Construction creates the model, `fetch_url` and thread-ID tools, optionally web search when the workspace has a Tavily key, and MCP tools unless `no_mcp` is set. Criteria and rubric agents receive only built-ins explicitly designated read-only plus MCP tools with coherent explicit read-only annotations.
 
-## Workspace selection, caching, and policy drift
+`ServerRuntime` joins the compiled agent with the exact `CompositeBackend` used to construct it and an offload operation derived from that backend. The graph and `/offload` therefore share backend and archive policy; no offload operation is a construction failure. A configured sandbox is opened as process-lifetime state and registered for `atexit` cleanup. Sandbox setup errors print a `DEEPAGENTS_STARTUP_ERROR:` marker and exit. Experimental extensions receive workspace, mode, project trust, and explicit paths; load errors are warnings, while active extensions are shut down if later graph construction fails.
 
-The initial graph load is not enough to select a request runtime. `make_graph` receives LangGraph execution context when serving a run; it requires a nonempty thread ID and workspace context, verifies the durable thread-to-workspace binding, then selects that binding's runtime. Calls without execution context use the configured launch runtime. This prevents an arbitrary request from selecting a workspace merely by naming a directory.
+The ordinary process runtime is constructed once behind an async lock. This is correctness, not just performance: recreating it could repeat MCP discovery, leak sandbox sessions, duplicate `atexit` handlers, and split graph/offload backend state. Startup construction failures emit the marker and exit nonzero; the parent health/readiness paths extract that marker from an early child exit. Request-scope offload handling contains this `SystemExit` and maps it to a service-unavailable response instead of killing an already serving child.
+
+## Workspace binding, selection, and caches
+
+A workspace is a durable, server-authoritative binding per thread. The workspace module validates untrusted `cwd` as an existing canonical absolute directory without traversal, derives an identity from its canonical directory and project root, and stores binding data in `dcode_thread_workspaces`. The resource key incorporates workspace identity and configuration fingerprint.
+
+`RemoteAgent.set_workspace` stores only launch policy for future binds, requiring policy and fingerprint together and clearing its per-thread descriptor cache. On first use, the client posts `cwd` and, when configured, the session policy and fingerprint to `/dcode/threads/{thread_id}/workspace`; it validates the returned descriptor and caches it by thread. The cache is a transport optimization, not authorization: durable binding and server-side validation decide every execution.
 
 ```mermaid
 flowchart TD
-    Request["make_graph invocation"] --> HasExecution{"Execution context present"}
-    HasExecution -- No --> Launch["Get launch ServerRuntime"]
-    HasExecution -- Yes --> Valid{"Thread ID and workspace context valid"}
-    Valid -- No --> Reject["Raise ValueError"]
-    Valid -- Yes --> Binding["Verify durable thread workspace binding"]
-    Binding --> Policy["Resolve current workspace policy"]
-    Policy --> Drift{"Policy and fingerprint unchanged"}
-    Drift -- No --> Conflict["Raise workspace conflict"]
-    Drift -- Yes --> Cache{"Runtime cached by resource key"}
-    Cache -- Yes --> Touch["Refresh LRU position"]
-    Touch --> Agent["Return bound runtime agent"]
-    Cache -- No --> Build["Claim sandbox and build workspace runtime"]
-    Build --> Store["Insert into bounded LRU"]
+    Request["make_graph invocation"] --> Execution{"Execution context present"}
+    Execution -- No --> Launch["Return configured server runtime"]
+    Execution -- Yes --> Required{"Thread ID and workspace valid"}
+    Required -- No --> Reject["Raise ValueError"]
+    Required -- Yes --> Bound["Validate durable thread binding"]
+    Bound --> Resolve["Resolve current workspace policy"]
+    Resolve --> Drift{"Fingerprint and policy unchanged"}
+    Drift -- No --> Conflict["Raise WorkspaceConflictError"]
+    Drift -- Yes --> Cached{"Runtime in LRU"}
+    Cached -- Yes --> Touch["Refresh LRU recency"]
+    Cached -- No --> Build["Claim sandbox and construct runtime"]
+    Touch --> Agent["Return bound agent"]
+    Build --> Store["Store runtime by resource key"]
     Store --> Agent
     Launch --> Agent
 ```
 
-This flow distinguishes launch-time construction from execution-time workspace routing.
+This flow shows execution-time routing rather than merely launch-time construction. With execution context, `make_graph` requires a nonempty thread ID and workspace context, verifies the binding, and selects that binding's runtime. Without it, it returns the configured server runtime.
 
-The process runtime is lock-protected and constructed once. Its cache is load-bearing: rebuilding per request would repeat MCP discovery, create/leak sandbox sessions, register duplicate `atexit` handlers, and make the graph and offload route disagree about backend state. Workspace-specific runtimes use a second lock-protected LRU keyed by the binding resource key; an access refreshes recency and insertion evicts the oldest entry once the cache exceeds 32 entries.
+Workspace runtimes are a lock-protected LRU of at most 32 entries keyed by resource key; reads refresh recency and insertion evicts the oldest item. Before reuse or construction, the server resolves current policy and rejects changed project fields or a changed fingerprint. It preserves the binding's extension-trust decision while checking current policy; even a failed trust-store read is handled as policy drift. A process-wide sandbox is reserved for one workspace ID and cannot be silently shared with another.
 
-Before reusing or building a workspace runtime, the server resolves current policy for the binding and compares both project-policy fields and the full workspace fingerprint against the durable binding. It preserves bound extension trust while resolving current policy, but reports any remaining project policy drift or fingerprint change as `WorkspaceConflictError`; even a trust-store read failure is treated as a policy change. A process-wide sandbox may be claimed only by one workspace ID, so a second workspace cannot silently share it.
+## Streaming, state mutation, and recovery
 
-On first use of a thread, `RemoteAgent` posts `cwd`, and when configured the session claim plus fingerprint, to `/dcode/threads/{thread_id}/workspace`; it validates and caches the returned descriptor per thread. `set_workspace` requires the policy and fingerprint together and clears that cache. This client cache avoids repeated binding requests but is not the authority: the durable server binding and per-request validation govern selection.
+`RemoteAgent` requires `config.configurable.thread_id` for streams and state operations. For `astream`, it obtains the bound workspace descriptor and adds it to runtime context, while `RemoteGraph` handles SSE framing, `messages-tuple` negotiation, namespace extraction, and interrupt detection. The wrapper converts streamed message dictionaries and interrupt updates for the UI, but leaves state snapshots serialized. Failed message conversion is counted and logged after the stream rather than aborting other events.
 
-## Streaming, state, and operation failures
+Checkpoint persistence and the development server's live HTTP thread row are distinct. `aget_state` treats a missing remote thread and the SDK's known no-checkpoint `TypeError` shape as empty state, but re-raises other reads. `aensure_thread` uses `if_exists="do_nothing"` to restore the HTTP row before state-mutating operations after a server restart. An HTTP 409 state update cancels pending and running runs concurrently, with a bounded wait for each, then retries the update once; other errors propagate.
 
-`RemoteAgent.astream` requires a thread ID, gets that thread's workspace descriptor, adds it to the runtime context, and delegates SSE framing, `messages-tuple` negotiation, namespace extraction, and interrupt detection to `RemoteGraph`. It defaults to `messages` and `updates`, deserializes message dictionaries for the UI, converts `__interrupt__` update data, and deliberately leaves state snapshots serialized. A message conversion failure is counted and reported after streaming rather than aborting unrelated events.
+When a session ends with queued graph work, `aabandon_pending_work` does not resume it. It cancels active runs, emits error `ToolMessage` values only for unanswered calls in the trailing AI-message turn, writes `__end__`, then rereads state and raises if queued nodes, tasks, or interrupts remain.
 
-Checkpoint data and the development server's HTTP thread row have separate lifecycles. `aget_state` returns empty state for a missing remote thread or the SDK's known no-checkpoint `TypeError`, but logs and re-raises other errors. `aensure_thread` idempotently creates the live HTTP row, allowing a persisted thread to receive state mutations after a server restart. For a state-update conflict, the client cancels pending/running runs concurrently with bounded per-run waits and retries the update once.
+```mermaid
+sequenceDiagram
+    participant UI as client recovery
+    participant Remote as RemoteAgent
+    participant Server as LangGraph server
+    UI->>Remote: abandon pending work
+    Remote->>Server: cancel running and pending runs
+    Remote->>Server: read checkpoint state
+    Remote->>Server: write trailing tool errors if needed
+    Remote->>Server: update state as __end__
+    Remote->>Server: reread state
+    Server-->>Remote: no queued work
+    Remote-->>UI: recovery complete
+```
 
-Lost or cancelled work is recovered destructively, not resumed. `aabandon_pending_work` cancels active runs, calculates error `ToolMessage` values only for unanswered calls in the trailing AI-message turn, writes `__end__` to discard queued work, then re-reads state and fails if queued nodes, tasks, or interrupts remain. The trailing-turn restriction preserves tool-use/result adjacency and avoids producing invalid history for older interrupted calls.
+This verified recovery path deliberately avoids executing the queued tool. The trailing-turn limitation preserves the adjacency required between a tool use and its result.
 
-The server also exposes backend-owned offload through an authenticated custom HTTP route rather than a second addressable graph. The generated configuration enables custom-route authentication when a deployment supplies auth; local process launch explicitly uses noop auth and loopback binding. The remote offload client ensures the thread exists, forwards workspace context, validates protocol responses, and treats an absent route as a server compatibility error.
+Server-owned offload follows the same workspace boundary: the client ensures the live thread row, forwards workspace context, validates operation responses, and on caller cancellation asks the server to acknowledge a terminal offload status. An absent `/offload` route is reported as server compatibility failure rather than an ambiguous 404.
 
-## Retry, startup, and shutdown semantics
+## Model retries and failure visibility
 
-`CodeModelRetryMiddleware` wraps the model-node handler rather than an entire agent turn and is installed inside side-effecting automatic compaction. Thus a transient provider retry does not replay completed tools, summary generation, or archive append. It remains installed even with a zero startup budget because a runtime-selected model can provide a request-time budget. `GraphBubbleUp` passes through as graph control flow; classified transient failures are retried while budget remains using usable `Retry-After` guidance or jittered exponential backoff, while terminal failures are re-raised rather than turned into artificial AI output. Correlated attempt and retry events record whether visible output may already have started, without allowing diagnostic-event failure to fail the run.
+`CodeModelRetryMiddleware` wraps model-node calls, not an entire agent turn, and is installed inside compaction. Retrying a transient provider failure therefore does not replay completed tools, summary generation, or archive append. The retry budget is read from the request model when present, allowing a runtime-selected model to override the startup fallback.
 
-Runtime construction is a startup barrier. The process runtime factory checks managed configuration health, emits `DEEPAGENTS_STARTUP_ERROR:` and exits nonzero when construction fails; early child-exit health polling extracts that marker and adds it to the parent error. Request-scoped callers must catch `SystemExit` and map it appropriately rather than terminating an already-serving child. This is especially relevant to operation routes.
+`GraphBubbleUp` is re-raised as graph control flow. Transient classifications include retryable `ModelError`, selected provider/HTTP transport failures, HTTP 408/409/429 and 5xx responses, including recognized faults nested in exception groups or cause chains. Retries use a positive, usable `Retry-After` value capped at 60 seconds or jittered exponential backoff. Interactive calls also have a cumulative delay guard. Terminal errors and exhausted budgets are re-raised; they are never converted into synthetic AI answers.
 
-The child environment strips `PYTHONPATH` and other startup-influencing values before launching the server interpreter. It preserves the launch `PYTHONPATH` only in a dedicated carrier for downstream agent execute commands, and protects immutable profile/carrier values from later environment overrides.
+Every model attempt produces correlated start/complete events, and retries carry the failed attempt and whether output may already have been streamed. Event-writer errors are logged but do not fail the agent run; `GraphBubbleUp` from the writer still propagates. This lets consumers mark superseded partial output incomplete without making diagnostics a second failure path.
 
-`ServerProcess` owns shutdown. On POSIX the child starts in a dedicated session/process group; stop sends `SIGTERM` to that group, waits for the whole group, then escalates with `SIGKILL` if necessary, refusing to target dcode's own group. Windows sends Ctrl+Break for graceful shutdown and escalates by killing the root process; a surviving descendant can therefore be orphaned. Signaling failures are logged because cleanup cannot guarantee that the child is gone.
+## Shutdown and operational guidance
 
-## Focused regression coverage and safe changes
+The child startup environment removes `PYTHONPATH`; its original value is conveyed only through a dedicated inherited carrier for downstream execute commands. Local launch uses noop auth on loopback. Generated dcode operation routes opt into custom-route authentication when a deployment configures authentication.
 
-Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, and nonblocking bootstrap. They also exercise ordered, identity-based criteria tool selection and fail-closed MCP annotations. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding.
+`ServerProcess.stop()` is idempotent and synchronized with restart so terminal shutdown wins over an in-flight restart. On POSIX, the child starts in a new session/process group; shutdown signals the group with `SIGTERM`, waits, then escalates to `SIGKILL` without targeting dcode's own group. On Windows it sends Ctrl+Break and then terminates the root process, so a descendant may survive orphaned. Failed signaling is logged, and debug mode preserves server logs for later notice rather than deleting them.
 
-When changing this area:
-
-1. Keep policy partitioning and durable binding validation aligned with the workspace cache key.
-2. Do not make a process-wide sandbox reusable across workspace IDs.
-3. Keep graph and offload construction on the same `ServerRuntime` backend.
-4. Preserve startup-marker parsing, request-scope `SystemExit` containment, and cancellation-safe launch cleanup.
-5. Keep model retries inside compaction and pending-work recovery ordered as cancel, trailing-turn repair, `__end__`, then verification.
-6. Test both platform shutdown scopes when changing process ownership or escalation.
+Focused tests use injected builders and doubles to cover runtime cache/startup-marker behavior, retry and stream behavior, workspace conversion and recovery, and cancellation of an in-memory queued-tools graph without running its tool. When changing this area, preserve policy partitioning and durable binding validation, keep graph and offload on the same backend, test cancellation-safe cleanup, and retain recovery ordering: cancel, repair the trailing turn, write `__end__`, then verify.

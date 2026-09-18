@@ -1,11 +1,11 @@
 ---
 type: capability reference
-title: Middleware Capability Catalog
-description: Capability-to-owner lookup for Deep Agents middleware, covering request shaping, filesystem access, context, memory, skills, delegation, quality gates, permissions, caching, and profile enforcement. Use it to select the owning layer and understand its important lifecycle boundaries.
+title: Middleware Catalog
+description: Responsibility-oriented lookup for Deep Agents middleware, covering model-request shaping, tools, context, memory, skills, delegation, quality gates, permissions, caching, and profiles. Use it to identify the owning layer and its lifecycle boundary.
 tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T08:05:29.735Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
@@ -41,10 +41,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
 ---
 
-# Middleware Capability Catalog
+# Middleware Catalog
 
 `deepagents.middleware` is the public import surface for the SDK's built-in middleware. Choose middleware when a capability must affect *every* model request: an `AgentMiddleware` wrapper can shape the system prompt, advertised tools, messages, and typed cross-turn state before the LLM is called. A consumer callable passed in `tools=` instead runs only after the model selects it.
 

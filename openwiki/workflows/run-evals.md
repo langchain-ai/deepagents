@@ -1,12 +1,17 @@
 ---
 type: evaluation workflow
-title: Run and Extend Evaluations
-description: Run, interpret, and extend the real-model Deep Agents behavioral eval suite, multi-trial reporting, Harbor benchmarks, and the unified cross-model battery.
+title: Run and Interpret Evaluations
+description: Run and interpret the real-model Deep Agents behavioral eval suite, multi-trial reports, Harbor benchmarks, and CI artifacts. Covers tracing and credentials, reliable failure signals, and safe cross-model comparisons.
 tags: [evaluations, testing, langsmith, harbor, benchmarking]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
+  - id: openwiki-source-fa750a379507f8fc66395df2
+    resource: repo://.github/workflows/_eval.yml
+  - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
+    resource: repo://.github/workflows/_harbor_run.yml
+  - id: openwiki-source-efa89bc59ebc2bd6d1443749
+    resource: repo://.github/workflows/evals.yml
+  - id: openwiki-source-4febfe1e2a3bf81fec4aefc9
+    resource: repo://.github/workflows/harbor.yml
   - id: openwiki-source-0153e073a6645f3118ca08c4
     resource: repo://libs/evals/AGENTS.md
   - id: openwiki-source-c0799cb44ce695871e7f3bf6
@@ -45,10 +50,13 @@ sources:
     resource: repo://libs/evals/UNIFIED_EVALS.md
   - id: openwiki-source-9731136dc92d76802b2fc11a
     resource: repo://libs/evals/UNIFIED_SCORECARD.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T08:05:29.735Z
 ---
 
-# Run and Extend Evaluations
+# Run and Interpret Evaluations
 
 `libs/evals` contains the real-model behavioral evaluation suite for the Deep Agents SDK. An eval runs an agent against an LLM, retains its tool calls, file mutations, and final response as a trajectory, then scores correctness and efficiency. This is distinct from the deterministic package suite: use deterministic tests to validate harness mechanics, and use real-model evaluations to make a claim about agent behavior or model quality.
 
@@ -141,6 +149,12 @@ make evals-trials MODEL=openai:gpt-5.5 TRIALS=3 \
 
 Both required Makefile variables fail fast when missing. Prefer `deepagents-evals --help` and subcommand help for the complete interactive interface; most subcommands support `--json` and `--dry-run` for automation and safe preview.
 
+### GitHub Actions execution and artifacts
+
+Dispatch `evals.yml` for the repository-managed multi-model suite. Its preparation job resolves a selected registry group or custom model list into provider-specific matrices. Each provider matrix is serialized (`max-parallel: 1`) while different provider jobs may run concurrently, avoiding a burst against one provider without unnecessarily serializing all providers. The reusable `_eval.yml` leaf writes `evals_report.json`, posts the metrics, category scores, and available LangSmith links to the job summary, and uploads the report; optional LLM failure analysis is best-effort and uploaded separately.
+
+The top-level aggregate job runs even when a provider leaf fails, downloads the available artifacts, writes `evals_summary.json`, and uploads it as `evals-summary`. It generates and uploads radar charts only when a summary is available; chart generation and publication are diagnostic/best-effort rather than a replacement for the JSON report. Download `evals-summary` or the per-model `evals-report-*` artifacts for further analysis—do not scrape the step summary.
+
 ## Catalog, categories, tiers, and model groups
 
 `EVAL_CATALOG.md` is generated from the AST-visible eval functions in `tests/evals/`, grouped by their category; never edit it manually. The unit test runs the generator in `--check` mode, so an added, removed, renamed, or retagged eval must be followed by:
@@ -204,6 +218,8 @@ make run-terminal-bench-docker MODEL=anthropic:claude-opus-4-8
 The staging target copies the checked-out Deep Agents, deepagents-code, ACP, and QuickJS packages into `.local_deps`; the supplied Terminal Bench targets select Docker, Modal, Daytona, Runloop, or LangSmith sandbox backends. The Harbor LangGraph agent temporarily removes provider and LangSmith credentials while it performs shell operations and restores them afterward. Keep that scrub boundary intact so task commands cannot inherit secrets.
 
 Interpret a failed Harbor trial before treating it as model evidence. `FailureCategory` distinguishes capability failures from `INFRA_OOM` (exit 137), `INFRA_TIMEOUT` (exit 124), and `INFRA_SANDBOX` based on structured tool output and exception patterns; ambiguous exceptions are `UNKNOWN`. Rerun or repair infrastructure failures rather than reporting them as a behavioral regression.
+
+For CI, dispatch `harbor.yml`. It accepts exactly one resolved model, derives the reporting category from the selected dataset, and delegates to `_harbor_run.yml`. The workflow validates the provider key and `LANGSMITH_API_KEY` before spending on sandboxes; tau3 also needs OpenAI credentials for its verifier/user simulator, and research needs `TAVILY_API_KEY` so the promised web-search capability is actually present. It caps per-shard concurrency at four and derives a shard pool bounded to at most 40 concurrent sandboxes. Each leaf uploads a branch-, agent-, category-, and model-scoped shard artifact even when it fails. The aggregate phase then processes whatever shards arrived, records pass@K / avg@K plus completeness diagnostics in `summary.json`, and uploads the combined result. An incomplete aggregate is not a valid model comparison.
 
 `harbor_adapters` supplies benchmark-specific bridges such as ContextBench and DRBench. `deepagents_clbench` is separate again: it is the version-controlled Deep Agents system payload for continual-learning-bench, but must be deployed into a clbench checkout because clbench discovers systems from its own `src/systems` tree.
 

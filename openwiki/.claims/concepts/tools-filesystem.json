@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c7befbb3775aeda33563bd257cf6e945b80d8944117fe0fbee50080e3e6661d4",
+  "pageVersion": "sha256:6e8c3ccbbd546846915de2e6000be5ae04f387077ea3a131311f5733d04069c0",
   "claims": [
     {
       "id": "claim_4018009140e341f487f6f52cdcbd1a24",
@@ -236,11 +236,11 @@
     },
     {
       "id": "claim_63905bffd0ae4548a15f552e503608f7",
-      "statement": "MCP tools are wrapped as asynchronous StructuredTools backed by an MCPSessionManager; the wrapper normalizes arguments, invokes the original MCP tool name through the server session, and records MCP server and original-name provenance in metadata.",
+      "statement": "MCP tools are adapted as asynchronous StructuredTools through a FastMCP client; the wrapper normalizes arguments, invokes an internally routed original tool name, and records MCP server and original-name provenance in metadata.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2039-L2108",
-          "version": "repo-lines-v1:sha256:e41275409d32a6f0bfd972236d417daf314d0f6782540db2f7a0a726317213ba:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4OGZhNmQ0MzVmNTg0ZDBmNjhjYmYyMTJjZDkwOWFlODI5ZWE3ZDBmNzkzYTJmYWRhYjg5MjU2YjA0NDVhMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlY2I1YmM2ZDMwNjUzMGQ1MGJjMzBlM2Y5NTU4MTViOTg0NjU3YWUxZWVkZjNhZGVlNzFjYzQyYWVmNDU3NTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZmVkZGZhNDFmYjg2NmJlMTc5N2NhZTY5ZGIzNmRkMDc3NjU1MjUzN2E3YzM4OWM4MTQ1OTBkMmU1ZDBhYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0ODNjMjZhZTRkODY1YzhkOTJjYzI5MGYxN2UxNjAxNWExODZiOTFlMmZmNGYyMjAxOWIzMGU5ZTEwNmUxODEifQ"
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L1490-L1550",
+          "version": "repo-lines-v1:sha256:445916dadc8dd14d7fa867fcad35ad7838dc91f59257722f63d374c4ca3076d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1ZGNlOTYyODgxOWUyNTYyOGY0YTJjOWE5Mzc2OTJmZmQ4Y2YxNDRiZGQ4OWUwZTI0MjAyNmQ2MjA5NzExNzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MmNmNDRjNmViZDhmNTg4MTgwMDkwODM1M2MzZTI0Y2Y2MWRlNTg2ZTBmYjkxMjA3Yzk1ODMwOTY0NzZlYzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmODcxODhlYTg3ZmIzMmVhYWUxYzk2M2VjMDg0NjY2ODAwZDU2OGFlZTZmMmU4N2E4NDUzNDRmYWEyMTU1OTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwNDg0ZTIwOTUyOTdmYTY1MDQ1ZjU3ODkzY2EwNmUzMzI0M2E1ZjBmZGE4Yjk3MWJkNGRjZjE4ODBiMWNkMGEifQ"
         }
       ]
     },
@@ -249,22 +249,26 @@
       "statement": "When MCP prefixing is enabled, dcode produces provider-safe names by sanitizing server and tool names and limiting them to 64 characters; changed or overlong names receive a deterministic SHA-256-derived suffix.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2017-L2036",
-          "version": "repo-lines-v1:sha256:cafaebee82678f6d322975d8dbdbb2afb89e8dcb81c1d1e94cd9f990c2a9cb6c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1ZDAzN2UzMTJjNmUzYTM2NjNjYTY1YzE3MjU2N2NhYjg2OGFjZTJjNWIwZWE4OTQ2ODQ2ZWZiYTRhYzFmMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZGU4Njg2ZjZjZjMzODUxMDAwZTRkNzQ5OGIxMjg3MTkxNDMyYTY5NDA2MmZkZTIwZjFhMzExMjQ5NDA3MGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIwYzgzYWViYjYwNTBhMmY0MjgzNGQ4ODhhNWRiOWJlMTVjYmMwODJmNWRlZTE2NjAwYTUzMzBiODA5Y2VmZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkYzI2ZDljZGNhNjYwYzg4OTYwMzk2OTg2OTRjODQ1M2UzODE4MDlhNDk1YWZkZjBhNjVjZmJjNDU1NzAxZDgifQ"
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L1581-L1603",
+          "version": "repo-lines-v1:sha256:81995d370bc6b15ecdbcb363a8058c58c28d8d270cc2aa143c0c29d246387bff:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOWVmZDk2N2E0NWQ2MTY1NGJmMTliNTcwZDU5N2ZhYTI1NzIzNDZlMTRlYmYzOTI4ZTAxOGM5YzEzOTNiZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZGU4Njg2ZjZjZjMzODUxMDAwZTRkNzQ5OGIxMjg3MTkxNDMyYTY5NDA2MmZkZTIwZjFhMzExMjQ5NDA3MGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3MjMzYWY2YjI1YjM2YTM5MjRhZDYzN2E2NTFkNDNmMzkxNjJkMjU5ZWM3OGUyMGI2NTcyMzIyMmRlY2EzZjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0OWRkOTZiMzA2MWQ4YjhkOTRkNTQ5NzljNzNmOGIzYzExMDc4ZmJlYWUzMjc2YTkxYjgwMmZlZGQxMTRiY2UifQ"
         }
       ]
     },
     {
       "id": "claim_7864e38be78c4d90b93e7ddc6c5301de",
-      "statement": "MCP discovery loads surviving servers concurrently with a bound, but returns server information in configuration order and the combined tool list sorted by name; unavailable servers are represented with status information rather than contributing tools.",
+      "statement": "MCP preflight and connection construction run concurrently with a bound, while results are folded into configuration order and the combined tool list is sorted by name; unavailable servers are represented with status information rather than contributing tools.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2862-L2906",
-          "version": "repo-lines-v1:sha256:9efd6fc88b079e39322d6a4b3c5ee236f5849046f9d556111f6f9364afec565b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwZGNjZWM2ODRmNGNhMGIxN2M1MzQ0ZDRkNThiNWY0ZGM0MDNhZmEwY2ViYzA1MDVlM2MxY2U2ZDRkZjE1NjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMjhjN2ZiNTJhNjZjZThhNTQ1NWY4YWYxNGQwOWU5NTJkN2UyODA1ZjgxOWI1NmMyY2Y1NDk3NDAxNzE1YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzODI5NzQyZDIxZDVhZjFjMzM2MGUyMDQzYjYyOTZjNmQ4N2E3NjQxMDIxNzE0YTIxNDZkNmNkMTVhNGJjMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGVkYjkwNzFlZDQ2M2YwZjRlOTdiZTRiZjhkMGJkOWZkNDAwNTc0OWUxNDcxNThkMDk5MzJiODViMjBkYTgifQ"
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L1744-L1794",
+          "version": "repo-lines-v1:sha256:0d3a41f17c9f7492a6160db4ab83ff2715e4bef139d2c4386db0edd453c7d955:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkOGM0ZDllYzJiNTExMDAwYzFiMTA3M2VkNDUzMmI3YzlkNGM4YTVkMGUwNzE4NWM5NzQ3YWY2N2M3MTVlNTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzYjIyMzQzZTljNzU1OTIzM2RjNDZkY2VhNTg5OTY1OGY2Yzg2YTczMTRmYTQ2MjA5OGYyOTI4YWY2YWQzZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5ZmNiODRlMzlkNzJlMmRhNmUzMjk1OWIyNzk3YTUyMzk4NjBmOWIyMjA4YzdiZTFhM2VlYTgyYjZkMjY2M2MifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L87-L109",
-          "version": "repo-lines-v1:sha256:98fb76fe0fb4603016302e49f731ceba25e64b5620279847e7aa0ebf0cb9a90b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjYjI1NTJlZjAxMmYxM2JiYzQyNDY2NTMzMDllZmE4YjE3YzQ2NGMwZjk3MmE3ZDFlZGI0NmVmOTdjODU0MmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhNGFiMTg1YzAyZDE0MTMyNGI3Yjc5MjU5OTFjNzcyMTQxMmM0NDc3OGJiZjc0NmYyOWRmZjAxODBmZjk0MDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyYjI1NzhkODVmMDU0N2ZhOTE3ZGE3YjE4ZDIwNzg5OTE4MjlhNTM4MmM3OTEyOGJlMTZmNmYxMDg4ZjdhYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIifQ"
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2219-L2246",
+          "version": "repo-lines-v1:sha256:6230655747391a703ed32b941eaa06cc232a469f06e2bf30b195673dd01ca7d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1OGMyZTEzMGVkM2U5ZmZkMmM4NmYzZGUxN2VjZjA1OTQzZWU0ZTRkMzMwYTljZjZiMmNjOWQ2NWJhODkwYTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyNjNiNmY2MTM4ZmJmMWVkYzliZWRmMzFlM2QyNjNhMWEzZTYwZjY3ZGRiYzg0MThlNTE5OTc5ODEzYTZlZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwMTcyZTM2MWNhN2YxZmU3YTM3YjBhNjZkNTk0NjBmNDY1M2Y2NTYyNjRhYjIyMmU3NDdjY2U5NjIzZmNjZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjViZDY2N2VmZjgwZjVkN2VkMmJhMWNlMDRkYmQ5ODdjMjFiYzljODk3YWQ3MDUwODM3NDRjNDVhYTJhMjFlMGYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2335-L2369",
+          "version": "repo-lines-v1:sha256:f9ba777325bd0659967485110a9827c335ee1988323c145470262ecdc6992e39:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0ZjFlZmFmOGQwOWFlYzdjMzVhYzk1MTNiNmNlNmI2N2EzYzVhNzAzNDZmOWVhNzUzMDVjOGRjNzNkZmQ3NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMjhjN2ZiNTJhNjZjZThhNTQ1NWY4YWYxNGQwOWU5NTJkN2UyODA1ZjgxOWI1NmMyY2Y1NDk3NDAxNzE1YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzODI5NzQyZDIxZDVhZjFjMzM2MGUyMDQzYjYyOTZjNmQ4N2E3NjQxMDIxNzE0YTIxNDZkNmNkMTVhNGJjMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhYzQ1MWQ1NDMyM2U4Zjk3YjBkNjk5ZmVmYTE3ZGQxNGI5N2IxZTc0NzNlNmU3YWZiMTAyOGFmNDM1N2U5NmYifQ"
         }
       ]
     },
@@ -327,10 +331,34 @@
           "version": "repo-lines-v1:sha256:44735f0766df91732f42273f1b06304d9c4d3c0226a8580b14857bf2fde58982:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOThmMTQ1OTZlOGIyMTNhM2E3ODc1YzdhMjU5MTA5M2Y4OTMyZTZkZTk1MzFiMTQyMWE2MmZkZTVlYjE2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjOTgyOGIxMmNlMjllNWQzZWJhZjczZWE3OTEzNGJhZDhiYjU5OWQzZDcwYzZiNzM4YjAxZDlkMTVhMWI5MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwODVhZTI2ZmE4NGE5NWI5YjZkNTRlODY2MDQyZGQwMmFhODI3YTJhNzM2ODdjMWU2NDA0MjkzNzVkZTZmMzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0Njg4MGY2ZGEzMmQ0OTZlMjljNTRjOTY0YTg5MTIzNDc4NzYwNDFiZDE5MTY3MGJlYjIzNzAyN2Y5OGExMGYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_18ede4ed76244f3cb6bdf2899bd8f3d0",
+      "statement": "BaseSandbox is an execution-backend extension boundary: subclasses implement execution, upload/download, and identity while the base class derives filesystem operations from those primitives; those helpers do not reduce the shell trust boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1411-L1430",
+          "version": "repo-lines-v1:sha256:1a9ee91060c98d5fd81bdcb1dd9ba0c7d031077bdf4b48f6f697e8861b08f7c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3MTZkMTY0YjUxOTAzYTc2Mzc5N2UyYzFhMGQ4MGU2OTUwODRjYWZlYzA1Zjk2Mzc3MTE0ZjZkMGE5Mzk2MjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjMmExZDBmMmQ3OTFmYmM2NGVjNWFjNjFhMTkyYjgwYjQ2NTBmOGExYjQ1M2I2YzBjYzYzZmZjMTkxOGEzYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxMWNiMmExNWM0MzkzNjc3ZmY1Zjc1MDRhMTk2N2ZkNDk2YWZkMDFhZTc1NDNkMTMyZjIzMWNiODYyYTc3ZTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b17353daafd6428f822f34ea224bfcf9",
+      "statement": "A BaseSandbox subclass may opt into capture-at-source execute offload: large combined output remains in the sandbox with a preview returned, but the feature defaults off for portability and otherwise generic middleware eviction remains the fallback.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1433-L1442",
+          "version": "repo-lines-v1:sha256:4a631434bb5e7dd526144c6fa1d8b4ed0cbbb2b4ad2595c2c7836a75020ab693:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiN2VjYWMxNTA3NzY3NDM1OWE0NTM4NjI3MTQwZTY5YzBmMmRkNjBmM2M4NDRhZTMxNTM1Zjc2MTBiOTE1MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkNmM1NTkzNzg1N2I3MDk0YmM5ZjE3MGU2M2YzODVlZGUzYTFlYmUzZjIyMGRiMWYyMDhlZjg0ZWIzNTM1MjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmMTk2MjYxOGNjZWRmZmVlZDFlODExYzNmYWUzNzEzMjdhMDE0YTM2ODVmZGY3MDVjZWVkYjk1NjQyMWI5OWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4NGY3ZGE5NDFiM2UxMWVjY2IxZjE5NzE3MjdlMGQxZjcyNmI2M2NhNWY1ZGFlNzhiMWExOTA4MWE3NDQ1NWEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L1464-L1513",
+          "version": "repo-lines-v1:sha256:ea1cf9acdfe08e454eb887b2cae6792ad5061ef868b0fefbe31ce09e0492f084:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyYmMyNTM3Mzg5ODdiYjY0YjE5MWFlYmI1OTNmODc3NWYxMDZkMDg2NGE5Nzg5YTFhZDIxMDY5NTMxZGEzZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1ZTI0YTIyN2RjYjY5MTUzZWNmNTkzMWEzODM5NjQ0YmI2OGI4NzhiNzI0MGY2Nzk2NmZkZWM2MzliYTUxZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2YmY4MWQ1YmIwNTgwZTg3NjE1MjQ5M2RiNWI5MWFkMjAxMDBjM2U4ZDYwMjFlNzFiOWEzMmI5YmZlYzNhZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlNzFkMzJmMWY2ZTExZGIzYmQ2Yjc2YzU5ZDZlZDRhOWQ1OWVjZDQ1MGJjMTljN2I1MzgxYmE0Nzk0MmFiNTIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-18T08:05:29.735Z"
   }
 }

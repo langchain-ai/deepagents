@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c24639776306ef2cbfb7263bed92c7938820f6527d4e8b36db1e49528e953c75",
+  "pageVersion": "sha256:1e94b73a938fce94addb4d797b50d053ae7f698eebf509cc6dd92d9cba01e775",
   "claims": [
     {
       "id": "claim_712e3318b74a4531906b1046ca9cea44",
@@ -53,20 +53,6 @@
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L423-L433",
           "version": "repo-lines-v1:sha256:4ab96d617cb12dd21361aea5d5f021c8183e28244eb23891c580751f549b8cde:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ZDQxZjM2MDQ5YTgwODk5Njg0MDdkY2ZiY2VhNDdkNzhkNjQ4MTkyMzkyMDFlOTlhOTlhZjVkYmU3MDk3NWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDZhMTlkY2YzM2M4NmI0NTI1YWMwMjU0YmNjZjgyZjhjZWM5YzYyNzQ4NzA1NWQwYWZjOTNhZmI0YmVhYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YmJmMTQxZmFhYTY5Yjc3OThiODFlZjk5NGJmZDliNzFiNWQ1ZmI1NTQyYjc0YjUxNjMyYmU3OTZiNzBiY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_f2c1dbd0bd1644ae9c49eccd7dd2358c",
-      "statement": "Filesystem tools call _check_fs_permission before executing and turn a 'deny' result into an error rather than performing the read or write operation on the validated path.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1803-L1820",
-          "version": "repo-lines-v1:sha256:8cefedaa2865a2ab3bb10404e2e731dce48c3584f2c035bcdfc16c05c2709b33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ZjM0Mzk1NTI5YWJiMjcwMjM5OThhMGVkMmI0ZmRlNWUxMzg0NGMwZjQ0NDFiYTU2ZGU2OWY2M2E5ZTg0MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMTBmMDY5MWFjZGE4NGM3ZDQwY2I0OTJhZWIzMzA2OTdlNzBiMmYyMzQ2ZDczMTRjYWVkYzYyNzY1ODcxNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmMmFjYzVjZTdlM2I4MGEzNTUxNGRlNjZiZmRiNzUwOGQwNmVkOGEzNTEzMjA0NWJiNjA0NWJkNjgyZjliZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5OTU1MWY0NDBkY2E2NGVkZWFkMWY2Njg0MTA3YTJjZmFlNGFjMjFkNTJiYzIwNjMyNmNmZWViODgxOGM1ZDIifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L2077-L2094",
-          "version": "repo-lines-v1:sha256:8e37e344e1aa205bd24571a5bba3244948d5902025f2c1c5eebb9da5cec15e50:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NzgwNWMzZmU3YWM2MzA3NGY2OWNkYjI1YjlhY2Q3YTg2NzkyZGZlNTQwODE4YWM0Zjg3NjRiNDllN2QxNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0NDYzZDc3YjQyMTFjYjc4NTBjZDg4MjYyYzM2NzZmZTc4NGRmMWYxYmUxYTZlOTI0ODhhMmZlZWU2OGE1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyZThkM2FkYmIxMTFjODAzZWVlZTFhMTY0Mzg2MGU4MmM4N2Q3ZWRlZWJiNzhkNDEyNDA4NGZhNTcxY2MwY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0MTBiMmNmNDM1NjQ1NGFhYThmODI0ZDZmMjFlYWYwMmNjOTVmMzNlNzEzN2ZhNjAwOTkyNmY0ODY1NzNhMTcifQ"
         }
       ]
     },
@@ -249,158 +235,16 @@
       ]
     },
     {
-      "id": "claim_c38040ed88f14946adf54b9d0c817e00",
-      "statement": "dcode's _add_interrupt_on registers every side-effecting tool (execute, write_file, edit_file, delete, web_search, fetch_url, task, async-subagent tools, and mutating MCP tools) with an InterruptOnConfig whose 'when' predicate is _should_interrupt_tool_call.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2171-L2270",
-          "version": "repo-lines-v1:sha256:36a9945ffda336a100afdde724d3d98c122d6b573b07353528468d1412d4848d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTkwYTc1NGIxODUwZGM2ZTA3ZjNlMDYzMDU4MDU0NmFiMjkxOTczZWY0ZTFkYjBlNzI4ZDIwYzkzMjEwYzhmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTQ4YTY1N2Y5YzhlOGFmODkzOTg0YzdlZTdkNTIyNmIyMzU2MjVkYzIxODdkN2E1MWM1OGEzY2EzMmZmZDFiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ODMxZDlmMzBkMzgzNDkwNGI0NjkyYzJhN2EwMWY4NDcxYjc2Y2Q1YzM3Njk4ZjRkMjg3YmY0NTE1N2ZjZDRmIn0"
-        }
-      ]
-    },
-    {
-      "id": "claim_3f75cde2d3004c249ff60cb3bf17e2d0",
-      "statement": "_should_interrupt_tool_call resolves the live approval mode (preferring a per-call async routing marker, else the runtime context/Store) and decides: YOLO never interrupts, AUTO interrupts only when the classifier is not eligible for the graph, everything else interrupts, and a prior hook-granted permission short-circuits to no interrupt.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2037-L2072",
-          "version": "repo-lines-v1:sha256:8028bb94892bc240c6893f65ee575b306d4351e6c965ef87a35877a6f9f7b8d5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxNzdjNDQzYmQ0NTg5ODE1NGEyYjRkMzk5YWRiNjlmNWU4YjAwNDk0N2U1MTVhM2YxZjY3NTBjZWM4M2M5MDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZTJhNDY1MDA5NWZhOTVkMGUyYmI0MWIyZGIyOTA5NGQzNDA0ZDI4Y2UxMjMzOWVjODhiYjRiNWM1YmU4ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlYjI4ZWJmZDM1YjBhM2NlMjAzNTEwZjQ5MWExNWU5NTQ5NjE0ODYzOWRlODkyZmMzZDhmMTU1NGViZDA5MWMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_6d30db700dd744caa0cc7aa1ca78a192",
-      "statement": "AsyncApprovalHITLMiddleware re-reads the live mode after the model responds and threads a transient process-local _RoutingDecision marker into stock HITL routing that is never checkpointed and cannot be forged by graph input; if driven synchronously it warns and fails closed to Manual.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2013-L2034",
-          "version": "repo-lines-v1:sha256:5f1c98b3c62ad9989475378ef00a22af0daab433f21271b4749476b208328e4c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlNTlhMGU1YjRkZjYxZTY3NTk1NzJkMzFmZDkxZDllOGMyNDUxZTk0ZDdmNWMxNWQzMDMwMmVkZjA2YjFlOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwMGNkODcyYjZmMWE0YjBkYzY1ZjU4MGQ1ODE3ZWUxMTZiMzQzMzNmZDE2MmM5MzYzMjE5NGM3NDUxZjY0YWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiYzkyYTYwOGMxN2JhMDRlZjIwYWNkMjllM2VmNDJhZmZiMDhkMGU3N2FkNzBhYjA0NDA2OWMwZjhiMWFhM2YifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2075-L2150",
-          "version": "repo-lines-v1:sha256:740484f0b99780f9c3719cad97648a840c63baaadf1c2d6f54e3a516eb7b36b1:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViNGVlOTllY2ZlZTI5MTcxNWViNmJhZjQ2Nzg0ODJiODlmN2U2NDYwY2ZiMjVlYjMzYTlhNTkwZGE0NzAyZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzYzczNzZiNjIyYzg0NjU1NTc4MzdkZWQ4MDIwZDM5YjFmYjA3ZWYwYTAzYmY1ZWRhYjA2ZjYyZDc3NzM0MGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1MjYwNTJiMzdhNTUzMTMwOTViYTcyYTJiNjc4YTY1ZjFlMjkzNTU5MDE0MmNlODE4NzY3NWEyN2NhZTA3NTEifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_5c583096590c4dd69a5df163140252ed",
-      "statement": "AskUserMiddleware adds an ask_user tool that lets the agent proactively ask the human one or more questions (text, multiple_choice, or multi_select) and pauses execution by calling LangGraph's interrupt() from inside tool execution.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L337-L344",
-          "version": "repo-lines-v1:sha256:094df775fd330f636489c5a13bf09bf9bae2146c65f4c0f1387b7d44fa1b4a7c:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGFmZjhhZjc4MWU4YjVhMDVkZjg4NzM4YjEzNGJkYzVmM2EyMWJjYjkzNDU5NTY4YzIzZWU5OTdiZTFmYjY2MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTZhNzE1MjU3MmVlODRmMTA5MDZjNzRiOWYyYTkyNDM0ZGRhYjBlM2M0MjgxM2IwNGU1OTdlZmNlYzk1MWIyNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTQwZTcyZWMxNDA1N2E3ODQ4ZmU4YmVmMDI0OWJhNTViYjY5Y2I2MWY0YjU0MGJiNzAzNDEyNmQzNDY4YzBlZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGQ0ZGJiNGU5M2YxZWNjMDgyMmNhZGQ3ZjlkNTBiZjM0MTM5ZjM4M2NlNDNhMGVhYzlkZjM0YTI2Mzg1MzMxYSJ9"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L405-L427",
-          "version": "repo-lines-v1:sha256:939b0acb2fa0dac6b3a81916dca163044c297e27a5f329066e03875226f5bff8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3MzkwN2U0YjNjNzc4ZTc2OWQzYjVhY2QwNzA3YmYxZWJjNDA0N2U3MGFiMzFjMzA5NjMxYmU0ZDFmZWZkOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViY2ZjZDFkMjM5MGU3MDE2MDNjYTU0Y2NlYzUwZGQ4OTk3OGEwMzZmNTJkYmFkMmMwMTkxOWVmM2YyMzViNjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjMGUxODE2OTU4YTBiYWE2YTA3OTcxZTI3MTI3ZTRmOGE3NDNiMTBkYTg2MzIwYmE4N2I1MWM2MGE1ZjlmOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxNTY4N2Y4OWMxZGQ1ZWZkMGRhNTNmOWI5ZDc1NzQ3OGNiMmMxMDJhYzRjMTgwNDczMGE1YjI0NzgzOGI2OWMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_1585b122d7b147629e40cbd0406d08ff",
-      "statement": "_parse_answers normalizes the resume payload into a ToolMessage transcript with explicit status handling: an answered payload whose answer count mismatches the questions is rejected as error rather than padded/truncated, cancelled synthesizes cancelled answers reported as success, and malformed payloads become explicit error answers.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L116-L269",
-          "version": "repo-lines-v1:sha256:db1d64c2fc7a8e21497b12f5c00511a08f23415bda0eacf5c5d6e85d8ed9997d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZDE1MDMxMjBhNjIzYmM3MTZjNmM0OGNiZmFiNzZlODdlMmVkZTUzZjUxMTNkMDQ4NzNjMjk2ZjMyY2QxYjI0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZDk2NGJhYmQxZjBkMjExZGNiNjdjZDE2MmY1MDZjMDU2ZmNjN2VlYzcxOWQ1Yzc3NDI2NmRmZWYzYWI5MDVhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzAxNDllMDY5YWQ2N2VjY2Y0NzM2NDZmZjFjNzUwMDUwZDMyOWQxMTAwMThkYzU3NjY4NzhlYWZhMWQ2MDdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2NjgxYzBkZjQ0YjZlN2RmM2Q5NGExMTI3OGUzYzY3OWNhYTMzOTA1ZmQwZjI5ZjFlZDkwMjFmZjRhNGI0NjM0In0"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L291-L317",
-          "version": "repo-lines-v1:sha256:ca69d58703f4f468b3f31546a73b2394933f0644d5320d10660d450271ff2a74:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNWE4NmYwODYxMmE2Mjk4ODViNGUxNmEwY2FlODQxZGFjMDZiZmRiNzMzZDNiNTdlMTIzYzJjMDFlZGRjY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5ZDQ1ZDJiZjU3MmFhYzlkMGRkMDM0ZjNiODFmNTQ3OWEzNGU0Nzk2ZGU1YjZjYzJmNjMyYjhkNDliYmMxY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjNGZlYWM3N2U1ZjRkNzM0NGI2Y2FlZTczYWNjOTI2MmU5MGI0MjliMjc5OGQ1NGIzMzc3OWY1MDI3MjVkY2IifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_e87d5f774dd94f9599363e29d517b5b7",
-      "statement": "Because ask_user's interrupt() raises GraphInterrupt inside ToolNode's wrap_tool_call chain, middleware that catches exceptions must re-raise GraphBubbleUp or it would swallow the interrupt and break ask_user.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L410-L426",
-          "version": "repo-lines-v1:sha256:8e4f41bff2379de8b51a8a9dec5c89172174473389b0812e143dccb1ee1e2b1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmMjU4NTIzNDcyM2FlZDI3OWNlYjEzZTFlNWIyZWUwODRlZGI1OWRlZDVmNmE1ZjExZGVlNTk4NjgzNzBlYTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NzgwNWMzZmU3YWM2MzA3NGY2OWNkYjI1YjlhY2Q3YTg2NzkyZGZlNTQwODE4YWM0Zjg3NjRiNDllN2QxNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNTE1MTVjOTU2NGNhOTYyNmViNjUxMmQ2OGNhN2YwNGIxYTBiMzQ3ZjhlNTBlMTdjY2FlNDQ1NGJmMWZlZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMwNGI3OWMwMDlmMTIzM2Y0Yjk3OGZlN2I2MWViMTlhOTM1MTgxNTg5YWJiYTQ5YjI1NzljMWU0ZjdiZmNkODgifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_c6323753faf1475088709858a73ae542",
-      "statement": "ask_user attaches an AskUserAuthorizationReceipt to the ToolMessage only when a prompt is genuinely answered with bounded string answers whose count matches the questions and whose thread and turn identities are trusted; the receipt is withheld for coerced answers, cancellations, and errors, and Auto mode requires it before treating an answer as authorization.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L271-L289",
-          "version": "repo-lines-v1:sha256:b52b7278df2485e103dbe90dd0cac95c83effac95b60c24bc623fc1c691a3416:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0MGQ0NTJmNmM5YmExZjZlYjA4ODg3MmNjYWVhYjM1YWVjMTMyOWEzNjNlMTc0NzZmYjc2MTBlZmNhMTE0N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlNjIyY2Q4ZWJiOWRlYjA4M2ZiNjAxYmJiN2MyOTMzOTI0ZDY1ZThhYjc0MDY0YzVmYTFmNDQ2YTQ3YTQ3NjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmNjA0ODM0MGFjOGE0NmM2NTM4ZDA0ZDAxOTFkZGFhZGMyOTZkNGExMjQ0NWY3MjNiZTVlNGNjNjdhNWVkYzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNDdlMjEzNGIxOTkyZmNhYmJlY2Y1YzZmM2Q0NTUzY2JmMmFiYTAyNTlkZTM0MWNkMGYzZDdjMzc1MjY3ZDcifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/ask_user.py#L306-L313",
-          "version": "repo-lines-v1:sha256:fd669e9edc2cd33da974cf0b23931c8ca3bfc3b3aa31d92a20994af7dfa185f0:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmU2Y2NjM2U0YzI4MjI5NGY1MjExMWRlZGUzZDM2NzNhMTA0ZjU2NzQ1YTgzYTAyYzA0YWJkYjgyYjBkYWVkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAzMTZjY2QyMjYyZDE0OTFlNjlmMzU0MTA2YWEwNzE0ZTc4MTdkZDk4MTA3NjgxNWZmZTY1MDkzMjc4OTgyOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjMxZGYyYTc1MDMwYTM5OGU0YzM1YzA2ZTYwZjcxMmE2MGE2NDRlMTA5MzIzMGYyOTc4NzdjMTUzOTBkMjBiZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGY2YjAxYTM2ODI0NGExZmUzNTMyODU0ZDQ0YzVhYmU4YTM1MzNlOWU1NTNlNjY4ZjczYmZiYzNlZmU2ZDM0NiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_2293318a442e47e48bcd2e68bcc00449",
-      "statement": "Permissions are enforcement, not visibility: a denied tool call may still be presented to the model and only rejected when the tool runs, producing an error the model reads, so the controls stop the effect rather than the model's awareness that it tried.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py#L60-L73",
-          "version": "repo-lines-v1:sha256:eef24cd6cd7a0a82e683b59fe2d8549ff0d80ebf485c463abac378dbe9a66045:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxY2RkZTgxNTJmM2ViODIwZTk1MmM3NjZmYTUwNzZiZjAyMjkyOGQ1MTEyNmMxMDEyNTQ0Y2I0YWY0YTZhNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjMWMwYmIzZDBiZWZkZGEwYTk2OGNlYmI3MWVjZmE2ZjYyMzc5ZmFmZTNhNWYyMjU1OTAxMWIxNjk0OTk2NDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3ZmRmYTIyODY2MmI3MTA2MTg1MzhlZTRmMTc1NzQ4MDJhOTczNWM3MzAzMDJiYTA5YmJkN2FmNTZiNmEzMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMjc1ZTE0NjM4NmM0YjI3MzIyMjU5OTBmODJiNWJlOWRmMjU0MGM3NTQ2ZjI2M2YxZTkwNjdjODYwZTI3ZGMifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L423-L433",
-          "version": "repo-lines-v1:sha256:4ab96d617cb12dd21361aea5d5f021c8183e28244eb23891c580751f549b8cde:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ZDQxZjM2MDQ5YTgwODk5Njg0MDdkY2ZiY2VhNDdkNzhkNjQ4MTkyMzkyMDFlOTlhOTlhZjVkYmU3MDk3NWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDZhMTlkY2YzM2M4NmI0NTI1YWMwMjU0YmNjZjgyZjhjZWM5YzYyNzQ4NzA1NWQwYWZjOTNhZmI0YmVhYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YmJmMTQxZmFhYTY5Yjc3OThiODFlZjk5NGJmZDliNzFiNWQ1ZmI1NTQyYjc0YjUxNjMyYmU3OTZiNzBiY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_8a4a7d1816424ceaa718c9f5e3dbc64a",
-      "statement": "AutoModeHITLMiddleware applies deterministic policy and classifier review to proposed calls: classifier-allowed calls can resume, policy-denied or classifier-unavailable calls produce errors, and calls marked require_human are escalated to human review.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2116-L2118",
-          "version": "repo-lines-v1:sha256:090df54df76ababa3524bc6f84a35900a9133b1033ac3cc2a9079a7399603ced:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTZhYzNjNjU1NWMzZTdkNjM3NmI4Mjk2YmEwMjM3YzE5MTI0ZjM4MGI2NjI4MzVmYzkzYzVlYTQxZGUwYWVkMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWI4ZjA1OGY3N2ViODU0MDkwNjFkODZiMjMwODkzNDYzMGFlMTE3OWQwOTA0N2UxNGQzNGQ4Y2ZhNThmNTcxYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQxZTgxZjg3ZDJmNjYyNmJkMDRhNWI5MjQ1NWVjMTU0MzA5OWYzZWJhMGNiZTYxZmRiZWE4NDg1ZDM2N2UxYyJ9"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L3878-L3929",
-          "version": "repo-lines-v1:sha256:049a988a60ddea0c2afeb4bbe865aa95b9c31cb14905d8f496ddf01946d417ab:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxY2FiMDhkNjA0OTM0ZjkyYmNiMTBjN2EwMDU4NGEyYjNhYmVhYzllY2U0YjI1NDE5YmIwNTg5YWEzYjU2ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyOTMxNmYyNDcyNTk1NjE1MWNlZDBlMGMzNTQyZDQ4YjE5NzhhZjgwNDdkNTg5NGRjNjM2OGJhNzZiZmEzNjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwMjE5ZWI3MDI0YWE1N2E5Mzc2M2Y3ZjIyOTRlMjljNWQ3Y2RjNDI0Y2IzNGUxZGE3YmI3OTViNDFlMDBmN2QifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L3947-L3978",
-          "version": "repo-lines-v1:sha256:f4bde83372cbb027e40e61197ed906bfd105e62acab3b28eb33e7de6bd4662af:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4Nzg5OGFjNTQ1NjA1MjJjYTY0YjAzYjZkOTRiMDQxZGM2YWRhNDRhNDNiZTNkZjg0ZDU2MDAxYmM0ZjdiYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyYWE0NjE2OGEwZmE2Zjc5OGFiMDBhNGNkZTE2ODc1MGMwYjUyYzJjN2Q3NzkzM2Q3YjVkNTVhOGZkMWUxNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0ZTEwNWYyYTFiODlmYWY4MjI4OTVjNGExZjJjNDk5YzVmYWM0M2YxMjU5OWUxNWY2NWQyN2Q0MGQ3MWViZWEifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_8635239bcd5a42378b32408c425426e2",
-      "statement": "In non-interactive dcode mode, a restrictive shell allow-list with interrupt_shell_only installs ShellAllowListMiddleware, which rejects disallowed execute calls before execution without pausing; absent a restrictive list, dcode falls back to standard HITL.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2683-L2710",
-          "version": "repo-lines-v1:sha256:0b42f04253251ae3e8d00c3906de47ff038551874bfc6758136a1a15d9beeaf0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhNzkwYzE0MjFiZjY0MWVmOGI2YjllNTZkOTdhMWNjMjlmN2RjNTUzMzdjZGY5NzY0NTNmMWYzODBlNjJhNzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyYmQ0NzliZDkxNzFkNTRkZjc5MWIwMDc4Njg3ZDIwYTkxMzc4MTYwM2Y4MTdiYmE1MDBlOWUxNGRjZjcxZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmOWZlNWYyZDMyMWNkODRmYTM4ZTg5Yjc0Mzg3OTc3NjgxNTFhYjRiYzBiMTYzOWI3MjJkZTBlNDFkNWU5MmIifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L823-L936",
-          "version": "repo-lines-v1:sha256:47c99ba976538f273accb215d3a0c5265aeb0d0d7f1c6e3bf228d31524241fda:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NWY1M2NhYTBjZGUzN2U0MmIxNWU3MTAxYjI1MTIxYTQwMjQxZDQwMzNlODY4MTgxYjgwNmFiZGY1MDIxZDBlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MWVhNjNhNjJmOTIxYWNmZTkxYTE3MjMxMTA5MjI5YzU5M2RlNzgzMWYwMWFmZGFmZDYwNTFjNTI2MTU0Y2U5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxMzY2YmNjNjdjNzViNWM0MDk1NTUxN2NmNWM3MDBmYTg5NmM4ZmUzNDMwMWY1MjMzZDVlYmQxODViNzlmOGI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OGI4Mzk3MjVkYTFmNzZjODZmZmJmYmQ2NDBkYThlNGZkNDRmMTgwNzNkMDNmNTZiNWMzYmI3MGUzYzlhMDFiIn0"
-        }
-      ]
-    },
-    {
       "id": "claim_d7d793ce3527471e99303d5f0c1f04bc",
       "statement": "Talon converts graph approval interrupts into LangGraph resume commands, limits a run to 50 approval rounds, and fails rather than implicitly resuming when interrupts have no usable IDs.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L745-L788",
-          "version": "repo-lines-v1:sha256:afa6ef10c7ca09f57a4da5dd8c5fb75afff01b1ff9f806ba7bdaf0c95cfc8d27:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNzA1OGQ0MjY3MmRhZjg1MDIxZDMzZjE1YTNkYzhjZGE3YTllZTIxMDRjZTM0Y2U1YmQ2NGE4ZjlmMWNmZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZTYyNTFlZjA3ZDZiNzgyZDcwYWRiZDk5N2FkY2Q2MzVkOGQzZWI2YzlmN2ZmN2Y4OGQ5MzhmYmYxMDZiZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhN2JkNzUzZjFhOWMyYmFkNmE1M2MzZDA1ZDdjZmQ5OGI2NzlkY2IyYTEyZTlmNWEwYWQ1NTk5MmVhNzVjMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5NGYxZWVjNjUwZjE1ZDBiMWY0Njc2ODM5MDIyYjMzNzUzMWQ1YTRmMmQxMmQ2MjczNjI4M2IwNWJhMTY0NjQifQ"
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L840-L887",
+          "version": "repo-lines-v1:sha256:21f0a0765f40010ebcbeccb21cc9384fffc739f5f5d80d863e1d74d39d544d75:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNzA1OGQ0MjY3MmRhZjg1MDIxZDMzZjE1YTNkYzhjZGE3YTllZTIxMDRjZTM0Y2U1YmQ2NGE4ZjlmMWNmZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZTYyNTFlZjA3ZDZiNzgyZDcwYWRiZDk5N2FkY2Q2MzVkOGQzZWI2YzlmN2ZmN2Y4OGQ5MzhmYmYxMDZiZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhN2JkNzUzZjFhOWMyYmFkNmE1M2MzZDA1ZDdjZmQ5OGI2NzlkY2IyYTEyZTlmNWEwYWQ1NTk5MmVhNzVjMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5NGYxZWVjNjUwZjE1ZDBiMWY0Njc2ODM5MDIyYjMzNzUzMWQ1YTRmMmQxMmQ2MjczNjI4M2IwNWJhMTY0NjQifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L80-L85",
-          "version": "repo-lines-v1:sha256:0813efd58d0737581c4c3468b6312d391c4343106e61126d0c55d9dbe0e818d9:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmNlMDNkMzE0NzhjODgxNjY4Y2EyZGNkNjFlY2NjOGU1MWYzOThkMjdmODE4OTI5YzI5YzA3Yzk2NWE5NDYxZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmQ0YzY1NGY2N2IyOTVkMzJmOGE1Y2Q1NTM2YTJmYjM2YjZkYzQ0YzlmZDU0MTdlYjA1OTk5MjJkNWYzMThiYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTVjMWM0NjJlMmEzOWQ3NDc1OWY1ZTFiMTI2Zjc2ODNhMmI3MzAxMThlMThmNTEyMmIwOGNlZGVlYjY1MGUyMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGUwNDQyNTgyZGMyZWQ5ZTE1M2JjOTJmOTQzODZkYzg1ZGE3NjE2MWVlNjg0OTNmNzk0N2ZmNjhkZDRiOWZhOSJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_ce33a599b35f4822a51f5b2eb2deafa7",
-      "statement": "Talon merges DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS into supplied interrupt_on configuration with environment entries taking precedence, and adds a gated MCP configuration-update tool unless its explicit auto-approve environment flag is true.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1010-L1054",
-          "version": "repo-lines-v1:sha256:242bdca7bb7b8ad393eb1b582acbdc103bed7ac70f579ea816b234703feb270e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxN2VkMWQwMDdjYzEwNjc0YzNjZTEwMWZkMTY0NjlhN2ZjYWU1OTVkYWUxOGMyNWFjYjUyMDUxYjljMzg1MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4OTFjYjVjMTcxNWY1NWY5OTliODdmZTI1M2Q4ODA1NDAxZjQ3YzQ0NjM0ZTZiYmJhMzMwY2MwMzg1N2U5MWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1ZGM1ZTczYTE5NjhlZTQzNTA1NjMzOTI0NzZkZGQzODE1MmIxMjkwZGRlY2JkZGIwYWM3NDBlYzc3NmFhNzQifQ"
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L87-L90",
+          "version": "repo-lines-v1:sha256:5354e15b73c70ce51a2ba844b2678fa5c11f1c656bdb1d01261d0d12753af58b:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmNlMDNkMzE0NzhjODgxNjY4Y2EyZGNkNjFlY2NjOGU1MWYzOThkMjdmODE4OTI5YzI5YzA3Yzk2NWE5NDYxZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM2MmU1NzgwZDkzY2M2MjBlMThhNmQ5OWJmZWE5YzQ1NzA1ODQ5MWU5NDliMDIzNjNlM2RlYzk0YmY5ZDk3MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTVjMWM0NjJlMmEzOWQ3NDc1OWY1ZTFiMTI2Zjc2ODNhMmI3MzAxMThlMThmNTEyMmIwOGNlZGVlYjY1MGUyMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmQ3YjViZDg5MzM0NWIyYjFkNDk4Nzg2NzM3Nzc4MGQ1ZjE5MWZkNGY2NTgzNmY5YzE2YjRkNGY1MjJiOTFmZCJ9"
         }
       ]
     },
@@ -409,32 +253,66 @@
       "statement": "Talon fails closed for approvals without an interactive operator: cron-triggered calls and calls lacking an approval handler are rejected; an available handler receives the conversation, interrupt ID, and pending action requests.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/interfaces.py#L104-L122",
-          "version": "repo-lines-v1:sha256:e467be5063a0ca94f0b0173b6acef11373d98933c45a939bac9aafb9851f2b41:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzZTJiZTRlYWM2YzcyMTZmMzk3ZjcwYmViNzExODAzMzQwNTE2NTlmZDMyMjBhZjc0ZWNjM2Y2NmQzMjkwMzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ODllYzllMDc5NGQ3ZWViODg1ZGRhN2RkOTM2NjMzNmI1YTRmNjU4YjEzYmJjMmVmY2YwYmZhZmM5NWI4ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5MmU5MzEzMmYyMDY0ZDhjZWZlMjZkYjM4MDgyNWMyYWI4MzJjZGUzZWNkM2E4NDkyZWNiYTU5ZmViZTQ5MjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L895-L933",
-          "version": "repo-lines-v1:sha256:e4186dcc40b046e93b54e27438c23532cf728978fb1f715d6f547e67a1b68d27:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOGFhMDliYTNkMTViMGQ1OTlmMjE2YjY3YzhkMzg3MzNiYWQwOTljZGRiMWRhYTJlYWExZjRmYjkyNzRiMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZTgxYzZhYjEzMWQ4NjBhMWUzNmIxNmRmOTE5OGY1NzQ4YzMyYzhiYWNlMjdmYzEyZDI1ZGYwNDY3YzIzN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjZGNkZDgwYzI4OGY4MzZlNmUyY2UyNWQ2Y2NmMWJhYTBiMWE5YzUzZWU1N2M2ZDA2MmJkOTNiNDJiNzZkNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0MDkzNjk4MmVhODBlMmRkNDA4Zjk4ZjdjN2IwYjcxZjY5MzE4NzllNDc1ZTY5OTI2NzhhNDk5MjBhZTVhNWMifQ"
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L992-L1030",
+          "version": "repo-lines-v1:sha256:7251fbd4b991fa0ea15b8ab8fbf10e939fee69d6aef83d8327531a04ce47ad0a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOGFhMDliYTNkMTViMGQ1OTlmMjE2YjY3YzhkMzg3MzNiYWQwOTljZGRiMWRhYTJlYWExZjRmYjkyNzRiMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZTgxYzZhYjEzMWQ4NjBhMWUzNmIxNmRmOTE5OGY1NzQ4YzMyYzhiYWNlMjdmYzEyZDI1ZGYwNDY3YzIzN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjZGNkZDgwYzI4OGY4MzZlNmUyY2UyNWQ2Y2NmMWJhYTBiMWE5YzUzZWU1N2M2ZDA2MmJkOTNiNDJiNzZkNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0MDkzNjk4MmVhODBlMmRkNDA4Zjk4ZjdjN2IwYjcxZjY5MzE4NzllNDc1ZTY5OTI2NzhhNDk5MjBhZTVhNWMifQ"
         }
       ]
     },
     {
-      "id": "claim_19a5e2660c444bd68cedfbb99dfe4e56",
-      "statement": "TalonHost mediates channel approvals by retaining a pending future per agent conversation and accepts a decision only from the initiating sender for text replies, while reactions must also match the provider, conversation, and approval-prompt message.",
+      "id": "claim_174ea9f51b2f44d08cb93f76d6271cfc",
+      "statement": "FilesystemMiddleware rejects configured path permissions with an execution-capable backend unless all rules are scoped to CompositeBackend routes, because execute-tool permission enforcement is not implemented.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py#L1102-L1201",
-          "version": "repo-lines-v1:sha256:703bf5a9108673edc4aa7f8f500ec2111b822ef2864f9d84ec17d8450a9a01f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkODM3OTAwNmRjNzU4NjRhMGJjMTg3YWU4MjgxZDRiMzU2NDA1YzcxM2RmNjA5NWI3NGI1NjE0YmE0OTE4YTI1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MWYwNmU5YjY3OWZkNWQ3MGM1ZDM4YjJjOWZiYjM1OWNiNWNlMzJjYzY0NGRjNWM3ZjkzMjc2ODljNmRjNzdlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5NzM4NWJhNTBiMDczYmIxZGFlNTllZTVmMzA5YjUyODk3OWY4Y2E0NWZhNTYzZjIyZTc0MmZkZjExYTA0ZjE5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ODFlYzM5NWRkNzdiNzNiODE5MDIxNTQ0YjI4NGM0YWUzMTRhY2VlMzk1ZmUwNmNjMTQ5Y2QyZGIwZDVmMDliIn0"
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1821-L1828",
+          "version": "repo-lines-v1:sha256:990548a59f26609e2a03df755ff237d5c689bbb31a7f0b591dbf834e7869f2f9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGU0MzE5NDRhOTJkNWY0NDUwOTllNDIzM2RhY2RhZjY4ZTc2MWM5Zjc5MjZkOGRjMWE2MWY4OGEzNGNhMWIxMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDE2Y2RiZGZjY2E2M2MyN2RkNjUwMDYzNTdmMmRiNzJiMmNmMTIxMTJmYWY1M2NiNmQzZTg5MGZhMTg0ODgwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmViNzJmYTQ3MzcyZDI5MDRlZmQ5OGZiYTIzMjBhMTcxMzBhZmE4MmQyMTRlYWJhMDU3YzFhMWQ1MjQ0NTFmOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWRiZjYyZTlhZmFjYTcwNmJjZDk1NGUyMzc1OWYxNDdlMDExOTdjOGQzOGIyZTQyNmMyYWM5ZGVhODE3NmYzNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_70f6948f2938449fbfff083f96440bd7",
+      "statement": "Talon's ToolApprovalStore persists an exact-name boolean policy in a bounded regular JSON file, rejects symlinks, identifies byte revisions with SHA-256, and uses a locked compare-and-swap update so concurrent changes return conflict instead of being overwritten.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L36-L52",
+          "version": "repo-lines-v1:sha256:f3a79ad6d17564d4293e39c1951bc69983cc396eb0929aac7fa5ea6f40173356:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2MDliYTVjNWFhZjllNWQxYzY2YzEyNDdmODA3NzVmYTQyNTVmYWNkZjllMmVkNmI5OTVlMDI1MzI1OGM5MTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMTFjMDU2N2QwYTVmOWU5YjEzNWY2NWNkMjUzNzJkZmQ2Mjg3NzVmN2MxZWQyNTNmOGJhZDQyZGQyZDY2NjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1NTczNTQzZDExNGYyNjNjYTFjMGRmNzE4NmYzYTljZjcxMjZiNmMxMmMyMjQwOTY5NjcxZTE0MDA0NjM3N2UifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py#L1501-L1523",
-          "version": "repo-lines-v1:sha256:ea0dea66d3b8ca75c07c160d820cd136a3a41c2d2bf76fed1d1db32a20f88dd1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZGM3ZGU4NjQ2MTdjZDI1YWUxNWIyMmJmMjM5OTIwYzM2NTNlMmQ4OTI1NTJjYzI4MmVhNzhhNWI5YTRhZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlNzk3MGE4MTUzYjRhNjQ3MGQxYzVkOTk2ZDI2OTc5NzkzN2NiMDVlM2QzOGZiZGRlOGU4YjNlMDQwYjNlMWQifQ"
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L90-L163",
+          "version": "repo-lines-v1:sha256:d3e7b0c27fbbd596e51493533934c7409868674f7ab383dff7f480ad54ce8145:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjMzE5YjkzNzZlNGYxOWZhZTk3ZTJhMzFiYjhlNGMxN2MzZDBmMzFiM2RjZmRmYTU4ZWI5M2ExZGZmYTk1MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMjUxODIyZjM3Njc1Y2NkYTRkYjM0MjU2NjY5ZjY0YzkyMDA2YTFmYTUxMTUyZGM0YTg2Y2E4YzFhN2Y4ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjMzU2NjllZWI0ZWY0M2U1YWM5NTZkNDNmNzc3YmRlMGE1NTFjMDQzMjQzMGVlYTc0Nzk0YTYyN2IzODYxZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4f125150dc484e4aa0134da7ea1f911f",
+      "statement": "A Talon ApprovalSnapshot generates approve/reject interrupts only for enabled exact tool names, while policy updates are operator-authorized and apply on the next invocation rather than changing the active snapshot.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L517-L530",
+          "version": "repo-lines-v1:sha256:a9af6ed7f4502adce1320d919c4401ba7379540ef6ff9f09bfa24f975d767568:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZTI3ZjIzNWM1MzliN2Q5MGViNDUxMDhlODU3OTU1Y2NlZWZkOTI4MjFmNDdmMjJkYjVhMjc5Nzc1YzI2MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYWNkMzkxMTBlMmY0MTM1MTc3NDUzZTFlNjY5YTM3Y2FiOGVhMWRhOTQzNTlhNDg5MmZkOGEwYjNjYWU4N2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4M2Y0MWJhYmJhZjAzY2NkMGEwMDVmZTAxODQ2ZWY2ZTYyYTUzYTVmNTM0NzY5YmQ0YzEyYTg1NzlhNmRhMGQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L187-L212",
+          "version": "repo-lines-v1:sha256:f1307f8b0a8eab257636d251795010aa7e6bde63b48228214094514222f9d8a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNTc1YzY5ZDE2ZjJlMTMyYzBlMDg4M2YzYjNhYTU2M2IyZDExYTZmNDgxMzc1MTE1ZWE2ZTEyN2YwNjJiNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZWNkNmFiYmM1YWJjOGZjNDM5ZTY1ODViMjZmZDdjMmE5MjAzNTgwZjlkNTk4ODRlYjRhNjgxZDEwMjVkNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwMDk4NmRjNzJiNjNlMzUyZDlkMWNlMTdmM2ZkNzQyZjIzODViYTZlYzRiMWU4ZmNhYmM5OGYwOTA1YjFiYzUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L65-L86",
+          "version": "repo-lines-v1:sha256:70adfbd4eda281ac48deff3d5d5e29fadf9e0fcda4de203282ea302c236b3659:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlODU1ZGE0MTBjNjAzNWExMmE1ZmM3ZjI0M2Q1NzA3MmFkYjczOGU5ZmQ1ZjhmZDFiZGNiZTMyYTE3ZjkzMzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkMjUxODIyZjM3Njc1Y2NkYTRkYjM0MjU2NjY5ZjY0YzkyMDA2YTFmYTUxMTUyZGM0YTg2Y2E4YzFhN2Y4ZTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_10ee3142c3d44bd2839e191018c45e7b",
+      "statement": "Remote dcode Store writes propagate failures so approval-mode callers can fail closed rather than retaining an auto-approval state that could not be persisted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L756-L790",
+          "version": "repo-lines-v1:sha256:ede3e382d1e6cf0977f0349316c587b18a014931a39d511b613b565363cb2ae8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmZTkyZjdjOWZiOTFhNjI3OGM4MjAzZWEwYjYyMTU1N2Q3MjA5NTY5OGRmMGNjNWJlNmQwNjEyYzZjZjQ5NTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWM1MjQ0MzRjMDA5YWFmMGQ3ZmU5ZTJmZmU3MjJiMTcwY2Y4ZWIxYzhjMTU3NWU0ZTNiZDUxZTkyNmM3MWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiOGFlNzU3ZWJiODYzMzZkMTZhN2RkMjA1NDgwOGZiNmQ3ZDA5ZDY1ODNjNzdkZWJiNDkwMWE4MzMyNTMxMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhZjQ2ZjQ4YjgzZTJiYjg2YTQxYjgzYTY5ODIyMzE4NmJkNzAwOTA1MTE5OWNiNjQxMDEwOWRkODVhMjg3OWQifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-08T08:05:55.853Z"
+    "at": "2026-09-18T08:05:29.735Z"
   }
 }

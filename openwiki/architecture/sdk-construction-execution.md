@@ -1,11 +1,8 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: Trace how create_deep_agent resolves its dependencies and policies into a LangChain-compiled LangGraph agent, then how state, streaming, tool calls, checkpoints, and interrupts behave at runtime.
+description: Trace how create_deep_agent resolves models, profiles, storage, and policies into a LangChain-compiled LangGraph agent, then how its tool loop, state, streaming, and interrupts operate.
 tags: [deepagents, create_deep_agent, langchain, langgraph, middleware, subagents, streaming, state]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -31,7 +28,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T08:05:29.735Z
 ---
 
 # SDK Construction and Execution
@@ -59,7 +59,7 @@ sequenceDiagram
     Builder->>LC: model prompt tools middleware and runtime options
     LC-->>Graph: compiled agent
     Builder-->>App: graph with config
-    App->>Graph: invoke or stream_events
+    App->>Graph: invoke or stream events
     loop Until model has no tool calls
         Graph->>Model: messages prompt and current tools
         Model-->>Graph: response or tool calls
@@ -97,7 +97,7 @@ The constructor partitions supplied subagents by shape:
 - A spec with `runnable` is a `CompiledSubAgent`, retained as its caller-compiled runnable for the synchronous `task` path.
 - Other specifications are declarative `SubAgent`s. They receive a resolved model, profile, prompt, middleware, permissions, interrupt policy, and tools. Absent tools, permissions, and `interrupt_on` inherit the parent values; supplied permissions replace the parent list.
 
-Unless the active harness profile disables it or an inline subagent is already named `general-purpose`, a default synchronous general-purpose subagent is inserted first. Inline subagents install `SubAgentMiddleware` and expose `task`; async subagents are independent. The default subagent can have profile-specific description and prompt overrides.
+Unless the active harness profile disables it or an inline subagent is already named `general-purpose`, a default synchronous general-purpose subagent is inserted first. Inline subagents install `SubAgentMiddleware` and expose `task`; async subagents are independent. The default subagent can have profile-specific description and prompt overrides. If the default is disabled and no synchronous subagent is provided, the main graph does not expose `task`.
 
 A declarative `mode="fork"` subagent is experimental. It continues with parent conversation/state, mirrors parent prompt-producing middleware, and appends its prompt to the inherited prompt. Forks may not define their own skills and recursive `task` delegation is refused. By contrast, compiled and remote subagents retain the schema and approval behavior of their own graphs.
 
@@ -107,15 +107,17 @@ The main core stack is ordered as optional `SkillsMiddleware`, `FilesystemMiddle
 
 `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a harness profile cannot exclude either. Exclusion validation is deliberately construction-time: unmatched exclusions and an ambiguous string name raise `ValueError`, instead of silently compiling a degraded agent.
 
-Filesystem permission rules are evaluated by the filesystem middleware. Permission-derived interrupt configuration merges with `interrupt_on`, with a caller entry winning for a duplicate tool name. A nonempty result installs `HumanInTheLoopMiddleware`; at runtime its approval request becomes a graph interruption. A checkpointer is needed when approval must survive/resume across execution.
+Filesystem permission rules are evaluated by the filesystem middleware. Permission-derived interrupt configuration merges with `interrupt_on`, with a caller entry winning for a duplicate tool name. A nonempty result installs `HumanInTheLoopMiddleware`; at runtime its approval request becomes a graph interruption. A checkpointer is needed when approval must survive and resume across execution.
 
-## Compilation, state, checkpoints, and interrupts
+## Compilation, tools, and state
 
 The final `create_agent()` call receives the resolved model, prompt, rewritten caller tools, assembled middleware, response format, context schema, checkpointer, store, debug setting, name, cache, and state schema. These runtime services are passed through to LangChain. The returned graph has `recursion_limit` `9999` and LangSmith metadata for the Deep Agents integration, version, and agent name.
 
+`tools=` is additive to the built-in filesystem operations, `execute`, and—when synchronous subagents exist—`task`. A backend that does not implement `SandboxBackendProtocol` still has an `execute` tool, but it returns an error. Profile `excluded_tools` stops a tool being offered in the model request; to remove a built-in filesystem tool entirely, replace `FilesystemMiddleware` with an instance configured with the desired tool set.
+
 Without a custom schema, the graph uses `DeepAgentState`, which extends `AgentState` and places `messages` on a `DeltaChannel` with snapshot frequency 50. This changes message-checkpoint growth from quadratic to linear. Its reducer accepts raw message-like input, deduplicates/replaces messages by stable ID, honors removal tombstones and `REMOVE_ALL_MESSAGES`, and treats a missing replay base as empty. Stable message IDs are assigned by LangGraph before checkpoint serialization, rather than randomly by the reducer, so replay and resumed threads retain identity.
 
-A custom `state_schema` is passed as the main graph schema and to `SubAgentMiddleware`, allowing declarative subagents to use shared fields. The constructor derives private field names from this schema and middleware schemas to isolate delegated state. The schema relationship to `DeepAgentState` is typing-only because `TypedDict` inheritance cannot be runtime-checked; callers should preserve the message reducer when extending it.
+A custom `state_schema` is passed as the main graph schema and to `SubAgentMiddleware`, allowing declarative subagents to use shared fields. The constructor derives private field names from this schema and middleware schemas to isolate delegated state. The schema relationship to `DeepAgentState` is typing-only because `TypedDict` inheritance cannot be runtime-checked; callers should preserve the message reducer when extending it. `context_schema` describes immutable run-scoped context, while `checkpointer` and `store` are passed through for state persistence and storage integration.
 
 ## Runtime, streaming, and extension choices
 
@@ -125,12 +127,13 @@ The compiled graph exposes upstream streaming. Tests use `stream_events(..., ver
 
 ## Focused verification
 
-`test_graph.py` covers assembly: profiles, prompt ordering, immutable tool rewrites, middleware ordering/exclusion, default and custom subagents, permission interrupt wiring, custom state propagation, and metadata. `test_messages_reducer.py` checks message IDs and replay behavior with an `InMemorySaver`. `test_deep_agent_streaming.py` runs scripted parent, regular subagent, fork, and failing-subagent cases through synchronous and asynchronous v3 stream projections. The integration suite additionally verifies normal delegation and structured output through a constructed graph.
+`test_graph.py` covers assembly: profiles, prompt ordering, immutable tool rewrites, middleware ordering/exclusion, default and custom subagents, permission interrupt wiring, custom state propagation, and metadata. `test_messages_reducer.py` checks message IDs and replay behavior with an `InMemorySaver`. `test_deep_agent_streaming.py` runs scripted parent, regular subagent, fork, and failing-subagent cases through synchronous and asynchronous v3 stream projections. The integration suite additionally exercises constructed agents across built-in tools, delegated work, persistence, and structured output.
 
 ## Related pages
 
+- [Architecture overview](overview.md) — system boundaries and component map.
 - [Middleware stack](middleware-stack.md) — hook responsibilities and ordering.
 - [Backends](../concepts/backends.md) — storage and execution implementations.
+- [Profiles and models](../concepts/profiles-models.md) — provider and harness policies.
 - [State persistence](../concepts/state-persistence.md) — checkpointer and resume concepts.
-- [Filesystem tools](../concepts/tools-filesystem.md) — filesystem capabilities and policy.
 - [Build a Deep Agent](../workflows/build-a-deep-agent.md) — application-level construction workflow.

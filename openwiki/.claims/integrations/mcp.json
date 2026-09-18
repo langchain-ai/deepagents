@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:65f4cf51bd392fbff3520bbeb7a094778c6783486901b83de21be002cd751bd7",
+  "pageVersion": "sha256:3bc9c381919660bc6267283577afa554f514703fa01dae9fe7afb21bc3b850f8",
   "claims": [
     {
       "id": "claim_d5aa81de837946b19d18c6953cbc5d84",
@@ -8,11 +8,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_auth.py",
-          "version": "repo-file-v1:sha256:666a7951022945a61f4af7e6d2d6896d2f89660353baa38f8a93c82592373849"
+          "version": "repo-file-v1:sha256:b079639cdd1b7bca8fd369296a4c89a6827783ac82a70d261efbfe60b98c939e"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py",
-          "version": "repo-file-v1:sha256:e56422fa24aef2bf9ad61f156b749dfa451e6ef38f80176c236633a315a418d7"
+          "version": "repo-file-v1:sha256:0d101f93b0e632c70cbaac5195b0d45422dce9a3ec48d7a316fe5ee37203b2e0"
         }
       ]
     },
@@ -22,7 +22,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -56,7 +56,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -70,7 +70,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -80,7 +80,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/plugins/adapters/mcp.py",
@@ -90,11 +90,11 @@
     },
     {
       "id": "claim_e25a71412d574c5dbad59b230bf70b6e",
-      "statement": "dcode performs bounded-concurrency preflight and throwaway-session discovery, isolates setup, discovery, and conversion failures per server, preserves status order, and sorts returned tools by name.",
+      "statement": "dcode performs bounded-concurrency preflight, mounts healthy transports behind a shared router for tool discovery, isolates setup, mount, and conversion failures per server, preserves status order, and sorts returned tools by name.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -104,11 +104,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/auto_mode.py",
-          "version": "repo-file-v1:sha256:b3820bdba2ab9519abfe8220708d5a13a5efcc7768dae0861042c613cddd5e4d"
+          "version": "repo-file-v1:sha256:aa5505d2df5dad53c911baa19cd7c6dbe675213814cdc60accd290bb807d05cb"
         },
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
@@ -118,17 +118,17 @@
     },
     {
       "id": "claim_578c261ed0ff435198bec4450121d211",
-      "statement": "`MCPSessionManager` creates one lazy persistent session per server for runtime calls, rejects incompatible reconfiguration after sessions exist, and cleanup closes entries concurrently with a five-second per-server bound before rejecting further creation.",
+      "statement": "`MCPSessionManager` owns a router client and the exit stacks that hold mounted backend connections; it can adopt multiple loads without closing earlier ones, and cleanup rejects later adoption while closing each router and backend with a five-second bound.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
     {
       "id": "claim_be8cffeeaeec4ff09de8c6bcb6aa2a8e",
-      "statement": "dcode's server graph supplies a process-wide session manager for stateless discovery, server launch cleans it up on shutdown, and metadata/catalog callers clean up their temporary manager in `finally`.",
+      "statement": "dcode's server graph supplies a process-wide session manager so stateless discovery can close its initial load while runtime calls create server-local loads through that manager; catalog metadata callers clean up their returned manager in `finally`, and client launch cleanup closes a returned manager.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
@@ -150,11 +150,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -164,15 +164,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py",
@@ -190,11 +190,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -204,11 +204,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_mcp_config.py",
-          "version": "repo-file-v1:sha256:96f1d0d8ece96fba82491ae16c4b77ffd08e1adb4388efcdf3da20ec0dbaf3c3"
+          "version": "repo-file-v1:sha256:cd2e39b982d43391e4ea321148740203cf408055608ddc01b70d7cdc33adbd10"
         }
       ]
     },
@@ -218,11 +218,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -242,7 +242,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         }
       ]
     },
@@ -252,13 +252,65 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
+        }
+      ]
+    },
+    {
+      "id": "claim_11a3073e2a974930a60bfbead938d4a0",
+      "statement": "Both dcode and Talon interpolate `${VAR}` and `${VAR:-default}` only in supported MCP connection fields without mutating the raw definition; missing required variables, malformed references, and wrong field types fail rather than silently changing commands, URLs, or headers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_config.py",
+          "version": "repo-file-v1:sha256:e5c64aae51ebf0a35ac902894ab7685e21901c08fbb0af1ffa33abac032a1df8"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp.py",
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4db03f526ea4bdba790246ee876e15e",
+      "statement": "For dcode remote servers, an explicit OAuth configuration without stored tokens is reported as unauthenticated before discovery; a 401 Bearer protected-resource challenge is also classified as unauthenticated, while a static Authorization header overrides stored OAuth tokens.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_auth.py",
+          "version": "repo-file-v1:sha256:b079639cdd1b7bca8fd369296a4c89a6827783ac82a70d261efbfe60b98c939e"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
+        }
+      ]
+    },
+    {
+      "id": "claim_c8c35a36a7be41e694dd13dd48e6db93",
+      "statement": "Talon rejects dangerous stdio environment variables, including `LD_PRELOAD`, `PYTHONPATH`, and `BASH_ENV`, before constructing a stdio connection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp.py",
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
+        }
+      ]
+    },
+    {
+      "id": "claim_2ca93b22f4774ce5a3dc5f3074a467c9",
+      "statement": "Talon converts an MCP JSON-RPC protocol error into an error tool result containing only the server error code and message, so the model can correct a rejected call without receiving the server-controlled error data payload.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp.py",
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_mcp.py",
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-18T08:05:29.735Z"
   }
 }

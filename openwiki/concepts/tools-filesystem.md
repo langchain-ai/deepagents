@@ -1,11 +1,8 @@
 ---
 type: concept
-title: Tool Surface, Filesystem, and Execution
-description: How Deep Agents and dcode compose the model-visible tool surface, route filesystem requests through backends, and separate capability checks from permissions and human approval.
+title: Filesystem and Tool Surface
+description: How Deep Agents and dcode compose model-visible tools, route filesystem operations through backend contracts, and separate capabilities from per-call permissions and approval.
 tags: [tools, filesystem, execution, middleware, backends, permissions, mcp]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-44654f7b6bdd46e6f9dd122c
     resource: repo://libs/code/deepagents_code/_constants.py
@@ -21,6 +18,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-d4463137befa776cd47750d4
+    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
@@ -31,10 +30,13 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-739ca0771331dc9b5a7d7fbc
     resource: repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T08:05:29.735Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T08:05:29.735Z
 ---
 
-# Tool Surface, Filesystem, and Execution
+# Filesystem and Tool Surface
 
 A tool's presence is not one authorization decision. The system deliberately separates **assembly and visibility** (schemas bound for the model), **backend capability** (operations the resolved backend can perform), and **permission or approval** (whether a particular call may proceed). A visible tool can therefore still return a capability or permission error, or pause for review.
 
@@ -84,6 +86,8 @@ The fixed filesystem vocabulary is `ls`, `read_file`, `write_file`, `edit_file`,
 
 Backends return structured results rather than preformatted text. `ReadResult` validates pagination at construction: window fields must occur together, bounds must be forward and within `total_lines`, and `next_offset` must be the line immediately after the returned window. Middleware, not the backend, adds line-number gutters and continuation rows for very long lines. `GrepResult` and `GlobResult` can carry valid but incomplete matches with `truncated=True`; callers must not interpret truncation as a hard failure or proof that no additional matches exist.
 
+`BaseSandbox` is an extension boundary for execution-capable backends: subclasses supply `execute`, file upload/download, and an identifier, while the base class derives listing, reading, searching, writing, and editing from those primitives. This is an implementation convenience, not isolation: its file helpers execute commands using the backend's own shell capability and do not narrow that trust boundary.
+
 ### Allowlist, capabilities, and request lifecycle
 
 `FilesystemMiddleware(tools=...)` is a visibility allowlist, not a permission policy. `None` and `"all"` opt into all names; a list constructs only listed factories, so omitted tools never reach the dispatchable node. An explicit list must include `read_file`, otherwise construction raises `ValueError`.
@@ -92,7 +96,7 @@ Before both sync and async model calls, the middleware filters tools that the re
 
 `grep` is literal substring search, not regex. Its default total match cap is `grep_max_count=1000`; a call can override it with `max_count`, and `None` disables the default. The asynchronous protocol wrapper applies a wait timeout and enforces the requested cap even if an older concrete backend does not accept `max_count`. For actual regex, the `grep` description recommends `rg` through `execute` only if execution is available.
 
-Large results from tools outside the filesystem set can be evicted beneath the backend artifacts root so the model sees a preview and file reference. `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, and `delete` are excluded because they truncate themselves, have awkward reread behavior, or provide compact confirmations. Large human messages follow a related lifecycle: the full message remains in state while the request receives a tagged preview and filesystem reference.
+Large results from tools outside the filesystem set can be evicted beneath the backend artifacts root so the model sees a preview and file reference. `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, and `delete` are excluded because they truncate themselves, have awkward reread behavior, or provide compact confirmations. A `BaseSandbox` subclass can opt into capture-at-source offload for `execute`: large combined command output stays in a sandbox file and only a head/tail preview returns, avoiding a round trip through the agent process. The feature defaults off because its wrapper assumes shell and coreutils support; without it, normal inline execution and generic eviction apply. Large human messages follow a related lifecycle: the full message remains in state while the request receives a tagged preview and filesystem reference.
 
 ## Shell execution and path routing
 

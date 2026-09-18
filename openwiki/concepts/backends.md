@@ -5,7 +5,7 @@ description: Backends determine where agent files live, how long they persist, a
 tags: [backends, storage, filesystem, state, persistence, sandbox, routing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T08:05:29.735Z
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py

@@ -25188,7 +25188,7 @@ class DeepAgentsApp(App):
             started_at = self._first_invocation_at
             if started_at is None:
                 return "not started"
-            return format_duration(max(0.0, time.monotonic() - started_at))
+            return format_duration(int(max(0.0, time.monotonic() - started_at)))
 
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks

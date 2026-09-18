@@ -2195,6 +2195,10 @@ class ChatInput(Vertical):
         width: 100%;
     }
 
+    ChatInput.prompt-search-active .input-row {
+        display: none;
+    }
+
     ChatInput .input-prompt {
         width: 3;
         height: 1;
@@ -3768,6 +3772,7 @@ class ChatInput(Vertical):
             # flow's keyboard assumptions, so the modal serves this case.
             return "modal"
 
+        self.add_class("prompt-search-active")
         self._prompt_search_draft = self._text_area.text
         self._prompt_search_cursor = self._text_area.cursor_location
         # Both tiers go through the public accessor so they always show the
@@ -3812,6 +3817,7 @@ class ChatInput(Vertical):
             refocus: Whether to return focus to the composer. Escalating to the
                 modal skips this so the modal's own filter input takes focus.
         """
+        self.remove_class("prompt-search-active")
         draft = self._prompt_search_draft
         cursor = self._prompt_search_cursor
         self._prompt_search_draft = None
@@ -3985,6 +3991,9 @@ class ChatInput(Vertical):
         if not self._prompt_search_active:
             return
         if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if event.value != event.input.value:
             return
         self.post_message(self.Typing())
         self._prompt_search_query = event.value

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bc6ab2240b66e9692828f1377b063bc76fb87808a1d0d0e82857b69095b79aeb",
+  "pageVersion": "sha256:492c8e792ab4fbc40e4e305f96143ad64935d16abb576e65ba54e8483fe05030",
   "claims": [
     {
       "id": "claim_842d191498324c558672b6f9d9aa40a4",
@@ -219,10 +219,42 @@
           "version": "repo-lines-v1:sha256:568198099ae09274a6fb729493aa439a40e79dde5b44ff7ed70bbe4005ba3e1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiM2Q0YjY1NzVlMDE4MDBmODAyYWZiZjAwNWE0ZDQxNTdkNDk1NDU2YjViNWZhZDUwMzNiYjgwYmQxZDhjOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjYTFmNzIzMGU3NDhhMjE2M2RjOGM2ODhjZDgzOTk3NjgwOWE5ZmUwZDZhNjhkYjcxZWU4ZTM0ZTVhYzVhMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzNDA4ZTkwMzA3M2E3MDU4MWE0NWMyODAzNmFhYzllZmI2ZDQ5Yzk5YTc4NzM0OTE5YmVhMjNlZDFlYjY1MjAifQ"
         }
       ]
+    },
+    {
+      "id": "claim_f06a3e553cc2470b8b364dfbeb87217b",
+      "statement": "The OpenWiki workflow runs generation before minting its dedicated App token, restores its own workflow file, and stages only `openwiki` and `AGENTS.md`; an empty staged diff closes only a matching repository-owned update pull request, while changes are committed and force-pushed to the update branch before a pull request is created or reused.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L170",
+          "version": "repo-lines-v1:sha256:ecb80ec874e07050a7ef639834dca28aa59370187e21eaebd5ec9ee8d82dc951:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmNWU1MGFiMWIzNzk0MmM4MTBkOGFiODQxNTU1ZDkwMjA1ZTNhMzE0ZTM5ZTI2NTY0YzVhMzg3YjI5NTRkYmEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L30-L53",
+          "version": "repo-lines-v1:sha256:c335710a1b9f9df9b7940528da16a62eb62f92253a6216a63ebd5a6c3b70cd1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZThmOWZhNDBlN2JkMDQ5OWQxYzBkODNmZDc1OGFhODViMzA4NDJkYmQ2MWYwZWE2YjdhZTEwZWZlYzc2ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZmRhZDQ5MWRmYzkzYjNlOWE2MjI1OGMzYjg1MjA2YWExMTg3M2RkZWEwYWI0NGZlZTBjNTEyNDAwYzZhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NTJiYTFhNjFkZThhNTlhZjA2OTY2MDIzNDQ4YTM3NTdiYTExODE2YWExMmNlYzhiYmUyNDVlZmRlMDc2YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhM2VhZmJlNWM4Y2RmZTRmNWMyZDM5ZGUxMjRiZjlkNmQ3OWQwZTFlYThhM2RjNmNiYmFlNDUwMGRiZGViZGQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L63-L113",
+          "version": "repo-lines-v1:sha256:171ea7d504f5c34ea7693a0af9ce69f27ea14fa21377d5b11eb4e46b479e7cf3:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkN2IwOTcxYWFiZjE3YjExOWJiOTczZTBiYmFiZTM4NDQ5N2EzYTJlMGRiOTU0MTAwNTBlNzRkZDE2NzNiN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MDRiMzFhNTI5YzM0ZmRhOTBjZGE1Mjk0YTk4MDRlZWJjOWU3MTM1MzcyY2U0NWE1MzRkMmJlOTI5MWUzZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwZDNkZjFlMzMwN2RlNDhhZjQ2MGE3ZDEzOTQ2YWNjMGFiNjdmYWMwNDZmYjFmYzY4ZmJlMGZiNGFlODAzNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ODAwNTNjZDE3ZjU2MDljMGFhMmIyMDQwMmFkOGNkYWY0MDBlODE2MTU2ZmNiY2UxNTFmNTFlNDcwOTc2OWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f5a63e4b16640188de5cc9bfb50d470",
+      "statement": "Before every OpenWiki merge attempt, the workflow verifies the expected base, repository-owned head, and recorded head SHA as well as open and non-conflicted state, then requests a SHA-pinned squash merge and requires `merged == true`; it retries only HTTP 405 responses up to 60 times with 15-second waits and treats other failures as terminal.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L145-L250",
+          "version": "repo-lines-v1:sha256:d92d8fc33a64ab47490ec6eb9b961d8b16daa4db6a260d6f78461f9a107044bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzODg1ODU0MjgzNzVjZjU0MTA0NWI0OWRiMDc0ZjVjZjM1NDkwZTg3ZTJhNmM2NTVkMjkwZGJkZGJiNmMzMWZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzljOWI4NzQ1OWVkNTEzZDRjNzAzZjMyOWFmMjEyMWZhZjJiYjFmMDE0NzgwNzg2MzkwZmRjMGIzM2IxNWQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MGQ4ZWQwNjcyNWQ0MjA1NWQ5Nzg3Zjk5MjgwZjE5MWQ2ZmZmMThlNGYyNmUzZjM3ZWE1MDhhMjE5NzAzNTI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L115-L162",
+          "version": "repo-lines-v1:sha256:419b3331e41633de16d79b04a3b4ba0015f916057b9cdb0313da220e3b100881:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-18T18:59:02.504Z"
   }
 }

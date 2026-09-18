@@ -1,12 +1,16 @@
 ---
 type: security operations guide
 title: Security Boundaries and Secrets
-description: Operating guidance for agent authority, filesystem and execution boundaries, MCP configuration and credentials, Talon approvals, and GitHub Actions credentials. It distinguishes mediated controls from containment and documents the repository's scoped CI credential model.
+description: Operating guidance for agent authority, filesystem and execution boundaries, MCP credentials, Talon approvals, and GitHub Actions secrets. It distinguishes mediated controls from containment and explains the restricted OpenWiki publication path.
 tags: [security, operations, trust-boundaries, secrets, approvals, mcp, github-actions]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-09-18T18:59:02.504Z
 sources:
+  - id: openwiki-source-f4eea0fab8d793f88bb9f835
+    resource: repo://.github/scripts/tests/workflows/test_openwiki_workflow.py
+  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
+    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
   - id: openwiki-source-8d4ac162fca0a57f00bb83b7
     resource: repo://.github/SECRETS.md
   - id: openwiki-source-fa750a379507f8fc66395df2
@@ -37,7 +41,7 @@ sources:
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T18:59:02.504Z" }
 ---
 
 # Security Boundaries and Secrets
@@ -50,8 +54,8 @@ Deep Agents follows a **trust the LLM** model: an agent can perform whatever its
 flowchart TD
     Input["User input or tool result"] --> Model["Model selects a tool call"]
     Model --> Gate{"Approval or policy"}
-    Gate -->|deny| Stop["Do not dispatch"]
-    Gate -->|allow| Tool["Exposed tool"]
+    Gate -->|"Deny"| Stop["Do not dispatch"]
+    Gate -->|"Allow"| Tool["Exposed tool"]
     Tool --> Backend["Selected backend"]
     Backend --> Host["Host process"]
     Backend --> Sandbox["Sandbox or remote environment"]
@@ -103,11 +107,36 @@ Talon MCP OAuth storage holds cleartext bearer and refresh tokens. It hardens st
 
 ## GitHub Actions and CI credentials
 
-`.github/SECRETS.md` is an inventory of intended non-`GITHUB_TOKEN` CI credential scopes and explicitly warns not to record credential values or identifiers. It distinguishes target GitHub configuration from what workflow YAML proves: environment selection does not establish that environment protection, branch policy, or secrets have actually been configured. Verify external GitHub and provider settings separately.
+`.github/SECRETS.md` is an inventory of intended non-`GITHUB_TOKEN` CI credential scopes and explicitly warns not to record credential values or identifiers. It distinguishes target GitHub configuration from what workflow YAML proves: selecting an environment does not establish that environment protection, branch policy, secrets, or App installation permissions have actually been configured. Verify external GitHub and provider settings separately.
 
-Use GitHub environments and step-level injection to minimize credential reach. For example, the labeling workflow selects the `labeling` environment but injects its provider credential only into the topic-classification step; the ordinary CI workflow defaults `GITHUB_TOKEN` to read-only checks, contents, and pull-request permissions. Reusable eval jobs declare optional provider secrets, run in the `evals` environment, and retain read-only repository contents permission.
+Use GitHub environments and step-level injection to minimize credential reach. For example, the labeling workflow selects the `labeling` environment but injects its provider credential only into the topic-classification step; the ordinary CI workflow defaults `GITHUB_TOKEN` to read-only checks, contents, and pull-request permissions. Reusable eval jobs declare optional provider credentials, run in the `evals` environment, and retain read-only repository contents permission.
 
-The OpenWiki update workflow defaults `GITHUB_TOKEN` to `contents: read`, checks out without persisted credentials, and mints a separate repository-scoped GitHub App token for the update/PR steps with explicit contents and pull-request write permissions. That separation is meaningful only for that App-token path: workflow-level `permissions` restrict `GITHUB_TOKEN`, not a separately minted App installation token. Keep App installations and provider keys least-privileged, scoped to the narrowest environment, and rotate/revoke them after suspected exposure.
+### OpenWiki automation: containment and mediation
+
+The scheduled or manually dispatched OpenWiki refresh is documented operationally in the [OpenWiki Update Automation Runbook](openwiki-automation.md). Its security-relevant lifecycle is: read-only checkout without persisted credentials, generation, delayed minting of the dedicated GitHub App installation token, then restricted publication through a pull request. The workflow-level `permissions` grants `GITHUB_TOKEN` only `contents: read`; checkout does not persist that token. The separately minted App token is scoped to the current repository and requests only contents and pull-request write permissions. It is supplied as `GH_TOKEN` only to the create-PR and merge steps, not to checkout or generation.
+
+```mermaid
+flowchart TD
+    Start["Scheduled or manual trigger"] --> Checkout["Read-only checkout without persisted credentials"]
+    Checkout --> Generate["Generate OpenWiki update"]
+    Generate --> Token["Mint dedicated App token"]
+    Token --> Stage["Restore workflow and stage allowed paths"]
+    Stage --> Changed{"Staged changes exist"}
+    Changed -->|"No"| Close["Close matching obsolete update PR"]
+    Changed -->|"Yes"| Publish["Force-push update branch and create or reuse PR"]
+    Publish --> Validate["Validate PR identity and recorded SHA"]
+    Validate --> Merge["Squash merge at recorded SHA"]
+```
+
+The diagram shows the trust handoff: generation is separated from repository mutation, and mutation is restricted to a dedicated App-token path.
+
+Before staging, the workflow restores its own YAML and then stages only `openwiki` and `AGENTS.md`. An empty staged diff closes only a matching open PR whose head is in the current repository; otherwise, a commit is pushed to `openwiki/update`, and the workflow creates or reuses a PR targeting `main`. The allowed staging set is a **containment** control over what this automation can publish.
+
+The merge step is a separate **mediation** control for the force-pushed branch. On every attempt it refetches the PR and rejects a changed base, head label, head repository, head SHA, closed state, or reported conflict. It asks GitHub for a squash merge pinned to the recorded commit SHA and requires `merged == true` in the response. Only HTTP `405` is retried, with a 15-second delay and a maximum of 60 attempts; each retry repeats the identity and SHA checks. Other failures are terminal and require triage rather than a broader retry or an unpinned merge.
+
+Do not treat the workflow-level `permissions` as a cap on the separately minted GitHub App installation token. They constrain `GITHUB_TOKEN`; the App token is governed by its token request and the App's external installation configuration. Conversely, requesting narrow token permissions in YAML is evidence of the intended token flow, not proof of the App installation's configured permissions, environment protections, branch rules, or secret presence.
+
+When changing this workflow, preserve the ordering boundary—generation before token minting—and review the staging allowlist, PR ownership checks, and SHA-pinned merge as authority controls. The focused contracts are `.github/scripts/tests/workflows/test_workflow_secret_scoping.py`, which statically checks secret/token scoping and order, and `.github/scripts/tests/workflows/test_openwiki_workflow.py`, which executes the merge shell with stubs to cover validation, retries, terminal failures, and success confirmation. Follow the automation runbook for entrypoints, failure triage, and recovery; use [Development, CI, and Releases](development.md) and the [Testing Strategy and Local Test Guide](../testing/testing-guide.md) for broader contributor validation.
 
 ## Operational checklist
 
@@ -116,7 +145,8 @@ The OpenWiki update workflow defaults `GITHUB_TOKEN` to `contents: read`, checks
 3. Keep dcode's local service away from untrusted local peers, and do not place secrets in project files, prompts, or tool output.
 4. For Talon, prefer `self` or a restrictive allowlist; do not equate MCP redaction, a workspace-placement warning, or approval prompts with sandboxing.
 5. Review the persisted and active Talon approval revisions before changes. Treat conflicts as a reason to reread and review, not to overwrite policy.
-6. Store CI credentials in their narrowest GitHub environment, inject them only into consuming steps, and audit broader repository/organization fallback scopes before deletion or rotation.
-7. On suspected compromise, stop the affected runtime; revoke and rotate relevant provider, MCP, channel, and CI credentials; review approval/configuration changes and persisted state; then redeploy only after containment and approval paths are retested.
+6. For CI, keep credentials in their narrowest environment and inject each only into its consuming step. Audit broader repository/organization fallback scopes before deletion or rotation.
+7. For OpenWiki changes, run the focused workflow contracts and do not relax delayed token minting, the publication allowlist, PR identity checks, SHA pinning, or the bounded retry rule.
+8. On suspected compromise, stop the affected runtime; revoke and rotate relevant provider, MCP, channel, and CI credentials; review approval/configuration changes and persisted state; then redeploy only after containment and approval paths are retested.
 
-Focused coverage includes `libs/talon/tests/unit_tests/test_mcp_config.py`, `libs/talon/tests/unit_tests/test_tool_approvals.py`, `libs/talon/tests/unit_tests/test_tool_approval_authorization.py`, and dcode workspace tests.
+Focused coverage also includes `libs/talon/tests/unit_tests/test_mcp_config.py`, `libs/talon/tests/unit_tests/test_tool_approvals.py`, `libs/talon/tests/unit_tests/test_tool_approval_authorization.py`, and dcode workspace tests.

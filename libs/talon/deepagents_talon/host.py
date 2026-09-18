@@ -37,6 +37,7 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,

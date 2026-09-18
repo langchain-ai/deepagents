@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cca9bd3acb617ac4ef20a2c54ef9ce636c7ba8340b675b3a3ef740ee827d0f87",
+  "pageVersion": "sha256:186b1ee093de7809e578ab3413221a5ec0ba5c1ae256dcbc6d00fff4940afe07",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -8,17 +8,21 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
-          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+          "version": "repo-file-v1:sha256:14c50a50b3561d34caf35578ff0736e4b1cfcd3e01a98b7f0be429bc40b19939"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py",
+          "version": "repo-file-v1:sha256:08ec6d6970e4acb6021d0eacbef29b37bb1e9c1964df23c6b432911c02638853"
         }
       ]
     },
     {
       "id": "claim_ddf8f81e6a8a4810bb8409af9600c050",
-      "statement": "SummarizationMiddleware.wrap_model_call compacts history by truncating over-long tool args, checking `_should_summarize` against the configured trigger, and when triggered partitioning messages at `_determine_cutoff_index`, offloading pre-summary history, generating an LLM summary, and returning a summary message plus the preserved tail with a Command state update.",
+      "statement": "SummarizationMiddleware.wrap_model_call reconstructs effective messages, optionally truncates old tool arguments, evaluates its configured trigger or input budget, and for a positive cutoff partitions history, offloads old messages, creates an LLM summary, and returns a summary event plus preserved tail in a Command state update.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1472-L1608",
+          "version": "repo-lines-v1:sha256:86be9c42cff3c9bed97931f0c002697f20733c347bc265660766bf60082e89fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MjcxYTBhMTMzOGI2ZTg2Y2RhYjY1YzY5Yjg1NDc4MTcyMTViZGIwNDNjMTA2N2RjNDE1ODJlMDIxNWVlZmU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYWFiN2QzZmJmN2I3ZDY5YTFlMWY5OTYwMWNkYjcyZGIxYjNmN2E0NGEyYzIwNzI5Yzc5YmVhMWY4NjVmOTlmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMjM3NTY4ZjM3MWM2NjRmYTczOWZlNmRmMzcwMmU3NjI1M2UwNzQzMjhkMDI1NmE0YWFkM2RlZDk5ZDdmOGE0In0"
         }
       ]
     },
@@ -28,21 +32,21 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "version": "repo-file-v1:sha256:54d93bd17a417180174c1810aca9720efefaf68a8b43fbd607ea5eb8ef081882"
         }
       ]
     },
     {
       "id": "claim_eb4c583b960b4d75b8f073c146b5bfca",
-      "statement": "After a ContextOverflowError-triggered summarization, `_clip_overflow_tail` shrinks the trailing consecutive ToolMessage batch when its combined token count reaches a threshold derived from `keep` (the keep token budget, or 5000 tokens when keep is message-based).",
+      "statement": "After a recognized provider context overflow or an over-budget request, the SDK budget-retry path calls `_clip_overflow_tail` with `keep=(\"tokens\", 1)`; the helper clips only a trailing consecutive ToolMessage batch that reaches its supplied keep-derived threshold.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py",
-          "version": "repo-file-v1:sha256:f02938ea6c7b738d2a92363e5e6c27494bae894fb65fa22c3c9a6008e2b76cc8"
+          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py#L131-L173",
+          "version": "repo-lines-v1:sha256:281a7d3b5b7a7bc91cf67636d638d501b9e208a42a35be8779fa81d06a42d24e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzYTdjZmQwMTZhY2Y1MmEyMjAxMTE1MjZlODdjNzZiYjFjZGY2N2Y4ODU2ODkwODI5YzI1MmM1MzBiN2U2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExYzZlZDk2ODM1NDQ3OGI1ZDVkOTgzNjdmY2FjMDY2YjkzZTYzNDVkZjAzMDBjYWI3MWU4OWJlODU2NDIzNDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMDFlYjhhNmQ5ZDQyYjQ2MDc5NGI0OWM4YjVhZTBkNmQ3OWZjMjk4OWUxNmE0ZTRmM2JiYzRmOTI4OWIwNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmNmFjNzU5OTc1NmRhYTVkMGMxNzNkYzEyNWVmNjE3ZWQxNzAzMzA2ZWIyNGM1MzQwYWJmMjRkNDI5MWVhMDkifQ"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1410-L1439",
+          "version": "repo-lines-v1:sha256:413b702a93421efe58b70d987a90baac49458fa949565632c4c9fe85e9e36aa2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmNGMxNDMyYzk4YjRiZGFkYWU1ODQzMDZhNmQyZWQxZDdkODQ0ZTY5MjA3Y2UxODM5MzNmOWFiMGJhNmIxMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0YmIyZjA3MzA3YmMxMDlmMDNlOTdkZDNiMjcxMzcwY2MwMjkxMDFhMjcwMmQxMGQ5ODM0Y2YxODU0MjdhMzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjMDIzMGYzYjczYzBmNmY4Yjc4MTNhZmEwMTBkOTdhYzlkNzZmZjkxOTllZWE2NzRkZmYwNzc2ZTFkODE1MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwMmEwMTkxOGU4NjkwM2Q5NDdkYWQ4NWE0NGFmNzllZTcwODVhZjQ0N2ZmNzJkOTU0ZWJkMDFkODY5N2FlN2QifQ"
         }
       ]
     },
@@ -52,7 +56,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -90,7 +94,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -100,17 +104,21 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
-          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+          "version": "repo-file-v1:sha256:14c50a50b3561d34caf35578ff0736e4b1cfcd3e01a98b7f0be429bc40b19939"
         }
       ]
     },
     {
       "id": "claim_50a87ab4a8de4887ad16aa05726da200",
-      "statement": "If automatic summarization is not indicated, SummarizationMiddleware tries the normal model call; a ContextOverflowError switches to its summarization path, and archive failure warns while compaction continues with `file_path=None`.",
+      "statement": "If automatic summarization is not indicated, SummarizationMiddleware tries the normal model call; a recognized provider context-limit error switches to its summarization path, and archive failure warns while compaction continues with `file_path=None`.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1524-L1559",
+          "version": "repo-lines-v1:sha256:cd3ca17884c014a09c6e243c937080fb267c4da78370f83abd793e486b4e124d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NjNjYmYyMzVmOWM5NGRmZTFlOTZlM2M0M2MwMmUzYWE3MjIxMWM4ZGJmOTE1NWI2ZWQ2ZDMyZWEwYjBjMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNjY5N2Q3NmFkMDdkMmZkYzAyMjU4Y2YyY2Q3MWVhYzQyNWMxZTY0ZWI5MTY1MWNjNWY4NjBlZTJhYTAzMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1MzVlMjY4MjU4OTM2YThhZTU0ODc2Y2RhMjllYTkyYTc1MzM1NGE0MzgyYmFjZmU5N2U1MWFmNGYxNDk3ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmZTJmNWZmZmIzNDcyYmQxMzI0MDI5OGM5NDEzMjFhMmFlM2EyZGU0ODhmNDViYjNkMWQ4YzBjODI5NjJhNGIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L500-L520",
+          "version": "repo-lines-v1:sha256:2803967a5c36f5538724365920a2b3f168805d781f91c8be5823a18febd6791e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzYzgyNjFjMmVkNzIyOWU4ZDc0NGIzMjJiNjlkYTE4ZjM1ZDFmOGI5NDc2YzVlZjNlYTY4MDc3MDExNjFlMzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmZDlkYjhhN2UwM2RhYmZhNzgxZDllZmIyMzAwODU4NGNkM2Y4NGM3ZDY4MzIyZjU3YTc2MzQzZTA1YWRjMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhNGQzYmU1NjEzZWJlMzhkZGU2MmVkODE1OWMyYzkyOWFmZDkzZGQ5NmNkM2NmOGI2YjYxYzVjMmMxN2RhYzkifQ"
         }
       ]
     },
@@ -140,7 +148,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -154,7 +162,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -168,7 +176,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:d0099de4af091a3d56347bacdd6653f1f89d329616bbb0e8f0898ab748b7efb1"
+          "version": "repo-file-v1:sha256:ed9bc903022576933b18d200804ad13039dcf8fd38caec8ef8280284998fdb4c"
         }
       ]
     },
@@ -188,7 +196,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py#L119-L142",
-          "version": "repo-lines-v1:sha256:edfd629ff3086bb037a5b6dd70ab5e008b077f7de406c80fefb161a98c543721:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNGYwMjI1NTU0YWYyZWU5MmFmNGQ0M2VlY2Q2YjUwMTFkZmFkMDFlMzQ5NmIwNmVjYmY2MzUwMWZiNGZkZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhYWVmZDAwYjA3ZDQzZWU2ZTIwMjE3ZDc0NzBjZGE0NDJkMWJhMWQyZDA4YmQxYzAyMzk3MWJhNzAyYThmNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5OTUxMjVkMmZhYTdmNzBhOTkxNTE0ODc5NDg0ZjcwNzk0NzAzYmRlNGZiZTQ5NGQ1YTA1MGE1NWFiNDNjOTcifQ"
+          "version": "repo-lines-v1:sha256:8d21688e45d7728c798ac70569e6df1f4fb92f3146991d6b14b463d448ad384d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNGYwMjI1NTU0YWYyZWU5MmFmNGQ0M2VlY2Q2YjUwMTFkZmFkMDFlMzQ5NmIwNmVjYmY2MzUwMWZiNGZkZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhYWVmZDAwYjA3ZDQzZWU2ZTIwMjE3ZDc0NzBjZGE0NDJkMWJhMWQyZDA4YmQxYzAyMzk3MWJhNzAyYThmNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5OTUxMjVkMmZhYTdmNzBhOTkxNTE0ODc5NDg0ZjcwNzk0NzAzYmRlNGZiZTQ5NGQ1YTA1MGE1NWFiNDNjOTcifQ"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L605-L613",
@@ -198,11 +206,15 @@
     },
     {
       "id": "claim_939f9e6c743f40b2a3cc40eea51413b2",
-      "statement": "Before summarizing archived messages, the SDK uploads inline base64 media and rewrites it to path references for both archival and summary input; an archive can still succeed with failed-media placeholders, in which case the middleware warns that the original media is not recoverable.",
+      "statement": "Before summarizing archived messages, the SDK uploads inline `data:` media and rewrites it to path references for both archival and summary input; an archive can still succeed with failed-media placeholders, in which case the middleware warns that the original media is not recoverable.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1428-L1454",
-          "version": "repo-lines-v1:sha256:b53e54a7622020e82fa0e55563c8ae7f1bddf18a97486bd75fe9f8bc10f9a267:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NDk1YmM0OTFmYjViOWEwMWVlMWUwNDg3N2ExZDJlNWRkYWM2YjAzOTc0M2VlM2IyNjBjMWY2NmVhMTVhYjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2NzE3YTIyZjg0ZmEzNjUwN2FhMDhjN2RmY2I0OTlmMzEzYTE5NjE4Y2Q1ZDQwNzlhNWY1NDlmNmY3NDllYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwODc0Njg2YjFjOGM2NjE1OWU4YjdjZjVlMDg1OWYyYmMxY2QyOTZiZDJjODAwM2YzZTExMTVlNDZlMzM3NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0YTkwYmZmY2ViNTBmNTEwNTkyNjkzMjczZmE4MjgyMGIzMGZjY2RjNDE5NDExY2MyZTJiYTQxOWE2M2I2MTcifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1077-L1113",
+          "version": "repo-lines-v1:sha256:9c69f89a73b111094989de76e10f947f6fc8357cc6a98e475d4e4a4d3ff49ba4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmOTQxMDJhMDhlM2E4MzMzNzc5NmIwOTc2NWQ4NDI5YzEyYjkwNzA3NTZkYmE2MDczZTZhMDE4YjIzZmFjMDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOTg5YjUyZGI5YWZmYWU2OTUzODcwM2Y0ZjdiY2M2YzJlODc0Yjk1ODFiMjg0MmY5N2M3ZTA4MzVjMjZkMzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyODdmYTkzMThiZGYwYjI2ODE2MTdiZmM1ZTY4Y2M2YjQ1OTIzMjZkZTY3ZDFmZmQ5NDJkMzcyNTk2MDQ5NmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwNTczNGY0NDNjYTE4N2Q0YjM3YzZmNWM2MDM4ZTU4YzYyY2I0NzY0YTc3ZTMxM2VkYjVkMDUwYzExYTQyMWYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1545-L1569",
+          "version": "repo-lines-v1:sha256:e946ccd44466b5aba15d91ab8428bd214a05d8481b66cb19c5d78c1765ad6596:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZjIzYjM1N2M3NzJjODg1ZTFiMDdiMjkxNWJhMjlhZWZiYmM1ZGIwYmQzYTE3MTdlODBiN2M1ZmVlNTVhYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNjY5N2Q3NmFkMDdkMmZkYzAyMjU4Y2YyY2Q3MWVhYzQyNWMxZTY0ZWI5MTY1MWNjNWY4NjBlZTJhYTAzMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5NzlhYjc1YjBiYzVmNTYyMzc0ZWM4ZjQzZDNjZWIyMmQ3YmE0ZjQ3NDM4ZjExMDRiNDIyMjJkZGU2NGJkODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxY2U0ZWU0NjVlZWI0NWViYjY3NGQ1MzlhZGMxNmFjOGM4Mjg3MWI2ZGJiZWNhYmM1MWFhYWI2OWQ1ZjBhMTAifQ"
         }
       ]
     },
@@ -241,64 +253,6 @@
         {
           "resource": "repo://libs/code/deepagents_code/offload.py#L365-L425",
           "version": "repo-lines-v1:sha256:9944e1598b5e004b7f2b9dc6c3c1114c3e456e60da0d9357a6a6b0b19c5e6fee:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNjQ0NGE2YzBkNDJiZmVmZTUzZjcyMmMxMThjMWFiNzlmNWVkN2VhNmNjNDkwMzFkYWZjZmYxMDI1YzJiNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZTJhNDY1MDA5NWZhOTVkMGUyYmI0MWIyZGIyOTA5NGQzNDA0ZDI4Y2UxMjMzOWVjODhiYjRiNWM1YmU4ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0NzYxMTdiMjc4YzhkMjZjN2ZkODYwMzIyMjE3YTQwM2E3NjMyZDY5N2I4NmMyNGMwZGVhOGEzNThiYzJhZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_37dcb84f21c547149c6fa2838de044ff",
-      "statement": "LocalContextMiddleware caches a backend-side environment detection snapshot in private state for system-prompt injection, then after a summarization cutoff appends a changed, fingerprinted local-context HumanMessage instead of changing the cached prompt prefix on every request.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L674-L707",
-          "version": "repo-lines-v1:sha256:fbab196f04e665303fa27bc117b9c82cf12759d67abdc94fce383f16791cc6dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkMzY1YzU3ZjQwZDNkODM1MDkwMzQ5NDhlNzU5MTcxMjBjMTJkYmVjMzkxNDQ5ODk4NzY2MDdjOWYzNThjZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwM2VmODMxYzU1NzI3NjcyYTNhY2U1MjhlODc5N2IzMjVjZDhiZGM2NDFiZGJkMzhiMmM1M2ExZjZkYzRhZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4MjY3NmM4ODhjMWE0ZDlmYTc3MmZjZGMzMDJmNzczYmM3MjkwZWViZmY5ZGEzNmEzOWY0NGMzMjExOTgzODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAzNzgyMGQwMjc3MDU0ODUzZmM1YTgxZDdhMmJlNmYwZDhmYWY1NmJjZjZjMDAxMzZjZWY2ZGM4NWI4MGUwOTUifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L805-L903",
-          "version": "repo-lines-v1:sha256:7df47b98d9d3b2df608ef3aa65a96d065692410edddbe460ff85f211d6eef71c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0Y2I2YTVjYTY5MWY3N2JkMDgxYjc3OGZjYWU5YWM0NmFiN2JjMDFhZTA4N2I3ODJkOWMyMTg2NGM0NzdkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MGFiZmI4YjEwNjcxZTE5OGZjNTFmZTc3MDg5MjZkMGVkYTk2ZjY0OTYwMWQzMDYwODQyM2YyYmZlOTBiZDIifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L975-L1032",
-          "version": "repo-lines-v1:sha256:df4291d2d187e1fe8862db3bc4b71685966db39837397fdce2f5300b3d44fb8d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjZGNlMzFmZjRjZGVlZmMxMzY0ODYxYTFjMTA0M2JmMWQ2NjdlODEyZWMzMWQyMTUzNGFlNjkzNGE4ZmM5ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwYTZiNmJhMGYwMDE1OTI1NmZhZjNiN2MyMzIwYjM1N2RiMzdkZmU1YTRiZjQyNmEzNjE5NDE3NGE0NTdkNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNWNhOTIwOWU1MDY2ODNiNjZhYTRlMmIzZDk2N2E4MGI1MzBlODRmMjQ2YzBhZTBkY2ExMjhmYmRmZGQxNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwYzMxMzI5NjBlNWEwNDNmYzkzMTU1YWE0MTE0MjU1ZTQ2OWFlYTgxM2NiNDk2ZDlkZTI1NjUyYzNmMmU0YTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_bc770990c4064144a92fdec39b286548",
-      "statement": "Local context detection runs a bounded shell script through the configured backend, allowing the same project and environment inspection to run in a local shell or remote sandbox; failed or empty detection omits the context rather than failing the request.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L1-L7",
-          "version": "repo-lines-v1:sha256:225786356f2ee729a5c646d488fe6e831277a1292013f8babc8b458462592140:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmExMzM5Zjk5NjNjMjMzMmVhOTE4YWJhYzQ4YWQzMTE5YmYxMWZlMWExNGY1YjJmNWQ1MDhmNTc3OWEyNGQzYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L740-L803",
-          "version": "repo-lines-v1:sha256:6f90e44e33f289ff982f42442b821e81fc40b11f5c7c50f96040ad1981c8a6c9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjYzVhNWEzZmI3NjcyMmU5MDMwMTJkNGUxMDRmMTUyNzgyOTMwOWM4ZmQ1M2Q2MzIzNWRhOGQ0OTZjOGExMWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZTE4Zjc4Y2UwOTcwYWYwMDllMWFmOTA1ZDNhYzRjMThjMzI5MjYyN2I3NzAyM2VlYzM2NTAxYjdjYzY0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1MWJmMTkwZWVhYjE0ZDFlMTNlNjRmMmI5ZjQwNDNlOTc0ZDc5NGUyODc0MjNiZjBiOWM1ZDExZjBjZWM1ZTcifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/local_context.py#L905-L973",
-          "version": "repo-lines-v1:sha256:115ba7fb9245af0a0dd9c41b80f914aab83d3e883894818a7c016b5394a14359:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1OWQ3NThhOGQxZWJhZjJjMGUyNGIzYzRmMzdhYTQzNWNhNjcyMDU0ZTE1NWMyZjBlZGU4MGY3YjEwMDMxNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNWNhOTIwOWU1MDY2ODNiNjZhYTRlMmIzZDk2N2E4MGI1MzBlODRmMjQ2YzBhZTBkY2ExMjhmYmRmZGQxNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4MTlmNDcwZTI4OGRmYTEwYWZjNWM2NzgwNmU5OTA3NTU3NjgyZTY1N2VkYTM5ZDgxYTgyOWU1Njc5MzcxZDIifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_bda6229ed686435ea01fcfc47aa62de4",
-      "statement": "The `/context-doctor` command estimates fresh-session injected context from base prompt, AGENTS.md memory, skills, built-in tool schemas, and MCP schemas, and separately reconciles available conversation and provider usage; its estimates use four characters per token and label unavailable custom or remote components.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/app.py#L13240-L13355",
-          "version": "repo-lines-v1:sha256:26716901d8f9c2eb9ab9cc0e122fc1e943046636ffc20b7706ccf4a3f4d11fcf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNGU2Mzg1Y2JkZTA5ZjAzNDJiZGQyNmE3ZDdlZGI0NTM5Mjg3NWNlNzc4OTM1MGUyNzI2ODkzNDIwZTY2ODkyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlZWE3OWQ0MWQwNDFjMzVjMDE3ZGFiNWM5NjUyZDI5MjRmOWU0NmJjYjA5YjI0OGQxNzdlYWFlYWVmODU4ZmMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkMjI2ZTk1MDk0MWVlNDk5OTk4Yjk1ZjEyOWE2MmE2ZWQ5MGFlODQ0Y2FjMTdjNmQ3OGZjZjFiOGNhYzlmMDNlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNGM4MzE4NDU3YjdkMWJhZGY2YTRlMDA3MWUzNWRjYzJlNWEwN2NhZTBlMmRhY2Q3ZjQ4ODJhMGIwNjk2YTlmIn0"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L177-L238",
-          "version": "repo-lines-v1:sha256:cb3c77a8701af4f60b022a4473c03dfae5b883aa11cbc700e4132963d0b5dc2d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYjAwMWQyOTRiNzljYzJlNzg5ZjBhMjlhMTQ3NWNkNDY3MzZjZTY1MzVlMzViODEzYjgyZDE0YzJjMjQ4ZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMzY2ZjgyN2MwMDcyYTQ4ZWNlMGM1ZjY0ZmMxM2MzNjBlOTI5YzQ0M2I0OWMzNzE5YTRmODgwMjgyODllNmIifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L241-L275",
-          "version": "repo-lines-v1:sha256:3d53350aabbcb2e8147297a58486b2823b18a2c313f22d53ccaa96a416c13593:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOGY0ZTEwMjVlZGUyNjg3OTZiZjUwZWMwN2E1MzQxMmI2NmQwNGRkZTIxZTY0ZGRjOTc3MTA3ZmE1NDBhOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYWU4YTBjYTc2Zjk4ZjdiN2RjNzk4NDk1MWQ2M2U1N2RiM2M2NDU1NzljYTUxYmFkNmE1MzlkNjE0ZWRiYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhOTcxZmI4NTNiNzkyNGNlZDhlMmY3ZDdjN2NhOGRkYjBmNTM1OGM1ZGViYWMxZmY5N2YxYjM2MTExOTBmN2MifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/context_doctor.py#L41-L55",
-          "version": "repo-lines-v1:sha256:c34cdaae1906030c447ab4d876fe360c68ca46a3901ea0f0e3a8c15fc69d9fd6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NGYzOGRhMzI0OWQwN2RhMzcyYjY4YzQ1YTYxNzE0NDk3NjA1ZDE3MTJhMTlmYmZhYjg3YWU3NmYwMDMxODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiY2E0ZTk5YjVlOWNhNWNlZWUxNWMxYmQ4ZGI0NWE5Yzc3NDgxMWVjYTdhMDYzNTRkYzFlMTExMTllM2EzY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1YzAzM2I1YmU5NmE5MDZhNThjY2MzOWZhODlhYTZjMjUzMWYxYThkZDhhMDVhZTIxMjY5OGU4MWE3YTIzZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5N2MxM2EwN2ZjMmNiYjQzNjI4OWM3Nzk1ZTA4MDU0NWY4ZDdjNzk0OGEzNzgyNmJiNWE2ODMyZGUwMDY1NGQifQ"
         }
       ]
     },
@@ -365,6 +319,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-18T16:46:37.183Z"
   }
 }

@@ -1,14 +1,18 @@
 ---
 type: architecture-overview
 title: Deep Agents Code Architecture
-description: Architecture of dcode's normal terminal-client and local LangGraph-server boundary, workspace-scoped runtimes, streaming, persistence, cleanup, and separate ACP stdio mode.
+description: Architecture of dcode's terminal and headless clients, local LangGraph server boundary, workspace-scoped runtimes, streaming, persistence, configuration bootstrap, and separate ACP stdio mode.
 tags: [deepagents-code, dcode, architecture, client-server, langgraph, acp, streaming]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
+  - id: openwiki-source-3396dda6599f7426e19ed526
+    resource: repo://libs/code/deepagents_code/__init__.py
+  - id: openwiki-source-5e41cb15122d503b08dad541
+    resource: repo://libs/code/deepagents_code/__main__.py
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
   - id: openwiki-source-4d4186e9d62fb4abe495cdd0
@@ -39,23 +43,25 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
   - id: openwiki-source-877b53371bf970f1b38a1809
     resource: repo://libs/code/tests/unit_tests/test_workspace.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
 # Deep Agents Code Architecture
 
 `deepagents-code` (`dcode`) is a reference terminal coding-agent product built on the `deepagents` SDK. It combines the SDK harness with terminal UX, persistence, tools, skills, and optional sandboxed execution.
 
+`python -m deepagents_code` enters the same lazy `cli_main` entry point as the package command. The lazy import avoids loading the CLI's argument and startup machinery when other package modules are imported.
+
 There are two deliberately distinct execution paths:
 
-- **Normal interactive and headless dcode** run a terminal client and an owned local `langgraph dev` server in separate processes. The client owns presentation, input, and approvals; the server owns the model, graph, tools, memory, skills, backend, and checkpoints.
+- **Normal interactive and headless dcode** run a terminal client and an owned local `langgraph dev` server in separate processes. The client owns presentation, input, and approval interaction; the server owns the model, graph, tools, memory, skills, backend, and checkpoints.
 - **`dcode --acp`** runs an ACP server in the launching process over stdio. It builds local session graphs and does not start `langgraph dev` or use `RemoteAgent`.
 
 This is an ownership boundary, not merely a transport choice: changes to the normal-server path must be evaluated against ACP separately.
 
 ## Normal client-server run
 
-Interactive mode renders and collects input in the Textual app. Headless mode runs one task against the same `RemoteAgent`/server arrangement but streams machine-oriented output to stdout; `--quiet` suppresses tool and file-operation diagnostics so stdout contains response text only.
+Interactive mode renders and collects input in the Textual app. Its startup worker installs the managed `rg` before spawning the server, starts the server asynchronously, retains the returned process immediately, and posts `ServerReady` for UI-side initialization. Headless mode runs one task against the same `RemoteAgent`/server arrangement but streams machine-oriented output to stdout; `--quiet` moves diagnostics to stderr so stdout contains response text only.
 
 ```mermaid
 sequenceDiagram
@@ -64,22 +70,35 @@ sequenceDiagram
     participant Manager as Server manager
     participant Server as LangGraph server
     participant Graph as Agent graph
+    participant Store as SQLite checkpoints
 
-    Client->>Manager: Resolve inputs and project context
-    Manager->>Manager: Validate MCP config and scaffold workspace
+    Client->>Manager: Resolve context and launch settings
+    Manager->>Manager: Validate MCP and scaffold workspace
     Manager->>Server: Spawn langgraph dev on loopback
     Manager->>Server: Wait for agent graph readiness
     Manager-->>Client: Return configured RemoteAgent
-    User->>Client: Prompt or approval
-    Client->>Server: Bind thread workspace when needed
-    Client->>Server: Send run and receive SSE events
-    Server->>Graph: Validate context and choose runtime
-    Graph-->>Server: Events and checkpoint changes
+    User->>Client: Prompt
+    Client->>Server: Bind thread workspace if needed
+    Client->>Server: Start run with thread and workspace context
+    Server->>Graph: Validate binding and select runtime
+    Graph->>Store: Write checkpoints
+    Graph-->>Server: Stream events or interrupt
     Server-->>Client: SSE events
-    Client-->>User: Render or print output
+    alt Approval is required
+        Client-->>User: Render approval request
+        User->>Client: Approve or reject
+        Client->>Server: Resume with decision
+    else Normal completion
+        Client-->>User: Render response
+    end
+    opt Resume existing thread
+        Client->>Server: Read durable thread state
+        Server-->>Client: Serialized snapshot
+        Client-->>User: Restore history before startup work
+    end
 ```
 
-This sequence shows the normal local path. The workspace bind and execution context make runtime selection server-authoritative; ACP has its own boundary below.
+This sequence shows the normal local path, including the client-owned approval/resume interaction. Workspace binding and execution context make runtime selection server-authoritative; ACP has its own boundary below.
 
 ### Startup and configuration handoff
 
@@ -89,33 +108,23 @@ The generated graph reference is `deepagents_code.server_graph:make_graph`. For 
 
 The client writes resolved launch settings as `DEEPAGENTS_CODE_SERVER_*` variables. `ServerConfig.to_env()` and `ServerConfig.from_env()` are the shared schema, keeping variable names, serialization, and defaults in one place. Configuration precedence uses lower numeric ranks first: managed policy, CLI arguments, retained reload values, environment, user `config.toml`, then typed defaults. See [configuration layering](/openwiki/concepts/config-layering.md).
 
-The child environment is also a security boundary. Startup-sensitive inherited variables, including `PYTHONPATH`, are stripped before the server interpreter starts. The original `PYTHONPATH` is carried separately solely for approval-gated shell execution, and immutable child environment handling pins profile selection to the client launch profile. See [security](/openwiki/operations/security.md).
+The child environment is also a security boundary. Startup-sensitive inherited variables, including `PYTHONPATH`, are stripped before the server interpreter starts. The original `PYTHONPATH` is carried separately solely for approval-gated shell execution, and immutable child environment handling pins profile selection to the client launch profile.
 
-## Workspace binding and runtime selection
+## Workspace binding, durable threads, and runtime selection
 
-`RemoteAgent` wraps LangGraph's `RemoteGraph`: the underlying client performs HTTP/SSE parsing, `messages-tuple` negotiation, namespace extraction, and interrupt detection. dcode normalizes thread IDs and converts streamed message dictionaries to message objects for the Textual adapter, while state snapshots remain in the server's serialized form. It also retries one state update after an HTTP 409 by cancelling active runs, which addresses a stream cancellation that races server-side completion.
+`RemoteAgent` wraps LangGraph's `RemoteGraph`: the underlying client performs HTTP/SSE parsing, `messages-tuple` negotiation, namespace extraction, and interrupt detection. dcode normalizes thread IDs and converts streamed message dictionaries and update interrupts to objects suitable for the Textual adapter, while state snapshots remain in the server's serialized form.
 
-Before a thread is used, `RemoteAgent` posts the configured cwd, workspace policy, and fingerprint to `/dcode/threads/{thread_id}/workspace`, then caches the server-returned descriptor. It separately registers the HTTP thread record because SQLite checkpoint data can survive a server restart even when the dev server has no live thread row.
+Before a thread is used, `RemoteAgent` posts the configured cwd, workspace policy, and fingerprint to `/dcode/threads/{thread_id}/workspace`, then caches the server-returned descriptor. It separately registers the HTTP thread record because SQLite checkpoint data can survive a server restart even when the dev server has no live thread row. Thus a durable checkpoint alone is not sufficient for a later HTTP state mutation or offload request.
 
-```mermaid
-flowchart TD
-    Begin["RemoteAgent needs a thread workspace"] --> Bind["POST workspace claim"]
-    Bind --> Persist["Server resolves policy and persists binding"]
-    Persist --> Run["Client sends thread ID and workspace context"]
-    Run --> Check["make_graph validates durable binding"]
-    Check --> Match{"Context and policy match"}
-    Match -- No --> Reject["Reject workspace conflict"]
-    Match -- Yes --> Cached{"Runtime cached by resource key"}
-    Cached -- Yes --> Use["Use cached workspace runtime"]
-    Cached -- No --> Build["Resolve bound config and build runtime"]
-    Build --> Use
-```
-
-This flow shows how an untrusted workspace claim becomes a durable, server-validated runtime choice.
-
-The server canonicalizes absolute cwd and project-root identity and stores a binding atomically in the session SQLite database. A thread cannot silently move to another workspace or configuration fingerprint: later binds and execution contexts must match the durable payload or raise `WorkspaceConflictError`. The durable policy excludes credentials and prompt material. Old binding schemas are migrated only after the preserved identity/session controls are validated.
+The server canonicalizes absolute cwd and project-root identity and stores a binding atomically in the session SQLite database. A thread cannot silently move to another workspace or configuration fingerprint: later binds and execution contexts must match the durable payload or raise `WorkspaceConflictError`. The durable policy excludes credentials and prompt material.
 
 With an execution runtime context, `make_graph` requires a nonempty thread ID and workspace context, verifies the durable binding, and selects the runtime keyed by its persisted resource key. Without execution context, it uses the configured launch workspace if present; otherwise it uses the lock-protected process runtime. Every workspace-runtime lookup re-resolves configuration and rejects project-policy or server-configuration drift before returning even a cached runtime. A revoked project-extension trust therefore invalidates use, while a new grant is pinned out of an already-bound thread. See [state persistence](/openwiki/concepts/state-persistence.md).
+
+### Client failure semantics
+
+The remote boundary is intentionally not a best-effort façade. `aget_state` returns `None` only for a missing HTTP thread or a live thread with no checkpoint; network, authentication, server, and unexpected-state failures are logged and re-raised. Store-write failures are likewise re-raised so higher-level approval code can fail closed rather than retain auto-approval state after persistence failed.
+
+`aupdate_state` has one narrow recovery path: on HTTP 409, it lists pending and running runs, requests their cancellation concurrently with bounded waits, and retries once. Individual cancellation failures are best-effort; failure of the retry still propagates to the caller. This addresses the common race where a client stopped consuming an SSE stream before the server finished its run; it is not a general suppression of remote failures.
 
 ## Graph assembly and shared server resources
 
@@ -131,11 +140,11 @@ Some resources constrain what one server process may host. A configured sandbox 
 
 Runtime construction is a startup barrier. A build failure emits a `DEEPAGENTS_STARTUP_ERROR:` marker and exits with code 1, allowing the parent to extract a specific cause from child logs rather than report only a readiness timeout. In request-scoped offload handling, that `SystemExit` is contained and translated to a service-unavailable response rather than killing the server mid-request.
 
-The manager stops its owned process when spawning, graph readiness, remote-client setup, or workspace setup fails. Its `finally` cleanup handles cancellation as well as ordinary exceptions. `server_session` stops the process on normal exit and drains queued notices for debug-preserved logs.
+The manager stops its owned process when spawning, graph readiness, remote-client setup, or workspace setup fails. Its `finally` cleanup handles cancellation as well as ordinary exceptions. `server_session` stops the process on normal exit and drains queued notices for debug-preserved logs. The Textual runner duplicates the final ownership guarantee for servers started by its background worker, including deferred startup.
 
 On POSIX, the server is started in a dedicated process group. Teardown signals the group, waits for descendants as well as the root, then escalates to `SIGKILL` if necessary. Windows uses a graceful console signal where possible, but hard-kill escalation reaches only the root process handle; a surviving descendant can be orphaned.
 
-Focused tests cover message and interrupt conversion at the remote stream boundary, binding idempotence and first-bind races, substituted workspace and policy conflicts, non-secret persisted policy, schema migration, workspace runtime cache and policy-drift behavior, sandbox ownership, and ACP protocol startup. These tests are useful guardrails when changing the boundaries described here.
+Focused tests cover server graph caching and concurrent construction, nonblocking server bootstrap and sandbox setup, workspace environment isolation, policy drift and sandbox ownership, remote 409 recovery, durable binding secrecy, and Textual resume/startup ordering. These tests are useful guardrails when changing the boundaries described here.
 
 ## ACP stdio lifecycle
 
@@ -143,10 +152,10 @@ Focused tests cover message and interrupt conversion at the remote stream bounda
 
 In Auto mode, dcode uses its `AgentServerACP` adapter. The adapter wraps local graph streaming to store trusted Auto approval state, attach prompt metadata, and supply CLI context. YOLO requires prior acknowledgement, and `--auto-classifier-model` is accepted in ACP only when the resolved mode is Auto. ACP failures go to stderr and return a nonzero status; they do not follow the normal subprocess startup-marker path. A `finally` block cleans up the ACP MCP session manager.
 
-The ACP smoke test starts `deepagents --acp --no-mcp`, initializes the protocol, opens a session using the current cwd, and asserts that it has an ID. It protects the stdio lifecycle without conflating it with the loopback normal-server path. See [ACP](/openwiki/integrations/acp.md).
+The ACP smoke test starts `deepagents --acp --no-mcp`, initializes the protocol, opens a session using the current cwd, and asserts that it has an ID. It protects the stdio lifecycle without conflating it with the loopback normal-server path.
 
 ## Extension and operations guidance
 
 Tools, MCP servers, skills, subagents, sandbox providers, hooks/commands, and authorized Python extensions are composition points. In normal-server mode, resource-affecting settings become part of the durable workspace policy/fingerprint; do not expect a bound thread to live-reconfigure into a different resource policy. Custom graph references also need an independent offload strategy because dcode does not register `/offload` for them.
 
-For operational usage, see [run a dcode session](/openwiki/workflows/run-dcode-session.md), [runtime behavior](/openwiki/architecture/runtime-behavior.md), [context management](/openwiki/concepts/context-management.md), and [configuration layering](/openwiki/concepts/config-layering.md).
+For operational usage, see [run a dcode session](/openwiki/workflows/run-dcode-session.md), [runtime behavior](/openwiki/architecture/runtime-behavior.md), [state persistence](/openwiki/concepts/state-persistence.md), [MCP](/openwiki/integrations/mcp.md), and [configuration layering](/openwiki/concepts/config-layering.md).

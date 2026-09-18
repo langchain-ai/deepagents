@@ -1173,6 +1173,9 @@ or the user queues input while waiting, the status bar reveals the connection
 state as the single app-wide progress indicator.
 """
 
+_HOOK_STATUS_REVEAL_DELAY_SECONDS = 2.0
+"""Seconds to hide hook progress so fast hooks do not flash in the footer."""
+
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
 
@@ -2039,7 +2042,7 @@ Shared by every such command -- `/effort`, `/summarization-model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
 
-_UNKNOWN_EFFORT_LABEL = "effort"
+_UNKNOWN_EFFORT_LABEL = "effort?"
 
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
@@ -2960,6 +2963,7 @@ class _ChatScroll(VerticalScroll):
         """
         super().__init__(*args, **kwargs)
         self._follow_bottom_when_scrollable = False
+        self._bottom_follow_generation = 0
 
     def anchor(self, anchor: bool = True) -> None:
         """Anchor only once the transcript is tall enough to scroll.
@@ -2976,6 +2980,8 @@ class _ChatScroll(VerticalScroll):
                 delegate to the base class.
         """
         self._follow_bottom_when_scrollable = anchor
+        if anchor:
+            self._bottom_follow_generation += 1
         if not anchor:
             super().anchor(False)
             return
@@ -4078,6 +4084,9 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._footer_picker_requests: set[str] = set()
+        """Footer picker commands currently being submitted."""
+
         self._agent_reconciling = False
         """True while turn-end checkpoint state is being synchronized."""
 
@@ -4152,6 +4161,15 @@ class DeepAgentsApp(App):
 
         self._connection_status_reveal_timer: Timer | None = None
         """One-shot timer that reveals deferred status-bar connection progress."""
+
+        self._pending_hook_status_message = ""
+        """Latest hook progress text waiting for its footer reveal delay."""
+
+        self._hook_status_visible = False
+        """Whether hook progress currently owns the visible status-message slot."""
+
+        self._hook_status_reveal_timer: Timer | None = None
+        """One-shot timer that reveals continuously active hook progress."""
 
         self._connection_ready_event = asyncio.Event()
         """Set once the initial server connection has either succeeded or failed."""
@@ -4327,6 +4345,9 @@ class DeepAgentsApp(App):
 
         self._history_prefetch_active = False
         """Whether resumed history is warming toward the soft window size."""
+
+        self._history_prefetch_anchor_generation: int | None = None
+        """Bottom-follow generation owned by resumed-history prefetch."""
 
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
@@ -4811,6 +4832,8 @@ class DeepAgentsApp(App):
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
+        if self._pending_hook_status_message:
+            self._schedule_hook_status_reveal_timer()
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
         model_spec = self._effective_model_spec()
@@ -5318,9 +5341,44 @@ class DeepAgentsApp(App):
         self.notify(message, severity=severity, markup=False)
 
     def _update_hook_status(self, message: str) -> None:
-        """Update the status bar with hook-owned progress text."""
-        if self._status_bar:
-            self._status_bar.set_status_message(message, source="hooks")
+        """Delay hook-owned progress text so fast hooks do not flash."""
+        self._pending_hook_status_message = message
+        if not message:
+            self._hook_status_visible = False
+            self._cancel_hook_status_reveal_timer()
+            if self._status_bar:
+                self._status_bar.set_status_message("", source="hooks")
+            return
+        if self._hook_status_visible:
+            if self._status_bar:
+                self._status_bar.set_status_message(message, source="hooks")
+            return
+        self._schedule_hook_status_reveal_timer()
+
+    def _schedule_hook_status_reveal_timer(self) -> None:
+        """Schedule the one-shot timer that reveals active hook progress."""
+        if self._hook_status_reveal_timer is not None or not self._running:
+            return
+        self._hook_status_reveal_timer = self.set_timer(
+            _HOOK_STATUS_REVEAL_DELAY_SECONDS,
+            self._on_hook_status_reveal_timer,
+        )
+
+    def _cancel_hook_status_reveal_timer(self) -> None:
+        """Cancel and clear the deferred hook-status reveal timer."""
+        if self._hook_status_reveal_timer is None:
+            return
+        self._hook_status_reveal_timer.stop()
+        self._hook_status_reveal_timer = None
+
+    def _on_hook_status_reveal_timer(self) -> None:
+        """Reveal the latest hook progress after continuous activity."""
+        self._hook_status_reveal_timer = None
+        message = self._pending_hook_status_message
+        if not message or self._status_bar is None:
+            return
+        self._hook_status_visible = True
+        self._status_bar.set_status_message(message, source="hooks")
 
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
@@ -9401,7 +9459,7 @@ class DeepAgentsApp(App):
             self._hydration_scheduled = False
 
         if hydrated_count == 0 and direction == "above":
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
         if hydrated_count or self._hydration_requests:
             self.call_after_refresh(lambda: self._continue_hydration(direction))
 
@@ -9421,7 +9479,7 @@ class DeepAgentsApp(App):
             ):
                 self._request_hydration("above")
                 return
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
             return
 
         if direction == "above":
@@ -9435,8 +9493,26 @@ class DeepAgentsApp(App):
             self._message_store.has_messages_above
             and self._message_store.visible_count < self._message_store.WINDOW_SIZE
         )
-        if self._history_prefetch_active:
-            self._request_hydration("above")
+        if not self._history_prefetch_active:
+            return
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            chat = self.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            self._history_prefetch_anchor_generation = chat._bottom_follow_generation
+        self._request_hydration("above")
+
+    def _stop_history_prefetch(self) -> None:
+        """End resumed-history warming and its temporary bottom anchor."""
+        if not self._history_prefetch_active:
+            return
+        self._history_prefetch_active = False
+        generation = self._history_prefetch_anchor_generation
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            chat = self.query_one("#chat", _ChatScroll)
+            if generation == chat._bottom_follow_generation:
+                chat.anchor(False)
 
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
@@ -20301,9 +20377,8 @@ class DeepAgentsApp(App):
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
-                # Re-derive groups for any tools mounted outside this path
-                # (resumed history), which carry no live group.
-                await self._regroup_completed_tools()
+                if not isinstance(widget, UserMessage):
+                    await self._regroup_completed_tools()
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached
@@ -20807,6 +20882,9 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         self._hydration_requests.clear()
         self._history_prefetch_active = False
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            self.query_one("#chat", _ChatScroll).anchor(False)
         if self._transcript_prune_timer is not None:
             self._transcript_prune_timer.stop()
             self._transcript_prune_timer = None
@@ -21740,6 +21818,7 @@ class DeepAgentsApp(App):
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
         self._cancel_connection_status_reveal_timer()
+        self._cancel_hook_status_reveal_timer()
         self._discard_queue()
 
         if self._shell_running and self._shell_worker:
@@ -23522,6 +23601,26 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def _submit_footer_picker(self, command: str) -> None:
+        """Submit a footer picker unless the same request is open or queued."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        screen_type = (
+            ModelSelectorScreen if command == "/model" else EffortSelectorScreen
+        )
+        if (
+            command in self._footer_picker_requests
+            or isinstance(self.screen, screen_type)
+            or any(message.text == command for message in self._pending_messages)
+        ):
+            return
+        self._footer_picker_requests.add(command)
+        try:
+            await self._submit_input(command, "command")
+        finally:
+            self._footer_picker_requests.discard(command)
+
     async def action_open_model_selector(self) -> None:
         """Open the model selector via `/model`.
 
@@ -23531,7 +23630,7 @@ class DeepAgentsApp(App):
         tip is dismissed. The bare form is `IMMEDIATE_UI`, so it still bypasses
         the queue and opens while the agent is busy.
         """
-        await self._submit_input("/model", "command")
+        await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
         """Open the reasoning effort picker via `/effort`.
@@ -23539,7 +23638,7 @@ class DeepAgentsApp(App):
         `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
         place behind any pending input instead of jumping an in-flight turn.
         """
-        await self._submit_input("/effort", "command")
+        await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(
         self,
@@ -25115,7 +25214,7 @@ class DeepAgentsApp(App):
             started_at = self._first_invocation_at
             if started_at is None:
                 return "not started"
-            return format_duration(max(0.0, time.monotonic() - started_at))
+            return format_duration(int(max(0.0, time.monotonic() - started_at)))
 
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks

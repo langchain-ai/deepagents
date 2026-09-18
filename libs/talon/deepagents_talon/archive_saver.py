@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, TypeVar, cast
 
-from langchain_core.messages import BaseMessage, convert_to_messages
+from langchain_core.messages import BaseMessage, HumanMessage, convert_to_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.types import _DeltaSnapshot
 
@@ -169,22 +169,36 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         session = str(config["configurable"]["thread_id"])
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], [])
-            messages = await self._messages(config, checkpoint)
+            parent_id = str(config["configurable"].get("checkpoint_id", ""))
+            acknowledged = await self.archive.checkpoint_acknowledged(session, parent_id)
+            changed = "messages" in new_versions or "messages" not in checkpoint["channel_versions"]
+            messages = (
+                await self._messages(config, checkpoint, acknowledged=acknowledged)
+                if changed or not acknowledged
+                else []
+            )
         result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
         if scope is not None:
             await self.archive.append(scope, session, checkpoint["ts"], messages)
+            await self.archive.acknowledge_checkpoint(session, checkpoint["id"])
         return result
 
-    async def _messages(self, config: RunnableConfig, checkpoint: Checkpoint) -> list[BaseMessage]:
+    async def _messages(
+        self, config: RunnableConfig, checkpoint: Checkpoint, *, acknowledged: bool
+    ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
+        previous: dict[str, BaseMessage] = {}
         if config["configurable"].get("checkpoint_id"):
             parent = await self.checkpointer.aget_tuple(config)
             if parent is not None:
+                if acknowledged:
+                    snapshot = _messages(parent.checkpoint["channel_values"].get("messages", []))
+                    previous = {message.id: message for message in snapshot if message.id}
                 for _, channel, value in parent.pending_writes or []:
                     if channel == "messages":
                         messages.extend(_messages(value))
         messages.extend(_messages(checkpoint["channel_values"].get("messages", [])))
-        return messages
+        return _changed_messages(messages, previous)
 
     async def aput_writes(
         self,
@@ -280,4 +294,38 @@ def _messages(value: object) -> list[BaseMessage]:
     if isinstance(value, _DeltaSnapshot):
         value = value.value
     values = value if isinstance(value, list) else [value]
-    return convert_to_messages(cast("list[MessageLikeRepresentation]", values))
+    messages = convert_to_messages(cast("list[MessageLikeRepresentation]", values))
+    return [_archive_message(message) for message in messages]
+
+
+def _archive_message(message: BaseMessage) -> BaseMessage:
+    source = message.additional_kwargs.get("talon_history_source")
+    if isinstance(message, HumanMessage):
+        if source is not None:
+            return message
+        source = "unknown"
+    else:
+        if source != "delivered":
+            return message
+        source = "internal"
+    return message.model_copy(
+        update={
+            "additional_kwargs": {
+                **message.additional_kwargs,
+                "talon_history_source": source,
+            }
+        }
+    )
+
+
+def _changed_messages(
+    messages: list[BaseMessage], previous: dict[str, BaseMessage]
+) -> list[BaseMessage]:
+    changed: list[BaseMessage] = []
+    for message in messages:
+        if message.id:
+            if message == previous.get(message.id):
+                continue
+            previous[message.id] = message
+        changed.append(message)
+    return changed

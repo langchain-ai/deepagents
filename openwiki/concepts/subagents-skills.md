@@ -3,12 +3,7 @@ type: agent extension mechanisms
 title: Subagents and Skills
 description: Deepagents middleware for inline, forked, compiled, and remote asynchronous delegation, plus progressive-disclosure skill discovery and loading. Includes dcode and Talon configuration and runtime behavior for these extensions.
 tags: [subagents, skills, delegation, middleware, progressive-disclosure, agent-protocol, dcode, talon]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-1eafe6f1154067896b272b26
     resource: repo://libs/code/deepagents_code/skills/invocation.py
   - id: openwiki-source-090c6e0a873de04d273989ad
@@ -23,8 +18,6 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-454da083c2cc29febd156c7e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6a038e6e1a11f450bcafce54
@@ -41,7 +34,10 @@ sources:
     resource: repo://libs/talon/tests/test_async_subagents.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T16:46:37.183Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
 # Subagents and Skills
@@ -119,7 +115,7 @@ Clients are lazy and cached by `(url, resolved headers)`. Resolved headers add `
 
 A valid skill requires YAML frontmatter with non-empty `name` and `description`. Loading is defensive: malformed frontmatter or YAML, inaccessible or missing content, non-UTF-8 bytes, and oversized files are skipped with warnings. Invalid name format or directory-name mismatch warns for compatibility but does not prevent loading. Metadata is normalized, overlong descriptions and compatibility values are truncated, and later sources replace earlier skills of the same name.
 
-`skills_metadata` and recoverable `skills_load_errors` are private state. Loading occurs once per session or checkpointed state: if `skills_metadata` exists—even empty—the middleware does not reload. A custom prompt template needs `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`. `system_prompt=None` suppresses prompt injection only, not discovery; source errors are logged and, when rendered, bounded and escaped as untrusted diagnostics.
+Recoverable `skills_load_errors` is private state. `skills_metadata` is accepted as input but omitted from output, so a caller can reset it without it surfacing in results, and it is excluded from subagent state so a subagent loads from its own sources. Loading occurs once per session or checkpointed state: if `skills_metadata` holds a list—even empty—the middleware does not reload; setting it to `None`, through `invoke()` or `update_state()`, makes the next run reload. A custom prompt template needs `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`. `system_prompt=None` suppresses prompt injection only, not discovery; source errors are logged and, when rendered, bounded and escaped as untrusted diagnostics.
 
 ## dcode: filesystem-defined agents and skills
 
@@ -129,7 +125,7 @@ For interactive `/skill:` commands, dcode wraps the SDK skill parser with a loca
 
 ## Talon: fresh, backgrounded, and reloadable delegation
 
-Talon is experimental and has its own delegation layer around the SDK. It loads remote definitions from `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. The CLI supplies this loader to `DeepAgentRuntime` in strict mode. An absent file yields no remote agents; unreadable, malformed, or invalid configuration fails startup in strict mode. Non-strict loading warns and retains valid entries.
+Talon is experimental and has its own delegation layer around the SDK. It loads remote definitions from `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`; each requires non-empty string `description` and `graph_id`, with optional non-empty `url` and string-to-string `headers`. The CLI supplies this loader to `DeepAgentRuntime`. An absent file yields no remote agents; unreadable or malformed files, a non-table section, or **any** invalid definition cause `load_async_subagents` to raise `ValueError` rather than starting with a partial configuration.
 
 Talon also reads local `AGENTS.md` definitions from its assistant `agents/{name}/` directory (or its parent fallback). These require name and description, may select a model and exact unique tool names, and compile as **fresh** agents with a task-only input and the operator approval policy. Talon does not support SDK fork mode: local configuration rejects any mode other than its `fresh` default, and preparation rejects `fork`. Per call, its `task` wrapper can add selected catalog tools to a named local subagent without replacing configured tools; it rejects duplicate or unavailable selections.
 

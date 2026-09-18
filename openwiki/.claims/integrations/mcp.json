@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:65f4cf51bd392fbff3520bbeb7a094778c6783486901b83de21be002cd751bd7",
+  "pageVersion": "sha256:c6f32953535cf788d56df15e1f5d24423fbcfc284b955e8b891241e2b081e51c",
   "claims": [
     {
       "id": "claim_d5aa81de837946b19d18c6953cbc5d84",
@@ -8,11 +8,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_auth.py",
-          "version": "repo-file-v1:sha256:666a7951022945a61f4af7e6d2d6896d2f89660353baa38f8a93c82592373849"
+          "version": "repo-file-v1:sha256:b079639cdd1b7bca8fd369296a4c89a6827783ac82a70d261efbfe60b98c939e"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py",
-          "version": "repo-file-v1:sha256:e56422fa24aef2bf9ad61f156b749dfa451e6ef38f80176c236633a315a418d7"
+          "version": "repo-file-v1:sha256:0d101f93b0e632c70cbaac5195b0d45422dce9a3ec48d7a316fe5ee37203b2e0"
         }
       ]
     },
@@ -22,7 +22,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -56,7 +56,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -70,7 +70,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         }
       ]
     },
@@ -80,21 +80,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/plugins/adapters/mcp.py",
           "version": "repo-file-v1:sha256:783fbd1323810422ada21dc0d22b954e6b53c20189bad7c800b48941bc7cf434"
-        }
-      ]
-    },
-    {
-      "id": "claim_e25a71412d574c5dbad59b230bf70b6e",
-      "statement": "dcode performs bounded-concurrency preflight and throwaway-session discovery, isolates setup, discovery, and conversion failures per server, preserves status order, and sorts returned tools by name.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
         }
       ]
     },
@@ -104,25 +94,15 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/auto_mode.py",
-          "version": "repo-file-v1:sha256:b3820bdba2ab9519abfe8220708d5a13a5efcc7768dae0861042c613cddd5e4d"
+          "version": "repo-file-v1:sha256:aa5505d2df5dad53c911baa19cd7c6dbe675213814cdc60accd290bb807d05cb"
         },
         {
           "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
+          "version": "repo-file-v1:sha256:efd50e5a43879fe8662f2986821296f0370a4283443cb4497d2384e67445c2d0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
           "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
-        }
-      ]
-    },
-    {
-      "id": "claim_578c261ed0ff435198bec4450121d211",
-      "statement": "`MCPSessionManager` creates one lazy persistent session per server for runtime calls, rejects incompatible reconfiguration after sessions exist, and cleanup closes entries concurrently with a five-second per-server bound before rejecting further creation.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:fc08b5b0ec8052423cb27fc348ab3cdd7c4fffa5bab86f9fba279edc45b31ec7"
         }
       ]
     },
@@ -150,11 +130,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -164,15 +144,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -182,7 +162,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py",
@@ -190,11 +170,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -204,11 +184,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_mcp_config.py",
-          "version": "repo-file-v1:sha256:96f1d0d8ece96fba82491ae16c4b77ffd08e1adb4388efcdf3da20ec0dbaf3c3"
+          "version": "repo-file-v1:sha256:cd2e39b982d43391e4ea321148740203cf408055608ddc01b70d7cdc33adbd10"
         }
       ]
     },
@@ -218,11 +198,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:de13f4c9e13e3a0f74378b0cf8a109223daa748da42272d95714aaaa3b7edc9e"
+          "version": "repo-file-v1:sha256:fb1b78795da6c1bffee77cc24206203edd1e82a81f1d222284f7f8f9ae132a1d"
         },
         {
           "resource": "repo://libs/talon/tests/test_mcp.py",
-          "version": "repo-file-v1:sha256:03738f2584fea4afc2c342643844103addf9cf1db72eec3266fc56c58f02cefd"
+          "version": "repo-file-v1:sha256:ae5ab4c31e6dcd651a894b1ce00b5ab9f6badd1fa7be951cec5ff39b976cf6cb"
         }
       ]
     },
@@ -242,7 +222,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
         }
       ]
     },
@@ -252,13 +232,77 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_config.py",
-          "version": "repo-file-v1:sha256:4253392fa1daea93dcb6f98eed453940269231362cd8ee4ee93da728161d7e4c"
+          "version": "repo-file-v1:sha256:2f071df550199df33d5067550663cbfc986174aa160018a2c2c08b91951a40ff"
+        }
+      ]
+    },
+    {
+      "id": "claim_3efe0e1ed56242e1abb9234fb4d2e9a3",
+      "statement": "dcode connects and discovers configured backends with bounded concurrency, isolates connection failures by server, mounts healthy stateful proxy backends behind one router, and exposes server-prefixed tools sorted by name.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L1848-L1945",
+          "version": "repo-lines-v1:sha256:542ff945f8be20f3edb8b99b852a295a0b90d0668c0c416c1fa9a37a0b6c2c24:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyYTBkMjY4MTQ5ZWNmMDhiYjEzOTZiZDc2ZGI5NDgzYzUxZGQ3YjYxYTUyMWEyZWY2ZTEwZjhiMTc1NjY5MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzYjIyMzQzZTljNzU1OTIzM2RjNDZkY2VhNTg5OTY1OGY2Yzg2YTczMTRmYTQ2MjA5OGYyOTI4YWY2YWQzZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2YjE4NzA3MzRhZTA3MzA5ZjA5OTNhMTM3Njc2Y2RlMDYyYTE5NzA5NDMyOGRhYzJkNjQwYTNmOWZhMTM3NDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhYjQ4ZGU0ZjIxZWM4MGE2NGI3MjkwZGU4MzY3N2ZiZmVkODk5NmYwYjg4NWZkNzdjMjEzMDRmMzQ1ZGE4NmUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2032-L2049",
+          "version": "repo-lines-v1:sha256:073409687fa601f64906dd4223b92454b922684e164c968833ca8ac5052de09b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NDYxZDVjMTY4NjFjNGYyYWIwNjAzYzY0M2IwZjk4ZWYwOTAwOWE4ZGJiNjYzY2U3ODFlNGNhN2NiZmU5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNTg3ZTEzZTRkMGI5ZTM3ODM0Y2Q1NDQ0YTU1OTAyN2QxYmU3Yjc1MTZmZTk3NDZjYmI2NzJmYTY1MzliYTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhZDNkOTM5YjNlMDNmZjBlN2JkZTc1NWYzMzI0YmFhODM2ZWU4YjkwNGZjYTZmNWNmNzk1OWMzNjAyYTllNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4YWQ2OWQzNzZjOWE5MTBhMmQ4MmVhYzY4ZmVlZTE1N2EzYzJkNTBjNDI0MmFjNzdlNzA5YTFjMTMwM2U0NDcifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_lifecycle.py#L204-L229",
+          "version": "repo-lines-v1:sha256:204bb57b60e515515b8cf7264dd19493f49ece601b9c2f2a32e9faf5874fc62b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4ZDgzZDAxOGIxYzBlOTc1NDc5ZjQxZmQ2YWZjN2ZmZDZmNTdiYjZiMDcxNWZhMmIwNzdjZjU1YzlkMWQ5ZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2YjQ0MzVjYmNiZTg3N2YwMTliMDA2YzU4OTQwOTA3MDI5NTE1YzNiMmY1OThmZjQwNDJmMjFlNjkwZWI5YmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlZDZlYzhkMDhlOTk5MjMzYTE1YmVmZjVmZTE4OWRhMDM4ZTk3NzczZGNhMTQ1OGNkM2RmMDcyNzZjNjU2MTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjMTFmNTY4MTYwYTY0NzFhNjA2NWQ0M2Q1MTE0NjliMDQ2MTczOTBlNTFiZjdjYTg5ZTZjZDE2MjdiMDRiYzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5a42351e505b43aa92a89d343ac8fadf",
+      "statement": "dcode's `MCPSessionManager` owns adopted router clients and backend stacks until cleanup; normal loads retain live backend connections, `stateless=True` opens a fresh session per tool call, and cleanup is bounded while completing before cancellation propagates.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2032-L2049",
+          "version": "repo-lines-v1:sha256:073409687fa601f64906dd4223b92454b922684e164c968833ca8ac5052de09b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NDYxZDVjMTY4NjFjNGYyYWIwNjAzYzY0M2IwZjk4ZWYwOTAwOWE4ZGJiNjYzY2U3ODFlNGNhN2NiZmU5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNTg3ZTEzZTRkMGI5ZTM3ODM0Y2Q1NDQ0YTU1OTAyN2QxYmU3Yjc1MTZmZTk3NDZjYmI2NzJmYTY1MzliYTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhZDNkOTM5YjNlMDNmZjBlN2JkZTc1NWYzMzI0YmFhODM2ZWU4YjkwNGZjYTZmNWNmNzk1OWMzNjAyYTllNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4YWQ2OWQzNzZjOWE5MTBhMmQ4MmVhYzY4ZmVlZTE1N2EzYzJkNTBjNDI0MmFjNzdlNzA5YTFjMTMwM2U0NDcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L295-L389",
+          "version": "repo-lines-v1:sha256:34823058a7b6be604b12d5f280656b6301022fb11df45219e0485a5aef7dd679:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1MzNkOTM2ZWI1MTQ2MzlkNzBjNWQzZDMxMTI2M2ZkZWFlMmYwN2M0MjkxOTkwY2E2YTIxNWJiNTAxOTE4MmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkNTBkMDI2NjBhMWE5YmY3YWI1MTQzMGVlYzA1NTZiMGFkZDQyZTdlMDAzN2M1ZGQ3YzkxNTgzZjY4NWZjYzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0MGMxMTA5Njg1MDRkOTMxMmJjNWY4MjcxMzRmNzM5ZmE1M2MxODRiMzcyNWRiZmJlYmUzNWQ1NTIxOTVlMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZmI4YTI0MzVhYTcwYTIwYjgzYzAwNzA4YWI0ZDViNzRhODc2ZjcwYmU1OGY3MTdkMDE5MmFiY2VhMWViYTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_lifecycle.py#L87-L172",
+          "version": "repo-lines-v1:sha256:fcf58ee08240c0e31fd6a18d1b1bfc848139f414ac228613bf161b9d186bd82e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5ZWUzODliM2JhYjY0M2Y2NjdkZGYzNGVlYzkyMWQxZmJiN2I4N2NjOWQyNTVhM2NjODdlYjQ3OTc1NmM0MzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NTRlMGFlZDFhYTdjN2EzMDAzNmE5MTA1OWJiZjU2NTI4YTZkOGNmYTBmNzllNGE5NzU2N2VlYzcwODBkYjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2YjFkMTU5MmMwNDJkYTJhMmM0YjE0MTU3NmVjOWM3ZWUzMzM0NGE3MjUwMzExZTk1MThlZmNiOWViMzIxNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgyMjVjYWQ3ZjA5YmVmMTAxZWFkOWQ4OTg3ODc3NDQ0MzY1YzlkOGU5ZjY3ZGUwYTVhOTdlN2FkNmFiZjBhZmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_25bfbce2396d4ba195b40d4a73c182ef",
+      "statement": "At dcode's proxy boundary, a disconnected backend is invalidated for a later connection, but the failed MCP operation is not replayed and returns an error warning that it may already have completed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_proxy.py#L71-L161",
+          "version": "repo-lines-v1:sha256:05ccff24e81f974db15ce52ec9dcb74fa40841c09bb110e786a757119e593a27:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmMjJlY2E2ZTAwZDBhMTY0MzllMDEzMjUxNzMwNTgwYmEwNTkxMGZhMjk0ZmIxMGE1YmU4ZmNhOTBhY2NkZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNjFjZTliMTJjOGMxZGQwOWU3MTcwMWUzNzU3Mjk3OGU1MWU3YTQ3ZDA4ZDAwYzEwM2JkODE2NmU3NTFjNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_lifecycle.py#L351-L393",
+          "version": "repo-lines-v1:sha256:74a087de0473e201e4b3db7246df4d8b359d0cd954173ae92f9e6e778235549d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNTczMmUzN2FlNjU0MjI2MWRlMDRmODQwODBkMzRmNjc2ZTc3ODU0MjlmOTliYjljYmM4MTdmZDI2OWI1YTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhNDcyMjc2Nzk1MDg4M2MzM2ViNjE3MmYxYmY4N2Y5MTM4MDBmN2E1MDMxYWQ0MDU2OTAzNTQ3NTFjYjczMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxM2JhZTViNDQzMTgzYmZmNTAyOTcxNjk2OGM2YTQ3Y2NmZDMzYzNmOGYxYWE0YWY2ZTJkNzcwMTlmZmM4OTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2NjNmY2NkNzZmY2NiNmY3OTZkMDhjYTQ0NWM0MGRhMGUzNDE4YTkwY2VjNjZiY2VjNDJjZjJmMzFmMTNkNDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_07c9d782baa24210a8d53460a638c45c",
+      "statement": "Talon converts MCP protocol errors into model-visible error results carrying only the server error code and message, deliberately excluding server-provided error data.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp.py#L568-L612",
+          "version": "repo-lines-v1:sha256:2d90e8e0719ffb24cf1d7c4e6e19a7a4f25382344529f29f81ff02f4af84c0b0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhZDMxOGYyMjE5MjM3NzM4YThlNDM0ZjZjZWZhYTdkZjc0MWZhNGQwYTM4ZTFmYjZmYjJhOGQ0NjQ5N2MxYzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliYjI2NGNkYTM4ZmFiMTA2MzJlOTE0MjMzMWQ3YjkwY2I5OGFjOTk1OGE5MjI4NmM4ZGM5MThiNGZlOGFkY2YifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_mcp.py#L346-L377",
+          "version": "repo-lines-v1:sha256:62d14e1f227f436306d84b6ad5e1dd962c1a6f75e1792e2d8f1a44b4cb173deb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljYTMxNjNkMGVkYjgyMmY4YjNhMDBmOTYxMTM0OTg3MTMyYTY1ZTg1ZGY0NmZkNjEwMzBjYTEzNTYzMDRmZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2MmI4ODcyNDU0YWU1Y2MyNDhkMjNjNzllMWEzMTRmNjQ3YjgyMmY2MmIzY2M4MTUxOGY0MWE5OWU3NzQ5NjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1MDA2YmEzNWQzNjk5YWQzMTIzNmRmOTVlYmIyNjM0YjI3NTAzZjNhNTI4MThlOWFkOGJjNzVlNjk4ODJjMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NmJhZjhiY2MwMDA5MzVjMDAwMmMzNzNkNzQ1YWE3M2I3NzVjYzA2MzJkYmQ1MDg1Y2NmYzgzNWVhNDY4OTIifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-18T16:46:37.183Z"
   }
 }

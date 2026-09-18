@@ -1595,6 +1595,9 @@ class _ModelCallRecord:
     scope: str = ""
     """Checkpoint namespace of the graph that owns this request."""
 
+    invocation_id: str = ""
+    """LangChain model run ID shared with streamed fallback chunk IDs."""
+
 
 @dataclass(frozen=True, slots=True)
 class _ModelCallContext:
@@ -1643,6 +1646,7 @@ def _emit_model_usage(
                 "provider": record.provider,
                 "thread_id": context.thread_id,
                 "scope": context.scope,
+                "invocation_id": record.invocation_id,
             }
         )
     except Exception:
@@ -1815,6 +1819,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
                 configured_model=context.configured_model,
                 configured_provider=context.configured_provider,
                 scope=context.scope,
+                invocation_id=str(run_id),
             )
         except Exception:
             # This is the sole entry point for every priced request, so a
@@ -1928,6 +1933,7 @@ def _record_from_response(
     configured_model: str = "",
     configured_provider: str = "",
     scope: str = "",
+    invocation_id: str = "",
 ) -> _ModelCallRecord | None:
     """Build a pricing record from a completed model response.
 
@@ -1939,6 +1945,7 @@ def _record_from_response(
             for a nested call describes the parent, not this request.
         configured_provider: Provider selected for this specific request.
         scope: Checkpoint namespace of the graph that made the request.
+        invocation_id: LangChain run ID for this model invocation.
 
     Returns:
         The record, or `None` when the response carries no usage to price.
@@ -1968,6 +1975,7 @@ def _record_from_response(
         model_name=model_name,
         provider=provider,
         scope=scope,
+        invocation_id=invocation_id,
     )
 
 

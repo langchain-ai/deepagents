@@ -22,6 +22,7 @@ from typing import cast
 
 from rich.style import Style
 
+from deepagents_code._session_stats import ModelInvocationKey
 from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
@@ -4546,7 +4547,9 @@ class TestAttemptLifecycle:
         # rather than being deduped as a replay.
         assert state.stats.request_count == 2
         assert len(state.recorded_usage_requests) == 2
-        assert all(isinstance(key, tuple) for key in state.recorded_usage_requests)
+        assert all(
+            isinstance(key, ModelInvocationKey) for key in state.recorded_usage_requests
+        )
 
     def _lifecycle_state(self, tmp_path: Path, **kwargs: Any) -> StreamState:
         transcripts = TranscriptStore(tmp_path / "transcripts")

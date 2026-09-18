@@ -176,21 +176,21 @@ class RecordedUsage:
     """
 
 
-UsageLedgerKey = str | tuple[Hashable, str]
-"""Key of the recorded-request ledger: a message ID, optionally scoped.
+@dataclass(frozen=True, slots=True)
+class ModelInvocationKey:
+    """Stable identity of one model invocation in the usage ledger."""
 
-A bare message-ID string keys requests recorded without an attempt scope
-(the legacy behavior). When a caller passes `attempt_scope` to
-`record_message_usage`/`record_model_usage_event`, the key is
-`(attempt_scope, message_id)` instead, so a retry that reuses the provider's
-message ID is a separate request while chunks of one attempt still merge.
-Callers that retain this ledger across retries should use this widened key type.
+    value: Hashable
 
-The two shapes coexist in one ledger, so de-duplication cannot rely on the
-key alone: an attempt scope lives for one model call, while a HITL resume pass
-replays messages with no scope open. `finalize_recorded_requests` closes that
-gap by projecting every scoped key down to its bare message ID at each round
-boundary -- see its docstring.
+
+UsageLedgerKey = str | ModelInvocationKey
+"""Key of the recorded-request ledger: a message ID or model invocation.
+
+Lifecycle attempt identities are preferred because provider and LangChain IDs
+can differ across chunks and the completed callback for one response. The
+LangChain model run ID is the fallback invocation identity when no attempt is
+open. Bare message IDs preserve compatibility when neither identity exists and
+also reject replayed messages after a stream round is finalized.
 """
 
 ModelStatsKey = tuple[str, str]
@@ -453,6 +453,9 @@ class RecordedRequest:
     round. A later chunk for a finalized request is a replay, not a revision.
     """
 
+    message_ids: frozenset[str] = frozenset()
+    """Provider and framework message IDs observed for this invocation."""
+
 
 def finalize_recorded_requests(
     recorded_requests: dict[UsageLedgerKey, RecordedRequest],
@@ -482,8 +485,8 @@ def finalize_recorded_requests(
     for request_id, recorded in list(recorded_requests.items()):
         closed = recorded if recorded.finalized else replace(recorded, finalized=True)
         recorded_requests[request_id] = closed
-        if isinstance(request_id, tuple):
-            recorded_requests[request_id[1]] = closed
+        for message_id in closed.message_ids:
+            recorded_requests[message_id] = closed
 
 
 def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
@@ -510,10 +513,24 @@ def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
     """
     if request_id is None:
         return None
-    if isinstance(request_id, tuple):
-        attempt_scope, message_id = request_id
-        return f"{attempt_scope!r}\x00{message_id}"
+    if isinstance(request_id, ModelInvocationKey):
+        return repr(request_id.value)
     return request_id
+
+
+def _usage_ledger_key(
+    message_id: str | None,
+    attempt_scope: Hashable | None,
+    invocation_id: str | None,
+) -> UsageLedgerKey | None:
+    """Return the strongest identity available for one model invocation."""
+    if attempt_scope is not None:
+        return ModelInvocationKey(attempt_scope)
+    if invocation_id:
+        return ModelInvocationKey(invocation_id)
+    if message_id and message_id.startswith("lc_run--"):
+        return ModelInvocationKey(message_id.removeprefix("lc_run--"))
+    return message_id
 
 
 def _names_a_model(message: object) -> bool:
@@ -783,6 +800,7 @@ def _move_request_to_named_model(
         cost_usd=cost_usd,
         usage_metadata=previous.usage_metadata,
         finalized=previous.finalized,
+        message_ids=previous.message_ids,
     )
     return _cost_delta(
         previous.cost_usd,
@@ -887,6 +905,12 @@ def _finalize_from_completed(
         cost_usd=cost_usd,
         usage_metadata=usage,
         finalized=True,
+        message_ids=previous.message_ids
+        | (
+            frozenset({message_id})
+            if (message_id := getattr(message, "id", None))
+            else frozenset()
+        ),
     )
     return RecordedUsage(
         input_tokens=input_count - previous.input_tokens,
@@ -913,6 +937,7 @@ def record_message_usage(
     kind: UsageKind = "assistant",
     recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
     attempt_scope: Hashable | None = None,
+    invocation_id: str | None = None,
 ) -> RecordedUsage | None:
     """Record usage attached to one streamed model message.
 
@@ -947,13 +972,12 @@ def record_message_usage(
             this specific request, when available.
         kind: Request class used by the type breakdown.
         recorded_requests: Ledger of requests this stream consumer has already
-            recorded, keyed by message ID -- or by `(attempt_scope, message_id)`
-            when `attempt_scope` is set. Mutated in place.
-        attempt_scope: Identity of the attempt that produced this message, or
-            `None` for legacy unscoped recording. Retries of one logical request
-            can reuse the provider's message ID; scoping keeps each attempt's
-            usage separate, while chunks and corrections of one attempt (same
-            scope, same ID) still merge into a single request.
+            recorded, keyed by stable invocation identity when available and by
+            message ID otherwise. Mutated in place.
+        attempt_scope: Lifecycle identity of the attempt that produced this
+            message. Keeps retries distinct when no model run ID is available.
+        invocation_id: LangChain model run ID shared by streaming and callback
+            deliveries for this invocation. Preferred over provider message IDs.
 
     Returns:
         The tokens and cost *this message* contributed, or `None` when it has no
@@ -972,12 +996,11 @@ def record_message_usage(
 
     if recorded_requests is None:
         recorded_requests = {}
-    message_id = getattr(message, "id", None)
-    request_id: UsageLedgerKey | None = (
-        message_id if isinstance(message_id, str) and message_id else None
+    raw_message_id = getattr(message, "id", None)
+    message_id = (
+        raw_message_id if isinstance(raw_message_id, str) and raw_message_id else None
     )
-    if request_id is not None and attempt_scope is not None:
-        request_id = (attempt_scope, request_id)
+    request_id = _usage_ledger_key(message_id, attempt_scope, invocation_id)
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
         previous = recorded_requests[request_id]
@@ -1102,6 +1125,8 @@ def record_message_usage(
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,
+            message_ids=(previous.message_ids if previous else frozenset())
+            | (frozenset({message_id}) if message_id else frozenset()),
         )
     # Provisional pricing needs this message's delta, while the context display
     # needs the request's running token total after folding the message in.
@@ -1176,6 +1201,7 @@ def record_model_usage_event(
         )
         return None
     request_id = data.get("request_id")
+    invocation_id = data.get("invocation_id")
     thread_id = data.get("thread_id")
     scope = data.get("scope")
     usage = data.get("usage_metadata")
@@ -1183,6 +1209,7 @@ def record_model_usage_event(
     if (
         not isinstance(request_id, str)
         or not request_id
+        or (invocation_id is not None and not isinstance(invocation_id, str))
         or not isinstance(thread_id, str)
         or not thread_id
         or not isinstance(scope, str)
@@ -1220,6 +1247,7 @@ def record_model_usage_event(
         kind="subagent",
         recorded_requests=recorded_requests,
         attempt_scope=attempt_scope,
+        invocation_id=invocation_id or None,
     )
 
 

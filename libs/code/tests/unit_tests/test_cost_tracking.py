@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, create_autospec, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from deepagents.backends import StateBackend
@@ -24,8 +24,19 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+    LLMResult,
+)
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -34,6 +45,11 @@ from langgraph.types import Command, Overwrite
 
 from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
+from deepagents_code._session_stats import (
+    SessionStats,
+    record_message_usage,
+    record_model_usage_event,
+)
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
     _RECORDER_VAR,
@@ -48,12 +64,15 @@ from deepagents_code.cost_tracking import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from pathlib import Path
 
     from genai_prices import UpdatePrices
     from genai_prices.types import Provider
-    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.callbacks import (
+        AsyncCallbackManagerForLLMRun,
+        CallbackManagerForLLMRun,
+    )
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
@@ -938,8 +957,10 @@ class TestSessionCostRecorder:
                 "provider": KNOWN_PROVIDER,
                 "thread_id": THREAD_ID,
                 "scope": "tools:task",
+                "invocation_id": str(events[0]["invocation_id"]),
             }
         ]
+        UUID(events[0]["invocation_id"])
         assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
             "child-1"
         ]
@@ -1066,6 +1087,24 @@ class _QueuedFakeModel(_ToolBindingFakeModel):
 def _fake_model(*messages: AIMessage) -> _QueuedFakeModel:
     """Build a fake model that returns the given responses in order."""
     return _QueuedFakeModel(queue=iter(messages))
+
+
+class _ResponsesStyleStreamingModel(_QueuedFakeModel):
+    """Emit a provider ID first and usage on an ID-less final chunk."""
+
+    disable_streaming: bool = False
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", id="resp_child"))
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(content="done", usage_metadata=_usage())  # ty: ignore[invalid-argument-type]
+        )
 
 
 def _repeating_fake_model(message_id_prefix: str) -> _QueuedFakeModel:
@@ -1245,6 +1284,84 @@ class TestGraphCostOwnership:
             middleware=stack,
             checkpointer=InMemorySaver(),
         )
+
+    async def test_responses_style_stream_and_callback_share_invocation_id(
+        self,
+    ) -> None:
+        child = create_agent(
+            model=_ResponsesStyleStreamingModel(queue=iter(())),
+            tools=[],
+            middleware=[CostTrackingMiddleware(nested=True)],
+        )
+
+        @tool
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run the mixed-ID child model."""
+            result = await child.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        agent = self._agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="parent-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[{"name": "task", "args": {"query": "go"}, "id": "t1"}],
+                ),
+                _message(_usage(), message_id="parent-2"),
+            ),
+            tools=[task],
+        )
+        messages: list[AIMessageChunk] = []
+        usage_events: list[dict[str, Any]] = []
+
+        async for namespace, mode, data in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode=["messages", "custom"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            if namespace and mode == "messages":
+                message, _metadata = data
+                if isinstance(message, AIMessageChunk):
+                    messages.append(message)
+            elif (
+                namespace
+                and isinstance(data, dict)
+                and data.get("type") == MODEL_USAGE_EVENT_TYPE
+            ):
+                usage_events.append(data)
+
+        usage_chunk = next(message for message in messages if message.usage_metadata)
+        assert usage_chunk.id is not None
+        assert usage_chunk.id.startswith("lc_run--")
+        assert usage_events[0]["request_id"] == "resp_child"
+        assert usage_events[0]["invocation_id"] == usage_chunk.id.removeprefix(
+            "lc_run--"
+        )
+
+        stats = SessionStats()
+        ledger = {}
+        record_message_usage(
+            stats,
+            usage_chunk,
+            kind="subagent",
+            recorded_requests=ledger,
+        )
+        record_model_usage_event(
+            stats,
+            usage_events[0],
+            active_thread_id=THREAD_ID,
+            recorded_requests=ledger,
+        )
+        assert stats.request_count == 1
+        assert stats.input_tokens == _usage()["input_tokens"]
+        assert stats.output_tokens == _usage()["output_tokens"]
+        assert stats.per_kind["subagent"].request_count == 1
 
     async def test_streamed_total_matches_the_checkpoint(self) -> None:
         agent = self._agent(model=_fake_model(_message(_usage(), message_id="a")))

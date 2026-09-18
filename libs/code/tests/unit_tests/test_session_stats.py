@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from deepagents_code._session_stats import (
+    ModelInvocationKey,
     ModelStats,
     RecordedRequest,
     SessionStats,
@@ -461,12 +462,11 @@ class TestRecordMessageUsage:
         # on the dollars attempt 2 just deposited.
         assert finalized.request_id != retry.request_id
         assert finalized.request_id is not None
-        assert "run-1" in finalized.request_id
         assert stats.request_count == 2
         assert stats.input_tokens == 1_900
         assert stats.output_tokens == 30
-        assert ledger[1, "run-1"].finalized is True
-        assert ledger[2, "run-1"].finalized is False
+        assert ledger[ModelInvocationKey(1)].finalized is True
+        assert ledger[ModelInvocationKey(2)].finalized is False
 
     def test_missing_response_model_uses_request_specific_configured_model(
         self, monkeypatch: pytest.MonkeyPatch
@@ -862,6 +862,86 @@ class TestRecordModelUsageEvent:
         assert stats.per_kind["subagent"].request_count == 1
         assert stats.cache_read_tokens == 800
         assert ("openai", "gpt-5.5") in stats.per_model
+
+    @pytest.mark.parametrize("completion_first", [False, True])
+    def test_deduplicates_mixed_response_ids_by_invocation(
+        self, completion_first: bool
+    ) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        invocation_id = "00000000-0000-0000-0000-000000000123"
+        chunk = AIMessageChunk(
+            content="",
+            id=f"lc_run--{invocation_id}",
+            usage_metadata={
+                "input_tokens": 900,
+                "output_tokens": 90,
+                "total_tokens": 990,
+            },
+        )
+        event = self._event() | {
+            "request_id": "resp_child",
+            "invocation_id": invocation_id,
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+                "input_token_details": {"cache_read": 800},
+            },
+        }
+
+        calls = (
+            (
+                lambda: record_model_usage_event(
+                    stats,
+                    event,
+                    active_thread_id="thread-1",
+                    recorded_requests=ledger,
+                ),
+                lambda: record_message_usage(
+                    stats, chunk, kind="subagent", recorded_requests=ledger
+                ),
+            )
+            if completion_first
+            else (
+                lambda: record_message_usage(
+                    stats, chunk, kind="subagent", recorded_requests=ledger
+                ),
+                lambda: record_model_usage_event(
+                    stats,
+                    event,
+                    active_thread_id="thread-1",
+                    recorded_requests=ledger,
+                ),
+            )
+        )
+        first, second = (call() for call in calls)
+
+        assert first is not None
+        assert second is None if completion_first else second is not None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+        assert stats.cache_read_tokens == 800
+        assert stats.per_kind["subagent"].request_count == 1
+
+        finalize_recorded_requests(ledger)
+        assert (
+            record_model_usage_event(
+                stats,
+                event,
+                active_thread_id="thread-1",
+                recorded_requests=ledger,
+            )
+            is None
+        )
+        assert (
+            record_message_usage(
+                stats, chunk, kind="subagent", recorded_requests=ledger
+            )
+            is None
+        )
+        assert stats.request_count == 1
 
     def test_deduplicates_with_ordinary_message(self) -> None:
         stats = SessionStats()

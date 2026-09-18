@@ -1866,10 +1866,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ("grep", self._create_grep_tool),
             ("execute", self._create_execute_tool),
         )
-        # Excluded tools are omitted here entirely, not just hidden from the
-        # model's schema, so a tool name outside `tools=` never reaches the
-        # dispatchable tool node
-        self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
+        unsupported, _, _ = self._unsupported_tools_and_execution_state({name for name, _ in tool_factories})
+        # Excluded and backend-unsupported tools are omitted here entirely, not
+        # just hidden from the model's schema, so they never reach ToolNode.
+        self.tools = [
+            factory() for name, factory in tool_factories if name not in unsupported and (self._enabled_tools is None or name in self._enabled_tools)
+        ]
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""

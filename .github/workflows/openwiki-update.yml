@@ -112,8 +112,9 @@ jobs:
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "head-sha=$head_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Enable auto-merge
+      - name: Merge OpenWiki update pull request
         if: ${{ steps.create-pr.outputs.number != '' }}
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.number }}
@@ -122,15 +123,40 @@ jobs:
           EXPECTED_HEAD: ${{ github.repository_owner }}:openwiki/update
         run: |
           set -euo pipefail
-          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
-          [[ "$EXPECTED_BASE" == "main" ]]
-          [[ "$EXPECTED_HEAD" == "${GITHUB_REPOSITORY_OWNER}:openwiki/update" ]]
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$EXPECTED_BASE" == "main" ]] || exit 1
+          [[ "$EXPECTED_HEAD" == "${GITHUB_REPOSITORY_OWNER}:openwiki/update" ]] || exit 1
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
 
-          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
-          [[ "$(jq -r '.base.ref' <<< "$pr")" == "$EXPECTED_BASE" ]]
-          [[ "$(jq -r '.head.label' <<< "$pr")" == "$EXPECTED_HEAD" ]]
-          [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" == "$GITHUB_REPOSITORY" ]]
-          [[ "$(jq -r '.head.sha' <<< "$pr")" == "$HEAD_SHA" ]]
+          for ((attempt = 1; attempt <= 60; attempt++)); do
+            pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+            [[ "$(jq -r '.base.ref' <<< "$pr")" == "$EXPECTED_BASE" ]] || exit 1
+            [[ "$(jq -r '.head.label' <<< "$pr")" == "$EXPECTED_HEAD" ]] || exit 1
+            [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" == "$GITHUB_REPOSITORY" ]] || exit 1
+            [[ "$(jq -r '.head.sha' <<< "$pr")" == "$HEAD_SHA" ]] || exit 1
+            if ! jq -e '.state == "open" and .mergeable != false' <<< "$pr" > /dev/null; then
+              echo "::error::OpenWiki PR is closed or has merge conflicts."
+              exit 1
+            fi
 
-          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"
+            if response="$(gh api --include --method PUT \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
+              -f merge_method=squash -f sha="$HEAD_SHA")"; then
+              response="${response//$'\r'/}"
+              jq -e '.merged == true' <<< "${response#*$'\n\n'}" > /dev/null
+              echo "Merged OpenWiki PR #${PR_NUMBER}."
+              exit 0
+            fi
+
+            response="${response//$'\r'/}"
+            status="${response%%$'\n'*}"
+            printf '%s\n' "${response#*$'\n\n'}"
+            [[ "$status" =~ ^HTTP/[^[:space:]]+[[:space:]]+405([[:space:]]|$) ]] || exit 1
+            if ((attempt < 60)); then
+              echo "Merge requirements not yet satisfied; retrying in 15 seconds (${attempt}/60)."
+              sleep 15
+            fi
+          done
+
+          echo "::error::OpenWiki PR still cannot be merged after 60 attempts."
+          exit 1

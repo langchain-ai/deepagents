@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
@@ -688,6 +689,9 @@ class StatusBar(Vertical):
         self.cache_input_tokens = 0
         self.cache_read_tokens = 0
         self.cache_write_tokens = 0
+        self.cache_written_at: datetime | None = None
+        self.cache_expires_at: datetime | None = None
+        self._cache_timer: Timer | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
             "agent": "",
             "hooks": "",
@@ -735,8 +739,9 @@ class StatusBar(Vertical):
             self.query_one("#cwd-display", CwdLabel).display = visible
 
     def on_unmount(self) -> None:
-        """Stop the spinner timer so it can't tick on a detached widget."""
+        """Stop timers so they can't tick on a detached widget."""
         self._stop_spinner()
+        self._stop_cache_timer()
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -1120,13 +1125,48 @@ class StatusBar(Vertical):
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"
         )
+        timing = self._cache_timing_segment()
         return Content.assemble(
             Content.styled("Cache", colors.muted),
             " ",
             hit_rate,
             f" {get_glyphs().bullet} " if hit_rate.plain else "",
             details,
+            f" {get_glyphs().bullet} " if timing else "",
+            timing,
         )
+
+    def _cache_timing_segment(self) -> str:
+        """Format the last cache write and remaining retention window.
+
+        Returns:
+            Compact local timestamp and cache-bust countdown.
+        """
+        if self.cache_written_at is None:
+            return ""
+        written = self.cache_written_at.astimezone().strftime("%H:%M:%S")
+        if self.cache_expires_at is None:
+            return f"wrote {written}"
+        remaining = max(
+            0, int((self.cache_expires_at - datetime.now(UTC)).total_seconds())
+        )
+        minutes, seconds = divmod(remaining, 60)
+        return f"wrote {written} / bust {minutes}:{seconds:02d}"
+
+    def _stop_cache_timer(self) -> None:
+        """Stop the cache countdown timer."""
+        if self._cache_timer is not None:
+            self._cache_timer.stop()
+            self._cache_timer = None
+
+    def _tick_cache_timer(self) -> None:
+        """Refresh the cache countdown and stop once it reaches zero."""
+        self._refresh_metrics()
+        if (
+            self.cache_expires_at is not None
+            and datetime.now(UTC) >= self.cache_expires_at
+        ):
+            self._stop_cache_timer()
 
     def _cost_text(self) -> str:
         """Format cumulative cost, including the initial zero state.
@@ -1215,6 +1255,25 @@ class StatusBar(Vertical):
         self.cache_input_tokens = inputs
         self.cache_read_tokens = reads
         self.cache_write_tokens = writes
+        self._refresh_metrics()
+
+    def set_cache_timing(
+        self, written_at: datetime | None, *, ttl_seconds: int | None = None
+    ) -> None:
+        """Set the last cache write time and optional retention countdown."""
+        self._stop_cache_timer()
+        self.cache_written_at = written_at
+        self.cache_expires_at = (
+            datetime.fromtimestamp(written_at.timestamp() + ttl_seconds, UTC)
+            if written_at is not None and ttl_seconds is not None and ttl_seconds > 0
+            else None
+        )
+        if (
+            self.cache_expires_at is not None
+            and self.cache_expires_at > datetime.now(UTC)
+            and self._running
+        ):
+            self._cache_timer = self.set_interval(1.0, self._tick_cache_timer)
         self._refresh_metrics()
 
     def set_cost(self, cost_usd: float) -> None:

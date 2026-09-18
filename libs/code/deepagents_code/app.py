@@ -8956,6 +8956,8 @@ class DeepAgentsApp(App):
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
+        if self._status_bar is not None:
+            self._status_bar.set_cache_timing(None)
         self._session_cost_warning_shown = False
         self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
@@ -9365,6 +9367,30 @@ class DeepAgentsApp(App):
                 "request records a fresh one",
                 type(raw_endpoint).__name__,
             )
+
+    def _refresh_cache_timing(self) -> None:
+        """Show timing for a cache write observed in the latest turn."""
+        if self._status_bar is None or not self._last_model_request_at:
+            return
+        from deepagents_code.cold_cache import (
+            parse_cache_timestamp,
+            resolve_prompt_cache_policy,
+        )
+
+        timestamp = parse_cache_timestamp(self._last_model_request_at)
+        policy = (
+            resolve_prompt_cache_policy(
+                self._last_cache_model_spec,
+                self._last_cache_model_params,
+                base_url=None,
+            )
+            if self._last_cache_endpoint == "default"
+            else None
+        )
+        self._status_bar.set_cache_timing(
+            timestamp,
+            ttl_seconds=policy.window_seconds if policy is not None else None,
+        )
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -18973,6 +18999,8 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+                if turn_stats.cache_write_tokens > 0:
+                    self._refresh_cache_timing()
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,
@@ -18981,6 +19009,8 @@ class DeepAgentsApp(App):
                 # very next send report "no record of when this thread last
                 # reached the model" seconds after a turn that plainly did.
                 await self._stamp_cache_identity_locally()
+                if turn_stats.cache_write_tokens > 0:
+                    self._refresh_cache_timing()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

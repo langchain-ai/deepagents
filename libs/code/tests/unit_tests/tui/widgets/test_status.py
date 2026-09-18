@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -281,6 +282,36 @@ class TestTokenDisplay:
 
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
+
+
+class TestCacheTimingDisplay:
+    """Tests for cache write timing in the status bar."""
+
+    async def test_shows_last_write_and_bust_countdown(self) -> None:
+        async with StatusBarApp().run_test(size=(160, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            written_at = datetime.now(UTC) - timedelta(seconds=30)
+            bar.set_cache_tokens(1000, 2000, input_tokens=3000)
+            bar.set_cache_timing(written_at, ttl_seconds=300)
+            await pilot.pause()
+
+            rendered = str(pilot.app.query_one("#cache-display").render())
+            assert f"wrote {written_at.astimezone():%H:%M:%S}" in rendered
+            assert "bust 4:2" in rendered
+            assert bar._cache_timer is not None
+
+    async def test_clear_stops_countdown(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(1000, 2000, input_tokens=3000)
+            bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
+            assert bar._cache_timer is not None
+
+            bar.set_cache_timing(None)
+            await pilot.pause()
+
+            assert bar._cache_timer is None
+            assert "wrote" not in str(pilot.app.query_one("#cache-display").render())
 
 
 class TestStatusMessageVisibility:

@@ -21,7 +21,7 @@ _SOURCE = Path(__file__).resolve().parents[2] / "deepagents_talon/steel_runtime"
 _SERVER = """
 const { createBridge } = await import(process.argv[1]);
 const { Coordinator } = await import(process.argv[2]);
-const coordinator = new Coordinator({ operator: 'op', identities: { telegram: 'sender' } });
+const coordinator = new Coordinator();
 const create = coordinator.create.bind(coordinator);
 coordinator.create = (...args) => {
   create(...args);
@@ -68,8 +68,6 @@ async def bridge_client(tmp_path, monkeypatch):
             {
                 "AGENT_ASSISTANT_ID": "test",
                 "TALON_BROWSER_ENABLED": "true",
-                "TALON_BROWSER_OPERATOR_ID": "op",
-                "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
                 "TALON_BROWSER_TOKEN_FILE": str(token),
             },
             base_home=tmp_path,

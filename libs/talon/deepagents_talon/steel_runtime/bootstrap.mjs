@@ -142,10 +142,8 @@ try {
   await server.listen({ host: "127.0.0.1", port: Number(process.env.PORT) });
   await firstLaunch;
   if (!service?.wsEndpoint) throw failure("browser_not_ready");
-  if (process.env.TALON_BROWSER_IDENTITIES) {
-    const { main } = await import('./bridge.mjs');
-    bridge = await main();
-  }
+  const { main } = await import('./bridge.mjs');
+  bridge = await main();
   process.stdout.write('{"event":"talon_steel_ready"}\n');
 } catch {
   await stop(1);

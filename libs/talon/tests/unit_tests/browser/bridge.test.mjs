@@ -10,8 +10,8 @@ import { tmpdir } from 'node:os';
 import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 import { createBridge, discover, Transport, readToken, MAX_BYTES } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
-const owner = { operator_id: 'op', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
-const make = () => new Coordinator({ operator: 'op', identities: { telegram: 'sender' } });
+const owner = { run_id: 'run', background: false };
+const make = () => new Coordinator();
 class Socket extends EventEmitter {
   constructor() { super(); this.readyState = 1; this.sent = []; queueMicrotask(() => this.emit('open')); }
   send(value) { this.sent.push(JSON.parse(value)); }
@@ -74,7 +74,7 @@ test('HTTP route isolation, auth, dedup and late response fencing', async () => 
     const lease = await (await fetch(`${control}/internal/browser/actions`, { method: 'POST', headers, body: JSON.stringify({ action: 'acquire', owner, request_id: 'a' }) })).json();
       for (const [payload, status] of [
         [{ action: 'nonsense', owner, request_id: 'bad' }, 400],
-        [{ action: 'acquire', owner: { ...owner, sender_id: 'other' }, request_id: 'bad' }, 403],
+        [{ action: 'acquire', owner: { ...owner, run_id: null }, request_id: 'bad' }, 403],
         [{ action: 'acquire', owner: { ...owner, run_id: 'other' }, request_id: 'bad' }, 409],
       ]) {
         const response = await fetch(`${control}/internal/browser/actions`, { method: 'POST', headers, body: JSON.stringify(payload) });

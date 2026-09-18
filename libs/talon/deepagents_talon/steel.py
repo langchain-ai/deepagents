@@ -8,7 +8,9 @@ import json
 import math
 import os
 import secrets
+import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +22,18 @@ _READY = b'{"event":"talon_steel_ready"}\n'
 _SHUTDOWN_TIMEOUT = 30
 _MAX_PORT = 65535
 _BOOTSTRAP = Path(__file__).with_name("steel_runtime") / "bootstrap.mjs"
+
+
+def _default_chrome() -> str:
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "linux":
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            executable = shutil.which(name)
+            if executable:
+                return str(Path(executable).absolute())
+    msg = "Chrome was not found; install Chrome/Chromium or set TALON_BROWSER_CHROME"
+    raise RuntimeError(msg)
 
 
 class SteelProcess:
@@ -37,7 +51,7 @@ class SteelProcess:
             .expanduser()
             .resolve()
         )
-        self.chrome = config.env.get("TALON_BROWSER_CHROME", "")
+        self.chrome = config.env.get("TALON_BROWSER_CHROME") or _default_chrome()
         self.port = int(config.env.get("TALON_BROWSER_PORT", "3000"))
         self.timeout = float(config.env.get("TALON_BROWSER_START_TIMEOUT", "60"))
         if not 1 <= self.port <= _MAX_PORT or not math.isfinite(self.timeout) or self.timeout <= 0:
@@ -48,13 +62,16 @@ class SteelProcess:
             for key, value in config.env.items()
             if key
             in {
-                "TALON_BROWSER_OPERATOR_ID",
-                "TALON_BROWSER_IDENTITIES",
                 "TALON_BROWSER_CONTROL_PORT",
                 "TALON_BROWSER_VIEWER_PORT",
                 "TALON_BROWSER_LEASE_TTL_SECONDS",
             }
         }
+        self._viewer_enabled = config.env.get("TALON_BROWSER_LOCAL_VIEWER", "true")
+        if self._viewer_enabled not in {"true", "false"}:
+            msg = "Invalid TALON_BROWSER_LOCAL_VIEWER"
+            raise ValueError(msg)
+        self._viewer_token = ""
         self._token_path = self.root / "control-token"
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -101,6 +118,8 @@ class SteelProcess:
         return {
             **self._bridge_env,
             "TALON_BROWSER_TOKEN_FILE": str(self._token_path),
+            "TALON_BROWSER_LOCAL_VIEWER": self._viewer_enabled,
+            "TALON_BROWSER_VIEWER_TOKEN": self._viewer_token,
             "PATH": os.defpath,
             "NODE_ENV": "development",
             "HOST": "127.0.0.1",
@@ -127,11 +146,12 @@ class SteelProcess:
         node = self._prepare()
         try:
             self._acquire()
-            if self._bridge_env.get("TALON_BROWSER_IDENTITIES"):
-                self._token_path.unlink(missing_ok=True)
-                fd = os.open(self._token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-                with os.fdopen(fd, "w") as token:
-                    token.write(secrets.token_urlsafe(32))
+            if self._viewer_enabled == "true":
+                self._viewer_token = secrets.token_urlsafe(32)
+            self._token_path.unlink(missing_ok=True)
+            fd = os.open(self._token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            with os.fdopen(fd, "w") as token:
+                token.write(secrets.token_urlsafe(32))
             spawn = asyncio.create_task(self._spawn(node))
             try:
                 self._process = await asyncio.shield(spawn)
@@ -139,9 +159,19 @@ class SteelProcess:
                 self._process = await spawn
                 raise
             await self._ready()
+            self._show_viewer_link()
         except BaseException:
             await self.stop()
             raise
+
+    def _show_viewer_link(self) -> None:
+        if self._viewer_token:
+            port = int(self._bridge_env.get("TALON_BROWSER_VIEWER_PORT", "8080"))
+            # The launch credential goes only to the terminal, never redirected logs.
+            with contextlib.suppress(OSError), Path("/dev/tty").open("w") as terminal:
+                terminal.write(
+                    f"Local browser: http://127.0.0.1:{port}/#token={self._viewer_token}\n"
+                )
 
     async def _spawn(self, node: str) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
@@ -198,6 +228,7 @@ class SteelProcess:
                 await asyncio.gather(self._reader, return_exceptions=True)
                 self._reader = None
             self._process = None
+            self._viewer_token = ""
             if self._lock is not None:
                 self._token_path.unlink(missing_ok=True)
                 os.close(self._lock)

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +16,6 @@ from deepagents_talon import steel
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.runtime import EchoAgentRuntime
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="native Steel requires POSIX")
 
@@ -56,6 +54,43 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TalonConfig:
 def assert_gone(pid: int) -> None:
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.parametrize("chrome", [None, "", "/custom/chrome"])
+def test_chrome_default_and_override(
+    config: TalonConfig, chrome: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "darwin")
+    config.env.pop("TALON_BROWSER_CHROME")
+    if chrome is not None:
+        config.env["TALON_BROWSER_CHROME"] = chrome
+    browser = steel.SteelProcess(config)
+    assert browser._environment()["CHROME_EXECUTABLE_PATH"] == (
+        chrome or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+)
+def test_linux_chrome_discovery(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "linux")
+    monkeypatch.setattr(
+        steel.shutil, "which", lambda candidate: f"/usr/bin/{name}" if candidate == name else None
+    )
+    assert steel._default_chrome() == f"/usr/bin/{name}"
+
+
+@pytest.mark.parametrize("platform", ["linux", "unknown"])
+def test_missing_chrome_requires_override(
+    config: TalonConfig, platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", platform)
+    monkeypatch.setattr(steel.shutil, "which", lambda _: None)
+    assert steel.SteelProcess(config).chrome == sys.executable
+    config.env.pop("TALON_BROWSER_CHROME")
+    with pytest.raises(RuntimeError, match="set TALON_BROWSER_CHROME"):
+        steel.SteelProcess(config)
 
 
 async def test_exclusive_profile_and_restart(config: TalonConfig) -> None:
@@ -166,3 +201,41 @@ async def test_shutdown_during_host_start(config: TalonConfig) -> None:
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_viewer_link_is_terminal_only_and_rotates(
+    config: TalonConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = Path.open
+    terminals: list[io.StringIO] = []
+
+    class Terminal(io.StringIO):
+        def close(self) -> None:
+            pass
+
+    def open_terminal(path: Path, *args: object, **kwargs: object):
+        if path == Path("/dev/tty"):
+            terminal = Terminal()
+            terminals.append(terminal)
+            return terminal
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_terminal)
+    browser = steel.SteelProcess(config)
+    try:
+        await browser.start()
+        first = browser._viewer_token
+        assert len(first) == 43
+        assert bool(terminals[-1].getvalue().endswith(f"/#token={first}\n"))
+        await browser.stop()
+        assert not browser._viewer_token
+        await browser.start()
+        assert bool(browser._viewer_token != first)
+        assert bool(first not in caplog.text)
+        captured = capsys.readouterr()
+        assert bool(first not in captured.out + captured.err)
+    finally:
+        await browser.stop()

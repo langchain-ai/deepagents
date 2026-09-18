@@ -30,7 +30,7 @@ _ACTIVE: contextvars.ContextVar[BrowserRun | None] = contextvars.ContextVar("bro
 
 @dataclass(frozen=True, slots=True, repr=False)
 class BrowserBinding:
-    """Identity supplied by the host route, never by model metadata."""
+    """Optional host route metadata for browser handoff events."""
 
     provider: str
     sender_id: str
@@ -75,8 +75,8 @@ class BrowserRun:
         return self.context.run_id
 
     def owner(self) -> dict[str, object]:
-        """Build the bridge owner from typed host authority."""
-        return {**asdict(self.binding), "operator_id": self.client.operator, "run_id": self.run_id}
+        """Identify the run coordinating access to the shared browser."""
+        return {"run_id": self.run_id, "background": self.binding.background}
 
     async def action(self, action: str) -> dict[str, object]:
         """Perform one non-retried lease transition."""
@@ -177,18 +177,8 @@ class BrowserClient:
     """Fixed-address, bounded, non-retrying browser control client."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
-        """Keep only validated identity settings and a token file path."""
+        """Validate the local control address and token file configuration."""
         try:
-            self.operator = env["TALON_BROWSER_OPERATOR_ID"]
-            identities = json.loads(env["TALON_BROWSER_IDENTITIES"])
-            if not self.operator or not isinstance(identities, dict) or not identities:
-                raise BrowserError
-            if any(
-                not isinstance(k, str) or not isinstance(v, str) or not k or not v
-                for k, v in identities.items()
-            ):
-                raise BrowserError
-            self.identities: dict[str, str] = identities
             self._token_file = env["TALON_BROWSER_TOKEN_FILE"]
             port = int(env.get("TALON_BROWSER_CONTROL_PORT", "8081"))
             if not 1 <= port <= 65535:  # noqa: PLR2004  # TCP port range.
@@ -232,14 +222,10 @@ class BrowserClient:
     def bind(
         self, binding: BrowserBinding | None, handler: BrowserEventHandler | None = None
     ) -> BrowserRun | None:
-        """Deny missing or mismatched explicit sender identities."""
-        if not isinstance(binding, BrowserBinding) or not binding.conversation_id:
-            return None
-        if (
-            not isinstance(binding.background, bool)
-            or not binding.sender_id
-            or self.identities.get(binding.provider) != binding.sender_id
-        ):
+        """Create an independent run for the single shared browser."""
+        if binding is None:
+            binding = BrowserBinding("local", "", "")
+        if not isinstance(binding, BrowserBinding) or not isinstance(binding.background, bool):
             return None
         return BrowserRun(self, binding, None if binding.background else handler)
 

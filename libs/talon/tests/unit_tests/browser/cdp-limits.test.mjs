@@ -4,10 +4,10 @@ import { EventEmitter } from 'node:events';
 import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 import { Transport } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
-const owner = { operator_id: 'op', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
+const owner = { run_id: 'run', background: false };
 
 async function setup() {
-  const c = new Coordinator({ operator: 'op', identities: { telegram: 'sender' } });
+  const c = new Coordinator();
   await c.action({ action: 'acquire', owner, request_id: 'acquire' });
   return c;
 }

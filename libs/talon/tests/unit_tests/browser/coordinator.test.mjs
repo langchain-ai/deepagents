@@ -2,16 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 
-const owner = { operator_id: 'operator', provider: 'telegram', sender_id: 'sender', conversation_id: 'chat', run_id: 'run', background: false };
-const make = (options = {}) => new Coordinator({ operator: 'operator', identities: { telegram: 'sender' }, ...options });
+const owner = { run_id: 'run', background: false };
+const make = (options = {}) => new Coordinator(options);
 const acquire = (c, id = 'acquire') => c.action({ action: 'acquire', owner, request_id: id });
 
-test('immutable exact identity and deployment-wide ownership', async () => {
-  assert.throws(() => make({ operator: '' }), /invalid_config/);
+test('single browser excludes competing runs and rejects invalid leases', async () => {
+  assert.throws(() => make({ ttl: 0 }), /invalid_config/);
   const c = make();
   const lease = await acquire(c);
   assert.deepEqual(Object.keys(lease), ['lease_id', 'generation', 'version', 'mode']);
-  for (const invalid of [{ ...owner, extra: 1 }, { ...owner, sender_id: 'other' }, { ...owner, background: 'false' }, { ...owner, run_id: '' }]) {
+  for (const invalid of [{ ...owner, extra: 1 }, { ...owner, run_id: null }, { ...owner, background: 'false' }, { ...owner, run_id: '' }]) {
     assert.throws(() => c.action({ action: 'acquire', owner: invalid, request_id: 'other' }), /invalid_owner/);
   }
   assert.throws(() => c.action({ action: 'acquire', owner: { ...owner, run_id: 'other' }, request_id: 'other' }), /lease_busy/);

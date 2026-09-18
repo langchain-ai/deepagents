@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import ipaddress
 import json
 import logging
@@ -723,6 +724,33 @@ async def test_authorization_code_flow_uses_guarded_discovery(oauth_client) -> N
     assert exchange.extensions["sni_hostname"] == b"auth.example"
     assert parse_qs(exchange.content.decode())["code"] == ["authorization-code"]
     assert "code_verifier" in parse_qs(exchange.content.decode())
+    assert (await storage.get_tokens()).access_token == "renewed"  # noqa: S105 - Mock token.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/resource",
+        "/.well-known/oauth-authorization-server/tenant",
+        "/register",
+        "/tenant/access-token",
+    ],
+)
+async def test_oauth_accepts_compressed_responses(oauth_client, path: str) -> None:
+    client, _, responses, storage = oauth_client
+    original = responses[path]
+    compressed = gzip.compress(original.content)
+    responses[path] = httpx.Response(
+        original.status_code,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "Content-Length": str(len(compressed)),
+        },
+        content=compressed,
+    )
+
+    assert (await client.get("https://example.com/mcp")).status_code == 200
     assert (await storage.get_tokens()).access_token == "renewed"  # noqa: S105 - Mock token.
 
 

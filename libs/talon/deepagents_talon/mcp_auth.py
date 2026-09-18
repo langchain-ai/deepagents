@@ -840,9 +840,13 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
                 )
                 response = await client.send(guarded, follow_redirects=False)
                 _reject_oauth_redirect(response)
+                headers = response.headers.copy()
+                # httpx has already decoded the body; let httpx2 recalculate its length.
+                headers.pop("content-encoding", None)
+                headers.pop("content-length", None)
                 return httpx2.Response(
                     response.status_code,
-                    headers=response.headers.raw,
+                    headers=headers.raw,
                     content=response.content,
                     request=request,
                 )

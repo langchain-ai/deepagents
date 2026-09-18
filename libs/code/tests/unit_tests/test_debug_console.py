@@ -17,10 +17,12 @@ from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
     _DebugLogView,
+    _record_to_content,
 )
 
 if TYPE_CHECKING:
     import pytest
+    from textual.strip import Strip
 
 
 logger = logging.getLogger("deepagents_code._test_console")
@@ -199,6 +201,54 @@ class TestDebugConsoleScreen:
             "debug2",
             "debug3",
         ]
+
+    async def test_log_wraps_at_scrollbar_edge_without_truncating(self) -> None:
+        app = _Harness()
+        async with app.run_test(size=(50, 30)) as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            prefix_width = _record_to_content(_log_record("")).cell_length
+            message = "x" * (log.scrollable_content_region.width - prefix_width) + "Z"
+
+            log.set_records([_log_record(message)], scroll_end=False)
+            await pilot.pause()
+
+            assert log.line_count == 2
+            assert "Z" in log.render_line(1).text
+
+    async def test_first_populated_frame_starts_at_bottom(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first frame containing logs renders at the newest records."""
+        states: list[tuple[int, int]] = []
+        records = [_log_record(f"marker-{index} {'x' * 100}") for index in range(100)]
+
+        class Buffer:
+            total_emitted = len(records)
+
+            @staticmethod
+            def snapshot_records_since(
+                _cursor: int,
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                return records, len(records)
+
+        class CapturingLogView(_DebugLogView):
+            def render_line(self, y: int) -> Strip:
+                if self.virtual_size.height > self.size.height:
+                    states.append((self.scroll_offset.y, self.max_scroll_y))
+                return super().render_line(y)
+
+        monkeypatch.setattr(debug_console_mod, "_DebugLogView", CapturingLogView)
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", Buffer)
+        app = _Harness()
+        async with app.run_test(size=(80, 30)) as pilot:
+            app.push_screen(DebugConsoleScreen(_snapshot()))
+            await pilot.pause()
+
+        assert states
+        assert all(offset == maximum for offset, maximum in states)
 
     async def test_notice_replaced_by_incoming_records(self) -> None:
         app = _Harness()
@@ -466,6 +516,18 @@ class TestDebugConsoleToggle:
         assert "cache creation" in field.value
         assert "1234" in field.value
         assert "0.000123456789" in field.value
+
+    async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
+        import time
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "not started"
+
+            app._first_invocation_at = time.monotonic() - 72.3
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "1m 12s"
 
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch

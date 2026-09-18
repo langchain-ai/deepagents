@@ -10,7 +10,7 @@
 # read-only for forks). This also means the job MUST NOT check out PR code —
 # see the inline warning in the trigger block below.
 #
-# Maintainer bypass: add the `bypass-fork-main-check` label to the PR.
+# Maintainer bypass: add the `ci:bypass-fork-main` label to the PR.
 
 name: Block fork main PRs
 
@@ -28,7 +28,7 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.fork == true &&
       (github.event.pull_request.head.ref == 'main' || github.event.pull_request.head.ref == 'master') &&
-      !contains(github.event.pull_request.labels.*.name, 'bypass-fork-main-check')
+      !contains(github.event.pull_request.labels.*.name, 'ci:bypass-fork-main')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -42,34 +42,6 @@ jobs:
             const headRef = context.payload.pull_request.head.ref;
             const marker = '<!-- block-fork-main -->';
 
-            // Ensure the warning label exists and apply it
-            const labelName = 'fork-main-head';
-            try {
-              await github.rest.issues.getLabel({ owner, repo, name: labelName });
-            } catch (e) {
-              if (e.status !== 404) {
-                throw new Error(`getLabel(${labelName}) failed: ${e.message}`);
-              }
-              try {
-                await github.rest.issues.createLabel({
-                  owner, repo, name: labelName, color: 'b76e79',
-                });
-              } catch (createErr) {
-                // A 422 with code `already_exists` means a race created the
-                // label between getLabel and createLabel — safe to ignore.
-                // Any other 422 (bad color, name too long) indicates a real
-                // bug introduced by editing this step, so rethrow.
-                const alreadyExists =
-                  createErr.status === 422 &&
-                  Array.isArray(createErr.errors) &&
-                  createErr.errors.some(e => e.code === 'already_exists');
-                if (!alreadyExists) throw createErr;
-              }
-            }
-            await github.rest.issues.addLabels({
-              owner, repo, issue_number: prNumber, labels: [labelName],
-            });
-
             const lines = [
               marker,
               `**This PR has been automatically closed** because its head branch is \`${headRef}\` on a fork.`,
@@ -82,7 +54,7 @@ jobs:
               '3. Push it: `git push -u origin feat/my-change`',
               '4. Open a new PR from `feat/my-change` → `langchain-ai/deepagents:main`',
               '',
-              '*Maintainers: add the `bypass-fork-main-check` label to override.*',
+              '*Maintainers: add the `ci:bypass-fork-main` label to override.*',
             ];
             const body = lines.join('\n');
 

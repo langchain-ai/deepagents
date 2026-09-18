@@ -53,7 +53,7 @@ on:
   pull_request:
     # `labeled`/`unlabeled` are required so the bypass-label warning comment
     # appears (or gets cleaned up) the moment a maintainer toggles
-    # `ignore-lint-pr-title`. Without them, the warning would only update on
+    # `ci:skip-title-lint`. Without them, the warning would only update on
     # the next title edit or push.
     types: [ opened, edited, synchronize, labeled, unlabeled ]
 
@@ -140,9 +140,9 @@ jobs:
             release
             [A-Z]+
           ignoreLabels: |
-            ignore-lint-pr-title
+            ci:skip-title-lint
 
-  # When a maintainer applies the `ignore-lint-pr-title` label to bypass the
+  # When a maintainer applies the `ci:skip-title-lint` label to bypass the
   # Conventional Commits check, post a sticky comment so the bypass is visible
   # to reviewers and to release-please consumers (a non-conventional title
   # typically means no changelog entry on merge, unless a
@@ -167,9 +167,9 @@ jobs:
     # path — without it, removing the label would leave the warning comment
     # behind until the next title edit or push.
     if: >-
-      (github.event.action == 'labeled' && github.event.label.name == 'ignore-lint-pr-title') ||
-      (github.event.action == 'unlabeled' && github.event.label.name == 'ignore-lint-pr-title') ||
-      contains(github.event.pull_request.labels.*.name, 'ignore-lint-pr-title')
+      (github.event.action == 'labeled' && github.event.label.name == 'ci:skip-title-lint') ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'ci:skip-title-lint') ||
+      contains(github.event.pull_request.labels.*.name, 'ci:skip-title-lint')
     steps:
       - name: "post or remove bypass-warning comment"
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -186,7 +186,7 @@ jobs:
               return;
             }
             const STICKY_MARKER = '<!-- pr-title-lint-bypass -->';
-            const BYPASS_LABEL = 'ignore-lint-pr-title';
+            const BYPASS_LABEL = 'ci:skip-title-lint';
 
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {

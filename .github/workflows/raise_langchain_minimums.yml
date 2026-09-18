@@ -80,8 +80,8 @@ on:
         required: false
         type: string
         default: ""
-      use_published_dcode_in_dependents:
-        description: "Resolve published deepagents-code instead of the local source when locking reverse dependents"
+      skip_dependent_locks:
+        description: "Skip lockfiles for packages that depend on the packages being bumped"
         required: false
         type: boolean
         default: false
@@ -134,6 +134,7 @@ jobs:
         env:
           PACKAGE: ${{ inputs.package || 'all' }}
           DEPENDENCIES: ${{ inputs.dependencies || '' }}
+          SKIP_DEPENDENT_LOCKS: ${{ inputs.skip_dependent_locks || false }}
         run: |
           set -euo pipefail
           # Validate the free-text CSV before it is used as a shell argument.
@@ -150,6 +151,9 @@ jobs:
           if [ -n "$DEPENDENCIES" ]; then
             args+=(--dependencies "$DEPENDENCIES")
           fi
+          if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then
+            args+=(--skip-dependent-locks)
+          fi
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
             "${args[@]}"
@@ -163,19 +167,14 @@ jobs:
         if: steps.raise.outputs.changed == 'true'
         env:
           LOCK_SPECS: ${{ steps.raise.outputs.lock_specs }}
-          USE_PUBLISHED_DCODE_IN_DEPENDENTS: ${{ inputs.use_published_dcode_in_dependents || false }}
         run: |
           set -euo pipefail
           IFS=',' read -ra specs <<< "$LOCK_SPECS"
           for spec in "${specs[@]}"; do
             dir="${spec%%=*}"
             py="${spec##*=}"
-            args=(--directory "$dir" --python "$py")
-            if [ "$USE_PUBLISHED_DCODE_IN_DEPENDENTS" = "true" ] && [ "$dir" != "libs/code" ]; then
-              args+=(--no-sources-package deepagents-code)
-            fi
             echo "Regenerating $dir/uv.lock (python $py)"
-            uv lock "${args[@]}"
+            uv lock --directory "$dir" --python "$py"
             if [ ! -f "$dir/uv.lock" ]; then
               echo "::error::Expected $dir/uv.lock to exist after uv lock"
               exit 1

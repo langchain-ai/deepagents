@@ -4,10 +4,9 @@
 
 ## [0.0.12](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.11...deepagents-acp==0.0.12) (2026-09-18)
 
-
 ### Bug Fixes
 
-* **acp:** scope cancel() to the requested session ([#5107](https://github.com/langchain-ai/deepagents/issues/5107)) ([96236d2](https://github.com/langchain-ai/deepagents/commit/96236d275f6799eeed80235eaa2054ee0e5bc8b7))
+- Scoped `cancel()` requests to the requested session. ([#5107](https://github.com/langchain-ai/deepagents/pull/5107))
 
 ## [0.0.11](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.10...deepagents-acp==0.0.11) (2026-08-27)
 

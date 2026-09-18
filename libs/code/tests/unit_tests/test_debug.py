@@ -40,6 +40,39 @@ def _icacls_entries(path) -> list[str]:
     return [entry.strip() for entry in entries if entry.strip()]
 
 
+@pytest.mark.parametrize(
+    "level", [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR]
+)
+def test_file_and_console_log_format_match(tmp_path: Path, level: int) -> None:
+    from deepagents_code._debug_buffer import InMemoryLogBuffer
+
+    logger = logging.getLogger("test.debug.format")
+    path = tmp_path / "format.log"
+    buffer = InMemoryLogBuffer()
+    record = logging.LogRecord(
+        logger.name, level, __file__, 0, "hello %s\nnext line", ("world",), None
+    )
+    record.created = 1_700_000_000.125
+    record.msecs = 125
+    _debug._attach_debug_handler(logger, path, logging.DEBUG)
+    try:
+        logger.handle(record)
+        buffer.handle(record)
+        records, _ = buffer.snapshot_records_since(0)
+        line = records[0].plain_line
+        assert records[0].timestamp.endswith(",125")
+        assert (
+            f" {logging.getLevelName(level)} {logger.name} hello world\nnext line"
+            in line
+        )
+        assert path.read_text().partition(" ")[2] == line + "\n"
+    finally:
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
+        buffer.close()
+
+
 class TestConfigureDebugLogging:
     def test_adds_handler_when_env_set(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.add")

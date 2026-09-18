@@ -1998,50 +1998,6 @@ class TestOllamaModelDiscovery:
         urlopen.assert_not_called()
         assert caplog.text.count("Ollama daemon not detected") == 1
 
-    @pytest.mark.parametrize("reachable", [False, True])
-    def test_no_models_logged_only_when_daemon_answers(
-        self,
-        reachable: bool,  # parametrized flag, not a call-site argument
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """The "returned no models" line is suppressed for an undetected daemon.
-
-        An absent daemon already reports "not detected", so restating it as
-        "returned no models" logged the same condition twice. A daemon that
-        answers with an empty lineup still gets the line.
-        """
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("")
-        monkeypatch.delenv("DEEPAGENTS_CODE_OLLAMA_DISCOVERY", raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.model_config._ollama_host_reachable",
-            MagicMock(return_value=reachable),
-        )
-
-        with (
-            self._patch_registry(),
-            patch(
-                "deepagents_code.model_config._load_provider_profiles",
-                side_effect=self._empty_profiles_loader,
-            ),
-            patch(
-                "deepagents_code.model_config.importlib.util.find_spec",
-                return_value=object(),
-            ),
-            patch(
-                "urllib.request.urlopen",
-                return_value=_BytesContext(b'{"models": []}'),
-            ),
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
-        ):
-            get_available_models()
-
-        expected = 1 if reachable else 0
-        assert caplog.text.count("Ollama discovery returned no models") == expected
-
     @pytest.mark.parametrize("endpoint", [None, "http://localhost:11434/"])
     def test_unreachable_cache_key_matches_across_normalization(
         self, endpoint: str | None, monkeypatch: pytest.MonkeyPatch

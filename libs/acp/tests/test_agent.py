@@ -871,6 +871,90 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
     }
 
 
+async def test_empty_args_tool_call_chunk_does_not_start_prematurely() -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
+    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    msg = AIMessageChunk(
+        content="",
+        tool_call_chunks=[{"id": "call_1", "name": "get_status", "args": "", "index": 0}],
+    )
+
+    active_tool_calls: dict[str, Any] = {}
+    tool_call_accumulator: dict[int, Any] = {}
+
+    await agent._process_tool_call_chunks(
+        session_id=session.session_id,
+        message_chunk=msg,
+        active_tool_calls=active_tool_calls,
+        tool_call_accumulator=tool_call_accumulator,
+    )
+
+    assert active_tool_calls == {}
+    assert tool_call_accumulator[0]["id"] == "call_1"
+    assert tool_call_accumulator[0]["args_str"] == ""
+
+
+async def test_empty_args_tool_call_is_surfaced_when_result_arrives() -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
+    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    tool_start = AIMessageChunk(
+        content="",
+        tool_call_chunks=[{"id": "call_1", "name": "get_status", "args": "", "index": 0}],
+    )
+    tool_result = ToolMessage(
+        content="ok",
+        name="get_status",
+        tool_call_id="call_1",
+    )
+
+    async def graph_astream(*args: Any, **kwargs: Any):
+        yield ((), "messages", (tool_start, {}))
+        yield ((), "messages", (tool_result, {}))
+
+    class Graph:
+        astream = graph_astream
+
+        async def aget_state(self, config: Any) -> Any:
+            class S:
+                next = ()
+                interrupts: list[Any] = []
+
+            return S()
+
+    agent._agent = Graph()  # type: ignore[assignment]
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    tool_updates = [
+        e["update"]
+        for e in client.events
+        if e["type"] == "session_update" and getattr(e["update"], "tool_call_id", None) == "call_1"
+    ]
+    assert [update.session_update for update in tool_updates] == [
+        "tool_call",
+        "tool_call_update",
+    ]
+    assert tool_updates[0].raw_input == {}
+    assert tool_updates[1].status == "completed"
+
+
 async def test_acp_agent_tool_result_completes_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())

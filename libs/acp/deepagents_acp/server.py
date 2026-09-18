@@ -640,32 +640,83 @@ class AgentServerACP(ACPAgent):
                 tool_name = acc.get("name")
                 args_str = acc.get("args_str", "")
 
-                # Only start if we haven't started yet and have parseable args
+                # Only start if we haven't started yet and have parseable args.
+                # Empty args_str is not "complete": it may still be waiting for
+                # argument deltas. No-arg tools are recovered when the result
+                # arrives, so this never emits a premature start.
                 if tool_id and tool_id not in active_tool_calls and args_str:
                     try:
                         tool_args = json.loads(args_str)
-
-                        # Mark as started and store args for later reference
-                        active_tool_calls[tool_id] = {
-                            "name": tool_name,
-                            "args": tool_args,
-                        }
-
-                        # Create the appropriate tool call start
-                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
-
-                        await self._conn.session_update(
-                            session_id=session_id,
-                            update=update,
-                            source="DeepAgent",
-                        )
-
-                        # If this is write_todos, send the plan update immediately
-                        if tool_name == "write_todos" and isinstance(tool_args, dict):
-                            todos = tool_args.get("todos", [])
-                            await self._handle_todo_update(session_id, todos, log_plan=False)
                     except json.JSONDecodeError:
-                        pass
+                        continue
+                    if not tool_name:
+                        continue
+                    await self._register_and_emit_tool_call_start(
+                        session_id,
+                        tool_id,
+                        tool_name,
+                        tool_args,
+                        active_tool_calls,
+                    )
+
+    async def _register_and_emit_tool_call_start(
+        self,
+        session_id: str,
+        tool_id: str,
+        tool_name: str,
+        tool_args: Any,
+        active_tool_calls: dict,
+    ) -> None:
+        """Register a tool call and emit its ACP start event."""
+        if tool_id in active_tool_calls:
+            return
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+        active_tool_calls[tool_id] = {
+            "name": tool_name,
+            "args": tool_args,
+        }
+        await self._conn.session_update(
+            session_id=session_id,
+            update=self._create_tool_call_start(tool_id, tool_name, tool_args),
+            source="DeepAgent",
+        )
+        if tool_name == "write_todos":
+            await self._handle_todo_update(session_id, tool_args.get("todos", []), log_plan=False)
+
+    async def _recover_missed_tool_call_start(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        message_chunk: Any,
+        active_tool_calls: dict,
+        tool_call_accumulator: dict,
+    ) -> None:
+        """Emit a start for a tool result whose streaming start never fired.
+
+        Happens for zero-argument tools (`args_str == ""`) and for openers
+        dropped by a proxy. Result time is terminal, so defaulting empty or
+        unparseable args to `{}` cannot race later argument deltas.
+        """
+        acc = next(
+            (item for item in tool_call_accumulator.values() if item.get("id") == tool_call_id),
+            None,
+        )
+        tool_name = (acc or {}).get("name") or getattr(message_chunk, "name", None)
+        if not tool_name:
+            return
+        args_str = (acc or {}).get("args_str") or ""
+        try:
+            tool_args = json.loads(args_str) if args_str else {}
+        except json.JSONDecodeError:
+            tool_args = {}
+        await self._register_and_emit_tool_call_start(
+            session_id,
+            tool_call_id,
+            tool_name,
+            tool_args,
+            active_tool_calls,
+        )
 
     def _create_tool_call_start(
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
@@ -1073,6 +1124,14 @@ class AgentServerACP(ACPAgent):
                 elif hasattr(message_chunk, "type") and message_chunk.type == "tool":
                     # This is a tool result message
                     tool_call_id = getattr(message_chunk, "tool_call_id", None)
+                    if tool_call_id and tool_call_id not in active_tool_calls:
+                        await self._recover_missed_tool_call_start(
+                            session_id,
+                            tool_call_id,
+                            message_chunk,
+                            active_tool_calls,
+                            tool_call_accumulator,
+                        )
                     if (
                         tool_call_id
                         and tool_call_id in active_tool_calls

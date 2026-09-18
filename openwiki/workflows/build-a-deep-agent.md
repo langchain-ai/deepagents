@@ -3,9 +3,6 @@ type: workflow
 title: Build and Customize a Deep Agent
 description: Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
 tags: [deepagents, langgraph, middleware, subagents, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
@@ -39,7 +36,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T16:46:37.183Z
 ---
 
 # Build and Customize a Deep Agent
@@ -54,7 +54,7 @@ Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` 
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-6-astra",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )
@@ -162,7 +162,7 @@ Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem
 
 ## 8. Validate the closest boundary, then the loop
 
-Start with assembly tests using a fake model: assert selected tools, profile prompt output, middleware order, and expected validation failures. Then use a scripted fake model in an end-to-end test for the changed tool loop. The end-to-end suite demonstrates construction and invocation, built-in filesystem calls, custom tools, and sequential tool calls by asserting the resulting message state and tool messages.
+Start with assembly tests using a fake model: assert selected tools, profile prompt output, middleware order, metadata, and expected validation failures. `test_graph.py` exercises profile lookup and prompt assembly, general-purpose subagent wiring, prompt-caching wiring, tool exclusion, and middleware/profile invariants. Then use a scripted fake model in an end-to-end test for the changed tool loop. The end-to-end suite demonstrates construction and invocation, built-in filesystem calls, custom tools, and sequential tool calls by asserting the resulting message state and tool messages.
 
 From `libs/deepagents`, run focused tests before the broader suite:
 

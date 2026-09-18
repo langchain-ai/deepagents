@@ -7,6 +7,7 @@ import contextlib
 import json
 import math
 import os
+import secrets
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,6 +43,19 @@ class SteelProcess:
         if not 1 <= self.port <= _MAX_PORT or not math.isfinite(self.timeout) or self.timeout <= 0:
             msg = "Invalid TALON_BROWSER_PORT or TALON_BROWSER_START_TIMEOUT"
             raise ValueError(msg)
+        self._bridge_env = {
+            key: value
+            for key, value in config.env.items()
+            if key
+            in {
+                "TALON_BROWSER_OPERATOR_ID",
+                "TALON_BROWSER_IDENTITIES",
+                "TALON_BROWSER_CONTROL_PORT",
+                "TALON_BROWSER_VIEWER_PORT",
+                "TALON_BROWSER_LEASE_TTL_SECONDS",
+            }
+        }
+        self._token_path = self.root / "control-token"
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._lock: int | None = None
@@ -85,6 +99,8 @@ class SteelProcess:
 
     def _environment(self) -> dict[str, str]:
         return {
+            **self._bridge_env,
+            "TALON_BROWSER_TOKEN_FILE": str(self._token_path),
             "PATH": os.defpath,
             "NODE_ENV": "development",
             "HOST": "127.0.0.1",
@@ -111,6 +127,11 @@ class SteelProcess:
         node = self._prepare()
         try:
             self._acquire()
+            if self._bridge_env.get("TALON_BROWSER_IDENTITIES"):
+                self._token_path.unlink(missing_ok=True)
+                fd = os.open(self._token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+                with os.fdopen(fd, "w") as token:
+                    token.write(secrets.token_urlsafe(32))
             spawn = asyncio.create_task(self._spawn(node))
             try:
                 self._process = await asyncio.shield(spawn)
@@ -178,6 +199,7 @@ class SteelProcess:
                 self._reader = None
             self._process = None
             if self._lock is not None:
+                self._token_path.unlink(missing_ok=True)
                 os.close(self._lock)
                 self._lock = None
 

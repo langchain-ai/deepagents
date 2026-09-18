@@ -31,6 +31,7 @@ from deepagents_talon.authorization import (
     CallbackURLRequested,
     DeviceCode,
 )
+from deepagents_talon.browser import BrowserBinding, BrowserEvent, BrowserEventHandler
 from deepagents_talon.channels.base import (
     ChannelExposure,
     ExposureMode,
@@ -180,6 +181,7 @@ class _BackgroundRoute:
     conversation_id: str
     provider: str | None
     metadata: Mapping[str, object] = field(default_factory=dict)
+    browser_binding: BrowserBinding | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -244,6 +246,9 @@ class TalonHost:
         self.agent = agent
         self.channels = tuple(channels)
         self.scheduler = scheduler
+        self.browser_event_handler: (
+            Callable[[BrowserBinding, BrowserEvent], Awaitable[None]] | None
+        ) = None
         self.voice_transcriber = voice_transcriber
         self._steel = (
             SteelProcess(config)
@@ -768,6 +773,16 @@ class TalonHost:
                 conversation_id=agent_conversation_id,
                 text=message.text,
                 metadata=metadata,
+                browser_binding=(
+                    route.browser_binding
+                    if scheduled
+                    else BrowserBinding(
+                        route.provider or "",
+                        route.message.sender_id or "",
+                        agent_conversation_id,
+                        unattended,
+                    )
+                ),
                 # A scheduled turn has no operator to ask. Approvals are auto-denied
                 # upstream for `trigger: cron`, and an authorization prompt raises on
                 # the absent sender rather than reaching anyone, so both are withheld
@@ -920,8 +935,24 @@ class TalonHost:
                 conversation_id=conversation_id,
                 text=job.prompt,
                 metadata=_scheduled_metadata(job),
+                browser_binding=self._scheduled_browser_binding(job.id, conversation_id),
             )
             return result.text
+
+    def _scheduled_browser_binding(
+        self, job_id: str, conversation_id: str
+    ) -> BrowserBinding | None:
+        try:
+            owners = json.loads(self.config.env.get("TALON_BROWSER_SCHEDULED_OWNERS", "{}"))
+            owner = owners.get(job_id) if isinstance(owners, dict) else None
+            if not isinstance(owner, dict):
+                return None
+            provider, sender = owner.get("provider"), owner.get("sender_id")
+            if not isinstance(provider, str) or not isinstance(sender, str):
+                return None
+            return BrowserBinding(provider, sender, conversation_id, background=True)
+        except ValueError:
+            return None
 
     async def _preempt_scheduled_turn(self, conversation_id: str) -> None:
         """Clear a background follow-up turn before a new run writes the same thread.
@@ -982,6 +1013,7 @@ class TalonHost:
             conversation_id=conversation_id,
             provider=job.origin.channel,
             metadata=_scheduled_metadata(job),
+            browser_binding=self._scheduled_browser_binding(job.id, conversation_id),
         )
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
@@ -1029,6 +1061,16 @@ class TalonHost:
             except Exception:
                 logger.exception("Could not record final-reply delivery in history")
 
+    def _browser_handler(self, binding: BrowserBinding | None) -> BrowserEventHandler | None:
+        handler = self.browser_event_handler
+        if handler is None or binding is None or binding.background:
+            return None
+
+        async def deliver(event: BrowserEvent) -> None:
+            await handler(binding, event)
+
+        return deliver
+
     async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
         *,
@@ -1039,6 +1081,8 @@ class TalonHost:
         | None = None,
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
+        browser_binding: BrowserBinding | None = None,
+        browser_event_handler: BrowserEventHandler | None = None,
         message_handler: ProgressMessageHandler | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1059,6 +1103,9 @@ class TalonHost:
                         conversation_id=conversation_id,
                         text=text,
                         metadata=metadata,
+                        browser_binding=browser_binding,
+                        browser_event_handler=browser_event_handler
+                        or self._browser_handler(browser_binding),
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,

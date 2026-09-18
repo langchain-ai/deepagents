@@ -303,7 +303,7 @@ async def test_failed_stdio_startup_terminates_process(
         await manager.cleanup()
 
 
-async def test_dead_stdio_backend_reconnects(tmp_path: Path) -> None:
+async def test_dead_stdio_backend_reconnects_after_failed_call(tmp_path: Path) -> None:
     script = tmp_path / "server.py"
     script.write_text(
         "import os\nfrom fastmcp import FastMCP\n"
@@ -332,6 +332,10 @@ async def test_dead_stdio_backend_reconnects(tmp_path: Path) -> None:
                     except ProcessLookupError:
                         break
                     await asyncio.sleep(0.01)
+            failed = await tools[0].ainvoke(
+                {"type": "tool_call", "id": "dead", "name": tools[0].name, "args": {}}
+            )
+            assert failed.status == "error"
         results = await asyncio.gather(*(tools[0].ainvoke({}) for _ in range(3)))
         recovered = [int(result[0]["text"]) for result in results]
         assert len(set(recovered)) == 1
@@ -344,15 +348,16 @@ async def test_dead_stdio_backend_reconnects(tmp_path: Path) -> None:
             os.kill(pid, 0)
 
 
-async def test_crashing_tool_retries_only_once(tmp_path: Path) -> None:
+async def test_crashing_tool_is_not_replayed(tmp_path: Path) -> None:
     script, calls = tmp_path / "server.py", tmp_path / "calls"
     script.write_text(
         "import os, sys\nfrom pathlib import Path\nfrom fastmcp import FastMCP\n"
         "server = FastMCP('stdio')\n"
-        "@server.tool\nasync def crash() -> str:\n"
+        "@server.tool\nasync def crash(fail: bool = True) -> str:\n"
         "    with Path(sys.argv[1]).open('a') as calls:\n"
         "        calls.write('called\\n')\n"
-        "    os._exit(1)\n"
+        "    if fail:\n        os._exit(1)\n"
+        "    return 'completed'\n"
         "server.run()\n",
         encoding="utf-8",
     )
@@ -366,12 +371,24 @@ async def test_crashing_tool_retries_only_once(tmp_path: Path) -> None:
     assert manager is not None
     try:
         assert infos[0].status == "ok", infos[0].error
-        for count in (2, 4):
+        for count in (1, 2):
             result = await tools[0].ainvoke(
                 {"type": "tool_call", "id": "crash", "name": tools[0].name, "args": {}}
             )
             assert result.status == "error"
+            assert "may have completed and was not retried" in str(result.content)
             assert len(calls.read_text().splitlines()) == count
+        result = await tools[0].ainvoke(
+            {
+                "type": "tool_call",
+                "id": "recovered",
+                "name": tools[0].name,
+                "args": {"fail": False},
+            }
+        )
+        assert result.status == "success"
+        assert "completed" in str(result.content)
+        assert len(calls.read_text().splitlines()) == 3
     finally:
         await manager.cleanup()
 

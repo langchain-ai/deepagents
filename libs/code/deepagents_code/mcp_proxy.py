@@ -133,7 +133,7 @@ class MCPBackendMiddleware(Middleware):
         context: MiddlewareContext[CallToolRequestParams],
         call_next: CallNext[CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        """Retry a broken connection once, leaving tool errors untouched.
+        """Recover connections without replaying possibly completed operations.
 
         Args:
             context: Incoming tool request.
@@ -143,14 +143,19 @@ class MCPBackendMiddleware(Middleware):
             The backend's tool result.
         """
         async with self._lock:
-            retry = True
-            while True:
-                try:
-                    return await call_next(context)
-                except Exception as exc:
-                    reauth = await self._recover(exc)
-                    if reauth is not None:
-                        return ToolResult(content=str(reauth), is_error=True)
-                    if not retry or not _is_disconnected(exc):
-                        raise
-                    retry = False
+            try:
+                return await call_next(context)
+            except Exception as exc:
+                reauth = await self._recover(exc)
+                if reauth is not None:
+                    return ToolResult(content=str(reauth), is_error=True)
+                if _is_disconnected(exc):
+                    return ToolResult(
+                        content=(
+                            "Connection lost while calling the MCP tool. The operation "
+                            "may have completed and was not retried. "
+                            "Verify its outcome before trying again."
+                        ),
+                        is_error=True,
+                    )
+                raise

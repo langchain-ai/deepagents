@@ -799,7 +799,7 @@ def _stdio_connection(name: str, server: Mapping[str, object]) -> ClientTranspor
         raise MCPConfigError(msg)
     if values is not None:
         _validate_stdio_env(name, values)
-    config: dict[str, object] = {"command": command, "args": args}
+    config: dict[str, object] = {"command": command, "args": args, "keep_alive": False}
     if values is not None:
         config["env"] = values
     return StdioMCPServer.model_validate(config).to_transport()

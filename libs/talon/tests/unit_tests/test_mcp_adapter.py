@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -247,3 +249,34 @@ async def test_real_elicitation_cancels_and_resumes(
 def test_malformed_elicitation_is_rejected(requests: object) -> None:
     with pytest.raises(ValueError, match="MCP elicitation interrupt"):
         mcp._cancel_mcp_elicitation({"type": "mcp_elicitation", "requests": requests})
+
+
+@pytest.mark.timeout(30)
+async def test_stdio_processes_exit_after_discovery_and_invocation(tmp_path: Path) -> None:
+    pidfile = tmp_path / "server.pid"
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "from fastmcp import FastMCP\n"
+        "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "server = FastMCP('lifecycle')\n"
+        "@server.tool\n"
+        "def ping() -> str:\n"
+        "    return 'pong'\n"
+        "server.run(transport='stdio', show_banner=False)\n"
+    )
+    transport = mcp._stdio_connection(
+        "local", {"command": sys.executable, "args": [str(script), str(pidfile)]}
+    )
+    adapter = mcp.MCPAdapter(transport)
+    try:
+        tools = await adapter.list_tools()
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pidfile.read_text()), 0)
+        for _ in range(2):
+            assert (await tools[0].ainvoke({}))[0]["text"] == "pong"
+            with pytest.raises(ProcessLookupError):
+                os.kill(int(pidfile.read_text()), 0)
+    finally:
+        await mcp.FastMCPClient(transport).close()

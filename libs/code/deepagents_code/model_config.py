@@ -1775,7 +1775,7 @@ def get_model_profiles(
     result: dict[str, ModelProfileEntry] = {}
     config = ModelConfig.load()
 
-    # Collect upstream profiles from provider packages.
+    # Assume providers have upstream profiles; skip those whose profiles are missing.
     seen_specs: set[str] = set()
     provider_modules = _get_provider_profile_modules()
     registry_providers: set[str] = set()
@@ -1792,7 +1792,7 @@ def get_model_profiles(
             profiles = _load_provider_profiles(module_path)
         except ImportError:
             logger.debug(
-                "Could not import profiles from %s for provider '%s'",
+                "Model profiles not found in %s for provider '%s'",
                 module_path,
                 provider,
             )

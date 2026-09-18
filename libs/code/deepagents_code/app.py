@@ -16633,6 +16633,25 @@ class DeepAgentsApp(App):
         elif cmd in {"/version", "/about"}:
             await self._mount_message(UserMessage(command))
             await self._handle_version_command()
+        elif cmd.split(maxsplit=1)[0] == "/btw":
+            from functools import partial
+
+            from deepagents_code.tui.modals.btw import BtwScreen
+
+            remote = self._remote_agent()
+            if remote is None or self._connecting or self._thread_switching:
+                self.notify("Connect to a dcode session before asking /btw.")
+                return
+            parts = command.strip().split(maxsplit=1)
+            question = parts[1].strip() if len(parts) > 1 else ""
+            answer = partial(
+                remote.abtw,
+                config={"configurable": {"thread_id": self._lc_thread_id}},
+            )
+            self.push_screen(
+                BtwScreen(answer, question),
+                lambda _result: self._focus_chat_input_after_refresh(),
+            )
         elif cmd == "/agents":
             await self._show_agent_selector()
         elif cmd == "/auto" or cmd.startswith("/auto "):

@@ -3479,6 +3479,12 @@ def create_cli_agent(
         from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
         agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
+    if interactive:
+        from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
+
+        btw = BtwOperation(model, system_prompt, environment)
+        agent_middleware.append(btw)
+        setattr(composite_backend, BTW_OPERATION_ATTR, btw)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

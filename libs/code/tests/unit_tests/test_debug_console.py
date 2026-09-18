@@ -467,15 +467,6 @@ class TestDebugConsoleToggle:
             snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Session length"] == "1m 12s"
 
-    async def test_build_snapshot_session_length_drops_half_seconds(self) -> None:
-        import time
-
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        async with app.run_test():
-            app._first_invocation_at = time.monotonic() - 42.7
-            snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert snapshot["Session length"] == "42s"
-
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

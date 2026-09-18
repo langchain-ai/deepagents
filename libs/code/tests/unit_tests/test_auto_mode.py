@@ -512,6 +512,37 @@ def _allow_result(call_id: str = "call-1") -> AutoDecisionBatch:
     )
 
 
+def test_auto_decision_batch_parses_encoded_object() -> None:
+    result = AutoDecisionBatch.model_validate(
+        {
+            "decisions": '{"decisions":[{"tool_call_id":"t1","decision":"allow",'
+            '"category":"other_policy","reason":""}]}'
+        }
+    )
+
+    assert len(result.decisions) == 1
+    assert result.decisions[0].tool_call_id == "t1"
+
+
+def test_auto_decision_batch_parses_encoded_array() -> None:
+    result = AutoDecisionBatch.model_validate(
+        {
+            "decisions": '[{"tool_call_id":"t1","decision":"allow",'
+            '"category":"other_policy","reason":""}]'
+        }
+    )
+
+    assert len(result.decisions) == 1
+    assert result.decisions[0].tool_call_id == "t1"
+
+
+def test_auto_decision_batch_rejects_invalid_encoded_decisions() -> None:
+    with pytest.raises(
+        ValueError, match="decisions must be a list or a JSON-encoded list"
+    ):
+        AutoDecisionBatch.model_validate({"decisions": "not-json"})
+
+
 _DEFAULT_RECEIPT = object()
 
 

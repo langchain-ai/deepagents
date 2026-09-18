@@ -293,6 +293,20 @@ class AutoDecisionBatch(BaseModel):
 
     decisions: list[AutoDecision]
 
+    @field_validator("decisions", mode="before")
+    @classmethod
+    def _coerce_encoded_decisions(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        try:
+            decoded = json.loads(value.strip())
+        except json.JSONDecodeError as exc:
+            msg = "decisions must be a list or a JSON-encoded list"
+            raise ValueError(msg) from exc
+        if isinstance(decoded, dict) and "decisions" in decoded:
+            return decoded["decisions"]
+        return decoded
+
 
 class AutoModeCounters(TypedDict):
     """Server-owned denial and availability counters for one thread."""

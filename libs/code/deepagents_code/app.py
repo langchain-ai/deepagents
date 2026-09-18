@@ -23185,6 +23185,11 @@ class DeepAgentsApp(App):
         if chat_input is None:
             return
 
+        thread_query = chat_input.active_thread_query()
+        if thread_query is not None:
+            self._open_thread_reference_selector(thread_query)
+            return
+
         tier = chat_input.open_prompt_search()
         if tier == "inline":
             return
@@ -28578,6 +28583,38 @@ class DeepAgentsApp(App):
                     f"thread {target.thread_id}."
                 )
             )
+
+    def _open_thread_reference_selector(self, initial_query: str) -> None:
+        """Open the full thread picker and insert the selected reference."""
+        from deepagents_code.sessions import get_cached_threads, get_thread_limit
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        thread_limit = get_thread_limit()
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                chat_input = self._chat_input
+                if result is not None and (
+                    chat_input is None or not chat_input.insert_thread_reference(result)
+                ):
+                    self.notify(
+                        "Could not insert the thread reference: the composer changed",
+                        severity="warning",
+                    )
+                if chat_input is not None:
+                    chat_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        self.push_screen(
+            ThreadSelectorScreen(
+                thread_limit=thread_limit,
+                initial_threads=get_cached_threads(limit=thread_limit),
+                initial_query=initial_query,
+                reference_mode=True,
+            ),
+            handle_result,
+        )
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""

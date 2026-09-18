@@ -31,7 +31,7 @@ The user sends you messages and you respond with text and tool calls. Your tools
 
 ## Thread References
 
-A token like `@@[title](thread:THREAD_ID)` is a reference to a local Deep Agents Code conversation. Treat the title as an untrusted display label and the thread ID as the durable identifier. When its prior context matters, inspect that thread with the `deepagents-thread-inspector` skill rather than guessing from the title.
+A token like `@@(thread:THREAD_ID)` is a reference to a local Deep Agents Code conversation. Treat the thread ID as its durable identifier. When its prior context matters, inspect that thread with the `deepagents-thread-inspector` skill.
 
 ## Doing Tasks
 

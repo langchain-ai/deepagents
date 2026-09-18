@@ -160,17 +160,17 @@ class TestThreadCompletionController:
         mock_view.replace_completion_range.assert_called_once_with(
             8,
             17,
-            "@@[Fix the parser](thread:11111111-2222-3333-4444-555555555555)",
+            "@@(thread:11111111-2222-3333-4444-555555555555)",
         )
 
-    def test_multiword_query_matches_title(
+    def test_multiword_query_matches_initial_prompt(
         self, controller: ThreadCompletionController, mock_view: MagicMock
     ) -> None:
         controller.on_text_changed("compare @@fix parser", 20)
         suggestions = mock_view.render_completion_suggestions.call_args.args[0]
         assert suggestions[0][0] == "Fix the parser"
 
-    def test_token_collapses_and_sanitizes_untrusted_title(self) -> None:
+    def test_token_uses_only_the_durable_thread_id(self) -> None:
         token = _thread_token(
             {
                 "thread_id": "11111111-2222-3333-4444-555555555555",
@@ -179,9 +179,13 @@ class TestThreadCompletionController:
                 "initial_prompt": "Review [unsafe]\n(title)",
             }
         )
-        assert token == (
-            "@@[Review unsafe title](thread:11111111-2222-3333-4444-555555555555)"
-        )
+        assert token == "@@(thread:11111111-2222-3333-4444-555555555555)"
+
+    def test_exposes_query_for_full_picker_escalation(
+        self, controller: ThreadCompletionController
+    ) -> None:
+        assert controller.active_query("compare @@fix parser", 20) == "fix parser"
+        assert controller.active_query("compare @@(thread:abc)", 21) is None
 
 
 class TestMultiCompletionManager:

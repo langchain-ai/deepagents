@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,32 @@ def _validated_offload_result(result: object) -> OffloadResult:
                 )
                 raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
     return cast("OffloadResult", result)
+
+
+def workspace_conflict_diagnostics(
+    exc: BaseException,
+) -> WorkspaceDiagnostics | None:
+    """Extract server workspace diagnostics from a raised HTTP conflict.
+
+    The workspace route answers a refusal with 409 and an additive
+    `diagnostics` payload beside `detail`; the SDK carries that body on
+    `APIStatusError.body`. Older servers omit the field, and any malformed
+    payload must degrade to `None` rather than break error display.
+
+    Args:
+        exc: The exception caught from a workspace request.
+
+    Returns:
+        The parsed `WorkspaceDiagnostics`, or `None` when absent or malformed.
+    """
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
+
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    return WorkspaceDiagnostics.from_dict(
+        cast("dict[str, Any]", body).get("diagnostics")
+    )
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:

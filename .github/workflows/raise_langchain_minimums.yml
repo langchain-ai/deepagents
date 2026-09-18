@@ -80,6 +80,11 @@ on:
         required: false
         type: string
         default: ""
+      skip_dependent_locks:
+        description: "Skip reverse-dependent lockfiles, leaving them stale until their packages are fixed"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -129,6 +134,7 @@ jobs:
         env:
           PACKAGE: ${{ inputs.package || 'all' }}
           DEPENDENCIES: ${{ inputs.dependencies || '' }}
+          SKIP_DEPENDENT_LOCKS: ${{ inputs.skip_dependent_locks || false }}
         run: |
           set -euo pipefail
           # Validate the free-text CSV before it is used as a shell argument.
@@ -144,6 +150,9 @@ jobs:
           args=(--package "$PACKAGE")
           if [ -n "$DEPENDENCIES" ]; then
             args+=(--dependencies "$DEPENDENCIES")
+          fi
+          if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then
+            args+=(--skip-dependent-locks)
           fi
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
@@ -227,18 +236,26 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
           DEPENDENCIES: ${{ inputs.dependencies || '' }}
+          SKIP_DEPENDENT_LOCKS: ${{ inputs.skip_dependent_locks || false }}
         run: |
           set -euo pipefail
           title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
           lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
+          locks='every affected `uv.lock`'
+          if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then
+            locks='only directly changed packages' `uv.lock` files'
+          fi
           if [ -n "$DEPENDENCIES" ]; then
             title="$title (\`$DEPENDENCIES\` only)"
             lead="Raises the dependency lower bounds for \`$DEPENDENCIES\` only"
           fi
           echo "title=$title" >> "$GITHUB_OUTPUT"
           {
-            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE"
+            printf '%s for `%s` to the latest compatible stable PyPI release, and regenerates %s. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$lead" "$PACKAGE" "$locks"
             printf '%s\n\n' "$SUMMARY"
+            if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then
+              printf 'Warning: reverse-dependent lockfiles were intentionally skipped and remain stale until those packages are made compatible.\n\n'
+            fi
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               printf 'Opened automatically by [`raise_langchain_minimums.yml`](%s), manually dispatched by @%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/raise_langchain_minimums.yml" "$ACTOR"
               if [ -n "$DEPENDENCIES" ]; then

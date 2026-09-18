@@ -25065,8 +25065,9 @@ class DeepAgentsApp(App):
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,
             )
+            from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
-            if isinstance(self.screen, PromptClipboardScreen):
+            if isinstance(self.screen, (PromptClipboardScreen, ThreadSelectorScreen)):
                 return False
         if action == "approval_reject_with_reason":
             from deepagents_code.tui.modals.prompt_clipboard import (

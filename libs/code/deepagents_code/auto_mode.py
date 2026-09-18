@@ -997,20 +997,10 @@ def _trusted_prompt_rows(
 
 
 def _latest_turn_id(messages: Sequence[object]) -> str | None:
-    latest_human = next(
-        (
-            message
-            for message in reversed(messages)
-            if isinstance(message, HumanMessage)
-        ),
-        None,
-    )
-    if latest_human is None:
-        return None
-    rows, _index = _trusted_prompt_rows([latest_human])
+    rows, _index = _trusted_prompt_rows(messages)
     if not rows:
         return None
-    return rows[0]["turn_id"]
+    return rows[-1]["turn_id"]
 
 
 def _active_temp_artifacts(state: Mapping[str, object]) -> dict[str, AutoTempArtifact]:

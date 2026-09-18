@@ -69,6 +69,7 @@ from deepagents_code.auto_mode import (
     _ClassifierModelUnavailableError,
     _default_counters,
     _fixed_repo_command_allowed,
+    _latest_turn_id,
     _merge_temp_artifacts,
     _routine_write_allowed,
     _unresolvable_write_path_reason,
@@ -2764,6 +2765,44 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
         )
     assert update is not None
     assert update["messages"] == [ai_message]
+
+
+async def test_injected_human_message_preserves_same_turn_ask_user_answer(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(request)
+    _append_history_message(
+        request,
+        HumanMessage(
+            content="[SYSTEM] rubric feedback",
+            additional_kwargs={"lc_source": "rubric_grader"},
+        ),
+    )
+
+    assert _latest_turn_id(request.messages) == "turn-1"
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"]
 
 
 async def test_short_affirmative_attaches_to_bound_ask_user_question(

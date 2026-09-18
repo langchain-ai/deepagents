@@ -27,6 +27,7 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
+    _active_turn_id,
     _parse_answers,
 )
 
@@ -415,6 +416,38 @@ class TestAskUserTool:
         assert receipt["turn_id"] == "turn-1"
         assert receipt["tool_call_id"] == "ask-1"
         assert set(ask_tool.args) == {"questions"}
+
+    def test_injected_human_message_does_not_hide_active_turn(self) -> None:
+        ask_tool = cast("Any", AskUserMiddleware().tools[0])
+        state = _turn_state("turn-1")
+        messages = cast("list[object]", state["messages"])
+        messages.append(
+            HumanMessage(
+                content="[SYSTEM] rubric feedback",
+                additional_kwargs={"lc_source": "rubric_grader"},
+            )
+        )
+        runtime = SimpleNamespace(
+            context={"thread_id": "thread-1", "turn_id": "turn-1"},
+            execution_info=SimpleNamespace(thread_id="thread-1"),
+            tool_call_id="ask-1",
+            state=state,
+        )
+
+        with patch(
+            "deepagents_code.ask_user.interrupt",
+            return_value={"answers": ["Rebase my commit"]},
+        ):
+            command = ask_tool.func(
+                questions=[{"question": "How should I integrate?", "type": "text"}],
+                tool_call_id="ask-1",
+                runtime=runtime,
+            )
+
+        message = _extract_tool_message(command)
+        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
+        assert _active_turn_id(runtime) == "turn-1"
+        assert receipt["turn_id"] == "turn-1"
 
     @pytest.mark.parametrize(
         "runtime",

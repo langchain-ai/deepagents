@@ -107,9 +107,10 @@ def _active_turn_id(runtime: object) -> str | None:
             continue
         metadata = message.additional_kwargs.get(USER_PROMPT_METADATA_KEY)
         if not isinstance(metadata, Mapping):
-            return None
+            continue
         turn_id = metadata.get("turn_id")
-        return turn_id if isinstance(turn_id, str) and turn_id else None
+        if isinstance(turn_id, str) and turn_id:
+            return turn_id
     return None
 
 

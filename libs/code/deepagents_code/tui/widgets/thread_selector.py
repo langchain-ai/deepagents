@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code._env_vars import RECENT_THREADS
+from deepagents_code.clipboard import copy_text_with_feedback
 from deepagents_code.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -679,6 +680,20 @@ class ContainedSelect(Select[str]):
         return super().check_consume_key(key, character)
 
 
+class ThreadFilterInput(Input):
+    """Search input that supports the modified thread-ID copy shortcut."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("alt+c", "copy_thread_id", "Copy ID", show=False, priority=True)
+    ]
+
+    def action_copy_thread_id(self) -> None:
+        """Copy the highlighted thread ID instead of inserting C."""
+        screen = self.screen
+        if isinstance(screen, ThreadSelectorScreen):
+            screen.action_copy_thread_id()
+
+
 class ThreadSelectorScreen(ModalScreen[str | None]):
     """Modal dialog for browsing and resuming threads.
 
@@ -694,6 +709,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
+        Binding("alt+c", "copy_thread_id", "Copy ID", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
         Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
@@ -708,9 +724,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     """Key bindings for thread navigation, selection, deletion, and filter focus.
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Enter
-    selects the highlighted thread, Ctrl+D opens the delete-confirmation
-    overlay, Tab/Shift+Tab rotate focus through the filter input, the
-    scope/sort/agent dropdowns, and the relative-timestamp and
+    selects the highlighted thread, Alt+C copies its full ID, Ctrl+D opens the
+    delete-confirmation overlay, Tab/Shift+Tab rotate focus through the filter
+    input, the scope/sort/agent dropdowns, and the relative-timestamp and
     column-visibility checkboxes, and Esc dismisses. All bindings use
     `priority=True` so they take precedence over the embedded filter
     `Input`, `Select`, and checkbox widgets; vim-style `j`/`k` bindings are
@@ -922,6 +938,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         thread_limit: int | None = None,
         initial_threads: list[ThreadInfo] | None = None,
         filter_cwd: str | _Sentinel | None = _CWD_DEFAULT,
+        initial_query: str = "",
+        reference_mode: bool = False,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
@@ -937,10 +955,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 view to "all directories". Pass an explicit path to scope to
                 that directory, or `None` to start the picker with no cwd
                 filter.
+            initial_query: Search text carried from the compact picker.
+            reference_mode: Whether selection returns a reference instead of
+                resuming the selected thread.
         """
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
+        self._initial_query = initial_query
+        self._reference_mode = reference_mode
 
         from deepagents_code.model_config import load_thread_config
 
@@ -966,7 +989,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._disk_load_complete = False
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
-        self._filter_text = ""
+        self._filter_text = initial_query
         self._filter_agent: str | None = None
         # Configured agent names from `~/.deepagents/` (the `/agents` list),
         # loaded off the event loop in `_load_threads`. Unioned with
@@ -986,7 +1009,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         # Cached threads are pre-sorted by updated_at DESC (the only sort
         # order the cache stores).  Skip the O(n log n) re-sort when that
         # matches the user's preference.
-        if not (self._has_initial_threads and self._sort_by_updated):
+        if self._filter_text:
+            self._update_filtered_list()
+        elif not (self._has_initial_threads and self._sort_by_updated):
             self._apply_sort()
         self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
@@ -1028,6 +1053,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Plain string or `Content` with an embedded hyperlink.
         """
+        if self._reference_mode:
+            return "Reference Thread"
         if not self._current_thread:
             return "Select Thread"
         if thread_url:
@@ -1054,6 +1081,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         lines = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Alt+C copy ID"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
@@ -1281,7 +1309,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._build_title(), classes="thread-selector-title", id="thread-title"
             )
 
-            yield Input(
+            yield ThreadFilterInput(
+                value=self._initial_query,
                 placeholder="Type to search threads...",
                 select_on_focus=False,
                 id="thread-filter",
@@ -2352,6 +2381,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
+
+    def action_copy_thread_id(self) -> None:
+        """Copy the highlighted thread's full ID."""
+        if self._confirming_delete:
+            return
+        if self._is_select_expanded():
+            self._close_expanded_select()
+        if self._filtered_threads:
+            copy_text_with_feedback(
+                self.app,
+                self._filtered_threads[self._selected_index]["thread_id"],
+                failure_noun="selection",
+                success_message="Copied thread ID",
+            )
 
     def action_focus_next_filter(self) -> None:
         """Move focus through the filter and column-toggle controls."""

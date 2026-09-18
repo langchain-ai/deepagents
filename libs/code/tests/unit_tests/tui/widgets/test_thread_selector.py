@@ -954,6 +954,68 @@ class TestThreadSelectorInitialSortOrder:
 class TestThreadSelectorSearch:
     """Tests for fuzzy search filtering."""
 
+    async def test_reference_picker_starts_with_compact_query(self) -> None:
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread=None,
+                        filter_cwd=None,
+                        initial_query="parser",
+                        reference_mode=True,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._build_title() == "Reference Thread"
+                assert screen.query_one("#thread-filter", Input).value == "parser"
+
+
+class TestThreadSelectorCopy:
+    """Tests for copying the selected full thread ID."""
+
+    async def test_alt_c_copies_highlighted_full_id(self) -> None:
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.tui.widgets.thread_selector.copy_text_with_feedback"
+            ) as copy,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("alt+c")
+                await pilot.pause()
+
+                copy.assert_called_once_with(
+                    app,
+                    "abc12345",
+                    failure_noun="selection",
+                    success_message="Copied thread ID",
+                )
+                assert app.dismissed is False
+
+    async def test_plain_c_filters_without_copying(self) -> None:
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.tui.widgets.thread_selector.copy_text_with_feedback"
+            ) as copy,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("c")
+                await pilot.pause()
+
+                assert app.screen.query_one("#thread-filter", Input).value == "c"
+                copy.assert_not_called()
+
 
 class TestThreadSelectorDelete:
     """Tests for ctrl+d delete functionality."""

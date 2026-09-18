@@ -1,12 +1,18 @@
 ---
-type: maintainer-quickstart
-title: Repository Quickstart
-description: Route Deep Agents maintainer work to the SDK, dcode product, ACP bridge, Talon host, evaluation suite, partner integrations, and their focused architecture, workflow, operations, and test guides.
-tags: [quickstart, monorepo, navigation, deepagents, dcode, maintenance]
+type: maintainer quickstart
+title: Deep Agents Repository Quickstart
+description: Route a Deep Agents maintenance task to its owning package or repository automation boundary, then choose the focused validation and operational guide. Distinguishes the scheduled OpenWiki publication workflow from the public dcode composite Action.
+tags: [quickstart, monorepo, navigation, deepagents, dcode, maintenance, openwiki, automation]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T18:59:02.504Z
 sources:
+  - id: openwiki-source-f4eea0fab8d793f88bb9f835
+    resource: repo://.github/scripts/tests/workflows/test_openwiki_workflow.py
+  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
+    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
+  - id: openwiki-source-6d4b4e707b8d60b6ccfa3425
+    resource: repo://.github/workflows/openwiki-update.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
   - id: openwiki-source-bb78950c8b36b7b9f6746e96
@@ -45,49 +51,43 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T18:59:02.504Z" }
 ---
 
-# Repository Quickstart
+# Deep Agents Repository Quickstart
 
-Deep Agents is an opinionated harness for agents: `create_deep_agent()` configures harness behavior, then delegates agent construction to LangChain's `create_agent()` on the LangGraph runtime. This is a maintainer routing page—not a substitute for the package-local README, Makefile, or focused design guide.
+Deep Agents is an opinionated agent harness. `create_deep_agent()` assembles harness behavior and delegates construction to LangChain's `create_agent()` on the LangGraph runtime. Start with the task's owner—not the repository root—and use the linked guide for the detailed lifecycle or operational contract.
 
-## Pick the entry point
+## Route the task first
 
-- **Try or change the terminal coding product:** install and start dcode:
+| If you are changing… | Owner and first destination | Validate next |
+| --- | --- | --- |
+| SDK graph construction, middleware, filesystem/shell backends, tools, delegation, skills, memory, profiles, or approvals | `libs/deepagents/`; [Repository Architecture Overview](./architecture/overview.md) and [Source Map](./architecture/source-map.md) | Package-local tests; see [Testing Guide](./testing/testing-guide.md) |
+| dcode CLI/TUI, server/client execution, workspace/session state, streaming, configuration, or context offload | `libs/code/`; [dcode session guide](./workflows/run-dcode-session.md) | dcode package tests |
+| ACP sessions or editor projection | `libs/acp/`; [ACP integration](./integrations/acp.md) | ACP package tests |
+| Talon channels, schedules, host lifecycle, history, or MCP loading | `libs/talon/`; [Talon integration](./integrations/talon.md) | Talon tests and [Security](./operations/security.md) |
+| Evaluation scenarios, trial aggregation, model credentials, or Harbor jobs | `libs/evals/`; [eval guide](./workflows/run-evals.md) | Evals package tests |
+| A provider, sandbox, or partner integration | the matching `libs/partners/<provider>/`; [Sandbox and Partner Backends](./integrations/sandbox-partners.md) | Owning package tests |
+| **Scheduled or manually dispatched OpenWiki maintenance**—generation, update PRs, merge behavior, or its credentials | `.github/workflows/openwiki-update.yml`; [OpenWiki Update Automation Runbook](./operations/openwiki-automation.md) | The two focused workflow contracts below and [Security](./operations/security.md) |
+| **Public dcode-in-workflow interface**—root Action inputs, outputs, or command translation | root `action.yml`; [GitHub Action Integration](./integrations/github-action.md) | Action/workflow contract tests |
+| Locks, releases, ordinary CI, or cross-package validation | [Development, CI, and Releases](./operations/development.md) | [Testing Guide](./testing/testing-guide.md) |
 
-  ```bash
-  curl -LsSf https://langch.in/dcode | bash
-  dcode
-  ```
+The two GitHub Actions rows are intentionally different. **OpenWiki Update** is repository-owned scheduled/manual maintenance that generates and publishes `openwiki/` content. Root `action.yml` is the public composite Action that runs one headless `dcode` task in a caller's workflow; it does not own OpenWiki publication or the package runtime.
 
-  dcode is the prebuilt terminal coding agent in `libs/code`; use the SDK instead when building a custom agent. For an interactive, headless, resume, approval, MCP, sandbox, or ACP session, follow [Run a dcode Session](./workflows/run-dcode-session.md).
-- **Build a custom agent:** install with `uv add deepagents` and start with `create_deep_agent(model=..., tools=..., system_prompt=...)`. Continue with [Build a Deep Agent](./workflows/build-a-deep-agent.md).
-- **Change repository behavior:** identify the owning package below, then use its local environment and `Makefile`. Start with [Development, CI, and Releases](./operations/development.md) for setup, locks, CI, and release work.
+## Package boundaries and runtime ownership
 
-## Know the runtime and package boundaries
+`libs/` is a monorepo of **independently versioned packages**, not one root Python project: there is no root `pyproject.toml`, and each package owns its `pyproject.toml`, `Makefile`, and README. First-party local dependencies are editable, so a sibling consumer sees changes from its checked-out dependency during development.
 
-The runtime layers are deliberately separate:
+| Need to change | Release unit and responsibility | Python requirement |
+| --- | --- | --- |
+| Reusable agent assembly, middleware, backends, profiles, skills, memory, or subagents | `libs/deepagents/` — `deepagents` SDK | `>=3.11,<4.0` |
+| Terminal UI, CLI/headless mode, sessions, workspaces, configuration, or dcode tools | `libs/code/` — `deepagents-code`, run with `dcode` | `>=3.12,<4.0` |
+| Editor-facing Agent Client Protocol sessions | `libs/acp/` — `deepagents-acp` | `>=3.11` |
+| Long-running channels, schedules, and local host lifecycle | `libs/talon/` — experimental `deepagents-talon` | `>=3.12` |
+| Behavioral evaluations and Harbor benchmarks | `libs/evals/` — `deepagents-evals` | `>=3.12,<3.14` |
+| Provider and sandbox extensions | `libs/partners/{daytona,modal,runloop,vercel,quickjs}/` — separate integration packages | `>=3.11,<4.0` for the five listed packages |
 
-- **LangGraph** owns runtime state, checkpoints, streaming, and interrupts.
-- **LangChain `create_agent`** owns the agent abstraction: model, tools, middleware, and the model/tool loop.
-- **Deep Agents** is the opinionated harness above `create_agent`, not another runtime. `create_deep_agent()` is its assembly point: it configures the default middleware stack and can configure backends, subagents, skills, memory, and profiles before delegating construction.
-
-Use [Architecture Overview](./architecture/overview.md) for the system model and [Source Map and Change Routing](./architecture/source-map.md) to trace a behavior to its owning surface and focused tests.
-
-`libs/` is a monorepo of independently versioned packages. There is no root `pyproject.toml`; every package has its own `pyproject.toml`, `Makefile`, and README, so work from the package being changed. Local first-party dependencies are editable, allowing a sibling consumer to observe source changes without publishing them first.
-
-| Boundary | Package or path | What it owns | Start here |
-| --- | --- | --- | --- |
-| SDK | `libs/deepagents/` | The reusable `deepagents` SDK: `create_deep_agent`, middleware, backends, profiles, skills, memory, and subagents. | [Build a Deep Agent](./workflows/build-a-deep-agent.md), [Architecture Overview](./architecture/overview.md) |
-| Coding product | `libs/code/` | `deepagents-code`, run as `dcode`: terminal UI, CLI/headless behavior, sessions, configuration, tools, and workspace runtime. | [Run a dcode Session](./workflows/run-dcode-session.md), [dcode Architecture](./architecture/code-agent.md) |
-| Editor bridge | `libs/acp/` | `deepagents-acp`, the Agent Client Protocol integration for running Deep Agents in editors; dcode also offers ACP mode. | [ACP Integration](./integrations/acp.md), [Testing Guide](./testing/testing-guide.md) |
-| Long-running host | `libs/talon/` | Experimental `deepagents-talon`: local process lifecycle, channel adapters, cron schedules, and agent runtime. | [Talon Runtime Host](./integrations/talon.md), [Security Boundaries](./operations/security.md) |
-| Evaluation | `libs/evals/` | `deepagents-evals`: behavioral evaluation suite and Harbor integration. | [Run Evals](./workflows/run-evals.md), [Testing Guide](./testing/testing-guide.md) |
-| Provider integrations | `libs/partners/` | Separately released Daytona, Modal, Runloop, Vercel, and QuickJS integration boundaries. | [Sandbox and Partner Integrations](./integrations/sandbox-partners.md) |
-| Workflow adapter | repository-root `action.yml` | Composite GitHub Action that runs dcode in a workflow. | [GitHub Action Integration](./integrations/github-action.md) |
-
-The manifests declare consumer direction: `deepagents-code` depends on `deepagents==0.7.13`; ACP depends on `deepagents`; evals depends on Deep Agents, dcode, and Harbor; and Talon depends on Deep Agents and dcode. The five partner packages each depend on Deep Agents. These are package relationships, not a runtime call graph.
+Select Python from the manifest of the package being run—there is no repository-wide pin. `uv` provisions the interpreter for package work. The manifests express consumer direction, not a runtime call graph: `deepagents-code` pins `deepagents==0.7.15`; ACP depends on `deepagents`; evals depends on Deep Agents, dcode, and Harbor; Talon depends on Deep Agents and dcode; and each listed partner package depends on Deep Agents.
 
 ```mermaid
 flowchart TD
@@ -104,33 +104,44 @@ flowchart TD
 
 The diagram shows declared package and integration dependency direction; arrows point from a consumer or adapter to the capability it uses.
 
-## Route the task to its guide
+The SDK stack has three ownership layers:
 
-| If you are changing… | Read first | Then use |
-| --- | --- | --- |
-| SDK graph assembly, middleware, tools, backends, profiles, skills, memory, subagents, or approvals | [Build a Deep Agent](./workflows/build-a-deep-agent.md) | [Architecture Overview](./architecture/overview.md), [Source Map](./architecture/source-map.md), [Testing Guide](./testing/testing-guide.md) |
-| dcode CLI/TUI, graph, client/server behavior, workspace runtime, configuration, persistence, streaming, or offload | [Run a dcode Session](./workflows/run-dcode-session.md) | [dcode Architecture](./architecture/code-agent.md), [dcode Configuration Layering](./concepts/config-layering.md), [State, Sessions, and Workspace Persistence](./concepts/state-persistence.md), [Context Management and Offload](./concepts/context-management.md) |
-| models, provider selection, profiles, or retry behavior | [Models, Profiles, and Retries](./concepts/profiles-models.md) | [dcode Architecture](./architecture/code-agent.md) or the SDK architecture, according to the owner |
-| an ACP editor integration, protocol session, or dcode ACP mode | [ACP Integration](./integrations/acp.md) | [dcode Architecture](./architecture/code-agent.md), [Testing Guide](./testing/testing-guide.md) |
-| Talon channels, schedules, host lifecycle, history, or MCP management | [Talon Runtime Host](./integrations/talon.md) | [State, Sessions, and Workspace Persistence](./concepts/state-persistence.md), [Security Boundaries](./operations/security.md) |
-| evaluation coverage, repeated trials, or Harbor benchmark work | [Run Evals](./workflows/run-evals.md) | [Testing Guide](./testing/testing-guide.md), then the runtime package that owns the behavior |
-| MCP discovery, trust, credentials, loading, reload, or failures | [MCP Integration](./integrations/mcp.md) | [Security Boundaries](./operations/security.md), plus dcode or Talon as applicable |
-| a sandbox provider, remote execution, or partner package | [Sandbox and Partner Integrations](./integrations/sandbox-partners.md) | [Source Map](./architecture/source-map.md), [Testing Guide](./testing/testing-guide.md) |
-| the GitHub Action’s prompt, credentials, workspace, memory, skills, sandbox, MCP, or headless behavior | [GitHub Action Integration](./integrations/github-action.md) | [Run a dcode Session](./workflows/run-dcode-session.md), [Security Boundaries](./operations/security.md) |
-| dependencies, locks, release metadata, CI, or package validation | [Development, CI, and Releases](./operations/development.md) | [Testing Guide](./testing/testing-guide.md) |
+1. **LangGraph** provides state, checkpoints, streaming, and interrupts.
+2. **LangChain `create_agent`** provides the model, tools, middleware, and agent-loop abstraction.
+3. **Deep Agents** adds an opinionated harness rather than a new runtime. Its `create_deep_agent()` assembly can configure the default middleware stack, backends, subagents, skills, memory, and profiles before it calls `create_agent()`.
 
-The root Action requires a prompt and accepts optional provider credentials and workspace, along with inputs for persisted memory, skills, sandbox, MCP, and headless output behavior. Treat those inputs as a workflow contract and trace an option to dcode before changing it.
+For a custom agent, install `deepagents` and construct it with `create_deep_agent(model=..., tools=..., system_prompt=...)`. To try the terminal product instead:
 
-## Run the package-local loop
+```bash
+curl -LsSf https://langch.in/dcode | bash
+dcode
+```
 
-Use `uv` for interpreters, environments, and dependencies; use neither `pip`, Poetry, nor Conda. `uv` provisions a suitable interpreter, so there is no repository-wide Python version to pin. The package `Makefile` is the command authority: run `make help` in the package, use `uv sync --all-groups` (or the needed group), and reserve `libs/` fan-out targets for intentional repository-wide checks.
+## Safe local edit–test loop
 
-Python compatibility is also package-local: Deep Agents is `>=3.11,<4.0`, dcode `>=3.12,<4.0`, ACP `>=3.11`, evals `>=3.12,<3.14`, and Talon `>=3.12`. The five listed partners each require `>=3.11,<4.0`. In particular, evals excludes Python 3.14; select the interpreter for the package you run.
+Use `uv` for interpreters, environments, and dependencies; do not substitute `pip`, Poetry, or Conda. From the package you are changing, install required groups and use its `Makefile` as the command authority:
 
-For a focused change, identify the public boundary and state owner, edit the narrowest owning package, and update the nearest observable test. The SDK and dcode Makefiles provide network-disabled unit tests through `make test` and separate integration targets. Evals similarly has network-disabled unit tests; `make evals MODEL=<id>` requires `MODEL` and runs the real-model suite in `tests/evals`, so it complements rather than replaces deterministic coverage.
+```bash
+cd libs/deepagents
+uv sync --all-groups
+make help
+make test
+make lint
+```
 
-## Operational caution: Talon
+Use `uv run ...` for a direct one-off command; use `libs/` fan-out targets such as `make lint`, `make lock`, or `make lock-check` only when intentionally validating the aggregate. Do not create a virtual environment outside the package or mix environments in one session.
 
-Talon is an experimental local runtime host, not a production security boundary. It does not implement complete HITL policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Treat channel access as direct access to the operator’s agent, credentials, MCP tools, and local resources. Read [Talon Runtime Host](./integrations/talon.md) and [Security Boundaries](./operations/security.md) before operating or extending it.
+For a focused runtime change, identify the public boundary and state owner, change the narrowest owning package, and run its nearest observable test. SDK and dcode `make test` targets disable network sockets and expose separate integration targets. Evals `make test` also disables network sockets; `make evals MODEL=<id>` rejects a missing `MODEL` and runs real-model tests in `tests/evals`, so it complements deterministic tests rather than replacing them.
 
-For broader navigation, start from [architecture](./architecture/overview.md), [workflows](./workflows/build-a-deep-agent.md), [integrations](./integrations/index.md), [operations](./operations/development.md), and [testing](./testing/testing-guide.md).
+For `.github` automation, do not substitute a package test. Workflow/action YAML contracts belong in `.github/scripts/tests/workflows/`. After editing OpenWiki workflow or merge semantics, run:
+
+```bash
+python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py -v
+python -m pytest .github/scripts/tests/workflows/test_openwiki_workflow.py -v
+```
+
+The credential-scope test statically checks the read-only default, `openwiki` environment, non-persistent checkout credentials, delayed dedicated App-token minting, and token use only in mutation steps. The merge harness extracts and runs the workflow's real Bash merge body with stubbed `gh` and `sleep` and real `jq`; it verifies the SHA-pinned squash merge, fail-closed PR validation, and the 405-only bounded retry behavior. It requires POSIX `bash` and `jq` and skips when they are unavailable or on Windows. Use the [OpenWiki runbook](./operations/openwiki-automation.md) for lifecycle and recovery, and [Security](./operations/security.md) before changing its trust boundary.
+
+## Talon operating boundary
+
+Talon is an alpha, experimental local host, not a production security boundary. It does not provide complete HITL policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Treat channel access as direct access to the operator's agent, model credentials, MCP tools, and local host resources. Read [Talon Long-Running Host](./integrations/talon.md) and [Security Boundaries and Secrets](./operations/security.md) before operating or extending it.

@@ -1,11 +1,11 @@
 ---
 type: security and approval concept
 title: Permissions and Human Approval
-description: Explains filesystem permission enforcement and path-scoped HITL, dcode approval modes and shell policy, and Talon's channel-mediated approval lifecycle. Distinguishes tool availability, policy enforcement, and human authorization.
+description: Explains filesystem permission enforcement and path-scoped HITL, dcode approval modes and shell policy, and Talon's persisted approval policy and channel-mediated approval lifecycle. Distinguishes tool availability, policy enforcement, and human authorization.
 tags: [permissions, human-in-the-loop, security, filesystem, approvals, interrupts, talon, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -31,7 +31,15 @@ sources:
     resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+  - id: openwiki-source-267468fe937003d4716fe6c2
+    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
+  - id: openwiki-source-8de0ff38635f214c7268d8e7
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+  - id: openwiki-source-d4964daa078854bf4438d764
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
 # Permissions and Human Approval
@@ -110,34 +118,39 @@ Auto is not a blanket allowlist. `AutoModeHITLMiddleware` applies deterministic 
 
 For non-interactive dcode operation, `interrupt_shell_only=True` disables HITL only when a restrictive shell allow-list is available, then installs `ShellAllowListMiddleware`. It checks `execute` before execution and returns an error `ToolMessage` for a command outside the list, avoiding an interrupt/resume cycle. If no restrictive list can be resolved, dcode logs a warning and retains normal HITL; an empty list is invalid, and the unrestricted `SHELL_ALLOW_ALL` sentinel must use `auto_approve=True` instead. `auto_approve=True` disables all HITL interruptions. Patch Tool Calls from the code interpreter bypass `interrupt_on`/HITL altogether, so `InterpreterConfig.ptc` is their effective control.
 
-## Talon: approvals mediated by the originating channel
+## Talon: persisted policy and channel-mediated approval
 
-Talon is an experimental runtime that translates graph interrupts into a channel conversation rather than exposing a local approval UI. `DeepAgentRuntime` invokes the graph asynchronously, detects `__interrupt__` values, obtains one decision for each interrupt, builds LangGraph `Command(resume=...)` payloads for every action request, and repeats for at most `DEFAULT_MAX_APPROVAL_ROUNDS` (50). A missing interrupt ID or an all-unresumable batch is an error rather than an implicit approval.
+Talon's approval configuration is an exact-name policy, separate from a graph invocation. `ToolApprovalStore` persists `tools.json` as a bounded, regular, non-symlink JSON mapping from tool name to boolean and gives each byte representation a SHA-256 revision. The initial file contains gates for `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, and `start_async_task`. An enabled entry produces an approve/reject-only `interrupt_on` entry; an unspecified or `false` entry produces no prompt. **That absence is not operator authorization**—it merely selects whether the graph pauses.
 
-`interrupt_on_with_env_overlay` merges a supplied map with comma-separated tool names from `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS`; the environment overlay wins for duplicate names. When the MCP configuration update tool is present, Talon adds an approve/reject gate unless `MCP_CONFIG_AUTO_APPROVE_ENV=true`; async-subagent tools are added by default when those agents exist.
+Updates are compare-and-swap operations under a file lock: the caller must supply the current persisted revision, and conflicts, malformed input, unsafe files, or write failures leave the previous policy intact. The runtime reads a snapshot when it starts and before each invocation; if it changed, it rebuilds the graph. An in-flight invocation keeps its captured snapshot, and a successful update reports that it is available on the next invocation. This prevents a call from changing the policy by which that same invocation is being authorized.
 
-For a channel turn, `TalonHost` passes an approval callback through `AgentRequest`. The host stores a pending future by agent conversation, posts the tool names and argument preview, and resumes it from an approve/reject reply or a thumbs-up/thumbs-down reaction. A text reply is accepted only from the sender that started the run when that identity is known. A reaction additionally must match the provider, conversation, exact approval-prompt message, and sender. Invalid replies re-prompt; mismatches are ignored and logged. The implementation logs stable references by default, with raw approval identifiers only if `DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS=true`.
+`get_tool_approvals` exposes both the active snapshot and the saved file. `update_tool_approvals` additionally requires both an active invocation snapshot and the `APPROVAL_OPERATOR` context flag. The runtime sets that flag only for metadata whose `tool_approval_operator` is literally `True`, and clears it for cron and background delivery. Channel routing derives that metadata from trusted channel exposure configuration rather than accepting route/message metadata as a grant.
 
-Talon fails closed where no interactive channel operator exists: scheduled (`trigger == "cron"`) calls and channel calls without an approval handler receive reject decisions with explanatory messages. Approval interrupt and resolution events record action count, names, a stable conversation reference, interrupt ID, trigger, decision, and resolution.
+`DeepAgentRuntime` invokes the graph asynchronously, detects `__interrupt__` values, obtains one decision for each interrupt, builds LangGraph `Command(resume=...)` payloads for every action request, and repeats for at most `DEFAULT_MAX_APPROVAL_ROUNDS` (50). A missing interrupt ID or an all-unresumable batch is an error rather than an implicit approval. For an approval interruption, cron runs, background delivery, and requests with no handler receive a reject decision. Otherwise, the handler receives the conversation ID, interrupt ID, and pending action requests.
+
+For a channel turn, `TalonHost` passes an approval callback through `AgentRequest`. The host retains a pending future per agent conversation, posts the action information, and completes it from an approve/reject reply or a thumbs-up/thumbs-down reaction. A text reply is accepted only from the sender that started the run when that identity is known. A reaction additionally must match the provider, conversation, exact approval-prompt message, and sender. Invalid replies re-prompt; mismatches are ignored and logged.
 
 ```mermaid
-sequenceDiagram
-    participant Channel
-    participant Host as TalonHost
-    participant Runtime as DeepAgentRuntime
-    participant Graph
-    Channel->>Host: inbound turn
-    Host->>Runtime: AgentRequest with approval handler
-    Runtime->>Graph: async invoke
-    Graph-->>Runtime: approval interrupt
-    Runtime->>Host: ToolApprovalRequest
-    Host->>Channel: prompt actions and arguments
-    Channel->>Host: approve or reject reply or reaction
-    Host-->>Runtime: decision
-    Runtime->>Graph: Command resume decisions
+flowchart TD
+    Proposed["Configured tool call"] --> Gate{"Active policy enables gate"}
+    Gate -->|No| Execute["Run tool"]
+    Gate -->|Yes| Interrupted["Graph returns approval interrupt"]
+    Interrupted --> Context{"Cron background or no handler"}
+    Context -->|Yes| Reject["Resume with reject"]
+    Context -->|No| Prompt["Host prompts originating channel"]
+    Prompt --> Valid{"Validated operator decision"}
+    Valid -->|Approve| Resume["Command resume approve"]
+    Valid -->|Reject| Reject
+    Resume --> Execute
 ```
 
-Caption: Talon carries a graph approval interruption over the same channel that initiated the conversation and resumes only after a validated decision.
+Caption: Talon first selects a gate from its invocation snapshot, then fails closed unless an interactive channel handler supplies a validated approval.
+
+### Talon security boundaries
+
+A persisted boolean policy is neither a sandbox nor a durable authorization credential. It controls which exact tool names yield graph approval interrupts; unprompted tools still rely on their own implementation and backend controls. Likewise, `approval_handler` is a runtime callback for a live channel turn, while `authorization_handler` is a distinct callback used for authorization events outside model context (for example, MCP authorization). Do not treat either callback as a general identity system or use request metadata from an untrusted caller to manufacture authority.
+
+The approval store is deliberately fail-closed operationally: an invalid stored policy prevents graph refresh/invocation rather than overwriting it or falling back to a less restrictive policy. Its active snapshot and `APPROVAL_OPERATOR` context are scoped to the invocation and reset afterwards; detached/background work cannot inherit the operator's authority.
 
 ## `ask_user` is not an approval gate
 
@@ -150,6 +163,6 @@ Only genuinely answered, bounded string responses with trusted thread, turn, and
 - Use absolute, literal-leading protected anchors such as `/secrets/**`; leading-wildcard interrupt patterns anchor at `/` for bulk overlap and can prompt nearly every bulk call.
 - Test direct paths and bulk roots, including omitted paths, `.`, absolute glob patterns, and `..` in a relative glob pattern. Test directory deletion separately from a confirmed leaf.
 - Treat `interrupt_on` as selective approval routing, not a replacement for backend sandboxing or filesystem denial. Review interpreter PTC separately.
-- For Talon deployments, configure gates before relying on them, ensure channels provide stable message/sender identities for reaction approvals, and expect cron/no-handler execution to deny gated calls.
+- For Talon deployments, review `tools.json` as an exact-name gate policy, use the returned revision when changing it, and expect a saved change to apply only to the next invocation. Ensure channels provide stable message/sender identities for reaction approvals, and expect cron, background, and no-handler execution to deny gated calls.
 
-Focused coverage includes `libs/deepagents/tests/unit_tests/test_permissions.py` for validation, precedence, bulk bypass protection, and delete overlap; `libs/code/tests/unit_tests/test_approval_mode.py` for fail-closed Store behavior; and Talon's runtime and host tests for resume payloads, channel decisions, mismatch rejection, and cron denial.
+Focused coverage includes `libs/deepagents/tests/unit_tests/test_permissions.py` for validation, precedence, bulk bypass protection, and delete overlap; `libs/code/tests/unit_tests/test_approval_mode.py` for fail-closed Store behavior; `libs/talon/tests/unit_tests/test_tool_approvals.py` for store validation, atomic compare-and-swap, snapshots, and operator checks; and Talon's tool-approval runtime/authorization tests for snapshot isolation, handler stripping, channel-origin authority, and cron/background denial.

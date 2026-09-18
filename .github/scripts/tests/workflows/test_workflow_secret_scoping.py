@@ -130,7 +130,9 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     token_step = _find_step(
         workflow, job="update", name="Generate OpenWiki GitHub App token"
     )
-    auto_merge = _find_step(workflow, job="update", name="Enable auto-merge")
+    merge = _find_step(
+        workflow, job="update", name="Merge OpenWiki update pull request"
+    )
     token = "${{ steps.app-token.outputs.token }}"
 
     assert "token" not in checkout["with"]
@@ -157,24 +159,14 @@ def test_openwiki_uses_dedicated_environment_and_token() -> None:
     assert ".head.repo.full_name == $repository" in create_pr["run"]
     assert 'gh pr close "$pr_number" --delete-branch' in create_pr["run"]
     assert 'gh pr close "$BRANCH"' not in create_pr["run"]
-    assert auto_merge["env"] == {
+    assert merge["env"] == {
         "GH_TOKEN": token,
         "PR_NUMBER": "${{ steps.create-pr.outputs.number }}",
         "HEAD_SHA": "${{ steps.create-pr.outputs.head-sha }}",
         "EXPECTED_BASE": "main",
         "EXPECTED_HEAD": "${{ github.repository_owner }}:openwiki/update",
     }
-    assert auto_merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
-    assert '[[ "$PR_NUMBER" =~ ^[0-9]+$ ]]' in auto_merge["run"]
-    assert '[[ "$EXPECTED_BASE" == "main" ]]' in auto_merge["run"]
-    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"' in auto_merge["run"]
-    assert ".head.label" in auto_merge["run"]
-    assert ".head.repo.full_name" in auto_merge["run"]
-    assert ".head.sha" in auto_merge["run"]
-    assert (
-        'gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"'
-        in auto_merge["run"]
-    )
+    assert merge["if"] == "${{ steps.create-pr.outputs.number != '' }}"
 
 
 def test_issue_topic_classifier_uses_dedicated_environment() -> None:

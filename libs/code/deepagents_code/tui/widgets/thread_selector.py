@@ -66,7 +66,7 @@ when the inputs (thread data + config) haven't changed."""
 
 _COL_TID = 10
 _COL_AGENT = 12
-_COL_MSGS = 4
+_COL_MSGS = 5
 _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
@@ -95,7 +95,7 @@ _COLUMN_WIDTHS: dict[str, int | None] = {
 _COLUMN_LABELS = {
     "thread_id": "Thread ID",
     "agent_name": "Agent",
-    "messages": "Msgs",
+    "messages": "# msg",
     "created_at": "Created",
     "updated_at": "Updated",
     "git_branch": "Branch",

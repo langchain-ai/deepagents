@@ -353,6 +353,34 @@ class RemoteAgent:
             )
         return self._graph
 
+    async def abtw(self, question: str, *, config: Mapping[str, Any]) -> str:
+        """Ask without submitting a run or writing conversation state.
+
+        Returns:
+            The ephemeral answer.
+
+        Raises:
+            RuntimeError: If the server does not support side questions.
+            TypeError: If the response is malformed.
+        """
+        from langgraph_sdk.errors import NotFoundError
+
+        thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
+        await self.aensure_thread(dict(config))
+        try:
+            response = await self._get_graph().client.http.post(
+                f"/dcode/threads/{thread_id}/btw",
+                json={"question": question, "workspace": workspace},
+            )
+        except NotFoundError as exc:
+            msg = "This server does not support /btw. Update the built-in dcode server."
+            raise RuntimeError(msg) from exc
+        if not isinstance(response, dict) or not isinstance(response.get("text"), str):
+            msg = "Invalid side-question response from the server."
+            raise TypeError(msg)
+        return response["text"]
+
     async def aoffload(
         self,
         *,

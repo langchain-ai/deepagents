@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (45)
+## Public (46)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -16,6 +16,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/auth` | `/connect` | Connect and manage provider and service credentials |
 | `/auto` |  | Switch to Auto approval mode or manage its classifier model |
 | `/auto-update` |  | Turn automatic updates on or off |
+| `/btw` |  | Ask a side question without changing the conversation |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Start a fresh thread |
 | `/context` |  | Show current context window usage |

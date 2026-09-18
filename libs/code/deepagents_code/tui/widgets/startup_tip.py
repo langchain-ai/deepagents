@@ -23,6 +23,7 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
+    "Ask /btw a side question while the agent keeps working": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
     "Use /context-doctor to audit the token cost of injected context": 1,

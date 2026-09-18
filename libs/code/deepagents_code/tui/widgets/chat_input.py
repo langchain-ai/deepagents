@@ -1605,6 +1605,11 @@ class ChatTextArea(PasteBurstTextArea):
             owner.apply_paste_payload(event.text, None)
             return
 
+        # TextArea inserts after this handler returns, before the callback runs.
+        # Re-scroll once auto-height layout has settled so an overflowing paste
+        # leaves its end visible instead of showing the start of the draft.
+        self.call_after_refresh(self.scroll_cursor_visible)
+
         # Don't call super() here — Textual's MRO dispatch already calls
         # TextArea._on_paste after this handler returns. Calling super()
         # would insert the text a second time, duplicating the paste.

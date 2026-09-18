@@ -257,6 +257,24 @@ class TestChatInputScrollbar:
     so the bar appears only on genuine overflow.
     """
 
+    async def test_overflowing_paste_scrolls_to_cursor(self) -> None:
+        """A paste taller than the composer leaves its end visible."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            owner = text_area._chat_input_owner
+            assert owner is not None
+            owner._collapse_pastes = False
+            text_area.focus()
+            await pilot.pause()
+
+            pasted = "word " * 200
+            app.post_message(events.Paste(pasted))
+            await pilot.pause()
+
+            assert text_area.cursor_location == (0, len(pasted))
+            assert text_area.scroll_y == text_area.max_scroll_y
+
 
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""

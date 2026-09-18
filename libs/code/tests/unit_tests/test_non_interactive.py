@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -22,6 +22,7 @@ from typing import cast
 
 from rich.style import Style
 
+from deepagents_code._session_stats import ModelInvocationKey
 from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
@@ -101,12 +102,17 @@ def console() -> Console:
     return Console(quiet=True)
 
 
-def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
+@pytest.mark.parametrize("provider_id", [False, True])
+@pytest.mark.parametrize("completion_first", [False, True])
+def test_nested_usage_event_updates_headless_stats(
+    console: Console, provider_id: bool, completion_first: bool
+) -> None:
     state = StreamState(thread_id="thread-1")
     event = {
         "type": "model_usage",
         "version": 1,
         "request_id": "child-1",
+        "invocation_id": "child-run",
         "usage_metadata": {
             "input_tokens": 1_000,
             "output_tokens": 100,
@@ -118,12 +124,25 @@ def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
         "scope": "tools:task",
     }
 
-    _process_stream_chunk(
-        (("tools:task",), "custom", event),
-        state,
-        console,
-        FileOpTracker(assistant_id="assistant"),
+    message = AIMessageChunk(
+        content="",
+        id="child-1" if provider_id else "lc_run--child-run",
+        usage_metadata={
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        },
     )
+    deliveries = [
+        (("tools:task",), "messages", (message, {})),
+        (("tools:task",), "custom", event),
+    ]
+    if completion_first:
+        deliveries.reverse()
+    for delivery in deliveries:
+        _process_stream_chunk(
+            delivery, state, console, FileOpTracker(assistant_id="assistant")
+        )
 
     assert state.stats.request_count == 1
     assert state.stats.per_kind["subagent"].request_count == 1
@@ -4546,7 +4565,9 @@ class TestAttemptLifecycle:
         # rather than being deduped as a replay.
         assert state.stats.request_count == 2
         assert len(state.recorded_usage_requests) == 2
-        assert all(isinstance(key, tuple) for key in state.recorded_usage_requests)
+        assert all(
+            isinstance(key, ModelInvocationKey) for key in state.recorded_usage_requests
+        )
 
     def _lifecycle_state(self, tmp_path: Path, **kwargs: Any) -> StreamState:
         transcripts = TranscriptStore(tmp_path / "transcripts")

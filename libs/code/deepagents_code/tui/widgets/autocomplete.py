@@ -41,8 +41,11 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
 
 
-_THREAD_TITLE_LIMIT = 80
-"""Maximum title length embedded in a durable thread token."""
+_THREAD_LABEL_LIMIT = 80
+"""Maximum initial-prompt label length shown in thread completion."""
+
+_THREAD_REFERENCE_PREFIX = "@@(thread:"
+"""Prefix for durable thread-reference tokens."""
 
 _THREAD_TRIGGER = "@@"
 """Trigger reserved for recent-thread completion."""
@@ -51,16 +54,14 @@ _THREAD_MAX_AGE_DAYS = 365
 """Threshold for displaying thread update age in years."""
 
 
-def _thread_title(thread: ThreadInfo) -> str:
-    """Return a safe single-line title for a thread mention."""
-    title = sanitize_control_chars(thread.get("initial_prompt") or "")
-    title = title.translate(str.maketrans({"[": " ", "]": " ", "(": " ", ")": " "}))
-    title = " ".join(title.split())
-    if not title:
+def _thread_label(thread: ThreadInfo) -> str:
+    """Return a single-line initial-prompt label for a completion row."""
+    label = " ".join(sanitize_control_chars(thread.get("initial_prompt") or "").split())
+    if not label:
         return thread["thread_id"][:8]
-    if len(title) > _THREAD_TITLE_LIMIT:
-        return f"{title[: _THREAD_TITLE_LIMIT - 3].rstrip()}..."
-    return title
+    if len(label) > _THREAD_LABEL_LIMIT:
+        return f"{label[: _THREAD_LABEL_LIMIT - 3].rstrip()}..."
+    return label
 
 
 def _thread_updated_at(thread: ThreadInfo) -> str:
@@ -90,12 +91,12 @@ def _thread_updated_at(thread: ThreadInfo) -> str:
 
 
 def _thread_token(thread: ThreadInfo) -> str:
-    """Build the durable plain-text token inserted into the chat input.
+    """Build the durable ID-only token inserted into the chat input.
 
     Returns:
-        Thread title and full ID encoded as a durable token.
+        Thread ID encoded as a durable token.
     """
-    return f"{_THREAD_TRIGGER}[{_thread_title(thread)}](thread:{thread['thread_id']})"
+    return f"{_THREAD_REFERENCE_PREFIX}{thread['thread_id']})"
 
 
 class CompletionResult(StrEnum):
@@ -457,7 +458,7 @@ class ThreadCompletionController:
         ):
             return None
         fragment = text[start:cursor_index]
-        if fragment.startswith(f"{_THREAD_TRIGGER}[") or "\n" in fragment:
+        if fragment.startswith(_THREAD_REFERENCE_PREFIX) or "\n" in fragment:
             return None
         return start
 
@@ -481,6 +482,30 @@ class ThreadCompletionController:
             thread.get("cwd"),
         )
         return " ".join(value for value in values if value).lower()
+
+    def active_query(self, text: str, cursor_index: int) -> str | None:
+        """Return the active thread query for full-picker escalation."""
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            return None
+        return text[start + len(_THREAD_TRIGGER) : cursor_index]
+
+    def replace_active_query(
+        self, text: str, cursor_index: int, thread_id: str
+    ) -> bool:
+        """Replace the active query with an ID-only thread token.
+
+        Returns:
+            Whether an active query was replaced.
+        """
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            return False
+        self._view.replace_completion_range(
+            start, cursor_index, f"{_THREAD_REFERENCE_PREFIX}{thread_id})"
+        )
+        self.reset()
+        return True
 
     def reset(self) -> None:
         """Clear suggestions."""
@@ -512,7 +537,7 @@ class ThreadCompletionController:
         self._matches = matches
         self._suggestions = [
             (
-                _thread_title(thread),
+                _thread_label(thread),
                 " · ".join(
                     filter(
                         None,
@@ -586,11 +611,9 @@ class ThreadCompletionController:
         start = self._mention_start(text, cursor_index)
         if start is None or not self._matches:
             return False
-        self._view.replace_completion_range(
-            start, cursor_index, _thread_token(self._matches[self._selected_index])
+        return self.replace_active_query(
+            text, cursor_index, self._matches[self._selected_index]["thread_id"]
         )
-        self.reset()
-        return True
 
 
 # ============================================================================

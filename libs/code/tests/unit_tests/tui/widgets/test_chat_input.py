@@ -539,8 +539,7 @@ class TestThreadCompletionIntegration:
             await pilot.pause()
 
             assert chat._text_area.text == (
-                "compare @@[Fix the parser]"
-                "(thread:11111111-2222-3333-4444-555555555555) "
+                "compare @@(thread:11111111-2222-3333-4444-555555555555) "
             )
 
 

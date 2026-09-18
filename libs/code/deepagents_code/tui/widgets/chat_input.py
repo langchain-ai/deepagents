@@ -3040,6 +3040,24 @@ class ChatInput(Vertical):
             col = max(0, col - length)
         self._text_area.move_cursor((row, col))
 
+    def active_thread_query(self) -> str | None:
+        """Return the active `@@` query for full-picker escalation."""
+        if self._thread_controller is None:
+            return None
+        text, cursor = self._completion_text_and_cursor()
+        return self._thread_controller.active_query(text, cursor)
+
+    def insert_thread_reference(self, thread_id: str) -> bool:
+        """Replace the active `@@` query with a durable thread reference.
+
+        Returns:
+            Whether an active query was replaced.
+        """
+        if self._thread_controller is None:
+            return False
+        text, cursor = self._completion_text_and_cursor()
+        return self._thread_controller.replace_active_query(text, cursor, thread_id)
+
     def _completion_text_and_cursor(self) -> tuple[str, int]:
         """Return controller-facing text/cursor in completion space.
 

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
+_RECOVERY_TRACE_HEADERS = {"x-deepagents-recovery": "interrupt"}
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
 Esc for more than ~10s, while leaving room for an actually-cancelling run to
 finish its in-flight tool call.
@@ -660,6 +661,7 @@ class RemoteAgent:
         values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
+        recovery: bool = False,
     ) -> None:
         """Update the state of a thread.
 
@@ -680,6 +682,7 @@ class RemoteAgent:
             config: Config with `configurable.thread_id`.
             values: State values to update.
             as_node: Optional graph node to attribute the state update to.
+            recovery: Mark an internal recovery write for server-side tracing policy.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
@@ -689,9 +692,12 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         prepared = _prepare_config(config)
         graph = self._get_graph()
+        update_kwargs = {"headers": _RECOVERY_TRACE_HEADERS} if recovery else {}
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except ConflictError:
             logger.debug(
                 "update_state conflict for thread %s; cancelling active runs "
@@ -709,7 +715,9 @@ class RemoteAgent:
         await _cancel_active_runs(graph, thread_id)
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except Exception:
             logger.debug(
                 "Retry of update_state still failed for thread %s",

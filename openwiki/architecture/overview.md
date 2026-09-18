@@ -3,9 +3,6 @@ type: architecture-overview
 title: Monorepo Architecture Overview
 description: System-level map of the independently versioned Deep Agents packages, their public entry points, dependency directions, and the boundaries between the SDK, dcode, ACP, Talon, evals, and partner integrations.
 tags: [architecture, deep-agents, langchain, langgraph, monorepo, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -25,16 +22,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-f2bb883b9cbec377de535c00
     resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
-  - id: openwiki-source-7da6afe7fe64c6589cf1fed0
-    resource: repo://libs/README.md
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
@@ -43,7 +34,10 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T15:26:08.526Z
 ---
 
 # Monorepo Architecture Overview
@@ -67,7 +61,7 @@ flowchart TD
   SDK --> Harness["Middleware, backends, profiles, and subagents"]
   Harness --> LC
 ```
-The diagram shows the runtime dependency direction and the SDK's harness extension boundary.
+The diagram shows the **runtime call path** and the SDK harness extension boundary; it is not a package-dependency diagram.
 
 The stack has three distinct owners:
 
@@ -101,7 +95,7 @@ The sequence separates SDK assembly from LangGraph-driven execution after invoca
 
 ### Middleware, state, and failure boundaries
 
-The main-agent stack is assembled in `graph.py`: filesystem and subagent support, summarization, patch-tool-calls, optional asynchronous subagents, profile middleware, prompt caching, optional memory, tool exclusion, and human-in-the-loop support. Skills are included when configured. Declarative subagents get separately built middleware stacks; compiled and remote subagents retain independently configured behavior.
+The main-agent stack is assembled in `graph.py`. Configured skills are added first, followed by filesystem and subagent support, summarization, and patch-tool-calls; optional asynchronous subagents follow. Profile middleware and prompt caching form the tail, with optional memory and human-in-the-loop support. Tool exclusion is applied after custom middleware so excluded tool names are stripped last. Declarative subagents get separately built middleware stacks; compiled and remote subagents retain independently configured behavior.
 
 Tool visibility is not authorization. A missing tool normally indicates middleware assembly or a profile tool exclusion. A visible tool that fails normally points to backend capability or filesystem permission enforcement. Profile exclusion validation fails closed: protected middleware, private names, ambiguous class matches, and exclusions that match no assembled middleware are rejected rather than silently producing a partial harness.
 
@@ -110,6 +104,19 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 ## Package map and dependency direction
 
 `libs/` is a monorepo of independently versioned packages. The release manifest tracks released package versions separately, including the SDK, ACP, Code, Talon, and each sandbox/provider partner. Package manifests make the dependency direction explicit: product, evaluation, and host packages consume the SDK rather than the SDK depending on them.
+
+```mermaid
+flowchart BT
+  SDK["deepagents SDK"]
+  ACP["deepagents-acp"] --> SDK
+  Code["deepagents-code"] --> SDK
+  Code --> ACP
+  Evals["deepagents-evals"] --> SDK
+  Evals --> Code
+  Talon["deepagents-talon"] --> SDK
+  Talon --> Code
+```
+The diagram shows declared **package dependencies**, not an invocation path: Code additionally consumes ACP, and Evals and Talon consume both the SDK and Code.
 
 | Package | Public entry point and ownership boundary |
 | --- | --- |
@@ -130,7 +137,7 @@ Tool visibility is not authorization. A missing tool normally indicates middlewa
 
 ### Talon lifecycle and security boundary
 
-Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, establishes request-scoped authorization, history, cron, graph, and background-result context, then resets those contexts in a `finally` block. `stop()` cancels background work before releasing the graph and closing a closeable checkpointer.
+Talon owns the process lifecycle around an SDK graph, not a different agent runtime. `DeepAgentRuntime.start()` resolves subagents and constructs its SDK graph. Each `invoke()` requires that graph to be started, refreshes runtime tools, establishes request-scoped authorization, history, cron, graph, and background-result context, then resets those contexts in a `finally` block. `stop()` first cancels background work, then releases the graph and closes a closeable checkpointer. If cancellation does not complete, it raises and deliberately leaves those resources open rather than closing a checkpointer while a worker may still write.
 
 Talon is alpha software and does not provide production-grade human approval policy, channel administrator controls, sandbox execution isolation, or multi-tenant boundaries. Treat a channel user as having direct access to the operator's agent, credentials, MCP tools, and local-host resources. This is a deployment constraint, not an SDK permission guarantee.
 

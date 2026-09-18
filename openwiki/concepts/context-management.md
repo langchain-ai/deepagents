@@ -5,7 +5,7 @@ description: How deepagents and dcode control model-visible context through resu
 tags: [context-management, summarization, compaction, eviction, offload, middleware, tool-results, conversation-history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T15:26:08.526Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -33,7 +33,9 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+  - id: openwiki-source-6228ff9cf1d681a771797121
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
 ---
 
 # Context Management and Offload
@@ -69,7 +71,7 @@ The summarizer derives history and large-result prefixes from its backend. A `Co
 
 `SummarizationMiddleware.wrap_model_call` reconstructs effective messages from a prior summarization event, counts them with the system message and tool schemas, and can truncate old oversized tool arguments. It evaluates the configured trigger. With a positive cutoff, it partitions old and retained messages, attempts to archive the old portion, creates an LLM summary, and invokes the model with the summary plus the preserved tail. The returned `ExtendedModelResponse` carries a `Command` that updates the event and session id.
 
-If automatic summarization is not indicated, the middleware first tries the ordinary model request. A `ContextOverflowError` changes to the same compaction path. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive.
+If automatic summarization is not indicated, the middleware first tries the ordinary model request. A recognized provider context-limit rejection (including `ContextOverflowError` and compatible overflow responses) changes to the same compaction path. The middleware sends at most one strictly smaller recovery request; irreducible input or a second rejection raises `ContextOverflowError` rather than resending unchanged context. Archive failure emits a warning but does not prevent a useful in-context summary; its event has `file_path=None`, so older detail is not recoverable from that archive.
 
 ### Conversation archive lifecycle
 

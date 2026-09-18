@@ -1,60 +1,44 @@
 ---
 type: integration-guide
 title: Sandbox and Partner Integrations
-description: How dcode discovers, provisions, and owns sandbox providers; how provider adapters meet the deepagents shell and filesystem contract; and the operational boundaries of supported partner packages.
+description: How dcode discovers, provisions, and owns sandbox providers; how provider adapters meet the deepagents shell and filesystem contract; and the release, dependency, security, and test boundaries of partner packages.
 tags: [sandbox, backends, integrations, deepagents, dcode, partners, quickjs]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-18T15:26:08.526Z
 sources:
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
-  - id: openwiki-source-03e3942e51522a3aa485168d
-    resource: repo://libs/code/deepagents_code/integrations/sandbox_provider.py
   - id: openwiki-source-668d65d09330d04370b47300
     resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-ea49272aef6bfc33d634a15c
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
-  - id: openwiki-source-ba6aa10dca5a8aea05030887
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_operations.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-667fd72e0b93552f91d3888d
-    resource: repo://libs/partners/AGENTS.md
-  - id: openwiki-source-7c1cff57fb2b25a4a7848547
-    resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
-  - id: openwiki-source-a7a618389fa5cf95185c7070
-    resource: repo://libs/partners/daytona/tests/integration_tests/test_integration.py
-  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
-    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-47e7cf704d54342cf95c8125
-    resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-e93ea9e1f8eb3113683abb76
     resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
   - id: openwiki-source-432765ddd062caf048e7f51e
     resource: repo://libs/partners/quickjs/README.md
-  - id: openwiki-source-cbe167006ecbe803d01c6520
-    resource: repo://libs/partners/runloop/langchain_runloop/provider.py
-  - id: openwiki-source-c16a7598b4b3a3ef0cee3328
-    resource: repo://libs/partners/runloop/tests/integration_tests/test_integration.py
-  - id: openwiki-source-edb310aff3786a7a99593231
-    resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
-  - id: openwiki-source-1176ea0659c06327fcdf25b1
-    resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
 ---
 
 # Sandbox and Partner Integrations
 
 A sandbox integration has two distinct roles. A **backend adapter** exposes a provider environment through the deepagents filesystem-and-shell contract. A dcode **provider** owns lifecycle: it creates or attaches an environment, establishes readiness, and deletes environments that dcode created. This separation keeps provider SDK concerns at the edge while `BaseSandbox` supplies common agent-facing filesystem behavior.
 
-`SandboxBackendProtocol` is a shell-execution capability contract, not an isolation certification. Although designed for containers, VMs, and remote hosts, `LocalShellBackend` implements it while executing directly on the host. Treat provider configuration—not the protocol—as the authority on isolation, accessible files and networks, credentials, quotas, retention, and teardown. See [Backends](../concepts/backends.md), [Runtime behavior](../architecture/runtime-behavior.md), [Filesystem tools](../concepts/tools-filesystem.md), and [Security](../operations/security.md).
+`SandboxBackendProtocol` is a shell-execution capability contract, not an isolation certification. Although designed for containers, VMs, and remote hosts, `LocalShellBackend` implements it while executing directly on the host. Treat provider configuration—not the protocol—as the authority on isolation, accessible files and networks, credentials, quotas, retention, and teardown. See [Backends](../concepts/backends.md), [Filesystem tools](../concepts/tools-filesystem.md), [Development](../operations/development.md), [Security](../operations/security.md), and [Run a dcode session](../workflows/run-dcode-session.md).
 
 ## Backend contract and derived operations
 
@@ -129,17 +113,19 @@ The curated set is `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and 
 - **Vercel:** creates a `python3.13` sandbox with a 30-minute lifetime or retrieves an existing ID, then waits for `running`. Terminal status or timeout fails startup, and dcode stops a newly created sandbox when readiness fails. Workspace-scoped explicit Vercel credentials must be complete and cannot mix workspace and inherited server fields.
 - **AgentCore:** validates workspace AWS credential combinations before constructing a session where possible; it avoids silently substituting server credentials when a workspace pinned a distinct, invalid credential configuration.
 
-## Partner adapters
+## Partner adapters and distribution boundaries
 
-Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. Adding a sandbox-backed partner involves release and operational wiring—CI, labels, release metadata, credential inventory, integration-test secret gating, and Harbor sandbox options—not only an adapter.
+Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. Adding a sandbox-backed partner involves release and operational wiring—CI, labels, release metadata, credential inventory, integration-test secret gating, and Harbor sandbox options—not only an adapter. Provider-specific installation, authentication, images, and account setup belong in that package's README rather than this cross-provider page.
 
-| Package | Boundary | Key behavior |
-| --- | --- | --- |
-| `langchain-daytona` | `DaytonaSandbox` | Per-command sessions and Daytona batch file APIs. |
-| `langchain-modal` | `ModalSandbox` | `bash -c` execution and Modal file handles. |
-| `langchain-runloop` | `RunloopSandbox` and `RunloopProvider` | Devbox execution/file APIs and blueprint-aware lifecycle. |
-| `langchain-vercel-sandbox` | `VercelSandbox` | Detached commands, polling, logs, and Vercel file APIs. |
-| `langchain-quickjs` | `CodeInterpreterMiddleware` | In-process JavaScript REPL with explicit capability bridges, not a remote shell backend. |
+Current package metadata pins the common compatibility boundary to `deepagents>=0.7.0,<0.8.0` and Python `>=3.11,<4.0`; provider SDK constraints remain package-specific:
+
+| Distribution | Version | Provider or runtime dependency | Boundary |
+| --- | --- | --- | --- |
+| `langchain-daytona` | `0.0.8` | `daytona` | `DaytonaSandbox` |
+| `langchain-modal` | `0.0.6` | `modal` | `ModalSandbox` |
+| `langchain-runloop` | `0.0.7` | `runloop-api-client` | `RunloopSandbox` and `RunloopProvider` |
+| `langchain-vercel-sandbox` | `0.0.2` | `vercel>=0.5.9,<0.6` | `VercelSandbox` |
+| `langchain-quickjs` | `0.3.7` | `quickjs-rs>=0.2.5,<0.3.0` | `CodeInterpreterMiddleware`, not a remote shell backend |
 
 ### Daytona, Modal, Runloop, and Vercel
 
@@ -153,11 +139,11 @@ Partner packages under `libs/partners/` are independently versioned distribution
 
 ## QuickJS: capability isolation, not a remote sandbox
 
-`langchain-quickjs` installs `CodeInterpreterMiddleware`, which gives an agent a persistent JavaScript `eval` tool backed by an embedded QuickJS engine. In the default `mode="thread"`, state persists across calls and turns for one LangGraph `thread_id`; `turn` limits it to a turn and `call` creates a fresh REPL for every evaluation. Each thread has an isolated worker/runtime/context slot. Thread-mode snapshots can be persisted, and supplying `snapshot_signing_key` HMAC-signs them; missing or invalid signatures are discarded before restore.
+`langchain-quickjs` installs `CodeInterpreterMiddleware`, which gives an agent a persistent JavaScript `eval` tool backed by the embedded `quickjs-rs` runtime. In the default `mode="thread"`, state persists across calls and turns for one LangGraph `thread_id`; `turn` limits it to a turn and `call` creates a fresh REPL for every evaluation. Each thread has an isolated worker/runtime/context slot. Thread-mode snapshots can be persisted, and supplying `snapshot_signing_key` HMAC-signs them; missing or invalid signatures are discarded before restore. A signing key is necessary when the checkpointer is not fully trusted.
 
-The guest has no ambient filesystem, network, `fetch`, `require`, `process`, or real-clock capability. Authority enters only through configured `tools.<name>` programmatic tool calling (PTC) or the optional `task(...)` subagent bridge. This is capability isolation rather than OS isolation: a bridged tool receives its actual authority. PTC and the subagent bridge bypass normal `ToolNode` routing, so `interrupt_on`/HITL approval is not automatically applied per bridged invocation. Gate `eval`, add approval middleware inside subagents, or disable bridges when per-operation approval is required; see [Permissions and HITL](../concepts/permissions-hitl.md).
+The guest has no ambient filesystem, network, `fetch`, `require`, `process`, or real-clock capability. Authority enters only through configured `tools.<name>` programmatic tool calling (PTC) or the optional `task(...)` subagent bridge. PTC is disabled by default; `task(...)` is enabled when the host exposes a Deep Agents `task` tool. This is capability isolation rather than OS isolation: a bridged tool receives its actual authority. PTC and the subagent bridge bypass normal `ToolNode` routing, so `interrupt_on`/HITL approval is not automatically applied per bridged invocation. Gate `eval`, add approval middleware inside subagents, or disable bridges when per-operation approval is required.
 
-Defaults are a 64 MiB runtime memory limit, a 5-second QuickJS VM execution timeout, 256 PTC host calls per evaluation, and 4,000-character result/console blocks. The VM timeout does not include waiting for Python host calls, so it is not a total wall-clock bound. `max_ptc_calls=None` permits unbounded host-call loops and is unsuitable for untrusted prompts.
+Defaults are a 64 MiB runtime memory limit, a 5-second QuickJS VM execution timeout, 256 PTC host calls per evaluation, and 4,000-character result/console blocks. The timeout does not include time awaiting Python host calls, so it is not a total wall-clock bound despite the README's general per-call timeout description. `max_ptc_calls=None` permits unbounded host-call loops and is unsuitable for untrusted prompts.
 
 ## What the focused tests establish
 

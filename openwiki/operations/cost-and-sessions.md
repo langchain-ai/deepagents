@@ -1,164 +1,143 @@
 ---
-type: operations reference
-title: dcode Sessions, Cost, and Observability
-description: How dcode persists and resumes threads, estimates model cost, and exposes the diagnostics needed to investigate a run, including tracing, debug logs, and update operations.
-tags: [dcode, sessions, cost-tracking, observability, troubleshooting]
+type: operations guide
+title: dcode Sessions, Cost, and Local State
+description: Explains dcode thread identity and resume behavior, the boundary between local checkpoint state and server operations, and the best-effort cost and cache diagnostics for long-running coding sessions.
+tags: [dcode, sessions, cost-tracking, local-state, operations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T15:26:08.526Z
 sources:
-  - id: openwiki-source-b64c485d8d3cdc25e7b4db1a
-    resource: repo://libs/code/deepagents_code/_debug.py
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
-  - id: openwiki-source-9d2d5e136d0c91e85635b155
-    resource: repo://libs/code/deepagents_code/_tracing.py
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
-  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
-    resource: repo://libs/code/deepagents_code/config_manifest.py
+  - id: openwiki-source-c0415071c1e2979d2795bd05
+    resource: repo://libs/code/deepagents_code/cold_cache.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
-  - id: openwiki-source-9b6cab59e92c8914079f0f53
-    resource: repo://libs/code/deepagents_code/offload.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
     resource: repo://libs/code/deepagents_code/resume_state.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
   - id: openwiki-source-29a60a7d68da0bf4ec625403
     resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
-  - id: openwiki-source-116a1f598e2b0900a09761fc
-    resource: repo://libs/code/deepagents_code/update_check.py
   - id: openwiki-source-5775d9bd08f14b550e010f4c
     resource: repo://libs/code/PRICING.md
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
-    resource: repo://libs/code/tests/unit_tests/test_sessions.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
 ---
 
-# dcode Sessions, Cost, and Observability
+# dcode Sessions, Cost, and Local State
 
-A dcode run has two complementary accounting paths. Graph checkpoint state owns the durable cost for a thread, while stream consumers keep `SessionStats` for responsive token and cost displays. Both are estimates rather than billing or a control plane: **nothing in the CLI caps spend or gates execution on them**.
+A dcode session is a LangGraph **thread**, identified by a time-ordered UUID7. In local mode, its checkpoints live in the local SQLite database `DEFAULT_STATE_DIR/sessions.db`; a checkpoint is the durable source for thread state and cumulative estimated cost. This is distinct from a server checkpoint in remote execution and from client-side stream statistics: those views help display and diagnose a run, but do not replace the state held by the graph.
 
-Related material: [Runtime behavior](../architecture/runtime-behavior.md), [Context management](../concepts/context-management.md), [State persistence](../concepts/state-persistence.md), and [Run a dcode session](../workflows/run-dcode-session.md).
+Cost figures are **estimates**, not provider invoices or a spend-control mechanism. A request can be unpriced because usage, model identity, or catalog data is unavailable; an unpriced estimate must not be interpreted as a zero provider charge. See [State persistence](../concepts/state-persistence.md), [Context management](../concepts/context-management.md), [Profiles and models](../concepts/profiles-models.md), [Security](security.md), and [Run a dcode session](../workflows/run-dcode-session.md).
 
-## Operational model
+## Ownership boundaries
 
-| Concern | Primary owner | What an operator should expect |
+| Concern | Owner | Operational meaning |
 | --- | --- | --- |
-| Thread durability | `sessions.py` and LangGraph checkpoints | A thread is recoverable from its selected checkpoint in local SQLite. |
-| Lifetime cost | `CostTrackingMiddleware` and `CostState` | The checkpointed total is authoritative for a thread. |
-| Live usage display | `SessionStats` | A replay-safe, client-side view of requests, tokens, and estimates. |
-| Pricing catalog | `genai-prices` plus dcode overrides | Best-effort lookup; unavailable data leaves a request unpriced. |
-| Per-run debugging | `_debug.py` | Optional secured, per-thread file logs. |
-| Trace grouping | `_tracing.py` | Resume rounds receive an inheritable LangSmith tag. |
-| Self-update diagnostics | `update_check.py` | Cached PyPI checks and retained subprocess logs diagnose update behavior. |
+| Thread identity and local durability | `sessions.py` + LangGraph `AsyncSqliteSaver` | Local checkpoint history is stored in `sessions.db`; a selected checkpoint supplies the state to resume. |
+| Resumable runtime facts | `ResumeState` private channels | Model, context, goal, and cache facts are checkpoint-versioned state rather than a client reconstruction of history. |
+| Durable lifetime estimate | `CostTrackingMiddleware` + `CostState` | `_session_cost_usd` is a private additive checkpoint channel. |
+| Live request statistics | `SessionStats` | Stream-local, replay-safe display ledger for requests, tokens, model/kind breakdowns, and estimated cost. |
+| Pricing data | `genai-prices`, user overrides, and bundled stopgaps | Best-effort data lookup only; upstream catalog matches take precedence. |
+| Server-side compaction/offload | `offload_api.py` | Server work must atomically checkpoint its state update and prepared cost update, or roll the recorded calls back. |
 
 ```mermaid
 flowchart TD
-    call["Completed model request"] --> recorder["Process-wide cost recorder"]
-    recorder --> drain["Middleware drains thread records"]
-    drain --> price["Estimate USD or leave unpriced"]
-    price --> checkpoint["Additive checkpoint update"]
-    checkpoint --> durable["Private session cost total"]
-    call --> stream["Stream consumer"]
-    stream --> stats["Replay-safe SessionStats"]
-    durable --> display["Cost display"]
-    stats --> display
+    Request["Completed model request"] --> Recorder["Process-wide recorder"]
+    Recorder --> Drain["Cost middleware drain"]
+    Drain --> Estimate["Estimate from pricing catalog"]
+    Estimate --> Checkpoint["Additive private cost update"]
+    Checkpoint --> Durable["Thread checkpoint"]
+    Request --> Stream["Message or usage event stream"]
+    Stream --> Stats["Replay-safe SessionStats"]
+    Durable --> Display["Settled client cost display"]
+    Stats --> Display
 ```
 
-*The graph checkpoint owns durable spend while stream statistics support the current client view.*
+*The checkpointed graph total settles the display; streamed statistics provide responsive, provisional diagnostics.*
 
-## Cost lifecycle
+## Thread lifecycle and resume
 
-`CostState` extends resume state with schema-private `_session_cost_usd`. The channel has an `operator.add` reducer: each pricing pass writes only its new delta rather than reading and overwriting a running total. Thus the graph owns a durable per-thread cumulative total and parallel writers do not make a UI accumulator authoritative.
+`get_db_path()` hardens the state directory and caches the `sessions.db` path. `get_checkpointer()` creates an `AsyncSqliteSaver` using a module-owned `aiosqlite` connection, including cleanup intended to avoid leaked worker threads during interrupted shutdown. A SQLite lock can therefore affect local thread operations; database access is not an external service checkpoint.
 
-`_SessionCostRecorder` is installed through LangChain's configure hook process-wide. It captures completed calls by thread and checkpoint scope without doing pricing on the callback path. This includes the agent model, subagents, offload/summarization, and Auto-classifier invokes without per-caller instrumentation. A request without a usable thread cannot be attributed; bounded in-flight and per-thread queues also warn and can drop undrained records under pathological load.
+A resume reads `state_values` from the selected checkpoint. `ResumeState` keeps these facts schema-private, including the latest context token count, effective model specification and parameters, goal/rubric state, pending goal data, and prompt-cache identity. Because they are versioned channels, values describe that checkpoint—not a thread-wide aggregate—and let the CLI restore session facts without replaying or re-tokenizing history. The model specification recorded for a successful turn can also preserve what the thread actually used rather than reverting to a current global default.
 
-`CostTrackingMiddleware.after_model` drains calls completed since its prior checkpoint, prices them, and persists the delta. `after_agent` performs a final drain for work that happens after the last model step, such as rubric grading. These hooks catch ordinary exceptions because each is a graph node and accounting must not fail the user's turn. Destructive drains are restored if pricing or the pass fails, so a later pass can retry them; queue-limit loss is the important exception to that recovery guarantee.
+The cache fields `_last_model_request_at`, `_last_cache_model_spec`, and `_last_cache_endpoint` are paired state for cold-cache detection. They are committed only after a successful request, so an old or malformed checkpoint must be treated as uncertain diagnostic input rather than evidence that a provider cache is warm.
 
-### Nested graphs and server operations
+`list_threads()` can filter on stored agent, branch, or exact working-directory metadata. It opportunistically creates a covering SQLite index; failure is non-fatal but can make large histories slower to list. Message count and initial prompt may need reconstruction from checkpoint writes when message deltas are not inlined.
 
-A nested middleware instance resets its local cost channel in `before_agent`, checkpoints its local spend, and publishes its completed amount via `_session_cost_transfers`. The transfer map is keyed by checkpoint scope and carries an `owner_scope` and total. The parent claims its matching transfer into its own checkpoint, preserving completed subagent spend if a sibling interrupts.
+### Delete semantics and offloaded history
 
-Server-owned work must use `prepare_operation_cost(state, thread_id)` as a small transaction: it drains and prices side-model records, then returns `PreparedOperationCost`. Persist its `update` atomically with operation state and call `commit()`, or call `rollback()` if the write fails or the operation is abandoned. This remains necessary for a zero delta because preparation has already consumed records. Rolling back after a successful write makes a later double charge possible; leaving the object unsettled warns because the drained records were not included in lifetime cost.
+`delete_thread(thread_id)` removes that thread's `checkpoints` and `writes` rows, clears in-process listing/count caches, and then attempts to delete a matching offloaded conversation archive. Its Boolean only says whether checkpoint rows were removed: archive cleanup is best effort and an orphan archive can be cleaned even when it returns `False`.
 
-## Pricing behavior and catalog operations
+Local offloaded history is held in a hardened `conversation_history` directory, with a temporary fallback if the normal profile location is unwritable. Archive deletion rejects path-escaping IDs. Treat a successful thread deletion as a request to remove local state, not proof that every optional archive file was removed; inspect logs or the storage location if cleanup matters.
 
-`estimate_cost` lazy-loads `genai-prices`; a load failure logs once and returns no estimate rather than failing a model turn. It forwards LangChain's inclusive `input_tokens` and cache, audio, and reasoning detail buckets. `genai-prices` subtracts priced details from their enclosing bucket, avoiding double charges; details a matched model does not price remain in ordinary input/output totals. Missing input/output split, model identity, or an API price likewise results in no estimate. Cache/detail inconsistencies are clamped and warned about rather than silently discarding all usage.
+## Durable cost accounting
 
-Provider aliases are normalized before lookup. Response metadata takes precedence, followed by metadata configured for the request, checkpointed model specification, and runtime configuration fallbacks. Test both response-named and fallback-named models when changing provider behavior.
+`CostState` adds `_session_cost_usd` as a schema-private channel with the `operator.add` reducer. Each pricing pass emits only its newly priced delta, which makes the graph checkpoint—not a UI accumulator—the durable cumulative estimate and avoids read-modify-write races.
 
-The first successful pricing import can start one daemon updater that refreshes upstream `data.json` hourly. Set `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0`, `[update].prices_auto_update = false`, or `DEEPAGENTS_CODE_OFFLINE` to suppress it. A failed fetch keeps the installed snapshot. The update is also rejected when it contains fewer providers than the bundled catalog, preventing a truncated upstream response from replacing healthy rates.
-
-On an upstream `genai-prices` miss only, dcode consults `~/.deepagents/prices.json`, then packaged `bundled_prices.json`; upstream wins, and the user source wins a provider/model conflict with the bundle. Override entries use upstream's provider-array schema and rates per million tokens (`input_mtok`, `output_mtok`, and optional cache/audio/reasoning buckets). A malformed or unusable fallback warns and is skipped, not allowed to interrupt a request. Restart after editing a successfully cached user catalog.
-
-Override parsing and lookup deliberately call private `genai_prices.types._providers_from_raw` and `genai_prices.data_snapshot.find_provider_by_id`. These APIs have no compatibility promise, so re-verify override validation, provider lookup, user/bundled precedence, and degradation behavior whenever the `genai-prices` dependency range or lockfile changes.
-
-## Live statistics, retries, and replay
-
-`SessionStats` holds request count; input, output, cache-read, and cache-write tokens; priced request count; cumulative USD; and wall time. It additionally breaks data down by `(provider, model_name)` and `UsageKind`. It is a display/diagnostic ledger, not the durable graph cost channel.
+`_SessionCostRecorder` is a process-wide LangChain callback handler. It records completed calls by thread and checkpoint scope but intentionally does not price on the callback path. This covers the main agent, subagents, offload/summarization, and Auto-mode classifier without adding instrumentation at each call site. It has bounded in-flight and per-thread queues: if a call lacks a usable thread, or a bound evicts an old record, the session total can be short; warnings distinguish the pathological dropped-record case from an ordinary unthreaded invocation.
 
 ```mermaid
 sequenceDiagram
-    participant Graph as Graph stream
-    participant Ledger as Usage ledger
-    participant Stats as SessionStats
-    Graph->>Ledger: First chunk in an attempt
-    Ledger->>Stats: Record request contribution
-    Graph->>Ledger: Later chunk
-    Ledger->>Stats: Retract previous contribution
-    Ledger->>Stats: Record revised running total
-    Graph->>Ledger: Round boundary
-    Ledger->>Ledger: Finalize and project attempt keys
-    Graph->>Ledger: HITL resume replay
-    Ledger-->>Stats: Reject finalized replay
+    participant Model as Model request
+    participant Recorder as Cost recorder
+    participant Middleware as Cost middleware
+    participant Graph as Graph checkpoint
+    participant Client as Client
+    Model->>Recorder: completed usage and identity
+    Middleware->>Recorder: drain thread records
+    Middleware->>Middleware: price records and fallback response
+    Middleware->>Graph: write additive delta
+    Middleware->>Client: absolute session cost event
+    Client->>Graph: read checkpoint to settle display
 ```
 
-*Chunks revise one request within a round; finalized entries make later resume data replay-safe.*
+*Pricing is deferred from the callback; the checkpoint write is the durable accounting step.*
 
-`record_message_usage` treats a completed `AIMessage` idempotently. For streamed chunks it retracts the exact prior `RecordedRequest` and records the updated aggregate, so one API call remains one request even when final metadata identifies a different model. Retry attempts use `(attempt_scope, message_id)`, allowing reused provider IDs to remain distinct. At each stream-round boundary, `finalize_recorded_requests` closes entries and projects scoped keys to bare message IDs; an unscoped HITL-resume replay therefore cannot merge and double tokens or cost. Both headless and TUI stream loops must preserve this finalization call.
+`after_model` drains calls since the previous checkpoint and prices the latest main response only when the recorder did not already cover it. `after_agent` performs a final drain for calls made after the last model step, such as a grading agent. Both hooks catch ordinary failures because each hook is a graph node: accounting failure must not fail the user's turn. If a drain/pricing pass fails before its update can reach a checkpoint, records are restored for a later drain where possible; this cannot recover a record already lost to a queue bound.
 
-`print_usage_table` is controlled by `usage_table_enabled()`, which resolves `display.show_usage_stats` once through `load_bool_display_preference` (enabled by default). TUI teardown and headless mode therefore share the decision. Config errors fail open because the table is cosmetic, except `BlockingError`, which is re-raised to surface event-loop blocking. `/cost` can distinguish priceable calls from unpriced calls rather than representing missing estimates as zero.
+Nested middleware starts by overwriting its local cost channel with zero. It checkpoints local subagent spend, then publishes a completed total in `_session_cost_transfers`, keyed by checkpoint scope and addressed to the owning parent scope. The parent claims the transfer into its own checkpoint, so completed nested spend can survive an interruption in sibling work while private nested totals remain isolated.
 
-## Thread storage and lifecycle
+### Server operation transaction rule
 
-Threads are LangGraph checkpoints in one SQLite database at `DEFAULT_STATE_DIR/sessions.db`. `get_db_path()` hardens and caches the state directory, and `get_checkpointer()` yields an `AsyncSqliteSaver` over a module-owned `aiosqlite` connection. Cancellation-aware connection cleanup closes and joins the worker to avoid leaked handles during shutdown. New IDs are time-ordered UUID7 strings.
+A server-owned operation such as offload must call `prepare_operation_cost(state, thread_id)` after its side-model work. Preparation destructively drains records and returns `PreparedOperationCost`; write `prepared.update` **atomically** with the operation state update, then call `commit()`. If no state is committed, validation fails, or the write fails, call `rollback()` so a later drain can price the restored records. This applies even when the delta is zero, because zero-priced/unpriceable records were still claimed. Rolling back after a successful state write risks a duplicate later charge; abandoning the object loses the drained contribution and emits a warning.
 
-`list_threads()` reads checkpoint metadata and can filter by agent, Git branch, or exact stored working directory. It creates a covering index opportunistically so normal listing can avoid scanning large state blobs; index failure is non-fatal but can make large histories slow. Message count and initial prompt are reconstructed from checkpoint/writes data when needed, because delta-channel checkpoints may not inline messages.
+The offload HTTP boundary follows this rule: it rejects state writes outside the explicitly allowed offload channels, rolls prepared cost back when there is nothing to persist, and combines an operation update with `prepared.update` before deferred commit. If the thread advances during compaction, the completed summary and its spend cannot be committed to the old checkpoint; the operation reports a conflict rather than attributing it to a later turn.
 
-`ResumeState` declares private, versioned channels. The CLI reads `state_values` for the chosen checkpoint to rehydrate history and runtime facts without replaying or re-tokenizing it; selected-checkpoint values are not thread-wide aggregates. The model cache fields `_last_model_request_at`, `_last_cache_model_spec`, and `_last_cache_endpoint` are committed only after a successful request so cold-cache detection has a coherent timestamp and request identity.
+## Estimation and pricing catalogs
 
-`delete_thread(thread_id)` deletes checkpoint and write rows, invalidates local caches, then best-effort removes the matching offloaded conversation-history archive. Its Boolean reports checkpoint-row deletion only, so it can clean an orphan archive while returning `False`. Archives live in a hardened local `conversation_history` directory with a temporary fallback when the profile root is unwritable; deletion rejects path-escaping IDs. On TUI startup, a background sweep deletes only expired direct regular `.md` archives according to layered `history.retention_days` (30 days default); zero disables it and filesystem failures leave archives in place.
+`estimate_cost(usage_metadata, model_name, provider)` is the only pricing entrypoint. It lazily imports `genai-prices`, returning `None` rather than breaking a model turn when pricing cannot be used. It needs a usable model identity and an input/output token split; a combined total alone cannot be defensibly priced. Providers such as `openai_codex`, whose access model is not equivalent to per-token API billing, are deliberately unpriceable.
 
-## Tracing and debug files
+LangChain `input_tokens` is inclusive of cache reads/writes. dcode forwards that total and cache, audio, and reasoning detail buckets to `genai-prices`, which subtracts priceable details from their enclosing total before applying rates. Detail buckets absent from the matched model's rates remain ordinary input/output tokens. Inconsistent cache counts are clamped with a warning so one bad detail does not discard the whole estimate; audio-plus-cache intersections that LangChain cannot report are priced conservatively as ordinary input and may understate cost.
 
-A turn's stream configuration carries its grouping metadata (`thread_id`, `turn_id`, and `turn_number`) across rounds. `stream_trace_config(config, stream_input)` leaves an initial input unchanged, but shallow-copies configuration for a LangGraph `Command` resume and adds `dcode:resume` exactly once. LangGraph inherits tags into model, tool, and subagent runs. The literal is an external LangSmith saved-view and cost-report contract; combine it with an `is_root` filter to select resume roots. The returned copy shares `metadata` and `configurable` with the original, so callers must not mutate them through it.
+The first successful pricing import may start one daemon updater per process. It fetches upstream pricing data hourly and installs a successful snapshot for subsequent lookups. Set `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0`, configure `[update].prices_auto_update = false`, or set `DEEPAGENTS_CODE_OFFLINE` to suppress it. A failed refresh retains the existing snapshot, and dcode refuses an upstream catalog with fewer providers than the bundled catalog so a truncated response does not replace a healthy catalog.
 
-Set `DEEPAGENTS_CODE_DEBUG` truthy before logging is configured to enable per-thread file logging. `bind_debug_logging_to_thread()` routes registered loggers to a safe thread-derived filename in `DEEPAGENTS_CODE_DEBUG_DIRECTORY`, legacy `DEEPAGENTS_CODE_DEBUG_FILE`'s parent, configured `[debug]` paths, or the default debug directory. Invalid/oversized IDs are hashed for a traversal-safe filename. The directory and file are hardened to owner-only access (`0o700`/`0o600` on POSIX; a current-user DACL on Windows) and file creation refuses symlinks. If hardening or opening fails, handlers are removed and dcode warns rather than writing insecure logs.
+On a primary `genai-prices` miss only, dcode tries `~/.deepagents/prices.json`, then `bundled_prices.json`. Thus upstream prices win; for a conflicting provider/model pair, the user catalog wins over the maintainer bundle. Both use the upstream provider-array schema and rates per million tokens. Bundled entries are intended only as stopgaps for models upstream does not yet price and should carry an upstream issue or PR reference; remove them once upstream covers the model. Invalid overrides warn and are skipped, and a catalog edit requires a restart after a user catalog has been loaded successfully.
 
-`DEEPAGENTS_CODE_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`; its fallback is `DEBUG` with debug files enabled and `INFO` otherwise. `installed_debug_log_path()` reports the handler actually attached, which avoids advertising a file merely because an environment variable changed after logger configuration. Use it when surfacing a “full error in …” hint.
+The override implementation uses the private upstream APIs `genai_prices.types._providers_from_raw` and `genai_prices.data_snapshot.find_provider_by_id`. The current dependency range is `genai-prices>=0.1.7,<0.2.0`, which spans 0.1.x patches without a private-API compatibility promise. Re-verify override parsing, lookup, precedence, and failure behavior whenever this dependency range or its resolved version changes.
 
-## Update checks and update diagnostics
+## Live usage, replay, and diagnostics
 
-Update checks cache stable and prerelease latest versions, release times, and relevant dependency metadata in `DEFAULT_STATE_DIR/latest_version.json` for 24 hours. The startup cache-only path never contacts PyPI; a missing, stale, corrupt, or unparsable cache simply provides no answer. A normal check uses PyPI with a three-second timeout, returns `(False, None)` on failure, and stable installs consider stable releases unless prerelease inclusion is requested or the installed build is prerelease.
+`SessionStats` is a client-side accounting ledger. It tracks request count, input/output and cache tokens, priced request count, estimated USD, wall time, plus per-model `(provider, model_name)` and `UsageKind` breakdowns (`assistant`, `subagent`, `offload`, and `auto`). It is useful for `/cost` and end-of-run output, but the private checkpointed channel is the lifetime estimate to trust after a resume or missed stream event.
 
-An update command detects `uv`, Homebrew, editable/unknown, and other installations. Execution only uses the detected supported method rather than falling back to a package manager that could modify a different environment. `perform_upgrade()` streams combined stdout/stderr to a progress callback and an optional persisted log, has a 120-second cap, and kills the install process group on POSIX during timeout or cancellation. A successful installer is still considered failed when its read-back installed version is below the selected target.
+Stream chunks are corrected rather than independently counted. `record_message_usage` retracts the exact prior `RecordedRequest` and records the revised request contribution; a completed `AIMessage` is idempotent. This preserves alignment of totals with model and kind breakdowns when a final chunk changes usage or finally identifies the served model. Retry attempts are keyed by `(attempt_scope, message_id)` so reused provider IDs remain separate calls.
 
-Update logs are timestamped under the OS cache directory at `deepagents-code/update_logs`; cleanup retains at most ten and removes logs older than 14 days. Create an actual file with `create_update_log_file()` before telling a user to follow it; failed preflight or a log-open failure means a computed path may not exist. `format_log_follow_command()` provides `tail -f` on POSIX and a safely literal PowerShell `Get-Content -Wait` command on Windows.
+At every stream-round boundary, consumers must call `finalize_recorded_requests`. Finalization marks records closed and projects scoped retry keys to bare IDs, so replayed chunks on a human-in-the-loop resume cannot merge into the prior round and double tokens or estimates. Both the non-interactive and TUI stream paths must retain this boundary behavior.
 
-Concurrent updates are guarded by an in-process lock plus a non-blocking installation-scoped `update.lock`, falling back to a profile lock if needed. A contender returns immediately and continues on its launched version. If locking infrastructure is unavailable, update behavior deliberately fails open with a warning rather than permanently disabling updates; this is a concurrency risk operators should resolve by restoring writable lock storage.
+The final usage table is controlled by `display.show_usage_stats`, enabled by default. The preference is loaded once, so headless output and TUI teardown cannot disagree. Cosmetic configuration errors fail open, while `BlockingError` is re-raised. A cost view should distinguish priced calls from unpriced calls instead of presenting omitted estimates as free usage.
 
-## Investigation and safe-change checklist
+### Long-running-session checklist
 
-1. Identify the `thread_id`, then inspect its checkpoint/list metadata and selected checkpoint state before interpreting a display total.
-2. Compare durable `_session_cost_usd` with the client `SessionStats` view: the former is checkpoint lifetime accounting, the latter is stream-local and replay-aware.
-3. For missing cost, check unpriceable usage/model identity, pricing-package availability, catalog lookup, recorder warnings about missing thread context or bounded-record drops, and any rollback/commit path for server work.
-4. For resume anomalies, inspect `dcode:resume` LangSmith traces and verify each stream consumer calls `finalize_recorded_requests` at the round boundary.
-5. Enable debug before startup, bind the run to its thread, and use `installed_debug_log_path()` rather than assuming the configured path was secured and attached.
-6. For update failures, inspect the retained update log, detected installation method, lock contention, cache freshness, and whether the installed distribution readback reached the intended version.
-7. When changing this area, exercise `test_cost_tracking.py`, `test_session_stats.py`, `test_sessions.py`, `test_debug.py`, `test_tracing.py`, and `test_update_check.py` under `libs/code/tests/unit_tests/`, with particular attention to failure, cancellation, retry, and replay paths.
+1. Start with the `thread_id`, its selected checkpoint, and its `state_values`; do not infer durable state from a terminal display alone.
+2. Compare `_session_cost_usd` with `SessionStats` only as different layers: checkpointed thread estimate versus stream-local diagnostic ledger.
+3. For a low or missing estimate, check model/provider identity, token split, pricing package health, catalog lookup, unpriceable provider behavior, recorder warnings, and server-operation commit/rollback paths.
+4. For resume double-counting, verify the stream consumer finalizes request ledgers at each round boundary and inspect the retry attempt scope.
+5. For a potential prompt-cache miss, treat checkpointed timestamp/model/endpoint data as an estimate. `estimate_rewarm_cost` prices synthetic warm and cold input through the normal pricing path and returns no estimate below the policy minimum or when pricing is unavailable.
+6. Before changing this area, exercise `test_session_stats.py` for chunk correction, retries, nested events, and resume replay; `test_cold_cache.py` for cache identity and safe endpoint handling; and the cost/offload/session tests for checkpoint, transaction, and deletion failure paths.

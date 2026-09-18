@@ -3,9 +3,6 @@ type: architecture
 title: SDK Construction and Execution
 description: Trace how create_deep_agent resolves its dependencies and policies into a LangChain-compiled LangGraph agent, then how state, streaming, tool calls, checkpoints, and interrupts behave at runtime.
 tags: [deepagents, create_deep_agent, langchain, langgraph, middleware, subagents, streaming, state]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -31,7 +28,12 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+  - id: openwiki-source-38c26264bf4a1dadb3401e80
+    resource: repo://libs/deepagents/tests/unit_tests/test_models.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T15:26:08.526Z
 ---
 
 # SDK Construction and Execution
@@ -125,7 +127,7 @@ The compiled graph exposes upstream streaming. Tests use `stream_events(..., ver
 
 ## Focused verification
 
-`test_graph.py` covers assembly: profiles, prompt ordering, immutable tool rewrites, middleware ordering/exclusion, default and custom subagents, permission interrupt wiring, custom state propagation, and metadata. `test_messages_reducer.py` checks message IDs and replay behavior with an `InMemorySaver`. `test_deep_agent_streaming.py` runs scripted parent, regular subagent, fork, and failing-subagent cases through synchronous and asynchronous v3 stream projections. The integration suite additionally verifies normal delegation and structured output through a constructed graph.
+`test_models.py` pins model passthrough and provider-profile initialization, while `test_graph.py` covers profile selection, prompt ordering, immutable tool rewrites, middleware ordering/exclusion, default and custom subagents, permission interrupt wiring, custom-state propagation, and metadata. In particular, the graph tests assert that the default schema passed to LangChain is `DeepAgentState`, that a supplied schema is passed to both `create_agent` and `SubAgentMiddleware`, and that a caller replacement of task middleware receives discovered private state keys. `test_messages_reducer.py` checks message IDs and replay behavior with an `InMemorySaver`. `test_deep_agent_streaming.py` runs scripted parent, regular subagent, fork, and failing-subagent cases through synchronous and asynchronous v3 stream projections. The integration suite additionally verifies normal delegation and structured output through a constructed graph.
 
 ## Related pages
 

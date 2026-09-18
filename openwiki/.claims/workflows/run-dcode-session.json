@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:543508074764fa59f7745f6e74f7520bc4c4f501af9e8dcdd79620cfd8ecca4a",
+  "pageVersion": "sha256:957edb6c6b205446e8970ea20d299a29fda1ca4561d47100f744c58a9c3565eb",
   "claims": [
     {
       "id": "claim_9e14bfcc46384dcc9a94586a9ab62f88",
@@ -331,12 +331,8 @@
       "statement": "The workspace-bind HTTP route resolves workspace policy on the server, rejects client claims of project policy or mismatched session claims, persists the binding before registering thread metadata, and returns conflict or validation responses rather than silently accepting a changed workspace.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/offload_api.py#L210-L320",
-          "version": "repo-lines-v1:sha256:a481d6e4b591c6f53a26a7274cc14f328a5f737088050c24c489e05b7e27b5f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZjA4MmRlMTg2NTAxNWNmMzU4ZWYwOGMzMzk1NDYzYjViZmIyNDZjYzY1ODJlNDlkMmUxOTY4OTY2ZjExMDA1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NmFiNWU2YmU0NGM1YWU0N2E3MzZkYmJkN2MzMDljMDFjYzY0OTNhYmUwMDc0OGMzMTc4MjQyNGI5N2YxODgzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NDI1MzA5MTM2ODI2OWFlYWNhNzcyYzFjNjY1MjcxMWU2NmNjNDdhYzE4ZTU4MTMxMjczMmNjODNkODQ2MjYzIn0"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/offload_api.py#L89-L96",
-          "version": "repo-lines-v1:sha256:e3e935072719d82def4141bc582534007c6194f87c64447277c385d83af5207f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWNlYzg1YzNiZDkyMmM2NGY4MDBkMWQyYTU5YTk2MDg0YjRlNzNmMGQ4ZTJmNmEzZjhiYmIyZWU2YzdkMDNjYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzVkZDlkYTk4YTBlZGRjNjEwZGNhNzM3OTRjNTEyMjA4MWM3NTYzZDMwZmJkM2IwMjEwNjFhMTk3MWVmNTk5ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjUzNjBlYjAyOTA4MTZhZGQ0NjFiNDdkZmY2MDJhYWVjZjY5YTI4ZDAzOTFlMGQxOWZiMmViNGE2NmMzMjI4OCJ9"
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L212-L343",
+          "version": "repo-lines-v1:sha256:c9455fc189eed4ca40b669217b5807c9cdc28b4791f56b5ac1b72779726389c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZjA4MmRlMTg2NTAxNWNmMzU4ZWYwOGMzMzk1NDYzYjViZmIyNDZjYzY1ODJlNDlkMmUxOTY4OTY2ZjExMDA1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NmFiNWU2YmU0NGM1YWU0N2E3MzZkYmJkN2MzMDljMDFjYzY0OTNhYmUwMDc0OGMzMTc4MjQyNGI5N2YxODgzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NDI1MzA5MTM2ODI2OWFlYWNhNzcyYzFjNjY1MjcxMWU2NmNjNDdhYzE4ZTU4MTMxMjczMmNjODNkODQ2MjYzIn0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/workspace.py#L328-L382",
@@ -385,10 +381,34 @@
           "version": "repo-lines-v1:sha256:09a32c3d666ef1747250b06693c0e19d0dae1c62ed4b33ce52f97a48ba8e2439:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkM2Y1MzdjYTZiMTA2YTliZDY4NzNkNGJhZTdlYmJkODgwM2ZhNjk5MTdlMzg1MDhkMmJiYjAxMDVjNjI5MjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmMDNkYjRjMWY0NDkyNDhjODc1OWJjNThiZDdmOGNiMWExYmZhYTkxYzlmZDU5ZmRhNjQ5ZjdkMWIyN2ZhNmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwMWM5YzNmNDlmZDM4M2ViNDlkM2M0ZDdmMTBmZWNiOGQ2OWRkMjg2ODkxMTEwYmJjMDYyODYyZWQ5NTM4ODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bada5b11ef6b4ffcaab78b207fbbd43c",
+      "statement": "MCP discovery preserves user versus project trust provenance, and a config path collision is resolved to project scope so it cannot silently inherit user trust.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L1065-L1142",
+          "version": "repo-lines-v1:sha256:4945becbf3d550cc9f8983200329f36606402e0f90e1d016ac185e723120fd71:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczOTg5MWI5NGJlZmM4YWExNjU1OTNiMDcwNDhlZWYwODJkMTkzMzVhOTA2ODRjZDFjNTZhOTNmZWU2MzcwMGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5ZWQ5MDE5ODFjNTM3YWE0NjVjMzVlMmFhMWNiYzI5NGM4NmNhNzQ4MmY4OTU0ZjIwYjQ0YWQzNzNiYWIyNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliNjBmYTNkMjAxYjRiMmRiZjZkYTBhNTAzZjM3MDY1NTQ5ZDMwMjRkYmM0ZGNkYjdlNTM3NDY3MzRkOTM0YWUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L986-L1062",
+          "version": "repo-lines-v1:sha256:b88ed01eeeb502331edb07ea93d4aa3f69359f96a9130c771638cad930c443f4:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhODg3OTZlY2FiNTFmZDU3MWYxNjg3YTc4NTBiMmEyNGJhOWE2ODZlOGZhYjU3Mjk3ODcxZTU2OWM1YzgxN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMjc1ODM3NTk0Njk3OGQ0MjUzOTQ1NGQ4YzU5Nzg4ZDg0Y2Q3ZDAwYzIzMGNmNzc3Nzk1ZjhiYTNhMzAzMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5YmE2Mjk5NWJiYmI2OWFlYzdkNWE1ZGVmMDIxMTM0NTk2OTVjNTA4M2Q0N2E2NDNmNWFmMzQyYThlMzQ1NjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkZGNjNWYyMGI2NWU3MGEwNDBkMTMyZWIyNGQ2ZDkzMmYyODNkMGNmNmMyYTkzZmMyZTU2ZmQ5NDBjZWUwMzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f08f21398c5a4e069929657616503ef4",
+      "statement": "The GitHub Action runs dcode non-interactively, exposes shell allow-list, turn, timeout, and output controls, and warns that its combined response output is raw unfiltered agent output.",
+      "evidence": [
+        {
+          "resource": "repo://ACTION.md#L32-L50",
+          "version": "repo-lines-v1:sha256:03c61d0fe0ee6d1854f183e84c8fcb673c6d32ca137f7ed02ce131fb26d43014:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlMDIyMTlkMGYxODFkN2Q0NTE0M2IxM2U4YTg5NjU1MWUyMDJjMDg0N2YwZmY4NDk3ODQ0Y2Q1MDMwYjQ5MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwOTJlOGMyYWMxMmVkNThkZDM4MjRiMGUxNDA2MDhlMjliMGE3NzMwMGEwNmIwMWY0NTJjYmE0YzgyMzkzZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyYWY3ZTVhNDI0NjlhMzFjNzZlZGNhOGYxYWY5ZWQ1NmY3YTU5ZjQ4ZWUzZmZlMzEyNjE2YzYzYWIxYjA0NTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyZGFkNmQ3ZTVlNTNlMjIyMmRkYmRlMzNhNzU4ZDg1M2E5MTk0ZjNiMzU1MDIzNzNlZjdkNzRlZGZjODc2ZTMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-18T15:26:08.526Z"
   }
 }

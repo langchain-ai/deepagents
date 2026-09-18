@@ -1,7 +1,7 @@
 ---
 type: runtime behavior
-title: dcode Runtime Behavior and Failure Handling
-description: How dcode launches and owns a workspace-aware LangGraph runtime, constructs its agent resources, selects bounded workspace runtimes, and surfaces startup and request failures.
+title: dcode Server Runtime Behavior
+description: How dcode launches and owns a workspace-aware LangGraph child server, binds threads to trusted workspace policy, caches runtimes, and handles streaming, offload, retries, recovery, and shutdown.
 tags: [dcode, runtime, server-startup, workspace, sandbox, extensions, mcp, retry, shutdown]
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
@@ -16,25 +16,33 @@ sources:
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
+  - id: openwiki-source-c100a7d2ff8c43af8ad1b816
+    resource: repo://libs/code/deepagents_code/offload_middleware.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-c8dacdfd6192dd22d24a9362
     resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
   - id: openwiki-source-c04c6318f6e59e0d1c9d6182
     resource: repo://libs/code/tests/unit_tests/test_model_retry.py
+  - id: openwiki-source-6a586415ef68cbe7c7967a41
+    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
   - id: openwiki-source-439d3e6c6f1b62e6d282df3f
     resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-784e764f7f5eb5169220c3d2
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
   - id: openwiki-source-f598809da8d8fbff2d7ae090
     resource: repo://libs/code/tests/unit_tests/test_server_manager.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+    at: 2026-09-18T15:26:08.526Z
 ---
 
-# dcode Runtime Behavior and Failure Handling
+# dcode Server Runtime Behavior
 
 Interactive dcode runs its agent in an owned, loopback `langgraph dev` subprocess and accesses the `agent` graph through `RemoteAgent` over HTTP and SSE. The split is intentional: the client retains UI and session concerns, while the server owns the compiled graph, its backend, MCP sessions, sandbox lifetime, and server-side offload operation. ACP's in-process stdio path is outside this page. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md), [Configuration Layering](/openwiki/concepts/config-layering.md), [State Persistence](/openwiki/concepts/state-persistence.md), [MCP](/openwiki/integrations/mcp.md), [Sandbox partners](/openwiki/integrations/sandbox-partners.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
 
@@ -110,7 +118,43 @@ Checkpoint data and the development server's HTTP thread row have separate lifec
 
 Lost or cancelled work is recovered destructively, not resumed. `aabandon_pending_work` cancels active runs, calculates error `ToolMessage` values only for unanswered calls in the trailing AI-message turn, writes `__end__` to discard queued work, then re-reads state and fails if queued nodes, tasks, or interrupts remain. The trailing-turn restriction preserves tool-use/result adjacency and avoids producing invalid history for older interrupted calls.
 
-The server also exposes backend-owned offload through an authenticated custom HTTP route rather than a second addressable graph. The generated configuration enables custom-route authentication when a deployment supplies auth; local process launch explicitly uses noop auth and loopback binding. The remote offload client ensures the thread exists, forwards workspace context, validates protocol responses, and treats an absent route as a server compatibility error.
+## Server-owned offload
+
+`/offload` is a custom HTTP operation, not a second graph: it reads the target checkpoint itself and runs the `OffloadOperation` created with the same runtime backend, compaction middleware, and hooks as the agent. The generated configuration enables custom-route authentication when a deployment supplies auth; local launch explicitly uses noop auth and loopback binding. `RemoteAgent.aoffload` ensures the live HTTP thread row exists, supplies the thread's validated workspace descriptor with model and hook context, and treats a missing route as incompatible custom-server support rather than an unexplained 404.
+
+```mermaid
+sequenceDiagram
+    participant UI as dcode client
+    participant Remote as RemoteAgent
+    participant API as offload API
+    participant Bind as workspace binding
+    participant Runtime as ServerRuntime
+    participant Store as checkpoint store
+    UI->>Remote: aoffload thread and context
+    Remote->>Remote: ensure HTTP thread and bind workspace
+    Remote->>API: POST operation id context hook replies
+    API->>API: acquire per-thread lock and require idle
+    API->>Store: read checkpoint state
+    API->>Bind: verify workspace context
+    API->>Runtime: select bound runtime
+    API->>Runtime: execute compaction and hooks
+    alt Hook needs client reply
+        Runtime-->>API: hook interrupt
+        API-->>Remote: interrupt request
+        Remote->>UI: fulfill hook
+        Remote->>API: retry same operation id with reply
+    else Completion
+        API->>Store: recheck idle and checkpoint identity
+        API->>Store: commit allowed state channels
+        API-->>Remote: complete result
+    end
+```
+
+This sequence shows the operation's re-execution protocol and its commit boundary.
+
+The API serializes one thread's offloads in-process, rejects active, interrupted, pending, unregistered, or checkpoint-less threads, then records the checkpoint identity before compaction. It verifies `require_thread_workspace` before selecting the runtime. After the operation, it rechecks both idleness and checkpoint identity; if the thread advanced, it refuses to commit the generated summary. The commit allowlist permits only offload state channels and explicitly rejects `messages`, preventing an operation based on an earlier checkpoint from clobbering concurrent conversation writes. Cost records are rolled back when there is no update and are settled with the deferred archive commit; cancellation is deferred until that commit task reaches a terminal state.
+
+Hook interruptions do not retain a suspended server coroutine. The client returns the accumulated reply map with the same operation ID; the server re-executes from the start and replays answered hook invocations. The client has a bounded hook-round limit and validates every response. Completion and resumable interrupts are HTTP 200; malformed requests are 422, conflicts that commit nothing are 409, unavailable runtime construction is 503, and an unconfirmed write is reported as indeterminate 500. Cancellation targets the active `(thread_id, operation_id)` task and waits for it to become terminal; a previously finished or cancelled operation returns its remembered status.
 
 ## Retry, startup, and shutdown semantics
 
@@ -124,7 +168,7 @@ The child environment strips `PYTHONPATH` and other startup-influencing values b
 
 ## Focused regression coverage and safe changes
 
-Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, and nonblocking bootstrap. They also exercise ordered, identity-based criteria tool selection and fail-closed MCP annotations. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding.
+Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, nonblocking bootstrap, workspace-scoped environment snapshots, policy drift, cache behavior, and single-workspace sandbox ownership. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding. `test_offload_api.py` exercises workspace-route claim rejection and runtime refusal, per-thread serialization, hook-resume and cancellation semantics, checkpoint-change conflicts, allowed-channel enforcement, empty-thread handling, and indeterminate commit reporting.
 
 When changing this area:
 

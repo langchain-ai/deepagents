@@ -3,9 +3,6 @@ type: workflow
 title: Build and Customize a Deep Agent
 description: Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
 tags: [deepagents, langgraph, middleware, subagents, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
@@ -15,6 +12,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-fc54598423086acf9d53d9fd
+    resource: repo://libs/deepagents/deepagents/middleware/__init__.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-e51c4102234507d1529a2440
@@ -39,7 +38,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T15:26:08.526Z
 ---
 
 # Build and Customize a Deep Agent
@@ -54,7 +56,7 @@ Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` 
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-6-astra",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )

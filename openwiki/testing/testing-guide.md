@@ -3,9 +3,6 @@ type: testing strategy
 title: Testing Strategy and Change Validation
 description: Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.
 tags: [testing, pytest, ci, validation, benchmarks, evaluations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -53,7 +50,10 @@ sources:
     resource: repo://libs/talon/tests/conftest.py
   - id: openwiki-source-d8eca7d18614ffc90856e204
     resource: repo://libs/talon/tests/integration_tests/test_core_flows.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T15:26:08.526Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T15:26:08.526Z
 ---
 
 # Testing Strategy and Change Validation
@@ -113,7 +113,9 @@ All five package pytest configurations use `asyncio_mode = "auto"`, so async tes
 
 Every package puts `"error"` first in pytest `filterwarnings`; entries after it are a reviewed allowlist. Thus an unaccepted warning fails a test, can fail collection when import emits it, or can abort pytest configuration. Fix actionable warnings first. If an expected warning is unavoidable, scope it to the test with `@pytest.mark.filterwarnings`; reserve package configuration for a justified categorical or third-party exception.
 
-CI has a maintainer escape hatch: a pull request with `bypass-warnings-check` can run pytest with `-W default`. The reusable workflow reads labels live and fails closed if that lookup fails; push and merge-group runs have no pull-request label context and always enforce warnings as errors. Treat the label as temporary triage, not validation that a warning is acceptable.
+CI has a maintainer escape hatch: a pull request with `ci:allow-warnings` can run pytest with `-W default`, which outranks the packages' ini warning filters. The reusable workflow reads labels live and fails closed if that lookup fails; push and merge-group runs have no pull-request label context and always enforce warnings as errors. The bypass applies only to jobs using `_test.yml`; direct pytest jobs such as the QuickJS SDK smoke job do not receive it. Treat the label as temporary triage, not validation that a warning is acceptable.
+
+A separate, narrowly scoped release-PR exception exists for installing ripgrep in Linux Deep Agents jobs: `ci:skip-ripgrep` can tolerate a failed strict installation only for release-please or release-titled pull requests. The workflow records that condition and lets ripgrep-gated tests skip only when no usable `rg` was installed; push and merge-group release-sensitive runs remain strict. This does not relax the warning policy.
 
 ### Test seams that protect behavior
 
@@ -180,4 +182,4 @@ Before a release-sensitive SDK change, validate the exact `deepagents==` pin in 
 3. Keep normal coverage deterministic: reset global state, use temporary paths and fixed time, and make doubles record observable output and lifecycle events.
 4. Escalate only when needed: use integration tests for process/provider contracts, evals for real-model quality, and Harbor for sandbox host behavior. Do not use benchmarks as correctness tests.
 5. For a shared SDK, dcode, workflow, dependency, or release change, run the affected consumer packages and repository fan-out checks. Verify the dcode SDK pin when relevant.
-6. Resolve warnings rather than broadening filters. Treat `bypass-warnings-check` as temporary triage and retain warnings-as-errors as the final gate.
+6. Resolve warnings rather than broadening filters. Treat `ci:allow-warnings` as temporary triage and retain warnings-as-errors as the final gate.

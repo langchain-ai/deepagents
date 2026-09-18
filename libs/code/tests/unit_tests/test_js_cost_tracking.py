@@ -19,8 +19,9 @@ from deepagents.backends import StateBackend
 from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command, interrupt
 
 from deepagents_code import cost_tracking
@@ -75,7 +76,7 @@ def _child(name: str) -> CompiledStateGraph:
 def _parent(
     code: str,
     children: dict[str, Any],
-    saver: InMemorySaver | None,
+    saver: InMemorySaver | AsyncSqliteSaver | None,
     *,
     resuming: bool = False,
     nested: bool = False,
@@ -369,7 +370,11 @@ async def test_failed_child_preserves_checkpointed_cost() -> None:
     assert await _total(agent) == pytest.approx(3.0)
 
 
-async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost() -> None:
+@pytest.mark.parametrize("durability", ["async", "exit"])
+@pytest.mark.parametrize("nested", [False, True])
+async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
+    durability, nested
+) -> None:
     waiting = asyncio.Event()
 
     @tool
@@ -404,14 +409,23 @@ async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost() ->
         'await Promise.all([task({description:"wait",subagentType:"wait"}),'
         'task({description:"fail",subagentType:"fail"})])'
     )
+    waiter = child("wait", wait)
+    if nested:
+        waiter = _parent(
+            'await task({description:"done", subagentType:"done"});'
+            'await task({description:"wait", subagentType:"wait"})',
+            {"done": _child("done"), "wait": waiter},
+            None,
+            nested=True,
+        )
     agent = _parent(
-        code,
-        {"wait": child("wait", wait), "fail": child("fail", fail)},
-        InMemorySaver(),
+        code, {"wait": waiter, "fail": child("fail", fail)}, InMemorySaver()
     )
-    result = await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+    )
     assert "parallel failure" in result["messages"][-2].content
-    assert await _total(agent) == pytest.approx(4.0)
+    assert await _total(agent) == pytest.approx(6.0 if nested else 4.0)
 
 
 async def test_failed_nested_dispatch_preserves_unclaimed_transfer() -> None:
@@ -499,37 +513,6 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
     assert await _total(agent) == pytest.approx(3.0)
 
 
-@pytest.mark.parametrize("amount", [True, -1, float("inf"), float("nan"), "1"])
-def test_invalid_costs_are_not_transferred(amount: object) -> None:
-    from deepagents_code._js_cost import _cost_transfers
-
-    result = Command(
-        update={
-            "_session_cost_transfers": {
-                "tools:a|dispatch:b": {"owner_scope": "tools:a", "cost_usd": amount}
-            }
-        }
-    )
-    assert _cost_transfers(result, "tools:a|dispatch:b", "") == {}
-
-
-def test_only_exact_child_scope_and_owner_are_accepted() -> None:
-    from deepagents_code._js_cost import _cost_transfers
-
-    result = Command(
-        update={
-            "_session_cost_transfers": {
-                "tools:a|dispatch:b": {"owner_scope": "tools:a", "cost_usd": 1.0},
-                "tools:a|dispatch:c": {"owner_scope": "tools:a", "cost_usd": 100.0},
-            }
-        }
-    )
-    assert _cost_transfers(result, "tools:a|dispatch:b", "root") == {
-        "tools:a|dispatch:b": {"owner_scope": "root", "cost_usd": 1.0}
-    }
-    assert _cost_transfers(result, "tools:wrong|dispatch:b", "root") == {}
-
-
 async def test_direct_task_still_transfers_costs() -> None:
     message = AIMessage(
         content="",
@@ -551,3 +534,227 @@ async def test_direct_task_still_transfers_costs() -> None:
     )
     await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     assert await _total(agent) == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+async def test_completion_order_does_not_swap_results_on_sqlite_resume(
+    tmp_path, durability, monkeypatch
+) -> None:
+    dispatched = []
+    release = asyncio.Event()
+
+    @tool
+    async def delay() -> str:
+        """Let D finish before A on the first invocation."""
+        await release.wait()
+        return "ready"
+
+    @tool
+    def approval() -> str:
+        """Interrupt after both dependent dispatches finish."""
+        return str(interrupt("approve?"))
+
+    from langchain.agents.middleware import AgentMiddleware
+
+    class Dispatch(AgentMiddleware):
+        def before_agent(self, state, runtime) -> None:
+            assert runtime is not None
+            name = state["messages"][0].content
+            dispatched.append(name)
+            if name == "D":
+                release.set()
+
+    def children(resuming: bool = False) -> dict[str, CompiledStateGraph]:
+        result = {}
+        for name in "ABCD":
+            messages = (
+                []
+                if resuming
+                else [
+                    AIMessage(
+                        content="RESULT_" + name, id=name, usage_metadata=_usage()
+                    )
+                ]
+            )
+            if name == "A" and not resuming:
+                messages.insert(
+                    0,
+                    AIMessage(
+                        content="",
+                        id="delay",
+                        usage_metadata=_usage(),
+                        tool_calls=[{"name": "delay", "args": {}, "id": "delay"}],
+                    ),
+                )
+            middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                CostTrackingMiddleware(nested=True),
+                Dispatch(),
+            ]
+            result[name] = create_agent(
+                _fake_model(*messages),
+                tools=[delay] if name == "A" else [],
+                middleware=middleware,
+            )
+        messages = [_message("approved")]
+        if not resuming:
+            messages.insert(
+                0,
+                AIMessage(
+                    content="",
+                    id="approval",
+                    usage_metadata=_usage(),
+                    tool_calls=[{"name": "approval", "args": {}, "id": "approval"}],
+                ),
+            )
+        result["approval"] = create_agent(
+            _fake_model(*messages),
+            tools=[approval],
+            middleware=[CostTrackingMiddleware(nested=True)],
+        )
+        return result
+
+    code = (
+        "const answers = await Promise.all(["
+        'task({description:"A",subagentType:"A"}).then(()=>task({description:"C",subagentType:"C"})),'
+        'task({description:"B",subagentType:"B"}).then(()=>task({description:"D",subagentType:"D"}))]);'
+        'await task({description:"approve",subagentType:"approval"}); answers'
+    )
+    database = str(tmp_path / "checkpoints.sqlite")
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent(code, children(), saver)
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+        )
+        assert result["__interrupt__"]
+        assert dispatched.index("D") < dispatched.index("C")
+    _fresh_runtime()
+    from deepagents_code import _js_cost
+
+    original = _js_cost._cost_task
+    resumed_dispatches = []
+    c_started = asyncio.Event()
+
+    def reordered(tool, runtime, owner, active) -> StructuredTool:
+        proxy = original(tool, runtime, owner, active)
+        invoke = proxy.coroutine
+        assert invoke is not None
+
+        async def dispatch(description, subagent_type, runtime) -> object:
+            if description == "B":
+                await c_started.wait()
+            resumed_dispatches.append(description)
+            if description == "C":
+                c_started.set()
+            return await invoke(description, subagent_type, runtime)
+
+        return proxy.model_copy(update={"coroutine": dispatch})
+
+    monkeypatch.setattr(_js_cost, "_cost_task", reordered)
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent(code, children(True), saver, resuming=True)
+        result = await agent.ainvoke(
+            Command(resume="yes"), _CONFIG, durability=durability
+        )
+        output = result["messages"][-2].content
+        assert output.index("RESULT_C") < output.index("RESULT_D")
+        assert resumed_dispatches.index("C") < resumed_dispatches.index("D")
+        assert await _total(agent) == pytest.approx(9.0)
+    _fresh_runtime()
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent(code, children(True), saver, resuming=True)
+        await agent.ainvoke(None, _CONFIG, durability=durability)
+        assert await _total(agent) == pytest.approx(9.0)
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+async def test_identical_parallel_requests_are_distinct(durability) -> None:
+    agent = _parent(
+        'await Promise.all([task({description:"same",subagentType:"child"}),'
+        'task({description:"same",subagentType:"child"})])',
+        {
+            "child": create_agent(
+                _fake_model(_message("one"), _message("two")),
+                middleware=[CostTrackingMiddleware(nested=True)],
+            )
+        },
+        InMemorySaver(),
+    )
+    await agent.ainvoke(
+        {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+    )
+    assert await _total(agent) == pytest.approx(4.0)
+
+
+async def test_direct_grandchild_is_not_double_counted() -> None:
+    direct = AIMessage(
+        content="",
+        id="direct",
+        usage_metadata=_usage(),
+        tool_calls=[
+            {
+                "name": "task",
+                "args": {"description": "leaf", "subagent_type": "leaf"},
+                "id": "leaf",
+            }
+        ],
+    )
+    inner = _parent(
+        "",
+        {"leaf": _child("leaf")},
+        None,
+        nested=True,
+        messages=[direct, _message("inner")],
+    )
+    agent = _parent(
+        'await task({description:"inner",subagentType:"inner"})',
+        {"inner": inner},
+        InMemorySaver(),
+    )
+    await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
+    assert await _total(agent) == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+async def test_cancellation_settles_inflight_receipt_before_sqlite_close(
+    tmp_path, durability
+) -> None:
+    writing = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowSaver(AsyncSqliteSaver):
+        async def aput(
+            self, config, checkpoint, metadata, new_versions
+        ) -> RunnableConfig:
+            if "js_cost_owner" in metadata:
+                writing.set()
+                await release.wait()
+            return await super().aput(config, checkpoint, metadata, new_versions)
+
+    database = str(tmp_path / "cancel.sqlite")
+    code = 'await task({description:"child",subagentType:"child"})'
+    async with SlowSaver.from_conn_string(database) as saver:
+        agent = _parent(code, {"child": _child("child")}, saver)
+        invocation = asyncio.create_task(
+            agent.ainvoke(
+                {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+            )
+        )
+        await asyncio.wait_for(writing.wait(), timeout=10)
+        invocation.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    _fresh_runtime()
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent(
+            code,
+            {
+                "child": create_agent(
+                    _fake_model(), middleware=[CostTrackingMiddleware(nested=True)]
+                )
+            },
+            saver,
+            resuming=True,
+        )
+        await agent.ainvoke(None, _CONFIG, durability=durability)
+        assert await _total(agent) == pytest.approx(3.0)

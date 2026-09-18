@@ -28732,6 +28732,18 @@ class TestToolGroupCollapse:
             assert len(list(app.query(ToolGroupSummary))) == 1
             assert tools[0].display is False
 
+    async def test_user_message_mount_skips_history_regroup(self) -> None:
+        """Submitting a prompt does not scan the mounted transcript."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-submit")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        regroup = AsyncMock()
+        app._regroup_completed_tools = regroup  # ty: ignore
+
+        async with app.run_test():
+            await app._mount_message(UserMessage("next prompt"))
+
+        regroup.assert_not_awaited()
+
     async def test_separate_steps_get_separate_summaries(self) -> None:
         """Tools split by an assistant message form two independent groups."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary

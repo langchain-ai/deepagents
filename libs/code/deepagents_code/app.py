@@ -20377,9 +20377,8 @@ class DeepAgentsApp(App):
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
-                # Re-derive groups for any tools mounted outside this path
-                # (resumed history), which carry no live group.
-                await self._regroup_completed_tools()
+                if not isinstance(widget, UserMessage):
+                    await self._regroup_completed_tools()
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached

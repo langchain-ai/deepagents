@@ -5406,8 +5406,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware in middleware_types
+        assert any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_no_interpreter_middleware_when_disabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -5439,8 +5440,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware not in middleware_types
+        assert not any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_raises_when_sandbox_present(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

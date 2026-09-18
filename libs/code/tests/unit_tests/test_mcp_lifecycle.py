@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -299,4 +300,103 @@ async def test_failed_stdio_startup_terminates_process(
             os.kill(pid, 0)
     finally:
         assert manager is not None
+        await manager.cleanup()
+
+
+async def test_dead_stdio_backend_reconnects(tmp_path: Path) -> None:
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import os\nfrom fastmcp import FastMCP\n"
+        "server = FastMCP('stdio')\n"
+        "@server.tool\nasync def pid() -> int:\n"
+        "    return os.getpid()\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    tools, manager, infos = await mcp_tools._load_tools_from_config(
+        {"mcpServers": {"stdio": {"command": sys.executable, "args": [str(script)]}}}
+    )
+    assert manager is not None
+    pids: list[int] = []
+    try:
+        assert infos[0].status == "ok", infos[0].error
+        for _ in range(2):
+            result = await tools[0].ainvoke({})
+            pid = int(result[0]["text"])
+            pids.append(pid)
+            os.kill(pid, signal.SIGTERM)
+            async with asyncio.timeout(5):
+                while True:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                    await asyncio.sleep(0.01)
+        results = await asyncio.gather(*(tools[0].ainvoke({}) for _ in range(3)))
+        recovered = [int(result[0]["text"]) for result in results]
+        assert len(set(recovered)) == 1
+        assert recovered[0] not in pids
+        pids.extend(recovered)
+    finally:
+        await manager.cleanup()
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+async def test_crashing_tool_retries_only_once(tmp_path: Path) -> None:
+    script, calls = tmp_path / "server.py", tmp_path / "calls"
+    script.write_text(
+        "import os, sys\nfrom pathlib import Path\nfrom fastmcp import FastMCP\n"
+        "server = FastMCP('stdio')\n"
+        "@server.tool\nasync def crash() -> str:\n"
+        "    with Path(sys.argv[1]).open('a') as calls:\n"
+        "        calls.write('called\\n')\n"
+        "    os._exit(1)\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    tools, manager, infos = await mcp_tools._load_tools_from_config(
+        {
+            "mcpServers": {
+                "stdio": {"command": sys.executable, "args": [str(script), str(calls)]}
+            }
+        }
+    )
+    assert manager is not None
+    try:
+        assert infos[0].status == "ok", infos[0].error
+        for count in (2, 4):
+            result = await tools[0].ainvoke(
+                {"type": "tool_call", "id": "crash", "name": tools[0].name, "args": {}}
+            )
+            assert result.status == "error"
+            assert len(calls.read_text().splitlines()) == count
+    finally:
+        await manager.cleanup()
+
+
+async def test_tool_error_is_not_retried(backends: dict[str, Backend]) -> None:
+    backend = backends["server"] = Backend("server")
+    calls = 0
+
+    @backend.server.tool
+    def failure() -> str:
+        nonlocal calls
+        calls += 1
+        msg = "Connection closed"
+        raise RuntimeError(msg)
+
+    tools, manager, _ = await mcp_tools._load_tools_from_config(config("server"))
+    assert manager is not None
+    try:
+        tool = next(tool for tool in tools if tool.name.endswith("failure"))
+        result = await tool.ainvoke(
+            {"type": "tool_call", "id": "failure", "name": tool.name, "args": {}}
+        )
+        assert result.status == "error"
+        assert "Connection closed" in str(result.content)
+        assert calls == 1
+        assert backend.started == 1
+    finally:
         await manager.cleanup()

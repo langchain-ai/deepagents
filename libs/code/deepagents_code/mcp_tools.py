@@ -1875,6 +1875,8 @@ async def _mount_backends(
     from fastmcp.server.providers.proxy import StatefulProxyClient
     from fastmcp.server.server import create_proxy
 
+    from deepagents_code.mcp_proxy import MCPBackendMiddleware
+
     router: Any = FastMCP(name="deepagents-code")
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
@@ -1929,9 +1931,9 @@ async def _mount_backends(
         )
         for name in backends:
             if name in connected:
-                router.mount(
-                    create_proxy(connected[name]), namespace=name.encode().hex()
-                )
+                proxy = create_proxy(connected[name])
+                proxy.add_middleware(MCPBackendMiddleware(connected[name]))
+                router.mount(proxy, namespace=name.encode().hex())
         return (
             FastMCPClient(router),
             stack.pop_all(),

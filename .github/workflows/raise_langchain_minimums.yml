@@ -243,7 +243,7 @@ jobs:
           lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
           locks='every affected `uv.lock`'
           if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then
-            locks='only directly changed packages' `uv.lock` files'
+            locks='only the `uv.lock` files of directly changed packages'
           fi
           if [ -n "$DEPENDENCIES" ]; then
             title="$title (\`$DEPENDENCIES\` only)"

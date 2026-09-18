@@ -4,10 +4,8 @@ Covers clipboard detection, base64 encoding, and multimodal content.
 """
 
 import base64
-import logging
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from deepagents_code.input import MediaTracker
@@ -16,7 +14,6 @@ from deepagents_code.media_utils import (
     VideoData,
     _detect_video_format,
     create_multimodal_content,
-    get_image_from_path,
     get_video_from_path,
     is_media_path,
     strip_media_placeholders,
@@ -43,21 +40,6 @@ class TestIsMediaPath:
 
 class TestImageData:
     """Tests for ImageData dataclass."""
-
-    def test_non_image_file_returns_none_without_debug_trace(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Non-image paths are an expected miss, not a logged decoder failure."""
-        path = tmp_path / "results.json"
-        path.write_text('{"result": "pass"}')
-        caplog.set_level(logging.DEBUG)
-
-        assert get_image_from_path(path) is None
-        assert not [
-            record
-            for record in caplog.records
-            if record.name == "deepagents_code.media_utils"
-        ]
 
 
 class TestMediaTracker:

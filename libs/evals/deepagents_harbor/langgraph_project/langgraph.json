@@ -2,8 +2,8 @@
   "dependencies": [
     "./.local_deps/deepagents",
     "./.local_deps/deepagents-code",
-    "langchain @ git+https://github.com/langchain-ai/langchain.git@a622cfc1b0562d7306c67b5b990f7d253a3eef6f#subdirectory=libs/langchain_v1",
-    "langchain-typesafe[experimental] @ git+https://github.com/langchain-ai/langchain.git@a622cfc1b0562d7306c67b5b990f7d253a3eef6f#subdirectory=libs/partners/typesafe",
+    "./.local_deps/langchain",
+    "./.local_deps/langchain-typesafe",
     "langchain-anthropic>=1.5.4,<2.0.0",
     "langchain-baseten>=0.2.0,<0.3.0",
     "langchain-fireworks>=1.4.2,<1.5.0",

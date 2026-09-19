@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:918ddb7b342f87d5c2db81dfde944b2a7012340f980a6cb4e8387d1805821a59",
+  "pageVersion": "sha256:8b4618d977e11f92ff373e1a2a954a237ee8f2f3d84a9e074cdba8efc54bd845",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -70,7 +70,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:951c0d7f07b9a86d3d84bb530dc71284c8d3c492dabcda20e4cc3862c9806d80"
+          "version": "repo-file-v1:sha256:a304dc8451f1b76c04bfed33b5611b0558a222fd0e61a0b5e81c4c5682bf4b09"
         }
       ]
     },
@@ -94,17 +94,17 @@
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:ea27b94af3f3f7d744a5d86d154231b58993450246f6708c671320aef3564ae0"
+          "version": "repo-file-v1:sha256:7c55c376be23deebe48b983de1623784e1a5bed0dba6672e88c128119d7533ba"
         }
       ]
     },
     {
       "id": "claim_837e7b13e9f94a098eb350808a7d0a3c",
-      "statement": "The release manifest records independent versions for deepagents 0.7.15, ACP 0.0.11, Code 0.1.71, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages.",
+      "statement": "The release manifest records independent versions for deepagents 0.7.15, ACP 0.0.12, Code 0.1.71, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:fdbdadc51c764eb16e91ed9a7d8c23f152a01b1f9887c134b03a31851ea63df3"
+          "version": "repo-file-v1:sha256:c3d6afc346ce040f297d10217439795b18c6863b0c740c0835fbbca77e7068af"
         }
       ]
     },
@@ -134,13 +134,65 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:951c0d7f07b9a86d3d84bb530dc71284c8d3c492dabcda20e4cc3862c9806d80"
+          "version": "repo-file-v1:sha256:a304dc8451f1b76c04bfed33b5611b0558a222fd0e61a0b5e81c4c5682bf4b09"
+        }
+      ]
+    },
+    {
+      "id": "claim_7b0ac1838356454c818cffb6e23b5c19",
+      "statement": "When ACP durable session loading is enabled, AgentServerACP verifies that checkpoint metadata marks the requested ACP session and that its recorded working directory matches, restores session options, and replays the session; it rejects loading when the capability is disabled.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L394-L428",
+          "version": "repo-lines-v1:sha256:46b9c974b06fed92e82e9dfee0251350726d492a9fd57b7f15947beac5508f3d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzcxMjY1MTEyZTI4NmE3NDdjYWMzNDY5MmJmMGNkY2Q2YjRkMzJiNDQ4MTI0ZmQzNTQyZjhjZTMwN2MzZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhNDc0ZWI4N2ZhZjY1N2E4MThiZmFiNGVjMmE2NGI5NTJiNjQ4N2I2ZjhkMGJmNmRiYTIwZjFlMTdiNjg3NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3OTg3OWRkZjdlYzI5OTQ5OWJkMzc2ZDlkOTYyYmM0MTFlZjJmYmE4MDVjYjFhZDU1NjYxYWYyZDQ1Yzg2YjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a49fb7b51f794c52b206c53ebad1caec",
+      "statement": "Talon's CLI loads MCP tools and constructs DeepAgentRuntime with Talon MCP middleware; with a configured checkpointer it uses the supplied checkpoint resource, and otherwise the model-backed host creates an SQLite saver and conversation archive wrapper.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L191-L282",
+          "version": "repo-lines-v1:sha256:5efe880fc445b0afc6854f71f278ed1ee0d0da893f9ea86fe422926ee2161da2:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmYzkyMjNhY2Y4NmU1MDA5NmE0NDUzMzMzNDE4ODZkMTc0MWU1NTdhZDFmMDRhMjA2ZmFhOGJmOTg2MzdhOWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYTViZmQzZDAyM2QwZTZjOGZlZDdkNzg2ODYyNWQ3MTg2NDdmNzAxNTk3MmY2ZGJjODNhYmYzOWZlNjBlOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NWRjY2NiN2JmYmEwYTZjNzI0MjNlYTE2NjdiMjMwNTBjNzY5MzM1MmEzOTU1YjZhNmNhYWRmMTVkZTA3NmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b115cf98ab154316aeb483d6a1df7263",
+      "statement": "Talon replaces the SDK subagent middleware with TaskTools so task calls can add only unique tool names from the current parent catalog to named local subagents; fresh local subagents run without inherited parent history, and fork mode is rejected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L398-L425",
+          "version": "repo-lines-v1:sha256:7a07edaeb22556bac0f8d1f982c9a6f7d24ef36d677ccaebd70fa6ab6e9a0f33:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhNjE0YTJkNTkxYTVkMTBkNjc3YWNlZGU1M2FmNWY1MWEyMDhjMWQyMTFiMGFjZDQxMzAxOGE2YzZmNzM0MTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZGIyYjkxYmVhOTkyODdjOTYzZWE0NmIxNDA3Y2VjYmE5MDYzMWI2MDczNmJjZGM0ZjY5NGRkNTI4MmM2M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0Mjc5YmIyNTQ1ZDc2ZTdjYzFlYWJiOTg5NjZmNjFmMDA2YTg3YTgwMzlmNDVhNDBkOTFjYzU2NGE2ZTA4YzgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py#L221-L264",
+          "version": "repo-lines-v1:sha256:88477aafaa590139e5447a21220d4445c67c88177f0bd4b838dfdccf18d36c25:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0M2MxMWFkODRkZjhhYjYwNmQ3MGRkNTI2NWVkODZjMzIzYmM1MzhkZmFlMTZmNmUzZmM4ZjBmNzI5ZGQ2OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NmE1YmY2YTliZTFhOWJjOGUyYzUwNjFkNzNkNTZjMjVlN2M4YmUzMTE1OGJiOGJmMzVlZTcyNjM3Y2U1NDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMzZhOTY0MDQ1ZDc1NzFiNTExZmU5Nzc1Y2FlMjI3YTVkNTQ0ZDk0MGY3ZGNkNGFhZDk4MjA0OGRkMTk0NmYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py#L64-L159",
+          "version": "repo-lines-v1:sha256:8f4224942a8f1dfa15b9e26468c6dd23851413968d27d6a3e8aa3cfe09812725:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkOWMzYTFkN2EyZGI0NGJkMTY5ZDZiYmM4ZGU1ODkzNmEwNTBmYmYzNmY5ZjMxNGU1MzkwYWY2ZTVhZmM4ZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOWY4ODUxNTA2NjA2M2MxOTE4NTA3YzJhNmYzZTc1YjQ2YTczMTBlMTY1MmZhMjgzODQyOTY1YTJiMjAzYmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyMzc1NjhmMzcxYzY2NGZhNzM5ZmU2ZGYzNzAyZTc2MjUzZTA3NDMyOGQwMjU2YTRhYWQzZGVkOTlkN2Y4YTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a8e81f1c8a214d3eb8f19e3721ef27b1",
+      "statement": "Talon MCP refresh and subagent reload construct replacement graphs under a lock, leaving the previous graph active when validation or reload fails and applying successful replacements to later turns.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L608-L648",
+          "version": "repo-lines-v1:sha256:4b12921aae276ae27b87776724bc37bd6be33266cb409fc9bd1f4746404a25d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1YjNlNTQxMmMzZjNiMzA0M2E3YWY0Y2E0ODBhOTIwY2Y1ZDk2NTM5NmVhZDAwYjg0MTg5Y2U1ZDBkZDI5MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2MmUyYTA3M2U5ZTNjNjBiZDJkMzU4N2NmYmNmZmVlYmEyZGEwZGMzNzAyNTQ4ZmIzYmM1OGZiNmIyYTY0MWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxNDU5N2Y5ODMzYmFjYmJlMDAwZTU3MTNkMmZmZjAyNWI1ZTY1MTUzMDg5Mzk5MTBmNWI2MzhmMDllZmRiZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MzlhZWFhZGJkM2FiZjViZDFmYjg4OTEwNWE4ZGRkOTYwZDliMDEwMjI2ZDA0NTcyOTM5MDdkNjRhOGM3ZWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L650-L696",
+          "version": "repo-lines-v1:sha256:ccc020ec7caf950b8529aeceb16809a16dd0674c8ce8f4ed4354034072dceafd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlYjI4MzU2NGM0MTc5MzY3NjY2MjJhOGRiZTc1YmJlN2Q1N2RlM2E2YmFiZTIxYzY5YWJhYjUzMzFlYTlkYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxZGU2ODM3ZTk0NjY1YmQ3YWNlNjQ0MmVjNWE3ODVmY2U0NTdhZDE1MTQwMDNiMGU0ZTE2ZDJkMDc3ZTZjNGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2EzOWQ4NWNmMTc5NDM5NmQ2ZTM0ZjEzYWI4NGYxZTE2YWZmNTU2MGY1OTVhMjNkNzc0NzIwNjNkY2YwYWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzNDM5NTZjMzM2ZjRkM2UzYWIwYTQzNTQ3MjA4ZjM4NmY0MDYyMzU2MGY5OTU1N2JiM2NhMzZmOWM4YjJlNzQifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-19T08:04:56.519Z"
   }
 }

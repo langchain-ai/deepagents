@@ -1,11 +1,11 @@
 ---
-type: operations-guide
+type: operations guide
 title: Development, CI, and Releases
-description: Package-local development and aggregate validation for the Deep Agents Python monorepo, plus the independently versioned release-please and PyPI release lifecycle.
+description: Package-local development and aggregate lock validation for the Deep Agents Python monorepo, plus independently versioned release-please and PyPI releases.
 tags: [development, ci, monorepo, uv, make, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-09-19T08:04:56.519Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -21,6 +21,12 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
+  - id: openwiki-source-0179ac261273b4285f3644bd
+    resource: repo://libs/acp/deepagents_acp/_version.py
+  - id: openwiki-source-bb78950c8b36b7b9f6746e96
+    resource: repo://libs/acp/pyproject.toml
+  - id: openwiki-source-7627ca23c1a4cd8f5d65d813
+    resource: repo://libs/acp/uv.lock
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
@@ -31,9 +37,15 @@ sources:
     resource: repo://libs/Makefile
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
+  - id: openwiki-source-131e2d6a1f4084abdc5cf240
+    resource: repo://libs/talon/deepagents_talon/_version.py
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
+    resource: repo://libs/talon/uv.lock
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
 ---
 
 # Development, CI, and Releases
@@ -92,7 +104,7 @@ Run repository fan-out operations from `libs/`. `libs/Makefile` discovers direct
 | `make lock-bump DEP=<pkg>` | Re-resolve every discovered lock with `-P <pkg>`; `DEP` is required. |
 | `make bench-all` | Run `bench` for `deepagents` and `code`. |
 
-The aggregate lock policy uses Python 3.14 for ACP and 3.12 elsewhere. Regenerate a package lock when its metadata or resolved dependencies change; for a shared dependency update, use `make -C libs lock-bump DEP=<pkg>` rather than hand-editing lockfiles.
+The aggregate lock policy resolves ACP with Python 3.14 and every other package or example with Python 3.12. This is a lock-generation choice, not ACP's published interpreter floor: ACP declares `requires-python = ">=3.11"`, while Talon declares `requires-python = ">=3.12"`; their lockfiles record those respective ranges. Regenerate a package lock when its metadata or resolved dependencies change; for a shared dependency update, use `make -C libs lock-bump DEP=<pkg>` rather than hand-editing lockfiles.
 
 The pre-commit configuration requires pre-commit 3.2.0 or later and installs `pre-commit`, `commit-msg`, and `pre-push` hooks. Package hooks invoke Makefile targets; lock, extras, and selected version checks are file-scoped. The main CI entry workflow handles pull requests, pushes to `main`, and merge-group events. It uses path detection to select affected package jobs on PRs, while main pushes run jobs unconditionally; filters include `libs/deepagents/**` for editable SDK consumers.
 
@@ -108,7 +120,7 @@ Adding a partner is therefore a wiring change, not just a directory: register it
 
 Release-please manages nine independent Python distributions: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, `langchain-daytona`, `langchain-modal`, `langchain-runloop`, `langchain-vercel-sandbox`, and `langchain-quickjs`. It creates separate draft PRs, one component per package, and `skip-github-release` delegates publication to `release.yml`. Each configured package supplies its Python release type, distribution/component names, changelog path, version-bearing extra files, and test exclusions. Tags use the component and `==`, without `v`.
 
-The manifest records released baselines, not source versions, and is automatically maintained. Current baselines are: `libs/deepagents` `0.7.15`, `libs/acp` `0.0.11`, `libs/code` `0.1.71`, `libs/talon` `0.0.8`, `daytona` `0.0.8`, `modal` `0.0.6`, `runloop` `0.0.7`, `vercel` `0.0.2`, and `quickjs` `0.3.7`. Add both config and manifest entries for a new managed package; for an unshipped `0.0.1` package, use manifest baseline `0.0.0` so its first proposed release is `0.0.1`.
+The manifest records released baselines, not source versions, and is automatically maintained. Current baselines are: `libs/deepagents` `0.7.15`, `libs/acp` `0.0.12`, `libs/code` `0.1.71`, `libs/talon` `0.0.8`, `daytona` `0.0.8`, `modal` `0.0.6`, `runloop` `0.0.7`, `vercel` `0.0.2`, and `quickjs` `0.3.7`. ACP's published `0.0.12` is aligned across its manifest baseline, `pyproject.toml`, and release-please-managed `deepagents_acp/_version.py`; Talon's corresponding current source version is `0.0.8`. Do not manually advance these release values as part of ordinary dependency work: release-please updates each configured package's `pyproject.toml` and version marker on its release PR, then its lock updater regenerates the affected `uv.lock` file. Add both config and manifest entries for a new managed package; for an unshipped `0.0.1` package, use manifest baseline `0.0.0` so its first proposed release is `0.0.1`.
 
 ```mermaid
 flowchart TD

@@ -20,7 +20,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 
-from deepagents_code._debug import LOG_LEVELS
+from deepagents_code._debug import DEBUG_LOG_FORMATTER, LOG_LEVELS
 from deepagents_code._env_vars import LOG_LEVEL
 
 DEFAULT_CAPACITY = 1000
@@ -35,9 +35,6 @@ bounded no matter how many distinct custom names appear. Like every bucket, this
 one is bounded to *capacity* and evicts oldest-first, so — unlike the standard
 levels, which each get isolated retention — distinct custom levels compete for a
 single budget and can evict one another."""
-
-_DATE_FORMAT = "%H:%M:%S"
-_FORMATTER = logging.Formatter(datefmt=_DATE_FORMAT)
 
 
 def retention_bucket_for_level(level: str) -> str:
@@ -173,13 +170,13 @@ class InMemoryLogBuffer(logging.Handler):
         message = record.getMessage()
         if record.exc_info:
             if not record.exc_text:
-                record.exc_text = _FORMATTER.formatException(record.exc_info)
+                record.exc_text = DEBUG_LOG_FORMATTER.formatException(record.exc_info)
             if record.exc_text:
                 message = f"{message}\n{record.exc_text}"
         if record.stack_info:
-            message = f"{message}\n{_FORMATTER.formatStack(record.stack_info)}"
+            message = f"{message}\n{DEBUG_LOG_FORMATTER.formatStack(record.stack_info)}"
         return InMemoryLogRecord(
-            timestamp=_FORMATTER.formatTime(record, _DATE_FORMAT),
+            timestamp=DEBUG_LOG_FORMATTER.formatTime(record).partition(" ")[2],
             level=record.levelname,
             levelno=record.levelno,
             logger=record.name,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain.agents import create_agent
@@ -10,12 +11,26 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool, tool
+from mcp.shared.exceptions import MCPError
 from pydantic import PrivateAttr
 
+from deepagents_talon.authorization import (
+    CallbackURLRequested,
+    current_authorization_attempt,
+    current_authorization_handler,
+    current_authorization_invocation,
+)
 from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.mcp_auth import _channel_handlers
+from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
 from deepagents_talon.runtime import DeepAgentRuntime
 from deepagents_talon.tool_approvals import ToolApprovalStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from deepagents_talon.authorization import AuthorizationEvent
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -197,6 +212,82 @@ async def test_explicit_shell_access(tmp_path, monkeypatch, name):
 
 async def _inventory(runtime):
     return await runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].ainvoke({})
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+async def test_local_subagents_retain_mcp_protections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dynamic: bool, background: bool, fail: bool
+) -> None:
+    _write_agent(tmp_path, "[]" if dynamic else "[remote_search]")
+    received: list[tuple[str, str]] = []
+
+    async def search(query: str, optional: str = "default") -> str:
+        received.append((query, optional))
+        assert current_authorization_invocation() == "remote_search"
+        assert current_authorization_attempt() is not None
+        if fail:
+            raise MCPError(-32602, "Invalid query", data={"private": "hidden-error-data"})
+        if background:
+            assert current_authorization_handler() is None
+        else:
+            redirect, callback = _channel_handlers("remote", "http://localhost:3000/callback")
+            await redirect("https://auth.example/authorize")
+            assert (await callback()).code == "example-code"
+        return "found"
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        assert event.binding.invocation_id == "remote_search"
+        if isinstance(event, CallbackURLRequested):
+            return "http://localhost:3000/callback?code=example-code&state=example-state"
+        return None
+
+    remote = StructuredTool.from_function(
+        coroutine=search,
+        description="Search",
+        name="remote_search",
+        metadata={MCP_TOOL_METADATA_KEY: True},
+        args_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "optional": {"type": "string"}},
+            "required": ["query"],
+        },
+    )
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("remote_search", query="", optional="")]),
+            AIMessage(content="Research complete"),
+        ]
+    )
+    launch = {"tools": ["remote_search"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Research", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[remote], env={})
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research", authorization_handler=authorize))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert received == [("", "default")]
+        message = child._seen[-1][-1]
+        assert message.status == ("error" if fail else "success")
+        assert message.content == ("MCP protocol error -32602: Invalid query" if fail else "found")
+        assert "hidden-error-data" not in str(child._seen)
+        assert current_authorization_invocation() is None
+        assert current_authorization_attempt() is None
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.parametrize("configured", [False, True])

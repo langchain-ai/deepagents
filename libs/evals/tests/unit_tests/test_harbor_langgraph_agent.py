@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import langchain.mcp as langchain_mcp
 import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
@@ -787,7 +788,7 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
         return "graph"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "MCPAdapter", FakeMCPAdapter)
+    monkeypatch.setattr(langchain_mcp, "MCPAdapter", FakeMCPAdapter)
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
 
     result = asyncio.run(
@@ -835,7 +836,7 @@ async def test_tau3_tools_remain_callable_after_discovery(monkeypatch):
         }
         return MCPAdapter(server)
 
-    monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
+    monkeypatch.setattr(langchain_mcp, "MCPAdapter", adapter)
     monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
     tools = await langgraph_agent.make_tau3_graph(

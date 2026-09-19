@@ -20,7 +20,6 @@ from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.agents.middleware.tool_selection import LLMToolSelectorMiddleware
 from langchain.chat_models import init_chat_model
-from langchain.mcp import MCPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -547,6 +546,8 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
         TypeError: If configurable values have unexpected types.
         ValueError: If no model name or MCP servers are provided.
     """
+    from langchain.mcp import MCPAdapter  # noqa: PLC0415
+
     configurable = _configurable(config)
     model = _build_model(configurable)
     tools = []

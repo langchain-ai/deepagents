@@ -15,7 +15,6 @@
     "langchain-openrouter>=0.2.3,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     "langchain-mcp-adapters>=0.3.0,<0.4.0",
-    "fastmcp>=4.0.1,<5.0.0",
     "aiohttp>=3.14.0,<4.0.0",
     "tavily-python>=0.7.26,<1.0.0",
     "toml>=0.10.2,<1.0.0"

@@ -174,6 +174,7 @@
 | DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results, goal objectives, rubric criteria, and status notes | High | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
 | DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/session_{uuid4hex}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
+| DC6 | Stored Classifier Conversations | Auto-mode authorization payloads: literal user text, canonical tool arguments, referenced file paths, same-turn user answers | High | OpenAI Responses API server-side storage, keyed by `previous_response_id` | Depends on OpenAI | OpenAI's stored-response retention (~30 days) | GDPR if personal data is discussed |
 
 ### Data Classification Details
 
@@ -211,6 +212,18 @@
 - **Retention**: Sandbox session lifetime (destroyed when sandbox is deleted).
 - **Logging exposure**: Contains full message history including tool results.
 - **Gaps**: The filename is a framework-minted `session_<uuid4 hex>` with no user-controlled component (no path injection risk), but offloaded content is unstructured markdown containing raw conversation data.
+
+#### DC6: Stored Classifier Conversations
+
+- **Fields**: The Auto-mode classifier request payload built by `auto_mode._classifier_context` — `authorization_evidence.literal_user_text`, `active_user_directives`, `same_turn_user_answers`, canonical tool arguments, referenced file paths, and prior tool calls for the current request.
+- **Producers**: `auto_mode.AutoModeHITLMiddleware._invoke_openai_classifier`, which sets `store=True` and chains reviews with `previous_response_id` so one provider-side conversation serves several reviews on a thread.
+- **Scope**: Enabled only for `ChatOpenAI` on the canonical OpenAI origin (`_openai_classifier_identity`). Azure, gateways, proxies, custom endpoints, non-OpenAI providers, and an explicit `store=False` or `use_responses_api=False` all keep the classifier stateless, and the endpoint is read from the resolved SDK client so an endpoint supplied through `OPENAI_BASE_URL` cannot be mistaken for first-party OpenAI.
+- **Storage**: OpenAI's server-side response store. Nothing is written locally beyond the `resp_` id held in checkpoint state (`_auto_classifier_conversation`).
+- **Access**: The OpenAI organization and project that issued the request. The identity hash covers endpoint, organization, project, model, credential fingerprint, per-request overrides, policy text, and response schema, so a change to any of them starts a new conversation rather than reading an earlier one.
+- **Encryption**: Depends on OpenAI.
+- **Retention**: OpenAI's stored-response retention, independent of dcode. A chain is additionally capped at `_MAX_CLASSIFIER_CONVERSATION_TURNS` reviews before it rotates.
+- **Logging exposure**: The `resp_` id appears in checkpoint state; payload content is not logged locally by this path.
+- **Gaps**: Retention is the provider's, so dcode cannot delete a stored conversation, and a zero-data-retention organization that rejects `store` has no dcode-level setting to opt the classifier out — it is inferred only from a model-level `store=False`. Content that enters one review's payload also remains in provider-side context for up to `_MAX_CLASSIFIER_CONVERSATION_TURNS` later authorization decisions; the policy re-sent on every request instructs the classifier to treat prior turns as granting nothing, which is a model-level instruction rather than an enforced boundary.
 
 ---
 

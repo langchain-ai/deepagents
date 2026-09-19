@@ -681,7 +681,9 @@ jobs:
           git -C "$RUNNER_TEMP/langchain-tool-selector" fetch --depth=1 origin \
             a622cfc1b0562d7306c67b5b990f7d253a3eef6f
           git -C "$RUNNER_TEMP/langchain-tool-selector" checkout FETCH_HEAD -- \
-            libs/langchain_v1 libs/partners/typesafe
+            libs/core libs/langchain_v1 libs/partners/typesafe
+          rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/core/" \
+            "$local_deps_dir/core/"
           rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/langchain_v1/" \
             "$local_deps_dir/langchain/"
           rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/partners/typesafe/" \

@@ -2707,6 +2707,9 @@ def create_cli_agent(
         if project_context is not None
         else get_project_agents_dir(runtime_credentials.project_root)
     )
+    from deepagents_code.fork_prompt import ForkPromptMiddleware
+
+    fork_prompt_middleware = ForkPromptMiddleware()
 
     def _subagent_cli_middleware(
         *,
@@ -2763,6 +2766,7 @@ def create_cli_agent(
             middleware.append(
                 ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
             )
+        middleware.append(fork_prompt_middleware)
         return middleware
 
     from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
@@ -3479,6 +3483,7 @@ def create_cli_agent(
         from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
         agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
+    agent_middleware.append(fork_prompt_middleware)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

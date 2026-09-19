@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +9,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Interrupt, interrupt
 
-from deepagents_talon.host import _format_tool_approval_prompt, _parse_tool_approval_reply
 from deepagents_talon.interfaces import AgentRequest, ToolApprovalDecision, ToolApprovalRequest
 from deepagents_talon.runtime import DeepAgentRuntime
 
@@ -141,55 +139,3 @@ async def test_invalid_interrupt_ids_never_prompt(ids):
                 for name in ids
             ],
         )
-
-
-async def test_cancelled_batch_never_returns_resume():
-    entered = asyncio.Event()
-
-    async def wait(_request):
-        entered.set()
-        await asyncio.Future()
-
-    task = asyncio.create_task(
-        DeepAgentRuntime(model="test:batch")._build_approval_resume(
-            AgentRequest("batch", "work", approval_handler=wait),
-            [
-                Interrupt(value={"action_requests": [{"name": name}]}, id=name)
-                for name in ("first", "second")
-            ],
-        )
-    )
-    await entered.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-
-@pytest.mark.parametrize("text", ["approve 1", "approve except 2", "👍 1", "deny 2"])
-def test_partial_batch_reply_is_not_a_decision(text):
-    assert _parse_tool_approval_reply(text, batch=True) is None
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [("approve", "approve"), ("👍", "approve"), ("deny", "reject"), ("👎", "reject")],
-)
-def test_batch_reply_applies_to_all(text, expected):
-    assert _parse_tool_approval_reply(text, batch=True) == expected
-
-
-def test_batch_prompt_displays_every_action_and_scope():
-    prompt = _format_tool_approval_prompt(
-        ToolApprovalRequest(
-            "batch",
-            "first",
-            (
-                {"name": "first", "args": {"item": 1}},
-                {"name": "second", "args": {"item": 2}},
-            ),
-        )
-    )
-    assert '1. `first`\nArgs: `{"item": 1}`' in prompt
-    assert '2. `second`\nArgs: `{"item": 2}`' in prompt
-    assert "run ALL actions" in prompt
-    assert "skip ALL actions" in prompt

@@ -52,6 +52,8 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "dcode": "./langgraph_agent.py:make_graph",
         "bare": "./langgraph_agent.py:make_bare_graph",
+        "llm-tool-selector": "./langgraph_agent.py:make_llm_tool_selector_graph",
+        "ts-tool-selector": "./langgraph_agent.py:make_ts_tool_selector_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
@@ -744,9 +746,27 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
+    assert captured_create[0]["middleware"] == []
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
+
+
+def test_make_llm_tool_selector_graph_adds_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_: "backend")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "LLMToolSelectorMiddleware",
+        lambda *, model: ("llm-selector", model),
+    )
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs)
+
+    graph = langgraph_agent.make_llm_tool_selector_graph({"configurable": {"model": "test:model"}})
+
+    assert graph["middleware"] == [("llm-selector", "model")]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

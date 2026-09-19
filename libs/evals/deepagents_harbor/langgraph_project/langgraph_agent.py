@@ -18,6 +18,7 @@ from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
+from langchain.agents.middleware.tool_selection import LLMToolSelectorMiddleware
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
 
@@ -412,43 +413,49 @@ def _web_search_tool() -> BaseTool | None:
     return web_search
 
 
-def make_bare_graph(config: dict[str, object] | None = None) -> object:
-    """Create a Deep Agents SDK graph Harbor should run directly.
-
-    This path avoids the Deep Agents Code CLI harness while still attaching a
-    local shell backend rooted at Harbor's sandbox workdir so terminal-bench
-    tasks can use filesystem and command execution tools.
-
-    Args:
-        config: LangGraph runtime config. Harbor passes the selected model in
-            `configurable.model` and optional provider kwargs in
-            `configurable.model_kwargs`.
-
-    Returns:
-        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
-
-    Raises:
-        TypeError: If configurable values have unexpected types.
-        ValueError: If no model name is provided.
-    """
+def _make_bare_graph(
+    config: dict[str, object] | None,
+    *,
+    selector: str | None = None,
+) -> object:
+    """Create a bare Harbor graph with an optional tool selector."""
     configurable = _configurable(config)
     model = _build_model(configurable)
-    # Harbor runs each task in its own isolated container rooted at the workdir,
-    # and tasks operate on the real sandbox paths, so path virtualization is
-    # unnecessary here (isolation is the container's job). Pin virtual_mode=False
-    # so the bare agent uses paths as-is rather than resolving against a virtual root.
     backend = LocalShellBackend(
         root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False
     )
-    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
-    # prompt-free default. The sandbox workdir is already enforced by the shell
-    # backend's `root_dir`.
     search_tool = _web_search_tool()
+    if selector == "llm":
+        middleware = [LLMToolSelectorMiddleware(model=model)]
+    elif selector == "typesafe":
+        from langchain_typesafe.experimental.middleware import (  # noqa: PLC0415
+            TsToolSelectorMiddleware,
+        )
+
+        middleware = [TsToolSelectorMiddleware()]
+    else:
+        middleware = []
     return create_deep_agent(
         model=model,
         backend=backend,
         tools=[search_tool] if search_tool is not None else None,
+        middleware=middleware,
     )
+
+
+def make_bare_graph(config: dict[str, object] | None = None) -> object:
+    """Create a Deep Agents SDK graph Harbor should run directly."""
+    return _make_bare_graph(config)
+
+
+def make_llm_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using `LLMToolSelectorMiddleware`."""
+    return _make_bare_graph(config, selector="llm")
+
+
+def make_ts_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using `TsToolSelectorMiddleware`."""
+    return _make_bare_graph(config, selector="typesafe")
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

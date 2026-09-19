@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.16](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.15...deepagents==0.7.16) (2026-09-19)
+
+
+### Features
+
+* **sdk:** reload skills when `skills_metadata` is reset to `None` ([#6364](https://github.com/langchain-ai/deepagents/issues/6364)) ([f86b4e9](https://github.com/langchain-ai/deepagents/commit/f86b4e9abef7620b63a7258bc9fab0ccd83de8a4))
+
 ## [0.7.15](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.14...deepagents==0.7.15) (2026-09-16)
 
 ### Bug Fixes

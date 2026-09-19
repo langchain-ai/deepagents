@@ -2,7 +2,8 @@
   "dependencies": [
     "./.local_deps/deepagents",
     "./.local_deps/deepagents-code",
-    "langchain>=1.3.9,<2.0.0",
+    "./.local_deps/langchain",
+    "./.local_deps/langchain-typesafe",
     "langchain-anthropic>=1.5.4,<2.0.0",
     "langchain-baseten>=0.2.0,<0.3.0",
     "langchain-fireworks>=1.4.2,<1.5.0",
@@ -14,6 +15,7 @@
     "langchain-openrouter>=0.2.3,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     "langchain-mcp-adapters>=0.3.0,<0.4.0",
+    "fastmcp>=4.0.1,<5.0.0",
     "aiohttp>=3.14.0,<4.0.0",
     "tavily-python>=0.7.26,<1.0.0",
     "toml>=0.10.2,<1.0.0"
@@ -21,6 +23,8 @@
   "graphs": {
     "dcode": "./langgraph_agent.py:make_graph",
     "bare": "./langgraph_agent.py:make_bare_graph",
+    "llm-tool-selector": "./langgraph_agent.py:make_llm_tool_selector_graph",
+    "ts-tool-selector": "./langgraph_agent.py:make_ts_tool_selector_graph",
     "tau3": "./langgraph_agent.py:make_tau3_graph"
   }
 }

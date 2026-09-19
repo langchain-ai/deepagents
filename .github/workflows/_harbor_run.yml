@@ -319,6 +319,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          TYPESAFE_API_KEY: ${{ (matrix.agent_impl || inputs.agent_impl) == 'ts-tool-selector' && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ (matrix.agent_impl || inputs.agent_impl) == 'ts-tool-selector' && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -378,6 +380,11 @@ jobs:
           # thin reports, which is far worse than failing now.
           if [ "$HARBOR_CATEGORY" = "research" ] && [ -z "$TAVILY_API_KEY" ]; then
             missing+=("TAVILY_API_KEY")
+          fi
+
+          if [ "$HARBOR_AGENT_IMPL" = "ts-tool-selector" ]; then
+            [ -z "$TYPESAFE_API_KEY" ] && missing+=("TYPESAFE_API_KEY")
+            [ -z "$TYPESAFE_BASE_URL" ] && missing+=("TYPESAFE_BASE_URL")
           fi
 
           # Pinned upstream DRBench knows gpt-4o/gpt-4o-mini directly; our verifier adds
@@ -615,6 +622,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          TYPESAFE_API_KEY: ${{ (matrix.agent_impl || inputs.agent_impl) == 'ts-tool-selector' && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ (matrix.agent_impl || inputs.agent_impl) == 'ts-tool-selector' && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -667,6 +676,20 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/langchain-ai/langchain.git "$RUNNER_TEMP/langchain-tool-selector"
+          git -C "$RUNNER_TEMP/langchain-tool-selector" fetch --depth=1 origin \
+            a622cfc1b0562d7306c67b5b990f7d253a3eef6f
+          git -C "$RUNNER_TEMP/langchain-tool-selector" checkout FETCH_HEAD -- \
+            libs/core libs/langchain_v1 libs/partners/typesafe
+          rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/core/" \
+            "$local_deps_dir/core/"
+          rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/langchain_v1/" \
+            "$local_deps_dir/langchain/"
+          rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/partners/typesafe/" \
+            "$local_deps_dir/langchain-typesafe/"
+          sed -i '/^\[tool\.uv\.sources\]$/,/^$/d' \
+            "$local_deps_dir/langchain-typesafe/pyproject.toml"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -906,6 +929,12 @@ jobs:
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
+          if [ "$HARBOR_AGENT_IMPL" = "ts-tool-selector" ]; then
+            agent_env_args+=(
+              --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
+              --agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'
+            )
+          fi
           # Open-web search, forwarded only to the deep-research category: its ground
           # truth includes external facts that exist nowhere in the task corpus, so the
           # agent needs a search engine to reach them. Every other category runs on an

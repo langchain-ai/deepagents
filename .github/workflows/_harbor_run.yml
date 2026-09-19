@@ -688,6 +688,8 @@ jobs:
             "$local_deps_dir/langchain/"
           rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/partners/typesafe/" \
             "$local_deps_dir/langchain-typesafe/"
+          sed -i '/^\[tool\.uv\.sources\]$/,/^$/d' \
+            "$local_deps_dir/langchain-typesafe/pyproject.toml"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then

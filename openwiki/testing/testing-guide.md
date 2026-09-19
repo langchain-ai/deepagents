@@ -5,69 +5,45 @@ description: Select package-local correctness, integration, benchmark, and evalu
 tags: [testing, pytest, ci, validation, github-actions, automation, benchmarks, evaluations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T18:59:02.504Z
+    at: 2026-09-19T08:04:56.519Z
 sources:
-  - id: openwiki-source-37e02a57730563a4b4de1690
-    resource: repo://.github/LAYOUT.md
-  - id: openwiki-source-9a1c436646ef8c4f6dde787a
-    resource: repo://.github/RELEASING.md
-  - id: openwiki-source-aca01c45db9fd5f5ed1f0306
-    resource: repo://.github/scripts/tests/conftest.py
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
-  - id: openwiki-source-f4eea0fab8d793f88bb9f835
-    resource: repo://.github/scripts/tests/workflows/test_openwiki_workflow.py
-  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
-    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
-  - id: openwiki-source-4d9cccca7700db7220ec055e
-    resource: repo://.github/workflows/_test.yml
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-6d4b4e707b8d60b6ccfa3425
-    resource: repo://.github/workflows/openwiki-update.yml
   - id: openwiki-source-18f01ea5159b63661c1c8b1c
     resource: repo://libs/acp/Makefile
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
-  - id: openwiki-source-8288b43b279d5cf7aaf1505d
-    resource: repo://libs/acp/tests/test_agent.py
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-7ba50bd13eb62341a2061ef9
-    resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-5dc287d30945406e0821cb29
-    resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-b64c485d8d3cdc25e7b4db1a
+    resource: repo://libs/code/deepagents_code/_debug.py
+  - id: openwiki-source-e930bbb03b92760cf9d657ce
+    resource: repo://libs/code/tests/unit_tests/test_debug.py
+  - id: openwiki-source-4867e6796ae92799ffe28be2
+    resource: repo://libs/code/tests/unit_tests/test_media_utils.py
+  - id: openwiki-source-a792fe22a007a50c07cc0c34
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_messages.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-224407caf6cd8bd5d8fe7833
-    resource: repo://libs/deepagents/tests/unit_tests/conftest.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-b57141bb692e5ccd2249f996
-    resource: repo://libs/evals/deepagents_evals/cli.py
-  - id: openwiki-source-dd120a1be03e34bad3c59b22
-    resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
-  - id: openwiki-source-be7f6aa28551fac7310db803
-    resource: repo://libs/evals/Makefile
-  - id: openwiki-source-f2bb883b9cbec377de535c00
-    resource: repo://libs/evals/pyproject.toml
-  - id: openwiki-source-444185e93422c817e5e81a83
-    resource: repo://libs/evals/tests/evals/conftest.py
-  - id: openwiki-source-dd030d5b39e772817a7c25f1
-    resource: repo://libs/evals/tests/evals/pytest_reporter.py
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
+  - id: openwiki-source-31e40ff79779f51cafd03f01
+    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
+  - id: openwiki-source-d98b6d615a63b95a7c893810
+    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
+  - id: openwiki-source-82cac27adeecff8a900a40fa
+    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
     resource: repo://libs/talon/Makefile
-  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
-    resource: repo://libs/talon/pyproject.toml
-  - id: openwiki-source-7aca178f00238f277438cf18
-    resource: repo://libs/talon/tests/conftest.py
   - id: openwiki-source-d8eca7d18614ffc90856e204
     resource: repo://libs/talon/tests/integration_tests/test_core_flows.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T18:59:02.504Z" }
+  - id: openwiki-source-df8e616d4a20b5878bc1a05e
+    resource: repo://libs/talon/tests/test_mcp_auth.py
+  - id: openwiki-source-4c1a7e831a8cd578116d1f18
+    resource: repo://libs/talon/tests/test_mcp_middleware.py
+  - id: openwiki-source-9b2c01939550b673ef6b4bed
+    resource: repo://libs/talon/tests/test_mcp.py
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
 ---
 
 # Testing Strategy and Local Test Guide
@@ -133,6 +109,112 @@ Deep Agents and dcode provide `update-snapshots` only for their unit smoke-test 
 ACP tests use a fake client that records session updates and permission requests. Talon uses a recording channel that captures output and defers injected input until a handler is registered; its integration flows use in-memory channels and scripted agents. These doubles make protocol and lifecycle observations possible without a live channel service.
 
 Use dcode integration coverage when the launched executable is the promise: its ACP smoke test starts `deepagents --acp --no-mcp` as a subprocess, initializes ACP over stdin/stdout, creates a session, and cleans up the process. Talon's normal socket-blocked target also covers `tests/integration_tests/`, retaining its in-memory host-orchestration contract without live channel services.
+
+## Focused Talon MCP, authorization, and research-subagent routes
+
+Talon's ordinary target is the first integration boundary for its MCP behavior: it still runs offline, blocks non-Unix sockets, and executes the WhatsApp bridge tests first. Run the exact file first, then broaden to `make test`; do not turn these tests into calls to an MCP server or OAuth provider. Their fakes deliberately expose the boundary while retaining deterministic control of configuration, transports, callbacks, time, and cancellation.
+
+```bash
+cd libs/talon
+make test TEST_FILE=tests/test_mcp.py
+make test TEST_FILE=tests/test_mcp_auth.py
+make test TEST_FILE=tests/test_mcp_middleware.py
+make test TEST_FILE=tests/unit_tests/test_research_subagents.py
+make test
+```
+
+### MCP loading and managed refresh
+
+`MCPToolProvider` owns the load/refresh lifecycle. It resolves the normal `~/.deepagents/.mcp.json` path or `DEEPAGENTS_TALON_MCP_CONFIG`, loads each configured server independently, namespaces loaded tool names with the server name, marks them as Talon MCP tools, and preserves a per-server status rather than failing the complete inventory because one server cannot load. Its status model disallows incoherent combinations: only an `ok` server can carry tools, every non-`ok` server needs an error, and a pending reconnect is only valid for a disabled server. OAuth-capable configurations add status and narrowly scoped authentication management tools; the provider rejects a name collision with those management tools.
+
+A reload tool only schedules a refresh; the next refresh serializes through a lock and applies the revision it observed. A concurrent caller therefore sees no duplicate reload, a request raised during a load remains pending for a subsequent pass, cancellation remains retryable, and a failed load records the attempted revision rather than retrying indefinitely. Test the observable result (new tool list or error/state), not private revision counters.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Provider as MCP tool provider
+    participant Config as MCP config
+    participant Server as MCP server
+    Model->>Provider: reload configuration
+    Provider->>Provider: mark refresh requested
+    Model->>Provider: next agent turn
+    Provider->>Config: read and validate servers
+    loop each configured server
+        Provider->>Server: connect and list tools
+        Server-->>Provider: tools or load failure
+    end
+    Provider-->>Model: namespaced tools and status tools
+```
+
+*The provider defers an operator-requested configuration change until a serialized load before the next agent turn, while retaining per-server failure status.*
+
+`tests/test_mcp.py` is the focused contract suite for this lifecycle. Its fake adapter records the selected client transport so configuration can be tested without a server; it checks path override behavior, transport selection, metadata/status invariants, tool naming/arguments, scheduled reloads, concurrent refresh serialization, refresh requests arriving during load, cancellation, and failure semantics. Extend this suite for config, loading, filtering, reload, or status changes. Escalate to a live endpoint only when compatibility with that external implementation—not Talon's loading contract—is the change under test.
+
+### OAuth and invocation containment
+
+MCP credentials are persisted per server name and endpoint digest below `.deepagents/mcp-tokens`; the token directory is owner-only, writes are lock-protected and atomically replaced, and a refresh response that omits a refresh token preserves the existing one. Authentication events carry a binding for the server and tool invocation, while sensitive URLs and device codes are excluded from their representations. The authorization context is task-local and must be reset after every invocation.
+
+The normal MCP middleware acts only on tools carrying Talon's MCP metadata. It removes empty optional string arguments while retaining required empty strings and explicitly non-string values, binds the tool-call identifier around the handler, and converts an `MCPError` into a model-visible error message without error data. Other exceptions propagate, so they remain diagnosable by the runtime rather than being incorrectly represented as protocol errors.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Middleware
+    participant Auth as authorization context
+    participant Host
+    participant Remote as MCP server
+    Model->>Middleware: metadata-marked tool call
+    Middleware->>Middleware: normalize optional empty arguments
+    Middleware->>Auth: bind invocation and attempt
+    Auth->>Host: deliver OAuth event when needed
+    Middleware->>Remote: invoke tool
+    alt MCP protocol failure
+        Remote-->>Middleware: MCP error
+        Middleware-->>Model: sanitized tool error
+    else completion or other failure
+        Remote-->>Middleware: result or exception
+        Middleware->>Auth: reset context
+        Middleware-->>Model: result or propagated exception
+    end
+```
+
+*Only marked remote tools acquire authorization context; protocol error data never crosses into the model message.*
+
+Use `tests/test_mcp_auth.py` for storage permissions, expiry/restart refresh behavior, callback validation, device flow, and safe mocked HTTP discovery. Its `oauth_network` fixture replaces DNS and both HTTP client transports, allowing the tests to inspect requests without contacting a provider. Keep tests that depend on a real issuer or account out of this unit route. Use `tests/test_mcp_middleware.py` when changing argument normalization, context binding/cleanup, or the sanitized-protocol-error boundary.
+
+### Research subagent capability boundaries
+
+Talon local subagents are fresh task-only graphs, not forks of the parent context. Their configured tools are explicit attachments; they do not inherit parent history, memory, skills, shell access, delegation tools, or an implicit general-purpose role. A parent can add unique catalog tools to a *named* local agent for one task, but cannot select delegation tools or unknown/duplicate names. The fresh graph retains Talon's MCP middleware and any applicable approval policy, so an attached remote MCP tool receives the same argument normalization, authorization binding, and protocol-error redaction as a main-agent invocation.
+
+`tests/unit_tests/test_research_subagents.py` validates this at a real graph boundary with fake chat models, temporary agent frontmatter, and recording tools. It exercises foreground and background dispatch, proves that private parent memory is absent, checks that only attached tools run, and verifies explicit shell access. It also covers invalid tool selections, protected added tools, reload behavior that retains the effective graph after invalid edits, and both direct and dynamically selected MCP attachments. When changing agent frontmatter, capability selection, fresh-context construction, approval behavior, or subagent reload, start there; use a host/channel flow only if channel orchestration itself changed.
+
+## Focused dcode debug, media, and Textual rendering routes
+
+These dcode tests are unit routes, even where they mount a real Textual test application: the boundary is dcode's formatting, state, and widget lifecycle, not a terminal emulator, model provider, or live media service.
+
+```bash
+cd libs/code
+make test TEST_FILE=tests/unit_tests/test_debug.py
+make test TEST_FILE=tests/unit_tests/test_media_utils.py
+make test TEST_FILE=tests/unit_tests/tui/widgets/test_messages.py
+make test
+```
+
+### Debug logging is a secure per-thread observable
+
+With `DEEPAGENTS_CODE_DEBUG` enabled, configured loggers route to a thread-named file under `DEEPAGENTS_CODE_DEBUG_DIRECTORY` (with legacy file configuration resolving to its parent directory). The implementation removes stale tagged handlers when the active thread changes but does not treat unrelated file handlers as its own. It uses traversal-safe names, owner-only directories and files, refuses symlinks on POSIX, and disables file logging with a visible warning if hardening fails; this matters because captured MCP stderr can contain credentials. `installed_debug_log_path()` reports an actually attached tagged handler rather than merely trusting an environment value.
+
+`test_debug.py` checks matching file/buffer formatting, secure modes or Windows ACL behavior, symlink refusal, unsafe thread identifiers, idempotent reconfiguration, handler rotation/removal on failure, and the distinction between a foreign handler and an installed debug handler. Add a focused test there for any logging configuration or confidentiality regression; do not assert a default path merely because an environment variable is set.
+
+### Media placeholders retain user-authored text
+
+Media attachment placeholders are display tokens, not model text. The media tests track the exact span of each attached image or video placeholder across edits and submit-time transformations, then construct multimodal blocks after removing only that bound occurrence. This preserves literal look-alike placeholders typed by the user, including duplicates before or after the display token, while keeping image/video attachment blocks and surrounding prompt text intact. The focused suite also covers extension classification and image/video encoding paths. Extend `test_media_utils.py` for draft synchronization, attachment serialization, or placeholder-removal changes; provider-specific acceptance of multimodal payloads is an integration concern.
+
+### Textual tests use runtime rendering for visual contracts
+
+Message-widget tests first cover markup-safe construction, but use `App.run_test()` and a `Pilot` for contracts dependent on Textual rendering: selectable markdown resolves to `Content`; hover gives a hand cursor over a rendered link, a text cursor only over rendered cells, and the default cursor over blank layout cells. Streamed assistant text writes its first fragment immediately, batches later fragments on a timer, drains/cancels on stop or replacement, and retains buffered text when a timed write fails so the timer cannot crash the application. The same suite protects credential display by hiding `.env` diff bodies.
+
+Use direct widget construction for pure formatting or escaping. Use the Textual harness when a behavior depends on layout, input routing, timers, selection, or Rich/Textual metadata; it is the narrowest test that can catch a framework upgrade changing the rendered contract.
 
 ## Performance and real-model coverage
 

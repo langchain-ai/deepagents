@@ -22,13 +22,27 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "aiosqlite>=0.22.1,<1.0.0",
     "deepagents>=0.7.0",
     "deepagents-code>=0.1.71,<1.0.0",
     "discord.py>=2.4.0,<3.0.0",
     "fastmcp>=4.0.0b4,<5.0.0",
+    "httpx>=0.28.1,<1.0.0",
+    # The MCP OAuth transport in `mcp_auth.py` builds `httpx2.Request`/`Response`
+    # objects and implements `httpx2.Auth`. Arrives transitively via `mcp`;
+    # declared here because we import it directly.
+    "httpx2>=2.12.0,<3.0.0",
     "langchain>=1.4.1,<2.0.0",
+    "langchain-core>=1.6.3,<2.0.0",
+    "langgraph>=1.2.11,<2.0.0",
+    "langgraph-checkpoint>=4.1.1,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
+    "langgraph-prebuilt>=1.1.0,<2.0.0",
+    "langgraph-sdk>=0.4.4,<1.0.0",
+    "langsmith>=0.12.6",
     "mcp>=2.0.0,<3.0.0",
+    "pydantic>=2.13.4,<3.0.0",
+    "pyyaml>=6.0.3",
     "tzdata>=2025.2",
 ]
 
@@ -37,7 +51,12 @@ history-local = [
     "sentence-transformers>=5.2.0,<7.0.0",
     "transformers>=5.16.1,<6.0.0",
 ]
-history-voyage = ["langchain-voyageai>=0.4.1,<0.5.0"]
+history-voyage = [
+    "langchain-voyageai>=0.4.1,<0.5.0",
+    # `history_voyage.py` replaces the base class's clients with
+    # `voyageai.Client`/`AsyncClient` directly.
+    "voyageai>=0.5.0,<1.0.0",
+]
 history-openai = ["langchain-openai>=1.6.2,<2.0.0"]
 mongodb = [
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
@@ -71,6 +90,8 @@ Issues = "https://github.com/langchain-ai/deepagents/issues"
 
 [dependency-groups]
 test = [
+    "anyio>=4.14.2,<5.0.0",
+    "httpcore>=1.0.9,<2.0.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",

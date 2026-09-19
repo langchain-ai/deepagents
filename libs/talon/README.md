@@ -232,12 +232,6 @@ returned by the read. The batch is atomic compare-and-swap: a stale revision
 rejects the entire write, and unrelated entries are preserved. Read again and
 review before retrying; do not replace the whole file to resolve a conflict.
 
-When multiple protected actions pause in the same run round, Talon lists them in
-one approval prompt. Reply `approve` / `👍` to run **all** listed actions or
-`deny` / `👎` to skip **all** of them. Partial selections are not supported;
-deny the batch and ask for a narrower set of actions instead. Later rounds require
-fresh approval. Only the operator who started the run can decide the batch.
-
 Saved changes activate on the next invocation without a restart. Existing turns
 and tasks keep their policy snapshot. An invalid file fails closed on the next
 invocation rather than silently using an older policy; repair it as the operator.

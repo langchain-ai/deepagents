@@ -577,6 +577,69 @@ def _build_update_tool(
     )
 
 
+_FINISHED_BEFORE_CANCEL = frozenset({"success", "error", "timeout"})
+"""Run statuses showing the run ended on its own, so a cancel request had nothing to stop."""
+
+
+def _read_status_after_cancel(client: SyncLangGraphClient, task: AsyncTask) -> str | None:
+    """Read the run's status back after a cancel request, or `None` if the read fails."""
+    try:
+        run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        logger.warning("Failed to read run status after cancelling task %s", task["task_id"], exc_info=True)
+        return None
+    return run["status"]
+
+
+async def _aread_status_after_cancel(client: LangGraphClient, task: AsyncTask) -> str | None:
+    """Async version of `_read_status_after_cancel`."""
+    try:
+        run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        logger.warning("Failed to read run status after cancelling task %s", task["task_id"], exc_info=True)
+        return None
+    return run["status"]
+
+
+def _build_cancel_command(
+    task: AsyncTask,
+    run_status: str | None,
+    tool_call_id: str | None,
+) -> Command:
+    """Build the `Command` update after a cancel request.
+
+    A run that finished before the cancel reached it keeps its real status, so
+    its outcome stays reachable through `check_async_task`. Any other status,
+    or a failed read (`run_status` is `None`), is recorded as `'cancelled'`.
+    """
+    if run_status is not None and run_status in _FINISHED_BEFORE_CANCEL:
+        status = run_status
+        msg = (
+            f"Async subagent task {task['task_id']} had already finished with status '{run_status}' "
+            "before the cancel request, so nothing was cancelled. Use check_async_task to see its outcome."
+        )
+    else:
+        status = "cancelled"
+        msg = f"Cancelled async subagent task: {task['task_id']}"
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    updated = AsyncTask(
+        task_id=task["task_id"],
+        agent_name=task["agent_name"],
+        thread_id=task["thread_id"],
+        run_id=task["run_id"],
+        status=status,
+        created_at=task["created_at"],
+        last_checked_at=now,
+        last_updated_at=now if status != task["status"] else task["last_updated_at"],
+    )
+    return Command(
+        update={
+            "messages": [ToolMessage(msg, tool_call_id=tool_call_id)],
+            "async_tasks": {task["task_id"]: updated},
+        }
+    )
+
+
 def _build_cancel_tool(
     clients: _ClientCache,
 ) -> StructuredTool:
@@ -595,24 +658,8 @@ def _build_cancel_tool(
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        updated = AsyncTask(
-            task_id=tracked["task_id"],
-            agent_name=tracked["agent_name"],
-            thread_id=tracked["thread_id"],
-            run_id=tracked["run_id"],
-            status="cancelled",
-            created_at=tracked["created_at"],
-            last_checked_at=now,
-            last_updated_at=now,
-        )
-        msg = f"Cancelled async subagent task: {tracked['task_id']}"
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {tracked["task_id"]: updated},
-            }
-        )
+        run_status = _read_status_after_cancel(client, tracked)
+        return _build_cancel_command(tracked, run_status, runtime.tool_call_id)
 
     async def acancel_async_task(
         task_id: str,
@@ -627,24 +674,8 @@ def _build_cancel_tool(
             await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        updated = AsyncTask(
-            task_id=tracked["task_id"],
-            agent_name=tracked["agent_name"],
-            thread_id=tracked["thread_id"],
-            run_id=tracked["run_id"],
-            status="cancelled",
-            created_at=tracked["created_at"],
-            last_checked_at=now,
-            last_updated_at=now,
-        )
-        msg = f"Cancelled async subagent task: {tracked['task_id']}"
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {tracked["task_id"]: updated},
-            }
-        )
+        run_status = await _aread_status_after_cancel(client, tracked)
+        return _build_cancel_command(tracked, run_status, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="cancel_async_task",

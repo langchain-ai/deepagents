@@ -929,11 +929,13 @@ jobs:
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
+          agent_host_args=()
           if [ "$HARBOR_AGENT_IMPL" = "ts-tool-selector" ]; then
             agent_env_args+=(
               --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
               --agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'
             )
+            agent_host_args+=(--allow-agent-host api.typesafe.ai)
           fi
           # Open-web search, forwarded only to the deep-research category: its ground
           # truth includes external facts that exist nowhere in the task corpus, so the
@@ -1006,6 +1008,7 @@ jobs:
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
+            "${agent_host_args[@]}" \
             "${verifier_env_args[@]}" \
             --jobs-dir "$HARBOR_JOBS_DIR" \
             $env_flag \

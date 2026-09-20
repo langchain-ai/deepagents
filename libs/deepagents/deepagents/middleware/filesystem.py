@@ -134,6 +134,8 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 }
 """Default mapping from filesystem tool name to its operation category."""
 
+_FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
+
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
@@ -153,6 +155,35 @@ _PDF_MIME_TYPE: Final = "application/pdf"
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
+    """Reject later same-path file mutations in one model response."""
+    tool_call = request.tool_call
+    if tool_call["name"] not in _FILE_MUTATION_TOOLS:
+        return None
+    path = tool_call["args"].get("file_path")
+    if not isinstance(path, str):
+        return None
+    try:
+        file_path = validate_path(path)
+    except ValueError:
+        return None
+    messages = request.state.get("messages") if isinstance(request.state, Mapping) else None
+    ai_message = next((message for message in reversed(messages or []) if isinstance(message, AIMessage)), None)
+    for call in ai_message.tool_calls if ai_message else []:
+        if call["id"] == tool_call["id"]:
+            return None
+        path = call["args"].get("file_path")
+        if call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
+            continue
+        try:
+            duplicate = validate_path(path) == file_path
+        except ValueError:
+            continue
+        if duplicate:
+            return _tool_error(tool_call["name"], tool_call["id"], "Error: parallel file mutations to the same path are not allowed.")
+    return None
 
 
 def _is_read_file_media_result(message: AnyMessage) -> bool:
@@ -3621,6 +3652,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
@@ -3646,6 +3679,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = await handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:

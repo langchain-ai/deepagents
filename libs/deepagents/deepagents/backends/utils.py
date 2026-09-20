@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
+# Upstream issue for model profiles: https://github.com/anomalyco/models.dev/issues/3037
 _OPENAI_FILE_MIME_TYPES: Final = frozenset(
     {
         "application/msword",

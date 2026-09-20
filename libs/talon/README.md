@@ -299,7 +299,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 
@@ -527,10 +527,10 @@ instructions in `description` or select
 edits; `list_subagents` shows launch-time additions.
 
 `task` launches local subagents and `start_async_task` launches remote subagents.
-Both return immediately. The user can continue chatting while the main agent uses
-`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
-finishes, its result is passed to the main agent for processing on the next idle
-turn, then the main agent replies to the channel.
+In a chat conversation both return immediately. The user can continue chatting while
+the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
+it. When work finishes, its result is passed to the main agent for processing on the
+next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
 `/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
@@ -540,6 +540,23 @@ complete the action. Remote runs cancel when their stream disconnects.
 
 Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
 and limits each run to one hour. Completed results are capped at 64,000 characters.
+
+### Scheduled runs
+
+A scheduled run is already unattended, so it does not delegate in the background.
+Both tools run the subagent to completion and return its result, and the run acts on
+that result in the turn that asked for it; there is no follow-up turn and no separate
+delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+which owns no background work to inspect. Subagents launched in one assistant message
+still run concurrently, and a scheduled run no longer competes with chat for the four
+worker slots.
+
+One delegation may take ten minutes, at most four run at once, and further ones queue
+rather than being refused. Set `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` to change
+the per-delegation bound; because due jobs run one at a time, it caps how long one
+stuck subagent holds up every other job. A delegation that overruns or fails reports
+that to the run, which still writes and delivers its own reply. A whole run is bounded
+at 30 minutes, after which its thread is repaired and the job is recorded as failed.
 
 ## Cron Schedules
 
@@ -593,6 +610,7 @@ Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.
 - `cron.delivery`
 - `cron.delivery_suppressed`
 - `cron.delivery_failure`
+- `cron.run_timeout`
 
 These logs complement the persisted `last_status` and `last_error` fields.
 

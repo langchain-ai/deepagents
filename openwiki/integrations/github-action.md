@@ -1,11 +1,11 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run a bounded, non-interactive dcode task from a GitHub Actions job. Covers the composite action inputs, credential and workspace boundaries, memory cache lifecycle, tool integrations, and headless approval behavior.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, credential and workspace handoff, memory cache lifecycle, and headless tool controls.
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -13,16 +13,16 @@ sources:
     resource: repo://action.yml
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
 # GitHub Action Integration
 
-The repository-root composite action (`langchain-ai/deepagents`) installs and invokes `dcode` for one headless task in the job workspace. It is a workflow adapter, not a separate agent runtime: action inputs are validated and translated to `dcode` flags, while dcode remains responsible for model selection, configuration resolution, tools, MCP, sandbox creation, and headless execution. For the underlying session model, see [Run & Extend a dcode Session](/openwiki/workflows/run-dcode-session.md).
+The repository-root composite action, `langchain-ai/deepagents`, is a GitHub Actions adapter for a single headless `dcode` task. Its public contract is **only** the inputs and outputs declared in root `action.yml`: the wrapper installs `deepagents-code`, validates selected values, passes credentials through its process environment, and translates supported inputs into `dcode` arguments. dcode—not the composite action—owns its broader configuration layering, model/runtime behavior, tool execution, and sandbox implementation. See [Run a dcode Session](/openwiki/workflows/run-dcode-session.md) for that runtime.
 
-## Minimal workflow
+## Use in a job
 
-Check out the repository first; the action's default working directory is `.` and its agent is intended to inspect or change that checkout. Supply provider credentials as GitHub secrets, not literals. Pin the action to a reviewed commit SHA in production rather than tracking `main`.
+Check out the target repository before invoking the action. The action runs in `working_directory`, which defaults to `.`, so that checkout is also the agent's local workspace unless a sandbox is selected. Keep provider keys in GitHub secrets and use least-privilege job `permissions`. For production, pin the action reference to a reviewed commit SHA rather than `main`.
 
 ```yaml
 name: dcode review
@@ -40,7 +40,7 @@ jobs:
       - uses: langchain-ai/deepagents@main
         with:
           prompt: "Review this repository and summarize the highest-risk issues."
-          model: "openai:gpt-5.5"
+          model: "openai:gpt-6-astra"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           shell_allow_list: "recommended,git,gh"
           max_turns: "8"
@@ -48,93 +48,105 @@ jobs:
           quiet: "true"
 ```
 
-Use least-privilege job `permissions`. `github_token` defaults to `${{ github.token }}`, is exported as `GITHUB_TOKEN`, and is also used to clone a private `skills_repo`; override it with a scoped token only when the job needs different access. The action exports `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY` from the corresponding inputs only for the `dcode` invocation.
+`github_token` defaults to `${{ github.token }}`. In the run step, it becomes `GITHUB_TOKEN`; `anthropic_api_key`, `openai_api_key`, and `google_api_key` become `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. The token is also supplied to `gh repo clone` when `skills_repo` is used. Therefore the model-directed task has the authority of the job token and any credentials available to tools in its execution environment; do not grant broader access merely to make a task convenient.
 
-## Execution lifecycle
+## Lifecycle and failure boundary
 
 ```mermaid
 flowchart TD
-    Setup["Set up uv cache"] --> Memory{"enable_memory is true"}
-    Memory -->|"yes"| Key["Resolve agent and scope cache key"]
-    Key --> Restore["Restore memory and session state"]
-    Memory -->|"no"| Install["Install selected dcode version"]
+    Setup["Set up uv cache"] --> Memory{"Memory enabled"}
+    Memory -->|"Yes"| CacheKey["Resolve agent and scope cache key"]
+    CacheKey --> Restore["Restore memory and session files"]
+    Memory -->|"No"| Install["Install selected dcode version"]
     Restore --> Install
-    Install --> Skills{"skills_repo supplied"}
-    Skills -->|"yes"| Clone["Clone SKILL.md directories into workspace"]
-    Skills -->|"no"| Assemble["Validate inputs and assemble dcode command"]
-    Clone --> Assemble
-    Assemble --> Run["Run bounded headless task"]
-    Run --> Outputs["Capture response and exit code"]
-    Outputs --> Save{"enable_memory is true"}
-    Save -->|"yes always"| Persist["Save memory cache"]
+    Install --> SkillSource{"skills_repo provided"}
+    SkillSource -->|"Yes"| Clone["Clone and install SKILL.md directories"]
+    SkillSource -->|"No"| Build["Validate inputs and assemble command"]
+    Clone --> Build
+    Build --> Execute["Run bounded headless dcode task"]
+    Execute --> Publish["Capture response and exit code"]
+    Publish --> Save{"Memory enabled"}
+    Save -->|"Yes always"| Persist["Save memory cache"]
 ```
 
-*The composite action restores state before execution and saves it after execution even when the agent fails.*
+*The composite action's control flow: restore happens before dcode and cache saving is attempted after the run even when the run fails.*
 
-The action sets up `uv`, then runs `uvx --from deepagents-code dcode` by default. `cli_version` pins the installed package; it must be at least `0.1.0`, but a pin can still fail if an enabled optional input maps to a flag introduced after that release. With `skills_repo`, the action clones `owner/repo`, `owner/repo@ref`, or a full HTTPS/SSH URL using `gh repo clone`, finds every `SKILL.md`, and copies each containing directory into `<working_directory>/.deepagents/skills`. Clone failure or a repository with no skills fails the action.
+The action sets up `uv` with its cache enabled, then verifies the selected CLI using `uvx --from deepagents-code dcode --version`, or `uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version` for a pin. `cli_version` must be at least `0.1.0`. That is only a floor for always-used flags: an older pinned dcode can still reject an optional action input whose corresponding dcode flag did not exist in that release.
 
-The run step builds an argument array rather than shell-interpolating values. It requires a nonempty `prompt`, runs in `working_directory`, and chooses one dispatch:
+The run step builds an argument array, requires a nonempty `prompt`, and dispatches either:
 
-- default: `dcode ... --non-interactive "$prompt"`;
-- `stdin: "true"`: `dcode ... --stdin` with the prompt supplied on standard input.
+- `dcode ... --non-interactive "$prompt"` by default; or
+- `dcode ... --stdin`, with the prompt supplied through standard input when `stdin: "true"`.
 
-`stdin` cannot be combined with `skill`, because that combination would enter dcode's interactive skill path instead of a headless run. The wrapper applies its own `timeout` in **minutes** (default `30`), while `task_timeout` is forwarded to dcode as `--timeout` in **seconds**. Positive integer validation applies to both timeouts, `max_turns`, and `rubric_max_iterations`; `max_retries` may be zero. `model_params` and `profile_override` are checked as JSON objects when `jq` is available. Boolean inputs that add a flag accept only `true`, `false`, or empty; `interpreter` is tri-state (`true` → `--interpreter`, `false` → `--no-interpreter`, empty → let dcode decide).
+`stdin` and `skill` are mutually exclusive because the combination routes piped input into dcode's interactive skill path rather than a headless task. The wrapper's `timeout` is an outer wall-clock timeout in **minutes** (default `30`); `task_timeout` is independently forwarded as dcode `--timeout` in **seconds**. A wrapper timeout normally exits `124`.
 
-The action pipes both dcode stdout and stderr through `tee`, captures the actual agent/timeout stage exit code rather than `tee`'s, writes it to `exit_code`, and exits with that code. A wrapper timeout conventionally returns `124`. It uses a random heredoc delimiter when writing the captured output to `$GITHUB_OUTPUT`, preventing agent-controlled output from injecting additional output records. A failure to write outputs warns but does not replace an existing agent failure code.
+The wrapper validates positive integers for `timeout`, `max_turns`, `task_timeout`, and `rubric_max_iterations`; `max_retries` accepts zero but not negative or nonnumeric values. Flag-adding boolean inputs accept only `true`, `false`, or empty. `interpreter` is deliberately tri-state: `true` adds `--interpreter`, `false` adds `--no-interpreter`, and empty leaves dcode's default intact. When `jq` is available, `model_params` and `profile_override` must be JSON objects; without it, malformed values are left for dcode to reject.
 
-## Input contract
+## Public input contract
 
-All `with:` values are strings. Leave an optional value empty to avoid forwarding its associated value flag.
+All `with:` values are strings. An empty optional value is generally not forwarded, while a `true` boolean adds its flag. The table describes the action API, not an exhaustive dcode configuration reference.
 
-| Concern | Inputs | Behavior |
+| Concern | Public inputs | Wrapper behavior |
 | --- | --- | --- |
-| Task and workspace | `prompt` (required), `working_directory`, `cli_version`, `timeout`, `task_timeout`, `max_turns` | Selects the task, package version, directory, and outer-minute/inner-second time budgets. |
-| Model | `model`, `model_params`, `max_retries`, `profile_override` | `model` accepts `provider:model` or supported bare model names; JSON overrides map to dcode model/profile flags. |
-| Credentials and GitHub | `anthropic_api_key`, `openai_api_key`, `google_api_key`, `github_token` | Provider keys and GitHub token become process environment variables; never print them or pass untrusted prompts access beyond the job's intended permissions. |
-| Shell and startup | `shell_allow_list`, `startup_cmd`, `skill`, `stdin` | The default shell list is `recommended,git,gh`; `startup_cmd` and startup skill behavior are dcode behavior. |
-| Output | `quiet`, `no_stream`, `json` | Forward `--quiet`, `--no-stream`, and `--json`. `quiet` keeps dcode status on stderr so response text is clean on stdout; the action's `response` still captures both streams. |
-| Rubric | `rubric`, `rubric_model`, `rubric_max_iterations` | Forwards acceptance criteria, optional grader model, and grader iteration cap. |
+| Task, identity, and location | `prompt` (required), `working_directory`, `agent_name`, `cli_version` | Selects task text, process directory, memory/agent identity, and package version. |
+| Model | `model`, `model_params`, `max_retries`, `profile_override` | Maps to `--model`, `--model-params`, `--max-retries`, and `--profile-override`. Model parameters and profile overrides are JSON-object inputs. |
+| Credentials | `anthropic_api_key`, `openai_api_key`, `google_api_key`, `github_token` | Exports provider keys and `GITHUB_TOKEN` for the dcode invocation; the GitHub token also authenticates skill cloning. |
+| Headless task | `shell_allow_list`, `skill`, `startup_cmd`, `stdin`, `max_turns`, `task_timeout`, `timeout` | Sets shell policy and startup behavior, chooses prompt transport, and controls turn, dcode, and wrapper time limits. |
+| Response form | `quiet`, `no_stream`, `json` | Adds `--quiet`, `--no-stream`, and `--json`. `quiet` makes dcode send status to stderr while response text remains on stdout, but the action captures both. |
+| Rubric | `rubric`, `rubric_model`, `rubric_max_iterations` | Passes acceptance criteria (literal text or `@path`), optional grading model, and iteration limit. |
+| Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Directly maps the supported MCP, interpreter, and sandbox controls to dcode flags. |
+| Persistent memory | `enable_memory`, `memory_scope` | Enables the cache lifecycle described below; defaults are `true` and `repo`. |
 
-### Memory cache
+Notably, `--auto-approve` is not an action input and is not forwarded. Adding a dcode option does not automatically expand this public action contract; it must be intentionally declared and mapped in `action.yml`.
 
-`enable_memory` defaults to `"true"`. When enabled, the action restores and subsequently saves an `actions/cache` entry covering `~/.deepagents/<agent_name>/`, the global sessions SQLite database and WAL/SHM files, and `<working_directory>/.deepagents/AGENTS.md`. This can carry agent-specific memory and session state between workflow runs; set `enable_memory: "false"` for isolated runs.
+## Memory cache scopes
 
-`agent_name` (default `agent`) names the dcode agent and cache namespace. `memory_scope` controls the key suffix:
+With the default `enable_memory: "true"`, the action restores and saves an `actions/cache` entry containing:
 
-- `pr`: PR/issue number when available, otherwise the ref name;
-- `branch`: ref name;
-- `repo` (default): one repository-wide namespace.
+```text
+~/.deepagents/<agent_name>/
+~/.deepagents/.state/sessions.db
+~/.deepagents/.state/sessions.db-wal
+~/.deepagents/.state/sessions.db-shm
+<working_directory>/.deepagents/AGENTS.md
+```
 
-An unknown scope warns and falls back to the conservative PR/ref behavior. The restore key includes a run ID so it never exactly matches a prior save, then uses the scoped prefix and finally the agent-wide prefix as restore keys. Consequently, a broad fallback can restore prior state from another scope for the same agent name; choose distinct `agent_name` values and conservative scopes where cross-context recall is unacceptable. `cache_hit` is the restore action's result and is empty when memory is disabled. The save step runs under `always()`, so a failed agent can still persist its updated files.
+`agent_name` defaults to `agent` and contributes to the cache namespace. `memory_scope` selects its scope suffix:
 
-## Tools, extensions, and security controls
+- `pr`: a pull request or issue number when present, otherwise `github.ref_name`;
+- `branch`: `github.ref_name`;
+- `repo`: a repository-wide scope, and the default.
 
-### Headless approval and shell authority
+An unknown scope emits a warning and falls back to the conservative PR/ref calculation. The restore lookup first uses the selected scope prefix and then the agent-wide prefix, while each save key is suffixed with `github.run_id`. A broad fallback can therefore restore an entry from a different scope for the same `agent_name`; choose a distinct agent name and a narrow scope when cross-context recall is undesirable. `cache_hit` is the restore step result and is empty when memory is disabled. The save step has `always()`, so a failed run can still save changed memory, session state, or `AGENTS.md`.
 
-The action intentionally does **not** expose interactive-only `--auto-approve`. It always invokes dcode headlessly, where `shell_allow_list` is the operational shell control: no list disables shell access; `recommended` or explicit entries enable only allowed commands; `all` permits unrestricted shell commands and auto-approves tools. The action default is restrictive rather than unrestricted, but `recommended,git,gh` still grants those command categories in the checked-out repository. Review the task text, checkout provenance, and job token before widening it. See [Permissions and Human Approval](/openwiki/concepts/permissions-hitl.md).
+## Skills, MCP, sandbox, and headless authority
 
-`startup_cmd` runs before the prompt, and a requested `skill` is resolved by dcode. A skills repository is executable instruction supply-chain input: the action copies all discovered skill directories from it into the workspace without a per-skill approval step. Pin a reviewed skills ref and use a token with only necessary repository access.
+### Skills repository
+
+If `skills_repo` is nonempty, the action accepts `owner/repo`, `owner/repo@ref`, or full HTTPS/SSH clone URLs. It performs a shallow `gh repo clone` into a temporary directory, finds every `SKILL.md`, and copies each containing directory into `<working_directory>/.deepagents/skills/<directory-name>`. Clone failure or a repository containing no `SKILL.md` fails the action.
+
+This is an instruction supply-chain boundary, not merely data installation. Pin a reviewed skills revision and give `github_token` only the access necessary to read it. `skill` then asks dcode to invoke a named discovered skill before the headless prompt; loading, validation, and semantics of that skill remain dcode behavior.
 
 ### MCP, interpreter, and sandbox
 
-The action forwards these dcode integration controls unchanged:
+The action passes `mcp_config`, `no_mcp`, and `trust_project_mcp` through to dcode. `no_mcp: "true"` disables MCP loading. `mcp_config` identifies an explicit config file; at the dcode layer it has highest precedence among discovered MCP configuration. Project stdio MCP is not trusted by default, so `trust_project_mcp: "true"` is an explicit authority grant for project-controlled subprocesses or connections. Review the checked-out repository before enabling it; see [MCP Integration](/openwiki/integrations/mcp.md).
 
-- **MCP:** `mcp_config`, `no_mcp`, and `trust_project_mcp`. `no_mcp: "true"` disables loading. `mcp_config` supplies an explicit configuration path; `trust_project_mcp: "true"` opts into project MCP trust and can permit repository-controlled configurations to launch stdio programs or connect to endpoints. Review it first; see [MCP](/openwiki/integrations/mcp.md).
-- **Interpreter:** `interpreter` and `interpreter_tools`, the latter mapping to dcode's PTC allowlist.
-- **Sandbox:** `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, and `sandbox_setup`. An empty `sandbox` means local execution on the GitHub runner, not isolation. Provider capabilities and lifecycle—including whether an existing ID can be attached—remain dcode concerns; see [Sandbox & Partner Integrations](/openwiki/integrations/sandbox-partners.md).
+For interpreter support, `interpreter_tools` is passed as dcode's PTC allowlist, while `interpreter` controls enable/disable/default as described above. Sandbox inputs map directly to `--sandbox`, `--sandbox-id`, `--sandbox-snapshot-name`, and `--sandbox-setup`. An empty `sandbox` selects local execution on the GitHub runner, not isolation. Provider selection, provisioning, reuse, and containment are dcode concerns; use a remote sandbox when runner-host isolation is required.
 
-The action does not replace dcode configuration precedence. Environment values and forwarded CLI flags participate in its normal configuration resolution, so use explicit action inputs for per-run overrides and repository/user configuration only where its trust boundary is appropriate. See [dcode Configuration Layering](/openwiki/concepts/config-layering.md).
+In dcode headless mode, `shell_allow_list` is the meaningful approval boundary. No allow list disables shell access while other tools are auto-approved; `recommended` or explicit entries enable shell but gate commands through the list; `all` allows any shell command and auto-approves all tools. The action's default is `recommended,git,gh`, not `all`, but it still grants the listed categories against the checkout. Treat prompts, checkout content, skills, MCP configuration, and `response` as untrusted inputs. For the wider deployment boundary, see [Security Boundaries and Runbook](/openwiki/operations/security.md).
 
-## Outputs and downstream use
+## Outputs and automation
 
 | Output | Meaning |
 | --- | --- |
-| `response` | Complete captured dcode stdout and stderr. It is raw agent output, not secret-redacted or safe to interpolate into a shell, issue, PR comment, or another service. |
-| `exit_code` | Agent or wrapper exit code. The run step itself exits with this value, so ordinary nonzero results fail the action. |
-| `cache_hit` | Memory restore hit indicator; empty when memory is disabled. |
+| `response` | Full combined dcode stdout and stderr. It is raw agent output and is not secret-redacted or safe to evaluate, shell-interpolate, or publish without review. |
+| `exit_code` | The dcode/outer-timeout status. The run step exits with this same status, so a nonzero code normally fails the action. |
+| `cache_hit` | Result of the memory restore step, or empty when memory is off. |
 
-Treat `response` as untrusted text. If a later step needs structured automation, prefer `json: "true"`, parse it without evaluating it, and still avoid exposing secrets. A nonzero `exit_code` is preserved even if output capture or output-file writing encounters a problem.
+The action pipes combined output through `tee`, but captures `PIPESTATUS[0]` so a successful `tee` cannot conceal an agent or timeout failure. It writes the response using a random heredoc delimiter in `$GITHUB_OUTPUT`, preventing agent-controlled text from forging another GitHub output record, and finally exits with the captured code. If output-file writing fails, it warns without replacing a prior agent failure. The stdin branch uses process substitution rather than a `printf | timeout` pipeline so a producer SIGPIPE cannot be mistaken for the dcode result.
 
-## Regression focus
+For machine processing, set `json: "true"` and parse the result as data; do not treat agent-generated JSON or text as trusted code or commands.
 
-The action test suite parses `action.yml` and dcode's root parser to catch input-to-flag drift and ensure `--auto-approve` is not reintroduced. It also executes the actual run-script body with stubbed `uvx` and `timeout` to cover validation, interpreter tri-state behavior, empty prompt and `stdin`/`skill` rejection, version command construction, leading-zero timeout arithmetic, exit-code propagation, and the stdin producer-SIGPIPE case. Changes to the action should preserve those wrapper contracts as well as dcode's headless semantics.
+## Change and regression focus
+
+`action.yml` is the compatibility surface to review when changing this integration. Keep its declared input list, run-script flag mapping, defaults, validation, outputs, and cache paths aligned. The focused action tests parse `action.yml` and dcode's root argument parser to detect flag drift and prevent reintroducing `--auto-approve`. They also execute the real run-script body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, CLI-version command construction, timeout arithmetic including leading zeros, exit propagation, and the stdin SIGPIPE case. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

@@ -28,6 +28,7 @@ from raise_langchain_minimums import (
     _run,
     _select_manifests,
     edits_markdown,
+    lock_dirs_for,
     stale_lock_dirs,
 )
 
@@ -283,6 +284,11 @@ class TestStaleLockDirs:
 
     def test_leaf_package_only_invalidates_itself(self) -> None:
         assert stale_lock_dirs(["libs/evals/pyproject.toml"]) == ["libs/evals"]
+
+    def test_can_skip_reverse_dependents(self) -> None:
+        assert lock_dirs_for(["libs/code/pyproject.toml"], skip_dependents=True) == [
+            "libs/code"
+        ]
 
 
 class TestSelectManifests:
@@ -550,19 +556,38 @@ def test_main_passes_the_parsed_dependencies_to_run(
     """Guards the CLI plumbing: dropping the flag here is otherwise invisible."""
     captured: dict[str, object] = {}
 
-    def _fake_run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+    def _fake_run(
+        package: str,
+        narrow_to: frozenset[str] | None = None,
+        *,
+        skip_dependent_locks: bool = False,
+    ) -> int:
         captured["package"] = package
         captured["narrow_to"] = narrow_to
+        captured["skip_dependent_locks"] = skip_dependent_locks
         return 0
 
     monkeypatch.setattr(raise_langchain_minimums, "_run", _fake_run)
     monkeypatch.setattr(raise_langchain_minimums, "_write_output", lambda *_: None)
     monkeypatch.setattr(
-        sys, "argv", ["prog", "--package", "pkg", "--dependencies", "LangChain-Core"]
+        sys,
+        "argv",
+        [
+            "prog",
+            "--package",
+            "pkg",
+            "--dependencies",
+            "LangChain-Core",
+            "--skip-dependent-locks",
+        ],
     )
 
     assert raise_langchain_minimums.main() == 0
-    assert captured == {"package": "pkg", "narrow_to": frozenset({"langchain-core"})}
+    assert captured == {
+        "package": "pkg",
+        "narrow_to": frozenset({"langchain-core"}),
+        "skip_dependent_locks": True,
+    }
 
 
 def test_workflow_expressions_use_only_real_functions() -> None:

@@ -25,6 +25,7 @@ from deepagents_talon.browser import (
     set_run,
 )
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
 from deepagents_talon.runtime import DeepAgentRuntime
@@ -628,3 +629,31 @@ async def test_graph_context_schema_opt_in(client, tmp_path, monkeypatch, enable
         assert ("browser_cdp" in {tool.name for tool in captured[0]["tools"]}) is enabled
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_scheduled_browser_binding_reaches_runtime(tmp_path, authorized):
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    job = store.create_job(
+        prompt="browse",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    owners = {job.id: {"provider": "telegram", "sender_id": "sender"}} if authorized else {}
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "test",
+            "TALON_BROWSER_SCHEDULED_OWNERS": json.dumps(owners),
+        },
+        base_home=tmp_path,
+    )
+    agent = BlockingAgent()
+    host = TalonHost(config=config, agent=agent)
+    assert await host.run_scheduled_job(job) == "reply:browse"
+    request = agent.requests[0]
+    if authorized:
+        assert request.browser_binding == BrowserBinding(
+            "telegram", "sender", request.conversation_id, background=True
+        )
+    else:
+        assert request.browser_binding is None

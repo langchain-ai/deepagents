@@ -15,6 +15,7 @@ from langgraph.types import Command  # noqa: TC002  # tool schemas resolve retur
 
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.browser import BrowserContext, active_run
+from deepagents_talon.mcp_middleware import talon_mcp_middleware
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent
     from langchain.agents.middleware import InterruptOnConfig
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain.agents.middleware.types import AgentState, ModelRequest, ModelResponse
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.language_models import BaseChatModel
 
@@ -203,12 +204,16 @@ def _compile_fresh(
     approvals = {
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
+    middleware: list[AgentMiddleware] = [talon_mcp_middleware()]
+    if approvals:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
     graph = create_agent(
         context_schema=BrowserContext,
         model=spec.get("model", model),
         tools=spec.get("tools", []),
         system_prompt=spec.get("system_prompt", ""),
-        middleware=[HumanInTheLoopMiddleware(interrupt_on=approvals)] if approvals else [],
+        # These tool wrappers do not inspect the runtime context.
+        middleware=cast("list[AgentMiddleware[AgentState, BrowserContext]]", middleware),
         checkpointer=False,
     )
 

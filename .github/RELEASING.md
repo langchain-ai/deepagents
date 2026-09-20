@@ -207,7 +207,7 @@ PRs containing breaking changes should:
 
 - Use the `!` form in the PR title so the squash commit (whose subject is the PR title) carries the marker. Release-please reads the merged commit message, not the PR body. Put the marker in the title.
 - Spell out the migration path in the PR body: what broke, how to update calling code, what the equivalent new API looks like.
-- Be reviewed against the [stable public interfaces](https://github.com/langchain-ai/deepagents/blob/main/CLAUDE.md#maintain-stable-public-interfaces) guidance in `CLAUDE.md` — the bar for breaking a public API is high, especially for the SDK.
+- Be reviewed against the [stable public interfaces](https://github.com/langchain-ai/deepagents/blob/main/AGENTS.md#public-interfaces) guidance in `AGENTS.md` — the bar for breaking a public API is high, especially for the SDK.
 - Avoid bundling unrelated changes. A breaking commit should isolate the breaking surface so the changelog entry is precise.
 
 ## Configuration Files

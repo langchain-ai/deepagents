@@ -1,16 +1,21 @@
 ---
-type: integration-guide
-title: Agent Client Protocol Integration
-description: Run a reusable Deep Agents graph or dcode's prebuilt coding agent from an ACP-capable editor over stdio. Covers session creation and recovery, working-directory validation, streamed turns, approvals, and the MCP ownership boundary.
-tags: [acp, integration, dcode, editor, stdio, langgraph]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
+type: protocol integration
+title: Agent Client Protocol Bridge
+description: Explains how deepagents-acp projects a LangGraph agent into an ACP stdio server, including session-scoped graph construction, streaming, permissions, cancellation, and optional durable recovery. It also describes dcode's ACP launcher and its separate tool, policy, and checkpoint ownership.
+tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
 sources:
+  - id: openwiki-source-532ea636a0657c1d2714bd7a
+    resource: repo://libs/acp/CHANGELOG.md
+  - id: openwiki-source-0179ac261273b4285f3644bd
+    resource: repo://libs/acp/deepagents_acp/_version.py
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
   - id: openwiki-source-1ffb4d0f447fcc4e9ca248ef
     resource: repo://libs/acp/deepagents_acp/utils.py
+  - id: openwiki-source-ad08e7a262f5792c6f16e1e5
+    resource: repo://libs/acp/examples/demo_agent.py
+  - id: openwiki-source-bb78950c8b36b7b9f6746e96
+    resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-8134f31fb22085cb0e6b4054
     resource: repo://libs/acp/README.md
   - id: openwiki-source-4d4186e9d62fb4abe495cdd0
@@ -21,99 +26,105 @@ sources:
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-5dc287d30945406e0821cb29
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-19T08:04:56.519Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
 ---
 
-# Agent Client Protocol Integration
+# Agent Client Protocol Bridge
 
-[Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) lets an ACP-capable editor launch and communicate with an agent process over **stdio**. This repository supplies two layers:
+[Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) lets an editor communicate with an agent process over stdio. `deepagents-acp` supplies `AgentServerACP`, an ACP `Agent` implementation that turns a compiled LangGraph into ACP session operations and `session/update` events. It is an adapter, not a new agent runtime: graph construction, tools, checkpoint storage, and interrupt policy remain application responsibilities.
 
-- **`deepagents-acp`** provides `AgentServerACP`, a reusable adapter from a LangGraph graph to ACP.
-- **`dcode --acp`** runs that protocol server around dcode's coding-agent factory. It supplies dcode's tools, configured MCP tools, subagents, checkpointer, model selection, and approval policy.
+There are two useful deployment layers:
 
-`--acp` is separate from the normal dcode UI path: it selects an ACP server over stdio instead of the Textual UI. The normal remote client lazily creates a LangGraph `RemoteGraph`. See [Code Agent architecture](/openwiki/architecture/code-agent.md), [state persistence](/openwiki/concepts/state-persistence.md), [testing guide](/openwiki/testing/testing-guide.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
+- A custom server calls `run_agent` with `AgentServerACP` around a Deep Agents or compatible LangGraph graph.
+- `dcode --acp` launches dcode's already-assembled coding-agent factory in the current process. Unlike normal dcode, it does not launch the Textual UI or use its remote client `RemoteGraph`; it owns local ACP session graphs instead. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md) and [SDK Construction and Agent Execution](/openwiki/architecture/sdk-construction-execution.md).
 
-## Use the reusable adapter
+## Release and package baseline
 
-`AgentServerACP` implements ACP's agent interface. Its `agent` can be either a compiled `CompiledStateGraph` or a factory that accepts `AgentSessionContext(cwd, mode, model)`. Choose a factory when graph construction depends on the editor-provided working directory or a selected mode/model. `modes` and `models` are factory-only; providing either alongside a compiled graph raises `ValueError`.
+`deepagents-acp` is currently version `0.0.12`; the package metadata and runtime version are kept in sync by release-please. It requires Python 3.11 or later and declares `agent-client-protocol>=0.10.1`, together with `deepagents` and `python-dotenv>=1.2.2`.
 
-```python
-import asyncio
+The `0.0.12` release (2026-09-18) scopes `cancel()` requests to their requested ACP session. The immediately preceding releases added visible reasoning as ACP thought chunks (`0.0.11`) and persistent ACP session loading (`0.0.10`). Those release changes explain two important current boundaries: cancellation must not leak across sessions, and `session/load` depends on application-provided durable checkpoint storage rather than on the protocol adapter alone.
 
-from acp import run_agent
-from deepagents import create_deep_agent
-from langgraph.checkpoint.memory import MemorySaver
+## Graph boundary and session model
 
-from deepagents_acp.server import AgentServerACP
+`AgentServerACP` accepts either a compiled `CompiledStateGraph` or a factory taking `AgentSessionContext(cwd, mode, model)`. A compiled graph is reused; a factory is the appropriate boundary when the editor's cwd or selected configuration changes how an agent must be built. `modes` and `models` are factory-only and cause `ValueError` when supplied with a compiled graph.
 
+The adapter retains only one active graph instance at a time. It resets/rebuilds a factory graph when a prompt belongs to another session or a selected setting changes, passing that session's cwd, mode, and model. The graph's LangGraph `thread_id` is exactly the ACP `session_id`; this is the identity that scopes checkpoint state.
 
-async def main() -> None:
-    agent = create_deep_agent(
-        tools=[...],
-        checkpointer=MemorySaver(),
-    )
-    server = AgentServerACP(agent)
-    await run_agent(server)
-
-
-asyncio.run(main())
-```
-
-For the repository demo, work from `libs/acp`, run `uv sync --group examples`, put `ANTHROPIC_API_KEY` in `.env`, and configure the editor to run `run_demo_agent.sh`. `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT` are optional tracing settings. The README includes a Zed configuration example; ACP itself is not limited to Zed.
-
-### Session state and selectors
-
-During `initialize`, the adapter advertises image prompt support and advertises `session/load` only when `load_sessions=True`. `new_session` makes a unique ACP session ID, records the supplied `cwd` and ACP MCP descriptors, initializes selector state, and persists session metadata when loading is enabled. The LangGraph `thread_id` is the ACP session ID.
-
-Mode and model configuration options accept only strings and recognized choices. Changing either resets the current graph. A factory consequently receives a fresh context carrying the session's `cwd`, mode, and model; invalid configuration IDs, values, and non-string values are invalid-parameter errors. The adapter maintains one active graph instance, rebuilding a factory graph when it begins serving a different session; a supplied compiled graph is reused.
+At `initialize`, the server advertises image input and advertises `session/load` only when `load_sessions=True`. `new_session` allocates a UUID-derived ID, records the supplied cwd and ACP MCP descriptors, initializes configured mode/model defaults, and returns the configuration options. With loading enabled it also writes ACP metadata into the graph thread before returning.
 
 ```mermaid
 sequenceDiagram
-    participant Editor
-    participant Adapter as AgentServerACP
-    participant Graph as checkpointed graph
-    Editor->>Adapter: new session with cwd
-    Adapter->>Graph: persist ACP session metadata
-    Adapter-->>Editor: session ID and config options
-    Editor->>Adapter: load session with session ID and cwd
-    Adapter->>Graph: read thread metadata and history
-    Adapter-->>Editor: replay session updates
-    Adapter-->>Editor: restored config options
+    participant Client as ACP client
+    participant Bridge as AgentServerACP
+    participant Factory as Graph factory
+    participant Graph as LangGraph thread
+    Client->>Bridge: initialize
+    Bridge-->>Client: image capability and optional load capability
+    Client->>Bridge: new session with cwd
+    Bridge->>Bridge: allocate session ID and selector state
+    opt Factory supplied
+        Bridge->>Factory: AgentSessionContext cwd mode model
+        Factory-->>Bridge: compiled graph
+    end
+    Bridge->>Graph: persist ACP metadata with thread ID
+    Bridge-->>Client: session ID and options
+    Client->>Bridge: prompt or configuration update
+    Bridge->>Graph: stream or rebuild with same thread ID
+    Graph-->>Bridge: messages updates or interrupt
+    Bridge-->>Client: session updates and prompt result
+    opt Later recovery
+        Client->>Bridge: load session with ID and cwd
+        Bridge->>Graph: validate metadata and replay history
+        Bridge-->>Client: replayed updates and restored options
+    end
 ```
 
-*Session creation records the identity and working directory that a later load must validate before replaying the checkpointed history.*
+*ACP session identity becomes the LangGraph thread identity; the bridge projects graph state and events rather than owning an independent transcript.*
 
-## Turn projection and interruption handling
+### Per-session configuration
 
-For a prompt, the adapter converts ACP text, images, resource links, and embedded resources to LangChain content. Resource-link paths are made relative to the session cwd; embedded text and blobs become textual context, with blobs represented by a data URI. Input audio raises `NotImplementedError`. In the opposite direction, normalized assistant image and audio blocks can be emitted to the ACP client.
+The adapter exposes mode and model selectors as ACP session configuration options (`mode` and `model`), with compatibility handling for ACP releases that either wrap or directly use select options. `set_config_option` accepts strings only, rejects unknown option IDs and unavailable mode/model values with invalid-parameter errors, resets the session graph, and persists the changed selection when durable loading is enabled. The older `set_session_mode` operation also resets and persists a configured session mode, but does not itself validate that its `mode_id` is in the available choices.
 
-The adapter streams the graph in `messages` and `updates` modes with subgraphs enabled. It exposes only top-level assistant content and plaintext reasoning, keeping subagent content internal. It maps `todos` to ACP plan updates. It emits assistant content before tool activity from the same chunk, accumulates tool-call argument fragments until they parse as JSON, then emits the tool start and completes it when its result arrives. If the graph has no checkpointer, `prompt` attaches `MemorySaver`; that can support the turn but not restart recovery.
+The demo is a concrete factory pattern: it uses `context.cwd` as the local-shell backend root, maps `context.mode` to an `interrupt_on` policy, forwards `context.model` to `create_deep_agent`, and shares its `MemorySaver` between factory-built graphs.
 
-`cancel` sets a cancellation flag checked before and while iterating a graph stream. A detected cancellation returns `PromptResponse(stop_reason="cancelled")`; a completed turn returns `end_turn`. When an interrupt update arrives, the adapter first exits the stream iterator before reading state, avoiding a stale pre-interrupt checkpoint snapshot.
+## Prompt and stream projection
 
-### Permission boundary
+For a prompt, the bridge converts ACP text and images to LangChain content; resource links become textual resource context with a `file://` path made relative to the session cwd, and embedded text/blob resources become text (a blob is represented as a data URI). Audio input raises `NotImplementedError`. In the reverse direction, normalized assistant text, image, and audio blocks can be emitted; only plaintext `reasoning` blocks are exposed as ACP thought chunks, while encrypted/redacted/nonstandard reasoning is omitted.
 
-ACP renders fixed permission choices, not arbitrary `interrupt()` questions. The adapter rejects a free-form LangGraph interrupt. ACP-compatible graphs should use the `action_requests` and review configuration shape used by `HumanInTheLoopMiddleware`.
+The graph is streamed with `messages` and `updates` modes and `subgraphs=True`. Only top-level assistant content and reasoning are shown, so subagent content stays internal. `write_todos` becomes ACP plan updates. A message chunk's content is sent before its tool activity; fragmented tool arguments are accumulated by call index and a tool-start update is sent only once the accumulated arguments parse as JSON. Later tool messages complete the corresponding call (except edit calls, whose start includes a diff). This ordering is also used during replay.
 
-For each action request, the adapter offers **Approve**, **Reject**, and **Always allow**, then resumes the graph with the decisions. Cancelling a permission request is rejection. For `write_todos`, a rejected or cancelled request clears the plan; rejection also feeds the agent text asking it to obtain feedback and create an improved plan. Updates to an approved incomplete plan are automatically approved.
+If a supplied graph has no checkpointer, `prompt` attaches `MemorySaver` so the turn can run. That is an ephemeral fallback, not a way to make a restarted server recover sessions.
 
-Always-allow state is in adapter memory and scoped to one ACP session, not a durable authorization grant. Non-shell tools are remembered by name. For `execute`, a future compound command is reapproved only if every extracted command signature was allowed and the command contains no dangerous shell pattern, including substitution, variable expansion, redirection, control characters, process substitution, or standalone backgrounding.
+### Cancellation and interrupts
 
-## Durable loading and cwd invariant
+`cancel(session_id)` adds that ID to an in-memory cancellation set. `prompt` clears a previous cancellation at the beginning of a new turn, checks the set before streaming and on every streamed chunk, and returns `PromptResponse(stop_reason="cancelled")` when it observes a cancellation. The flag is session-specific, so one session's cancel does not cancel another session's prompt; a normal completion returns `end_turn`.
 
-`load_sessions=True` merely enables and advertises ACP's loading operation. Durable recovery also needs a graph checkpointer that remains available after a process restart; `MemorySaver` is suitable for tests and ephemeral turns, not restart persistence. The adapter writes an ACP marker, cwd, and active mode/model selections to checkpoint metadata.
+ACP permission UI has fixed choices, so the adapter rejects a free-form LangGraph `interrupt()` value. Compatible graphs must instead emit the `action_requests` form used by `HumanInTheLoopMiddleware`. After an interrupt update, the bridge leaves the stream iterator before reading graph state—important for persistent checkpointers whose interrupt checkpoint is not visible until iteration closes—asks the ACP client for decisions, and resumes with `Command(resume={"decisions": ...})`.
 
-Loading requires a checkpointed thread with that ACP marker. Missing or unrelated threads return `resource_not_found`; a different cwd is an invalid-parameters error. On success, the adapter restores only saved mode/model values still supported by the current server, rebuilds a factory graph when necessary, and replays user messages, visible assistant content/reasoning, tool starts, and tool results as `session/update` events before returning. A persisted ACP session therefore cannot be moved to a different editor working directory.
+For each action, ACP offers Approve, Reject, and Always allow. A client cancellation response is treated as rejection. Rejected or cancelled `write_todos` clears the plan; rejection additionally tells the graph to ask for feedback and make an improved plan. Once a plan is approved and remains incomplete, later updates to it are auto-approved.
+
+“Always allow” is adapter-memory state scoped to the ACP session, not a durable authorization grant. Non-shell tools are allowlisted by name. For `execute`, the bridge allowlists extracted command signatures, and auto-approves a future compound command only if **all** signatures were allowed and the command has none of the dangerous substitutions, variable expansions, redirects, control characters, process substitutions, or standalone backgrounding patterns.
+
+## Durable-session option versus durable storage
+
+`load_sessions=True` is a protocol capability switch: it advertises and implements `session/load`; it does **not** supply persistent storage. Both creating/loading a durable session require the session graph to have a checkpointer, and recovery across process restart requires that checkpointer's data to survive and remain available after restart. `MemorySaver` supports tests and an in-process turn but not restart recovery. See [State, Checkpoints, and Durable Records](/openwiki/concepts/state-persistence.md).
+
+The bridge persists metadata containing an ACP-session marker, cwd, and current mode/model selection. On `load_session`, it requires a checkpointed thread with that marker; missing or unrelated threads return `resource_not_found`. The requested cwd must equal the persisted cwd or loading returns invalid parameters and clears validation-time local state. It restores only persisted selector values still supported by the current server, rebuilds the factory graph if that restoration changes its context, and replays deduplicated historical human messages, visible assistant blocks/thoughts, tool starts, plans, and tool results through `session/update` before returning. A session cannot be relocated merely by loading it from another editor cwd.
 
 ## MCP ownership boundary
 
-The generic adapter retains ACP MCP descriptors supplied to `new_session` or `load_session`, but `AgentSessionContext` contains only `cwd`, `mode`, and `model`. It neither passes those descriptors to the factory nor converts them into graph tools. Applications that want editor-provided MCP servers must deliberately implement that bridge.
+ACP's `new_session` and `load_session` accept MCP descriptors, and the generic bridge retains them per session (including compatibility with an old positional `new_session` form). They do not appear in `AgentSessionContext`, are not passed to the graph factory, and are not converted to graph tools. A custom application that intends to honor editor-provided MCP configuration must build that explicit bridge itself.
 
-Dcode owns a separate configuration-driven MCP path. Before it serves ACP, dcode resolves MCP tools from an explicit configuration path or normal configuration, project trust and context, and plugin-discovered MCP configurations. It captures the resulting tools and server data for each session graph, and cleans up its MCP session manager when the ACP server exits. A missing MCP configuration or tool-loading failure is reported to stderr and ends startup with exit code 1.
+Dcode has a different, configuration-owned MCP path. Before serving ACP it resolves MCP tools from its explicit/normal configuration, project-trust context, and discovered plugin configurations; these tools and server information are captured by its per-session graph factory. Missing configuration files or MCP tool-loading failures go to stderr and return exit code 1, and the MCP session manager is cleaned up when the ACP server exits.
 
-## Run dcode as an ACP server
+## Run and operate the integrations
 
-Install dcode and the adapter together, then configure the editor to launch `dcode`:
+For the repository example, work in `libs/acp`, run `uv sync --group examples`, add `ANTHROPIC_API_KEY` to `.env`, and configure an editor to execute `run_demo_agent.sh` (make it executable if needed). LangSmith tracing variables in the example `.env` are optional. The README's Zed example is one ACP client configuration; the adapter is not Zed-specific.
+
+For dcode, install the ACP dependency with the CLI and point an ACP-capable editor at it:
 
 ```sh
 uv tool install -U deepagents-code --with deepagents-acp
@@ -125,22 +136,16 @@ uv tool install -U deepagents-code --with deepagents-acp
     "Deep Agents Code": {
       "type": "custom",
       "command": "dcode",
-      "args": ["--acp", "--model", "anthropic:claude-sonnet-4-5"]
+      "args": ["--acp", "--model", "anthropic:claude-sonnet-5"]
     }
   }
 }
 ```
 
-`--acp` is detected in raw argv so dcode skips the Textual dependency check. ACP imports are lazy: if `acp` or `deepagents-acp` is missing, dcode prints the reinstall command and exits nonzero. Provider credentials come from the environment, and model specifications use `provider:model-name`.
+Dcode detects raw `--acp` before argument parsing to skip Textual dependency checks and imports ACP components lazily. If `acp` or `deepagents-acp` is absent, it prints the reinstall command and exits nonzero. The ACP launcher resolves the initial model and selector list, builds web/MCP/subagent tools, opens dcode's checkpointer, and passes a session-cwd/model-sensitive factory to `AgentServerACP(load_sessions=True)`.
 
-### Construction, policy, and option failures
-
-ACP startup resolves the initial model, stores/touches it as recent, and builds model selectors from available models. It constructs built-in web tools, configured MCP tools, and asynchronous subagents, then opens and sets up dcode's checkpointer. The per-session factory uses the selected model or initial model and calls `create_cli_agent` with the session cwd/project context, shared checkpointer, tools, MCP data, subagents, filesystem allowlist, recursion/retry settings, summarization model, and memory setting. The server enables session loading, so model changes rebuild the factory graph without changing the ACP/LangGraph thread identity.
-
-`--no-mcp` and `--mcp-config` are mutually exclusive and return an argument error (exit 2). ACP permits YOLO only after an acknowledgement recorded through the interactive TUI. `--auto-classifier-model` is valid in ACP only with resolved Auto mode.
-
-ACP presentation and dcode approval policy are separate. The dcode factory passes `auto_approve=yolo` and `auto_mode_enabled=auto` to `create_cli_agent`; YOLO removes gated tool interrupts, while ACP permission UI is used only for interrupts that remain human-gated. In Auto mode, `deepagents_code.acp.AgentServerACP` wraps each graph to write trusted Auto approval state, attach text-prompt metadata, and stream with a `CLIContextSchema` containing Auto approval settings. It does not make free-form LangGraph interrupts representable in ACP.
+`--no-mcp` and `--mcp-config` are mutually exclusive (exit 2). YOLO mode requires an acknowledgement previously made in the interactive TUI, and `--auto-classifier-model` requires resolved Auto mode. Dcode passes its resolved `yolo` and `auto` policy into `create_cli_agent`; therefore ACP's permission rendering occurs only for human-gated interrupts left by that policy. In Auto mode, dcode substitutes a specialized bridge that writes trusted Auto approval state, adds text-prompt metadata, and streams using `CLIContextSchema` with Auto settings. It does not expand ACP to support free-form interrupts.
 
 ## Focused verification
 
-`libs/acp/tests/test_agent.py` covers initialization, selectors and restoration, multimodal conversion, ordering of content/reasoning/tool updates, cancellation, permission and plan behavior, command allowlisting, durable replay, tool-history replay, and cwd validation. The dcode smoke test starts `deepagents --acp --no-mcp`, connects through ACP pipes, initializes a session, and asserts that a session ID is returned.
+`libs/acp/tests/test_agent.py` exercises capability advertisement, configuration compatibility and validation, multimodal conversion, top-level streaming order, tool transitions, cancellation isolation, fixed-decision permissions, command allowlisting, delayed checkpoint visibility, recovery replay, selector restoration, and cwd rejection. `libs/code/tests/integration_tests/test_acp_mode.py` is a stdio smoke test: it launches `deepagents --acp --no-mcp`, initializes an ACP pipe connection, creates a session, and asserts a session ID is returned.

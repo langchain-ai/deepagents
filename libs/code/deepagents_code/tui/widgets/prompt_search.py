@@ -392,7 +392,8 @@ class PromptSearchPanel(Vertical):
         self._rebuild_generation += 1
         gen = self._rebuild_generation
         if self._query_input is not None and self._query_input.value != query:
-            self._query_input.value = query
+            with self._query_input.prevent(Input.Changed):
+                self._query_input.value = query
         self.call_next(lambda: self._rebuild_options(gen))
 
     async def _fit_rows_to_window(

@@ -316,6 +316,23 @@ class BackgroundRuntime(Protocol):
 
 
 @runtime_checkable
+class ConversationDeliveryRuntime(Protocol):
+    """Optional runtime support for indexing acknowledged final replies."""
+
+    async def record_delivered_reply(
+        self, conversation_id: str, channel: str, chat: str, text: str
+    ) -> None:
+        """Record text only after successful channel delivery.
+
+        Args:
+            conversation_id: Agent thread producing the reply.
+            channel: Trusted provider identifier.
+            chat: Destination chat identifier.
+            text: Delivered reply text.
+        """
+
+
+@runtime_checkable
 class ConversationHistoryRuntime(Protocol):
     """Optional runtime support for erasing conversation history."""
 

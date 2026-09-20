@@ -595,6 +595,17 @@ def stale_lock_dirs(changed_manifests: Collection[str]) -> list[str]:
         stale |= dependents
 
 
+def lock_dirs_for(
+    changed_manifests: Collection[str], *, skip_dependents: bool
+) -> list[str]:
+    """Return lock directories, optionally excluding reverse dependents."""
+    if skip_dependents:
+        return sorted(
+            {PurePosixPath(path).parent.as_posix() for path in changed_manifests}
+        )
+    return stale_lock_dirs(changed_manifests)
+
+
 def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
     """Render applied edits as a Markdown table for the PR body/summary."""
     lines = [heading, "", "| Manifest | Dependency | Change |", "|---|---|---|"]
@@ -647,7 +658,12 @@ def _select_manifests(package: str, packages: Mapping[str, str]) -> list[str] | 
     return [f"{path}/pyproject.toml" for path in selected]
 
 
-def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+def _run(
+    package: str,
+    narrow_to: frozenset[str] | None = None,
+    *,
+    skip_dependent_locks: bool = False,
+) -> int:
     """Raise in-scope lower bounds for `package`, writing manifests and outputs.
 
     When `narrow_to` is provided, only those distribution names are raised
@@ -777,7 +793,7 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
     print(summary)
 
     changed_files = sorted(plan.manifest_path for plan in plans)
-    lock_dirs = stale_lock_dirs(changed_files)
+    lock_dirs = lock_dirs_for(changed_files, skip_dependents=skip_dependent_locks)
     _write_output("changed", "true")
     _write_output("changed_files", ",".join(changed_files))
     _write_output("lock_dirs", ",".join(lock_dirs))
@@ -837,11 +853,16 @@ def main() -> int:
             "matching IN_SCOPE_PREFIXES is raised."
         ),
     )
+    parser.add_argument("--skip-dependent-locks", action="store_true")
     args = parser.parse_args()
     try:
         dependencies = _parse_dependency_csv(args.dependencies)
         _write_output("branch", _branch_name(args.package, dependencies))
-        return _run(args.package, dependencies)
+        return _run(
+            args.package,
+            dependencies,
+            skip_dependent_locks=args.skip_dependent_locks,
+        )
     except Exception as err:  # noqa: BLE001  # fail closed on script defects
         _error(f"Raising dependency minimums failed unexpectedly: {err}")
         return 2

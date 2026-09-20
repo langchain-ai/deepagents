@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:0417e3201e830742f5b22d62785dd771f81e3271f2190166a39f2599f5b61244",
+  "claims": [
+    {
+      "id": "claim_d4dfe80e0d3d493890a4a75205636819",
+      "statement": "The OpenWiki Update workflow is manually dispatchable and scheduled daily at 08:00 UTC, and its single update job uses the `openwiki` environment.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L1-L15",
+          "version": "repo-lines-v1:sha256:003dd5b8b234b0d1e0c0994abe1a4f6a01b30ec3bbc7d128946a745c7d7bf0b0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2MDI3ODdhZjZkY2MwODM0ZGUxMjFjYmIxY2I5NWY5NDU5YjcyMWVhYjAzNDlmMTA1MDFiOTk2YzFjNzdmZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4OTk5MTEwM2Y2YmE4ODhlM2RlNzY1MWM1YTMwNWM3N2U1NTQ3Njc3M2FiYTgzOTU5MWVjYzViZDBmMmFiMWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlZjU4YjBhNzM1NjEyMWVhOWU3ZGY2ZTIxNzc4MmExYTk3NzU2Mjk0MjE2N2JkMzY3ZjUxNWNkZTkxN2M2ZDUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cbc3150030fc4c04a8a19b941efddf91",
+      "statement": "Checkout is full-depth and uncredentialed with `persist-credentials: false`; OpenWiki installation and generation occur before a dedicated GitHub App token is minted.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L151",
+          "version": "repo-lines-v1:sha256:d0d1ba2876ec73d3d07b8f5729e151e36b0a194b08a550bdbc446d648c56547f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc4MDQ4MWVjNzRmZjE2MjJmYjQ5YzRmOGQxZGUyY2ZiMzc2ZjA4NjUxZjdkZWFiYTEzZDRmN2M5MzY4M2Y2ODIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L16-L44",
+          "version": "repo-lines-v1:sha256:e9f33a5564189e0d46b713864f39bcb820dc8d775adc6154f1fb5418bd14b470:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1ZDZjZjdkNDI4Y2E4MTE1ZmM0YmFiYjY4MDczOTAyMzMyN2E3YTlkOTE2M2Y3MDZhMjc2ODdkZDUxNmYzOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMGI2NGJmMDI3Y2EyZDA0YzA0MjI1NzFlZjFkY2NkZGNlNjRmMGIzZWM2M2Q5NDk2ZWY3YTM3ODc4YWRlZmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3NzliNWVlOGFmYjdkYmU1OGEzMjc3ZDBiNTA3MzIwMjkzYzc3ZDVlOTM2ZWM0OWMwNDEzNjZhYzc5MGMxYzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjMWJlMzNmNzE3YzdkMDlkMjI0MjNiYzI0MzlhYzMxNzcwODNlZTcyZTUxOTEzZDkyMzE2NWUyZmE3NjQzY2QifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d162a9be6454b5f8f6e30ba2ee01985",
+      "statement": "The workflow mints a dedicated App installation token scoped to the current owner and repository with explicit contents and pull-request write permissions, and supplies that token only to the PR-creation and merge steps.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L169",
+          "version": "repo-lines-v1:sha256:ba5245256f4c1097afed479cf3a7c9eb381a46b25ea8b551c75cdc3da554aa9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZDRhMGY5NDMyMDNmOTU0NDYxYzE3MjI2MmYwZTkyMTc3ODkyNjI5YTZlOWFiYWVhOTMxYTZiZDg3YWE3MWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxODY1OGU0NmI2NGZkMzM4MDUzZjcyNGMyNTg1MDlmNTc2MTQ2MjQ0YzdmN2FmNjIyZjJjNWEzODRhYTdkMjIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L115-L124",
+          "version": "repo-lines-v1:sha256:c2fad902a6cc50e913043550a01cafa8b12efe084decbe1c63e5c649084c3734:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjZThiODJlMzgwNWEzYTE4MDAzZjJmZTQ1ZDRmNWRiYjQ3YWZkZThjMmRkZjU1OWNlZDJiNGZkYzRmNDA2MzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxYjYzYzhkMjI3OTMxYWUxZWU0ZTgyNTg2OWY3Mjk5NDNjN2E4MThiMjZmNTNiNWFhNmYxM2FhNTYzYzY5ZDkifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L39-L54",
+          "version": "repo-lines-v1:sha256:cd768cc906e2889f0dd3212a4b9df2f9e2054d5849d0df065f02a06b8055aba5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNGNhMzM5M2I4YzI2MjE0YzI5OTdiZjIwN2RlMGQyYWE1MzRiZTdlMDg4MDBiMDBlM2YxMzhhMzBiMDRhZDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0NzY1ZjIzNWNlYzhlZDQ4YmE1MTU1MWI1NTg1NGViMmQ1NzA4MTdiYTg3YTE4YzJlZjBhNzAyMGMzNWZhZTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjOTdkOGE3MTM0M2QyMzk4ZTQ3MDBjYzdiZGFmZTVjYmEwODRjYjIxNTRkMjNiZDAxMGU1YjI3ZDUxMWEwZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3OWJlNDhlN2Q4MDZjNTMwMWNlZjM0MTc5ZGVjNDQyNTkxMjk1NTI0ZGZlOWExZjU5N2RiNjBhZmQ1YzY0MzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_89cf77e47a534e48a123ae1b83122158",
+      "statement": "Before publication, the workflow restores its own YAML and stages only `openwiki` and `AGENTS.md`; if that index is empty, it closes and deletes a matching open repository-owned update PR as obsolete.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L152-L161",
+          "version": "repo-lines-v1:sha256:037f54045555d3de6836d35909e747bcdc824f73c687675e1f68619eb78a9e63:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ODA3NDlmYjA0ZTFlMzJmOTA1ZjE0MzY4ZjFiYzMzYTYzZjI1ZjY0YjQzNzZiMGJjOTk0YmQ5MjRjMmEwOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmY2QxZmJkYzM1N2Q4OWUwMjJjNGQ5MDNlYjQ0M2Q2YWRmZDcxYzhkY2E2OGI3ZTIwN2U5MWJkZmJmZTZiZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyNDIxZGVjODBhMDQ0MGRmMmFjZTZhMGE3NTkyM2IwODRjYWE2YWViNzRlMjYxMDM3MDg1Njk2YmMzNjkyNGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlYjc2M2JmZmVlMGVjOTVmYzFiOTE2MzdkYjIwNmRkMzdjOWVmNTQ1MWY1YjI4NjI3OTU4M2VlNjhhMmExOTcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L63-L89",
+          "version": "repo-lines-v1:sha256:65c710cb36595e8d73b8743acd72f22380842024813f17f1fb01e865b27bcb74:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkN2IwOTcxYWFiZjE3YjExOWJiOTczZTBiYmFiZTM4NDQ5N2EzYTJlMGRiOTU0MTAwNTBlNzRkZDE2NzNiN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5ZGQ4YjViN2NkYzc2NTYxNTBmZjA0OTI4YzBkN2NmYTZiMzFhNThmYmZmMDA5OGJmNjU5YmVlMjNjOTMyYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwZDNkZjFlMzMwN2RlNDhhZjQ2MGE3ZDEzOTQ2YWNjMGFiNjdmYWMwNDZmYjFmYzY4ZmJlMGZiNGFlODAzNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2MDUyNTEyZjc2MWNiNTQwOTY1MzFjOGY1YjExOWJhNDI3ZGMzYTMzMmY5MGY1OTY0NzFmZGMwZjUzYWNlNTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ebc72d60be0745bea5c4787ba75f12b0",
+      "statement": "For generated changes, the workflow commits the documentation, force-pushes `openwiki/update`, and creates or reuses an open PR identified by the current repository's branch label and head repository, passing the PR number and commit SHA to merge.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L63-L114",
+          "version": "repo-lines-v1:sha256:cac66915fb11b5afe061fb53ee4d6d13847cc3a0d77edc71689bd8ffeba2117b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkN2IwOTcxYWFiZjE3YjExOWJiOTczZTBiYmFiZTM4NDQ5N2EzYTJlMGRiOTU0MTAwNTBlNzRkZDE2NzNiN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwZDNkZjFlMzMwN2RlNDhhZjQ2MGE3ZDEzOTQ2YWNjMGFiNjdmYWMwNDZmYjFmYzY4ZmJlMGZiNGFlODAzNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNDI2OWIzM2FmNGZhZTIyMDQ1MzI4ZDgzMzRiM2YxZTQ5MTE4MTUwNmZhZGRkOWExMGIzYmQzZTA3MzVlM2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2b429e8118f64a669952e200cad479c7",
+      "statement": "Before every merge request, the workflow validates the expected `main` base, repository-owned `openwiki/update` head label, exact head SHA, open state, and lack of merge conflicts, then requests a SHA-pinned squash merge.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L137-L151",
+          "version": "repo-lines-v1:sha256:50d837a0c118a0aec1307c35bd7404799e384739c63f24b8d471912f67bdba53:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5MGQ4ODA5NmRmOTJiMzRkN2FmMTM1Y2I0YzUyMThiNWUxN2QwNDI1ZTQ3NThlZGNlMzEzNjNmM2EzODEzODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkNGM1ZGMzMGI4ZGY0ODkzMTAwZjU1NGEzYWQ1Njk2NGY3MjU2ZjgzNjFkNDc2YjE5MjExZGZkZDRmZDQ0ZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlOGE1NjFmZDBmNzZjYjA3NWU1YjZjMmNiMTdlYWQ4MjIwOWRjOWVhMDJkMjhlZmZhMzNiODkxNmU1MTJjNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyN2Q0YWI1NDlhZWNhMjE2ZjI3MmQ1ODA5ZjdlZTQ0ODY4OTUzNTZmYzU4YTU4NmQwMzQ4ZDVmZjdlNThkM2IifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L178-L220",
+          "version": "repo-lines-v1:sha256:a8de561401fec8d35ffb870b94403531c66dbdcf1aa160310b5329e419846982:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlOGFhNGMzZGI1NGY2YjkzYzAxN2FiYmRmODBmMzVkNjc3NjViYWFlZmYzZDMxNjhhNjE2MmNjMWQzMzYyMTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1NTk3MjA5NTQ5ZGU5MGQ4OWFmOWFlMmExYTNhZjY2MGFkYTgxNGMxNWM5ZDA4ZmE5OGUxMDU4MmE4ZWI3NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjYWJjMTY2ODM3NDNmOGY2Y2E0NTZiZTYyY2U0YTJhZjVmMGVjMGY1Y2FmYzY3NmUwZTg0NGVhODZiZGY4NWYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L115-L148",
+          "version": "repo-lines-v1:sha256:a6ab9bf179504fe8784543a011b464de39e9709fc821409c6002dd0c80137ffc:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljZWViYzBiZTZmNWY5MzU2ZGZmYjA2NTNlMGQ0MDhlOWJiYWRiOTRiNmIxNWJmM2M1MzBiMzA4OTM4ZjgyM2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyNmQ3ZjFhMjE4ODZjNDc1MWZhMDExMTExNmFhZmUyNWNjYjNlNTU0ZmEyZTEwYWMzOTJlYmM0MDQ5ZTRiMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c05b037883204df5ad01c8c06b41026f",
+      "statement": "Merge retries are limited to HTTP 405: after a 15-second wait the workflow refetches and revalidates the PR, makes at most 60 attempts, and treats other HTTP, transport, invalid-response, and changed-identity failures as terminal.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L155-L174",
+          "version": "repo-lines-v1:sha256:7d4463fdf3bdedaba220b53e82205aeb5d451850ff2244e38c129dc7012b9783:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4ODU4NTQyODM3NWNmNTQxMDQ1YjQ5ZGIwNzRmNWNmMzU0OTBlODdlMmE2YzY1NWQyOTBkYmRkYmI2YzMxZmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjYWNhMzk4MDkwMjM4NmYxYTQwZWNkMTNlMTE3OTg0NTZiMGUxYjljNDJiMjIxNTljNzg5ZTlmYTA3OTViOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyN2Q0YWI1NDlhZWNhMjE2ZjI3MmQ1ODA5ZjdlZTQ0ODY4OTUzNTZmYzU4YTU4NmQwMzQ4ZDVmZjdlNThkM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1NTk3MjA5NTQ5ZGU5MGQ4OWFmOWFlMmExYTNhZjY2MGFkYTgxNGMxNWM5ZDA4ZmE5OGUxMDU4MmE4ZWI3NTQifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L223-L250",
+          "version": "repo-lines-v1:sha256:0943afe9f8d6f3c478f1d9f1c9bfec7e435bd8efb45f2d17bd6c6bf91b1c9434:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5MjZmMWY4MzVlYzMxNzcxMTU0ZDY4NjU2N2VlZDBlM2ZkMjBhMzNkYTYyNjQzZTE1OTA4YzQxY2NjZTJhMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3OWM5Yjg3NDU5ZWQ1MTNkNGM3MDNmMzI5YWYyMTIxZmFmMmJiMWYwMTQ3ODA3ODYzOTBmZGMwYjMzYjE1ZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1MzY3NTgwNTg4ZDQ3MTM2YzI5M2IwNWRhMTI3NDQ0ZWQzNzQ3M2RhOTA5YTg5NjI2MmEyNDg3MTVkOGQxMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L131-L162",
+          "version": "repo-lines-v1:sha256:d81ceaa88378bfaf71f1feea44e77329222ab0f0019bd1df6eca482e1a2111ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2ZDE0Mjk5ZjAyOGQwOTdkYTg2ZWExMjY1NzQ1MmExZWUxZDlhOTc1OTM4ZDE1YWY3MjI2ODY5NjI2NjViOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxMGUxOTIxZmM1YTlmYmE3N2RjY2NhODc4ZDUxODFiMDE1ZTdhNmUxYWNhNzI5OGRiYWIyNTNlM2YzNDlkZDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_638b9576beb148ce94297ae070b23f39",
+      "statement": "GitHub environment selection and the intended credential inventory are external configuration concerns: workflow YAML does not prove environment secrets, protections, branch policy, or installed App permissions, and the current workflow references must be verified separately from the inventory.",
+      "evidence": [
+        {
+          "resource": "repo://.github/SECRETS.md#L150-L173",
+          "version": "repo-lines-v1:sha256:1446d31e9d10f458fb0c50b7ac4e5eb79d79b46bfcb73029d25fe1bd61fecc9f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmN2ZiYzE5MmNmN2I3ZTZkYzA0M2UzNjQwYmEzNzI2ZTA1MzI3MDg0YTIzZTAyZWU5MGNjN2E1NTQ3ZDI2N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2MjQ1ZWU1MzY0YTk0ZjlkOTE1OWZkNGYzNDcwYzcyNjliYTY4ZjcxY2JlM2I0N2Y2YTE3NjVkMTZjMzM5ZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwNTY1OTkzODE4ZjZkMzA0MWQ3ZGNmMzI0NmQ1NDZmMzM2ODIyYzE1M2M2ZTY0Yjg1YzhjOTIzNTVhNzQ3ZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3MjJlNzc2ZThmN2E4ODE3ODhiYzA5NDljNzM1ZmNhYjUzNzI1ODM0MDAyZTFlN2Q1NTllNGQ0MTVhNmY0MmYifQ"
+        },
+        {
+          "resource": "repo://.github/SECRETS.md#L23-L49",
+          "version": "repo-lines-v1:sha256:c1b8850ebd2b37356222097cc7257567f091c3e06f5372fed195ea85a47e8991:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhZjhkNTRlNGJlNmFlMWE0YzIyZmYxMGQ5MTdmNzJlNWI4ODIyNzU0NTM1OWYwOWU2ZTkzOWFmMzVhYzgwYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZWQ3YmI5MDgxYjUzNWE2N2NlNWU4MzAyMjZmMGNhNGU1MDFlMjIxOTQxN2I2YWVhZWQ5ZTc4YjFkNzU5NTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxNzkxOWQ3NGVhNzIzYmZhODEyNDQ4NWI2MzEzZjIwZjA1NTAwYjk3YTgwN2Q4ZWM5ZDI2NWQ3MjQ0YTM4NmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZTljOTFmZDhlNDRhMWIyZWNhMjUwYmI1ZGE0ZTVjNDIwOTNjZGUzN2I2ZDZhNzczNGIzNDRlYjdkYjdhMjIifQ"
+        },
+        {
+          "resource": "repo://.github/SECRETS.md#L3-L6",
+          "version": "repo-lines-v1:sha256:073bec1c713dd81d1e9479296e78b7d4c1c96ba01fc2f187e0c5b3b9bd7f9d43:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzJhMGJjZTNlMWE2YWZiYTc3ZDM0MTU3ZTYxYzNkMWZkZTdmYTE0ZDhmMWUxMTEwMzNlNGQ1MDAyODQwNjE4ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTljZGNjNDJlY2I5YmJmZTc5MTA5ZTYxMGZiZDljZGQ4YTVlZGFjMTU4NmQ4YTY5NjMyMDJkOTNjN2Q2ZTFhZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDQ1MzUwOTkyYWU0NjUyZTZmYzY0Njc1YzNiNTY0MzE4M2QxZmJjYmYyNDBjOGMyYzdiMjIzMGVlM2Y0ZDVhMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzUyMWU1NGE1ZmRkODcyMzlkZTEwYzRiNWIyZGYyYTBiMzQzOGU4OTkzMjczOTgyYmE1Yjc4YWRjMmFjMDYzYiJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L12-L15",
+          "version": "repo-lines-v1:sha256:dbdfea31247464d08d9756f87726d5d3575c8fd4e88f720601bd8ba50005f67b:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzljZWFmOWQ1YWYwMDcwNTA5NjI3YzBkOWExZjY3NGJjNDAwZjE3ZmJmY2QwMjI1OTgzMjJhMjhhYWI4NmQ3OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg5OTkxMTAzZjZiYTg4OGUzZGU3NjUxYzVhMzA1Yzc3ZTU1NDc2NzczYWJhODM5NTkxZWNjNWJkMGYyYWIxZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmNkZGFlNGU3YTYzNmMyMGY1NTBhY2I2YTU0ZjI3MDlhZTJjYjRjZGE0MTVkM2E3ZTUyNDFlMzcxODU2ODkyMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGVmNThiMGE3MzU2MTIxZWE5ZTdkZjZlMjE3NzgyYTFhOTc3NTYyOTQyMTY3YmQzNjdmNTE1Y2RlOTE3YzZkNSJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L30-L48",
+          "version": "repo-lines-v1:sha256:18667e460a0093f0978a6b4a5500f2fb40badb4e1f3bc1c7a908007443b122d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZThmOWZhNDBlN2JkMDQ5OWQxYzBkODNmZDc1OGFhODViMzA4NDJkYmQ2MWYwZWE2YjdhZTEwZWZlYzc2ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMmY3OWIyM2Y3NjVkODRjMmViOTk1ODQxOTRkNmQ3Njc0ZmQ5NWUyN2JiMDFhMGNhYjRkNGYwZmUwMzllMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NTJiYTFhNjFkZThhNTlhZjA2OTY2MDIzNDQ4YTM3NTdiYTExODE2YWExMmNlYzhiYmUyNDVlZmRlMDc2YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkZWVlZWUzZTEyMGQ5ZDEwNGI3NmU1YzcxYTYyMjZlNDVjMDkzNWNiNWM2ZjI1MTIyZTUyNTdmYjFjMzgyNDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d47ef70aa504272bd1ac9afdab6b1db",
+      "statement": "The focused workflow tests use static secret-scoping assertions and stubbed merge-shell scenarios; merge behavior tests require POSIX bash and jq and skip on Windows or when either executable is unavailable.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L1-L22",
+          "version": "repo-lines-v1:sha256:cf33a2c6a56f2b551dd2dceb923da382cf7e33b25c544dad4c2aa74b5d144d11:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1Y2EzZjk0M2I3YWNjOTdlZWQ1MWI3OTgzZDg3ZDNjNDliYmI1NDE4OTdkNzkxOTdhYzA1N2VlYTQ3ODU4ZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlYjljMWQxOWE4OTI3NGIwODk5OTk4NmFkNzcyNjBiOGZiNzcwMTNkMTBhN2U0N2VhYWJkNTBiMzIyMTY4ODcifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L80-L130",
+          "version": "repo-lines-v1:sha256:a9c5bbf50714989b5fe339576e26789c331e86626257337d676f7877f8fe5ee6:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NWMwOTNkMDUxNjE2Zjc2MDRkY2Q5MTVmZDM2NTAzNThlNzBlOGM0MDBkZjNlMGVlMzg5ZTRiMDY5ZTY1ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmNDI0ODVhNDEyNDAzYzMyZDcwYWVmYWU5MjdiZDUwZDk0MWQ2MTUxNWRjMjViYzI3YWQxYmU0ZGY1ZmJjMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2M2Q3YzhiZjdkMWVjMGJiZmY4N2VkZTMwYmUzZjYxMzBiODNkM2I0NzkwNzJkOTRjODY4YzMxZWI2YzYwNGYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L169",
+          "version": "repo-lines-v1:sha256:ba5245256f4c1097afed479cf3a7c9eb381a46b25ea8b551c75cdc3da554aa9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZDRhMGY5NDMyMDNmOTU0NDYxYzE3MjI2MmYwZTkyMTc3ODkyNjI5YTZlOWFiYWVhOTMxYTZiZDg3YWE3MWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxODY1OGU0NmI2NGZkMzM4MDUzZjcyNGMyNTg1MDlmNTc2MTQ2MjQ0YzdmN2FmNjIyZjJjNWEzODRhYTdkMjIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-18T18:59:02.504Z"
+  }
+}

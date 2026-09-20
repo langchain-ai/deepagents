@@ -40,7 +40,11 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
-from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.background import (
+    _INLINE_TIMEOUT_SECONDS,
+    _SCHEDULED_TURN,
+    BackgroundSubagents,
+)
 from deepagents_talon.browser import (
     BrowserBinding,
     BrowserClient,
@@ -61,6 +65,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
 from deepagents_talon.observability import (
     AgentActivityCallback,
@@ -100,6 +105,7 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
+INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
@@ -357,7 +363,9 @@ class DeepAgentRuntime:
             default=None,
         )
         self._tools_lock = asyncio.Lock()
-        self.background = BackgroundSubagents()
+        self.background = BackgroundSubagents(
+            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS)
+        )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
         )
@@ -529,6 +537,13 @@ class DeepAgentRuntime:
             binding = None
         return self.browser.bind(binding, request.browser_event_handler) if self.browser else None
 
+    def _refresh_approval_graph(self) -> ApprovalSnapshot:
+        snapshot = self.approval_store.read()
+        if snapshot != self._active_approvals:
+            self._graph = self._create_graph(approvals=snapshot)
+            self._active_approvals = snapshot
+        return snapshot
+
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Invoke the Deep Agents graph for one Talon request.
 
@@ -547,11 +562,7 @@ class DeepAgentRuntime:
 
         await self._refresh_runtime_tools()
         async with self._tools_lock:
-            snapshot = self.approval_store.read()
-            if snapshot != self._active_approvals:
-                graph = self._create_graph(approvals=snapshot)
-                self._graph = graph
-                self._active_approvals = snapshot
+            snapshot = self._refresh_approval_graph()
             graph_token = self._invocation_graph.set(self._graph)
             policy_token = ACTIVE_APPROVALS.set(snapshot)
         operator_token = APPROVAL_OPERATOR.set(
@@ -565,6 +576,10 @@ class DeepAgentRuntime:
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
+        # Covers a job's own run and any later turn on its thread, both of which carry the
+        # same scheduled metadata. A chat delivery turn is excluded: it has a user waiting,
+        # so its delegations keep detaching.
+        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         history_token = _HISTORY_SCOPE.set(_history_scope(request))
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
@@ -586,6 +601,7 @@ class DeepAgentRuntime:
             MESSAGE_HANDLER.reset(message_token)
             _HISTORY_SCOPE.reset(history_token)
             _HISTORY_SESSION.reset(session_token)
+            _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
             self._pending_results.reset(pending_token)
@@ -603,6 +619,24 @@ class DeepAgentRuntime:
     def history_enabled(self) -> bool:
         """Whether this runtime uses the persistent conversation archive."""
         return isinstance(self.checkpointer, ConversationSaver)
+
+    async def record_delivered_reply(
+        self, conversation_id: str, channel: str, chat: str, text: str
+    ) -> None:
+        """Make a host-confirmed final reply eligible for semantic history search.
+
+        Args:
+            conversation_id: Agent thread producing the reply.
+            channel: Trusted provider identifier.
+            chat: Destination chat identifier.
+            text: Successfully delivered text.
+        """
+        if isinstance(self.checkpointer, ConversationSaver) and text:
+            await self.checkpointer.archive.record_delivery(
+                ArchiveScope(talon_history_channel=channel, talon_history_chat=chat),
+                conversation_id,
+                text,
+            )
 
     async def clear_history(self, channel: str, chat: str) -> None:
         """Erase all persisted sessions belonging to a channel and chat.
@@ -745,6 +779,10 @@ class DeepAgentRuntime:
             _request_model_content(request),
             request,
             activity,
+            source="internal"
+            if request.metadata.get("trigger") == "cron"
+            or request.metadata.get("background_delivery")
+            else "user",
         )
         text = _last_text(state)
         if text:
@@ -770,15 +808,26 @@ class DeepAgentRuntime:
         content: ModelContent,
         conversation_id: str,
         activity: AgentActivityCallback | None,
+        *,
+        source: str = "internal",
     ) -> object:
         return await self._invoke_payload_with_retries(
             {
                 "messages": [
                     *[
-                        {"role": "user", "id": task_id, "content": result}
+                        {
+                            "role": "user",
+                            "id": task_id,
+                            "content": result,
+                            "additional_kwargs": {"talon_history_source": "subagent"},
+                        }
                         for task_id, result in (self._pending_results.get() or {}).items()
                     ],
-                    {"role": "user", "content": content},
+                    {
+                        "role": "user",
+                        "content": content,
+                        "additional_kwargs": {"talon_history_source": source},
+                    },
                 ]
             },
             conversation_id,
@@ -848,8 +897,12 @@ class DeepAgentRuntime:
         content: ModelContent,
         request: AgentRequest,
         activity: AgentActivityCallback | None,
+        *,
+        source: str = "internal",
     ) -> object:
-        state = await self._invoke_with_retries(content, request.conversation_id, activity)
+        state = await self._invoke_with_retries(
+            content, request.conversation_id, activity, source=source
+        )
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)
             if not interrupts:
@@ -864,11 +917,15 @@ class DeepAgentRuntime:
         request: AgentRequest,
         interrupts: Sequence[object],
     ) -> Command:
-        payload: dict[str, dict[str, list[dict[str, str]]]] = {}
+        payload: dict[str, object] = {}
         for interrupt in interrupts:
             interrupt_id = _interrupt_id(interrupt)
             if interrupt_id is None:
                 logger.warning("Received tool approval interrupt without an id")
+                continue
+            elicitation = _cancel_mcp_elicitation(getattr(interrupt, "value", None))
+            if elicitation is not None:
+                payload[interrupt_id] = elicitation
                 continue
             action_requests = _action_requests_from_interrupt(interrupt)
             decision, reject_message, _resolution = await _approval_decision(
@@ -1172,6 +1229,24 @@ def _recursion_limit_from_env(env: Mapping[str, str], fallback: int) -> int:
     """
     resolved = _positive_int_from_env(env, RECURSION_LIMIT_ENV_KEY)
     return resolved if resolved is not None else fallback
+
+
+def _inline_timeout_from_env(env: Mapping[str, str], fallback: float) -> float:
+    """Resolve how long a scheduled run may spend in one delegation.
+
+    The `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` env var, when set, overrides the
+    code default so operators can match the bound to their own schedules: the value
+    caps how long one wedged subagent can hold up every other cron job.
+
+    Args:
+        env: Process environment to read.
+        fallback: Value to keep when the variable is unset or unusable.
+
+    Returns:
+        Seconds allowed for one inline delegation.
+    """
+    resolved = _positive_int_from_env(env, INLINE_SUBAGENT_TIMEOUT_ENV_KEY)
+    return float(resolved) if resolved is not None else fallback
 
 
 def _positive_int_from_env(env: Mapping[str, str], key: str) -> int | None:

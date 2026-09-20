@@ -386,7 +386,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "file_path": "/./multi.txt",
                                 "old_string": "two",
                                 "new_string": "2",
                             },

@@ -656,16 +656,24 @@ make test
 
 ## Local Steel browser
 
-Talon can start and stop a native Steel browser with one persistent profile per
-assistant home. This experimental integration supports macOS with Node.js **24**,
-npm, git, and an installed Google Chrome. Runtime assets ship in the Talon package.
-Browser tools and a local viewer interface are separate follow-up changes.
+Talon manages one persistent local Steel browser per assistant home. Install
+Chrome/Chromium, git, and uv, then run setup once from `libs/talon`:
 
-Run this **once** from `libs/talon`, with Node 24 on `PATH`:
+**macOS (Homebrew):**
 
 ```sh
-uv run python -m deepagents_talon.steel_setup
+brew install node@24
+PATH="$(brew --prefix node@24)/bin:$PATH" uv run python -m deepagents_talon.steel_setup
 ```
+
+**Linux (with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) installed):**
+
+```sh
+nvm install 24
+nvm exec 24 uv run python -m deepagents_talon.steel_setup
+```
+
+Both setup commands explicitly select the required Node 24.
 
 Setup installs into `~/.deepagents/steel` by default (`--directory` overrides it).
 It checks out Steel revision `2b41124d8e2953b0afe355c534e3c9aa71edae26`,
@@ -678,8 +686,12 @@ Configure the existing Talon process environment:
 
 ```sh
 export TALON_BROWSER_ENABLED=true
-export TALON_BROWSER_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
+
+On macOS, Chrome defaults to `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
+On Linux, Talon searches `PATH` for `google-chrome`, `google-chrome-stable`,
+`chromium`, then `chromium-browser`. Set `TALON_BROWSER_CHROME` to override discovery.
+Native browser testing has been performed on macOS.
 
 From `examples/talon`, launch Talon:
 

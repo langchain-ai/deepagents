@@ -7,7 +7,9 @@ import contextlib
 import json
 import math
 import os
+import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,6 +21,18 @@ _READY = b'{"event":"talon_steel_ready"}\n'
 _SHUTDOWN_TIMEOUT = 30
 _MAX_PORT = 65535
 _BOOTSTRAP = Path(__file__).with_name("steel_runtime") / "bootstrap.mjs"
+
+
+def _default_chrome() -> str:
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "linux":
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            executable = shutil.which(name)
+            if executable:
+                return str(Path(executable).absolute())
+    msg = "Chrome was not found; install Chrome/Chromium or set TALON_BROWSER_CHROME"
+    raise RuntimeError(msg)
 
 
 class SteelProcess:
@@ -36,7 +50,7 @@ class SteelProcess:
             .expanduser()
             .resolve()
         )
-        self.chrome = config.env.get("TALON_BROWSER_CHROME", "")
+        self.chrome = config.env.get("TALON_BROWSER_CHROME") or _default_chrome()
         self.port = int(config.env.get("TALON_BROWSER_PORT", "3000"))
         self.timeout = float(config.env.get("TALON_BROWSER_START_TIMEOUT", "60"))
         if not 1 <= self.port <= _MAX_PORT or not math.isfinite(self.timeout) or self.timeout <= 0:

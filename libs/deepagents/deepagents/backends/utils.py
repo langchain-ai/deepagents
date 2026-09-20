@@ -40,7 +40,10 @@ _OPENAI_FILE_MIME_TYPES: Final = frozenset(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
 )
-"""Binary document inputs accepted by the OpenAI Responses API."""
+"""Binary document inputs accepted by the OpenAI Responses API.
+
+Source: https://developers.openai.com/api/docs/guides/file-inputs
+"""
 
 
 class InvalidGlobPatternError(ValueError):

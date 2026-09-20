@@ -875,32 +875,27 @@ class DeepAgentRuntime:
         request: AgentRequest,
         interrupts: Sequence[object],
     ) -> Command:
-        payload: dict[str, object] = {}
-        for interrupt in interrupts:
-            interrupt_id = _interrupt_id(interrupt)
-            if interrupt_id is None:
-                logger.warning("Received tool approval interrupt without an id")
-                continue
-            elicitation = _cancel_mcp_elicitation(getattr(interrupt, "value", None))
-            if elicitation is not None:
-                payload[interrupt_id] = elicitation
-                continue
-            action_requests = _action_requests_from_interrupt(interrupt)
-            decision, reject_message, _resolution = await _approval_decision(
-                request,
-                interrupt_id,
-                action_requests,
-            )
-            payload[interrupt_id] = {
+        actions, payload = _approval_batch(interrupts)
+        if not actions:
+            return Command(resume=payload)
+        audits = [
+            _approval_audit_context(request, interrupt_id, batch)
+            for interrupt_id, batch in actions.items()
+        ]
+        for audit in audits:
+            _log_approval_interrupt(audit)
+        decision, reject_message, resolution = await _approval_decision(
+            request,
+            next(iter(actions)),
+            tuple(action for batch in actions.values() for action in batch),
+        )
+        for audit in audits:
+            _log_approval_resolution(audit, decision=decision, resolution=resolution)
+            payload[audit.interrupt_id] = {
                 "decisions": _decision_payload(
-                    decision,
-                    count=max(len(action_requests), 1),
-                    reject_message=reject_message,
+                    decision, count=audit.action_count, reject_message=reject_message
                 )
             }
-        if not payload:
-            msg = "agent returned approval interrupts without resumable ids"
-            raise RuntimeError(msg)
         return Command(resume=payload)
 
     def _resolve_system_prompt(self) -> str | None:
@@ -986,24 +981,39 @@ def _interrupt_id(interrupt: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _approval_batch(
+    interrupts: Sequence[object],
+) -> tuple[dict[str, tuple[Mapping[str, object], ...]], dict[str, object]]:
+    actions: dict[str, tuple[Mapping[str, object], ...]] = {}
+    payload: dict[str, object] = {}
+    for interrupt in interrupts:
+        interrupt_id = _interrupt_id(interrupt)
+        if interrupt_id is None or interrupt_id in actions or interrupt_id in payload:
+            msg = "agent returned approval interrupts without unique resumable ids"
+            raise RuntimeError(msg)
+        elicitation = _cancel_mcp_elicitation(getattr(interrupt, "value", None))
+        if elicitation is not None:
+            payload[interrupt_id] = elicitation
+        else:
+            actions[interrupt_id] = _action_requests_from_interrupt(interrupt)
+    if not actions and not payload:
+        msg = "agent returned approval interrupts without resumable ids"
+        raise RuntimeError(msg)
+    return actions, payload
+
+
 def _action_requests_from_interrupt(interrupt: object) -> tuple[Mapping[str, object], ...]:
     value = getattr(interrupt, "value", None)
-    if not isinstance(value, Mapping):
-        logger.warning("Received malformed tool approval interrupt: missing value mapping")
-        return ()
-    data = cast("Mapping[str, object]", value)
-    requests = data.get("action_requests")
-    if not isinstance(requests, Sequence) or isinstance(requests, (str, bytes, bytearray)):
-        logger.warning("Received malformed tool approval interrupt: missing action_requests")
-        return ()
-
-    parsed: list[Mapping[str, object]] = []
-    for item in requests:
-        if isinstance(item, Mapping):
-            parsed.append(cast("Mapping[str, object]", item))
-        else:
-            logger.warning("Ignoring malformed tool approval action request: %r", item)
-    return tuple(parsed)
+    requests = value.get("action_requests") if isinstance(value, Mapping) else None
+    if (
+        not isinstance(requests, Sequence)
+        or isinstance(requests, (str, bytes, bytearray))
+        or not requests
+        or any(not isinstance(item, Mapping) for item in requests)
+    ):
+        msg = "Received malformed tool approval action requests"
+        raise ValueError(msg)
+    return tuple(cast("Mapping[str, object]", item) for item in requests)
 
 
 async def _approval_decision(
@@ -1011,16 +1021,12 @@ async def _approval_decision(
     interrupt_id: str,
     action_requests: Sequence[Mapping[str, object]],
 ) -> tuple[ToolApprovalDecision, str | None, str]:
-    audit = _approval_audit_context(request, interrupt_id, action_requests)
-    _log_approval_interrupt(audit)
-
     if request.metadata.get("trigger") == "cron":
         logger.warning(
             "Auto-denying %d tool approval request(s) for cron conversation %s",
             len(action_requests),
-            audit.conversation_ref,
+            stable_log_ref(request.conversation_id),
         )
-        _log_approval_resolution(audit, decision="reject", resolution="cron_auto_deny")
         return "reject", _CRON_AUTO_DENY_MESSAGE, "cron_auto_deny"
 
     handler = _approval_handler_from_request(request)
@@ -1028,9 +1034,8 @@ async def _approval_decision(
         logger.warning(
             "Auto-denying %d tool approval request(s) for conversation %s without approval handler",
             len(action_requests),
-            audit.conversation_ref,
+            stable_log_ref(request.conversation_id),
         )
-        _log_approval_resolution(audit, decision="reject", resolution="channel_auto_deny")
         return "reject", _CHANNEL_AUTO_DENY_MESSAGE, "channel_auto_deny"
 
     decision = await handler(
@@ -1041,9 +1046,7 @@ async def _approval_decision(
         )
     )
     if decision == "approve":
-        _log_approval_resolution(audit, decision="approve", resolution="operator")
         return "approve", None, "operator"
-    _log_approval_resolution(audit, decision="reject", resolution="operator")
     return "reject", "Denied by operator.", "operator"
 
 

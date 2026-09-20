@@ -233,9 +233,10 @@ class MediaAgent(BlockingAgent):
 
 
 class ApprovalAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, action_count: int = 1) -> None:
         super().__init__()
         self.approvals: list[ToolApprovalRequest] = []
+        self.action_count = action_count
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -250,7 +251,8 @@ class ApprovalAgent(BlockingAgent):
                     "name": "dangerous_tool",
                     "args": {"path": "/secret"},
                 },
-            ),
+            )
+            * self.action_count,
         )
         self.approvals.append(approval)
         decision = await request.approval_handler(approval)
@@ -2073,5 +2075,39 @@ async def test_reset_counter_rollback_failure_is_logged_and_still_reverted(
         assert host._agent_conversation_id("test:chat") == "test:chat"
         assert json.loads(config.conversation_state_path.read_text()) == {"test:chat": 1}
         assert "Could not roll back the conversation reset counter" in caplog.text
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("reply", ["approve", "deny"])
+async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent(action_count=2)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text="run", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 1)
+        assert "run ALL actions" in channel.sent[0][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="other")
+        )
+        await _wait_for_sent_count(channel, 2)
+        assert "Only the operator" in channel.sent[1][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=f"{reply} 1", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 3)
+        assert channel.sent[2] == channel.sent[0]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 4)
+        decision = "approve" if reply == "approve" else "reject"
+        assert channel.sent[3] == ("chat", f"decision:{decision}")
+        assert len(agent.requests) == 1
+        assert not host._pending_tool_approvals
     finally:
         await host.stop()

@@ -935,7 +935,7 @@ jobs:
               --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
               --agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'
             )
-            agent_host_args+=(--allow-agent-host api.typesafe.ai)
+            agent_host_args+=(--allow-agent-host gateway.smith.langchain.com)
           fi
           # Open-web search, forwarded only to the deep-research category: its ground
           # truth includes external facts that exist nowhere in the task corpus, so the

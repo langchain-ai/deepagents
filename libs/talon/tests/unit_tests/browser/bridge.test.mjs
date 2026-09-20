@@ -62,12 +62,12 @@ test('HTTP route isolation, authentication and command execution', async () => {
     const control = `http://127.0.0.1:${bridge.control.address().port}`;
     const viewer = `http://127.0.0.1:${bridge.viewer.address().port}`;
     assert.equal((await fetch(`${viewer}/health`)).status, 200);
-    assert.equal((await fetch(`${viewer}/internal/browser/status`)).status, 404);
-    assert.equal((await fetch(`${control}/internal/browser/status`)).status, 401);
+    assert.equal((await fetch(`${viewer}/internal/browser/release`, { method: 'POST' })).status, 404);
+    assert.equal((await fetch(`${control}/internal/browser/release`, { method: 'POST' })).status, 401);
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-    assert.equal((await fetch(`${control}/internal/browser/status`, { headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
+    assert.equal((await fetch(`${control}/internal/browser/release`, { headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
     const rebound = await new Promise((resolve, reject) => {
-      http.get(`${control}/internal/browser/status`, { headers: { ...headers, Host: 'attacker.example' } }, (response) => { response.resume(); resolve(response.statusCode); }).on('error', reject);
+      http.get(`${control}/internal/browser/release`, { headers: { ...headers, Host: 'attacker.example' } }, (response) => { response.resume(); resolve(response.statusCode); }).on('error', reject);
     });
     assert.equal(rebound, 403);
     const envelope = { run_id: 'run', method: 'Runtime.evaluate', params: { expression: '2' } };

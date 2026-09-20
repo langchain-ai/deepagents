@@ -9,10 +9,6 @@ export class Coordinator {
     Object.assign(this, { ttl, drainMs, run: null, paused: false, failed: false, pausing: null });
   }
 
-  status() {
-    return { paused: this.paused, busy: this.run !== null, failed: this.failed };
-  }
-
   allowed(run) {
     return !this.failed && !this.paused && this.run === run && !run.closing;
   }

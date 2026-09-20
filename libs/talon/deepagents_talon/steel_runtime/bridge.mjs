@@ -201,12 +201,10 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
         return reply(response, ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
       }
       if (!control && localViewer) return await localViewer.handler(request, response);
-      const status = request.method === 'GET' && request.url === '/internal/browser/status';
       const release = request.method === 'POST' && request.url === '/internal/browser/release';
       const invoke = request.method === 'POST' && request.url === '/internal/browser/command';
-      if (!control || !(status || release || invoke)) return reply(response, 404, { error: 'not_found' });
+      if (!control || !(release || invoke)) return reply(response, 404, { error: 'not_found' });
       if (!authorized(request, token)) return reply(response, 401, { error: 'unauthorized' });
-      if (status) return reply(response, 200, coordinator.status());
       const envelope = await body(request, invoke ? MAX_BYTES : 16384);
       const result = release ? (await coordinator.release(envelope.run_id), { status: 'released' }) : await command(envelope);
       return reply(response, 200, result);

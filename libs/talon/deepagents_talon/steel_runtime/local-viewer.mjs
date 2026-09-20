@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const UPSTREAM = `http://127.0.0.1:${process.env.PORT || 3000}`;
 const CAST = '/v1/sessions/cast';
@@ -87,18 +87,12 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
     return value;
   }
 
-  function controlling(value) {
-    coordinator.expire();
-    return value && !value.revoked && Date.now() < value.created + 1800000 && Date.now() < value.touched + 600000 && local?.session === value && coordinator.lease === local.lease && local.lease.mode === 'HUMAN' && !local.lease.expiring && !local.draining;
+  function live(value) {
+    return value && !value.revoked && Date.now() < value.created + 1800000 && Date.now() < value.touched + 600000;
   }
 
-  function closeSocket(socket) {
-    if (socket.readyState === 3) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { reject(new Error('close_timeout')); socket.terminate(); }, 3000);
-      socket.once('close', () => { clearTimeout(timer); resolve(); });
-      try { socket.close(1000); } catch { socket.terminate(); }
-    });
+  function controlling(value) {
+    return live(value) && local?.session === value && local.ready && !local.draining && coordinator.paused && !coordinator.failed;
   }
 
   function deadline(operation) {
@@ -110,52 +104,40 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
   }
 
   function fail(current) {
-    coordinator.failed(current.lease);
+    coordinator.fail();
+    current.ready = false;
     try { current.input?.abort(); } catch { }
   }
 
-  function drain(current = local) {
-    if (!current) return Promise.resolve();
-    if (!current.draining) {
-      if (current.lease.mode !== 'FAILED') coordinator.fence(current.lease, 'PAUSED');
-      const sockets = [...pairs].filter((pair) => pair.local === current);
-      current.draining = Promise.resolve().then(async () => {
+  function drain(current) {
+    current.ready = false;
+    if (!current.draining) current.draining = (async () => {
+      try {
+        await current.setup;
         await Promise.allSettled([...current.pending]);
-        try { await deadline(() => current.input?.close()); }
-        finally { await Promise.all(sockets.flatMap((pair) => [closeSocket(pair.client), closeSocket(pair.upstream)])); }
-      });
-      current.draining.catch(() => fail(current));
-    }
+        await deadline(() => current.input?.close());
+        if (coordinator.failed) throw new Error('input_failed');
+      } catch (error) { fail(current); throw error; }
+    })();
     return current.draining;
   }
 
-  async function fence(failed = false, current = local) {
+  async function resume(current = local) {
     if (!current) return;
-    if (failed) fail(current);
-    else if (current.lease.mode !== 'FAILED') coordinator.fence(current.lease, 'PAUSED');
-    try { await drain(current); } catch { }
+    await drain(current);
+    await coordinator.resume();
+    if (local === current) local = null;
   }
 
-  async function revoke(value, current = local) {
+  async function revoke(value) {
     value.revoked = true;
     for (const [id, session] of sessions) if (session === value) sessions.delete(id);
-    if (!current || current.session !== value) return;
-    if (!current.revoking) current.revoking = (async () => {
-      try {
-        await current.setup?.catch(() => {});
-        await drain(current);
-        await coordinator.stop(current.lease, true);
-        if (local === current) local = null;
-      } catch (error) {
-        fail(current);
-        throw error;
-      }
-    })();
-    return current.revoking;
+    for (const pair of pairs) if (pair.session === value) pair.stop();
+    if (local?.session === value) await resume();
   }
 
   function inject(current, value, pair, message) {
-    if (!current.input || current.pending.size >= 32) { void fence(true, current); return; }
+    if (!current.input || current.pending.size >= 32) { fail(current); return; }
     const operation = current.queue.then(async () => {
       if (!controlling(value) || local !== current || pair.pageId !== message.pageId) return;
       if (current.target !== message.pageId) {
@@ -178,39 +160,23 @@ export function createLocalViewer({ coordinator, WebSocket, WebSocketServer, ori
       await deadline(() => current.input.command(message.type === 'mouseEvent' ? 'Input.dispatchMouseEvent' : 'Input.dispatchKeyEvent', params, current.sessionId));
     });
     current.pending.add(operation);
-    current.queue = operation.catch(() => { void fence(true, current); }).finally(() => current.pending.delete(operation));
+    current.queue = operation.catch(() => { fail(current); }).finally(() => current.pending.delete(operation));
   }
 
   const sweep = setInterval(() => {
-    for (const [id, value] of sessions) {
-      if (Date.now() >= value.created + 1800000 || Date.now() >= value.touched + 600000) {
-        void revoke(value).catch(() => {});
-      }
-    }
-    if (local && (coordinator.lease !== local.lease || local.lease.mode !== 'HUMAN' || local.lease.expiring)) void fence(local.lease.mode === 'FAILED');
+    for (const value of sessions.values()) if (!live(value)) void revoke(value).catch(() => {});
   }, 1000);
   sweep.unref();
 
-  async function take(value) {
-    if (local || coordinator.status().mode !== 'IDLE' || coordinator.failedLatch) throw new Error('unavailable');
-    const owner = { run_id: `local:${randomUUID()}`, background: false };
-    const acquired = await coordinator.action({ action: 'acquire', request_id: randomUUID(), owner });
-    local = { session: value, lease: coordinator.lease, draining: null, input: null, pending: new Set(), queue: Promise.resolve() };
-    const current = local;
-    current.setup = (async () => {
-      if (value.revoked) throw new Error('session_revoked');
-      const handoff = await coordinator.action({ ...acquired, owner, action: 'handoff', request_id: randomUUID() });
-      if (value.revoked) throw new Error('session_revoked');
-      await coordinator.take({ ...handoff, owner }, owner);
-      if (value.revoked) throw new Error('session_revoked');
-      current.input = createInput ? createInput(current.lease, () => local === current && controlling(value)) : null;
-    })();
-    try { await current.setup; }
-    catch (error) {
-      if (value.revoked) await revoke(value, current);
-      else await fence(true, current);
-      throw error;
-    }
+  async function pause(value) {
+    if (local || coordinator.failed) throw new Error('unavailable');
+    const current = local = { session: value, ready: false, draining: null, input: null, pending: new Set(), queue: Promise.resolve() };
+    current.setup = coordinator.pause();
+    await current.setup;
+    if (!live(value) || local !== current || current.draining) throw new Error('session_revoked');
+    current.input = createInput ? createInput(() => local === current && controlling(value)) : null;
+    if (!current.input) { fail(current); throw new Error('input_unavailable'); }
+    current.ready = true;
   }
 
   function shell(value) {
@@ -229,25 +195,23 @@ message.textContent='Invalid or expired sign-in link.';
 addEventListener('hashchange',loginFromLink);loginFromLink();
 </script>`;
     if (!value) return '<!doctype html><title>Local browser login</title><h1>Local browser</h1><form method="post" action="/auth/login"><label>Launch password <input type="password" name="token" required autocomplete="off" maxlength="43"></label><button>Sign in</button></form><p id="login-message" role="status"></p>' + linkLogin;
-    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="take">Take</button> <button id="release">Release</button> <button id="logout">Sign out</button><p>Take waits for the agent to finish. Release returns control to Talon.</p><p id="status" role="status"></p><iframe title="Steel browser viewer" hidden style="width:100%;height:80vh;border:0" sandbox="allow-scripts allow-same-origin"></iframe>${linkLogin}<script>
-const frame=document.querySelector('iframe'), status=document.querySelector('#status');
-let waiting=false, refreshing=false;
+    return `<!doctype html><title>Local browser control</title><h1>Local browser</h1><button id="automation">Pause automation</button> <button id="logout">Sign out</button><p>Watch anytime. Pause browser automation to log in or interact, then resume.</p><p id="status" role="status"></p><iframe src="/viewer" title="Steel browser viewer" style="width:100%;height:80vh;border:0;pointer-events:none" sandbox="allow-scripts allow-same-origin"></iframe>${linkLogin}<script>
+const frame=document.querySelector('iframe'), status=document.querySelector('#status'), button=document.querySelector('#automation');
+let owned=false, refreshing=false, changing=false;
 async function mutate(action){return fetch('/'+action,{method:'POST',headers:{'X-CSRF-Token':'${value.csrf}'}});}
 async function refresh(){
-if(refreshing)return;refreshing=true;
+if(refreshing||changing)return;refreshing=true;
 try{
 const response=await fetch('/state');if(response.status===401){location.reload();return;}if(!response.ok)throw Error();
-const state=await response.json();
-if(waiting&&state.available){const taken=await mutate('take');if(taken.ok){if(!waiting)await mutate('release');waiting=false;return;}if(taken.status!==409)throw Error();}
-document.querySelector('#take').disabled=waiting||state.owned;
-document.querySelector('#release').disabled=!waiting&&!state.owned;
-status.textContent=waiting?'Waiting for the agent to finish':state.controlling?'You control this browser':state.owned?'Paused: release to finish':state.available?'Available':'Browser is busy';
-if(state.controlling){if(!frame.hasAttribute('src'))frame.src='/viewer';frame.hidden=false;}else{frame.removeAttribute('src');frame.hidden=true;}
-}catch{waiting=false;status.textContent='Browser control is unavailable.';}finally{refreshing=false;}
+const state=await response.json();owned=state.owned;
+button.textContent=owned?'Resume automation':'Pause automation';
+button.disabled=state.failed||(state.paused&&!owned);
+status.textContent=state.failed?'Browser unavailable; restart Talon.':state.controlling?'Automation paused. You can interact.':state.paused?'Automation paused.':'Watching the shared browser.';
+frame.style.pointerEvents=state.controlling?'auto':'none';
+}catch{status.textContent='Browser unavailable.';frame.style.pointerEvents='none';}finally{refreshing=false;}
 }
-document.querySelector('#take').onclick=()=>{waiting=true;void refresh();};
-document.querySelector('#release').onclick=async()=>{if(waiting){waiting=false;}else{await mutate('release');}await refresh();};
-document.querySelector('#logout').onclick=async()=>{waiting=false;if((await mutate('auth/logout')).ok)location.reload();};
+button.onclick=async()=>{changing=true;button.disabled=true;frame.style.pointerEvents='none';status.textContent=owned?'Resuming automation…':'Finishing the current browser command…';try{await mutate(owned?'resume':'pause');}finally{changing=false;await refresh();}};
+document.querySelector('#logout').onclick=async()=>{if((await mutate('auth/logout')).ok)location.reload();};
 refresh();setInterval(refresh,2000);
 </script>`;
   }
@@ -256,8 +220,8 @@ refresh();setInterval(refresh,2000);
     try {
       if (closed || request.headers.host !== authority) return send(response, 403, 'Forbidden');
       const route = request.url;
-      if (!['/', '/auth/login', '/auth/logout', '/state', '/take', '/release', '/viewer'].includes(route)) return send(response, 404, 'Not found');
-      const mutation = ['/auth/login', '/auth/logout', '/take', '/release'].includes(route);
+      if (!['/', '/auth/login', '/auth/logout', '/state', '/pause', '/resume', '/viewer'].includes(route)) return send(response, 404, 'Not found');
+      const mutation = ['/auth/login', '/auth/logout', '/pause', '/resume'].includes(route);
       if (request.method !== (mutation ? 'POST' : 'GET')) return send(response, 405, 'Method not allowed');
       if (mutation && request.headers.origin !== origin) return send(response, 403, 'Forbidden');
       if (route === '/auth/login') {
@@ -278,31 +242,28 @@ refresh();setInterval(refresh,2000);
       const value = session(request);
       if (route === '/') return send(response, 200, shell(value), 'text/html; charset=utf-8');
       if (!value) return send(response, 401, 'Sign in required');
-      if (route === '/state') return send(response, 200, JSON.stringify({ available: !local && coordinator.status().mode === 'IDLE' && !coordinator.failedLatch && !busy, owned: local?.session === value, controlling: Boolean(controlling(value)) }), 'application/json');
+      if (route === '/state') return send(response, 200, JSON.stringify({ paused: coordinator.paused, failed: coordinator.failed, owned: local?.session === value, controlling: Boolean(controlling(value)) }), 'application/json');
       if (route === '/viewer') {
-        if (!controlling(value)) return send(response, 403, 'Forbidden');
+        if (!live(value)) return send(response, 401, 'Sign in required');
         const html = await fetchHTML();
         const stock = `const baseWsUrl = '${UPSTREAM.replace("http:", "ws:")}${CAST}?pageIndex=0';`;
         if (typeof html !== 'string' || Buffer.byteLength(html) > FRAME_LIMIT || html.split(stock).length !== 2 || !html.includes('const singlePageMode = true;') || html.includes('id="url-text"') || html.includes('id="tab-bar"')) throw new Error('unexpected_viewer_template');
-        if (!controlling(value)) return send(response, 403, 'Forbidden');
+        if (!live(value)) return send(response, 401, 'Sign in required');
         return send(response, 200, html.replace(stock, `const baseWsUrl = '${wsOrigin}${CAST}?pageIndex=0';`), 'text/html; charset=utf-8');
       }
       if (request.headers['x-csrf-token'] !== value.csrf) return send(response, 403, 'Forbidden');
       if ((await readBody(request)) !== '') return send(response, 400, 'Unexpected body');
       if (route === '/auth/logout') {
-          await revoke(value);
-          return send(response, 200, '{}', 'application/json', { 'Set-Cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
-        }
-        if (busy) return send(response, 409, 'Busy');
+        await revoke(value);
+        return send(response, 200, '{}', 'application/json', { 'Set-Cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+      }
+      if (busy) return send(response, 409, 'Busy');
       busy = true;
       try {
-        if (route === '/take') await take(value);
+        if (route === '/pause') await pause(value);
         else {
-          if (!local || local.session !== value) return send(response, 403, 'Forbidden');
-          coordinator.fence(local.lease, local.lease.mode === 'FAILED' ? 'FAILED' : 'PAUSED');
-          await drain();
-          await coordinator.stop(local.lease, true);
-          local = null;
+          if (local?.session !== value) return send(response, 403, 'Forbidden');
+          await resume();
         }
         return send(response, 200, '{}', 'application/json');
       } finally { busy = false; }
@@ -314,48 +275,54 @@ refresh();setInterval(refresh,2000);
     try {
       if (closed || request.method !== 'GET' || request.headers.host !== authority || request.headers.origin !== origin || request.headers['sec-websocket-protocol']) return reject();
       const value = session(request);
-      if (!controlling(value)) return reject();
+      if (!live(value)) return reject();
       const match = /^\/v1\/sessions\/cast\?(tabInfo=true|pageIndex=0|pageId=([A-Za-z0-9_-]{1,128}))$/.exec(request.url);
       if (!match) return reject();
       const discovery = match[1] === 'tabInfo=true';
-      if ([...pairs].some((pair) => pair.discovery === discovery) || pairs.size >= 2) return reject();
+      if ([...pairs].some((pair) => pair.session === value && pair.discovery === discovery) || pairs.size >= 64) return reject();
       wss.handleUpgrade(request, socket, head, (client) => {
-        if (!controlling(value)) { client.close(); return; }
+        if (!live(value)) { client.close(); return; }
         let upstream;
         try { upstream = new WebSocket(`${UPSTREAM.replace('http:', 'ws:')}${CAST}?${match[1]}`, { maxPayload: FRAME_LIMIT, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 5000 }); }
-        catch { client.close(); void fence(true); return; }
-        const current = local;
-        const pair = { client, upstream, discovery, local: current, pageId: null };
+        catch { client.close(); return; }
+        const pair = { client, upstream, discovery, session: value, pageId: null };
         pairs.add(pair);
         let credits = 240;
         let last = Date.now();
         let frameAt = 0;
-        let clientClosed = false;
-        let upstreamClosed = false;
-        const stop = () => { void fence(false, current); };
+        let stopped = false;
+        const stop = pair.stop = () => {
+          if (stopped) return;
+          stopped = true;
+          pairs.delete(pair);
+          client.terminate();
+          upstream.terminate();
+          if (local?.session === value) void drain(local).catch(() => {});
+        };
         client.on('error', stop);
         upstream.on('error', stop);
-        client.on('close', () => { clientClosed = true; if (upstreamClosed) pairs.delete(pair); stop(); });
-        upstream.on('close', () => { upstreamClosed = true; if (clientClosed) pairs.delete(pair); stop(); });
+        client.on('close', stop);
+        upstream.on('close', stop);
         client.on('message', (data, binary) => {
           try {
-            if (!controlling(value)) return stop();
+            if (!live(value)) return stop();
+            if (!controlling(value)) return;
             const now = Date.now();
             credits = Math.min(240, credits + (now - last) * 0.12);
             last = now;
-            if (binary || discovery || data.length > INPUT_LIMIT || credits < 1 || upstream.readyState !== 1 || upstream.bufferedAmount > INPUT_LIMIT) return stop();
+            if (binary || discovery || data.length > INPUT_LIMIT || credits < 1 || upstream.readyState !== 1) return stop();
             const message = JSON.parse(data.toString());
             if (!validInput(message)) return stop();
             if (match[1] === 'pageIndex=0' && message.pageId === 'default') message.pageId = pair.pageId;
             if (!pair.pageId || message.pageId !== pair.pageId || (match[2] && message.pageId !== match[2])) return stop();
             credits -= 1;
             value.touched = now;
-            inject(current, value, pair, message);
+            inject(local, value, pair, message);
           } catch { stop(); }
         });
         upstream.on('message', (data, binary) => {
           try {
-            if (!controlling(value)) return stop();
+            if (!live(value)) return stop();
             if (binary || data.length > FRAME_LIMIT || client.bufferedAmount > FRAME_LIMIT) return stop();
             const message = JSON.parse(data.toString());
             if (!record(message)) return stop();
@@ -376,8 +343,8 @@ refresh();setInterval(refresh,2000);
     if (!closePromise) closePromise = (async () => {
       closed = true;
       clearInterval(sweep);
-      sessions.clear();
-      await fence(true);
+      for (const value of [...sessions.values()]) await revoke(value).catch(() => {});
+      for (const pair of pairs) pair.stop();
       await new Promise((resolve) => wss.close(resolve));
     })();
     return closePromise;

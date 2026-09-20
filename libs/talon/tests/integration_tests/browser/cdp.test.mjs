@@ -8,10 +8,9 @@ import { createBridge } from '../../../deepagents_talon/steel_runtime/bridge.mjs
 
 const enabled = process.env.TALON_TEST_LIVE_CDP === '1';
 
-test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, handoff', { skip: !enabled, timeout: 60000 }, async () => {
+test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input', { skip: !enabled, timeout: 60000 }, async () => {
   const { WebSocket } = createRequire(`${process.env.TALON_TEST_STEEL_DIR}/package.json`)('ws');
   const coordinator = new Coordinator();
-  const owner = { run_id: 'cdp-test', background: false };
   const token = randomBytes(32).toString('base64url');
   const bridge = createBridge({ token, coordinator, WebSocket, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0,
     ...(process.env.TALON_TEST_CDP_LOOPBACK === '1' ? { discoverURL: async () => 'ws://127.0.0.1:3000/' } : {}) });
@@ -26,9 +25,9 @@ test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, ha
       assert.equal(response.status, 200, JSON.stringify(result));
       return result;
     };
-    let lease = await post('actions', { action: 'acquire', owner, request_id: 'acquire' });
-    let sequence = 0;
-    const command = async (method, params = {}, session_id) => (await post('command', { owner, ...lease, request_id: `cmd-${++sequence}`, method, params, ...(session_id ? { session_id } : {}) })).result;
+    const command = async (method, params = {}, session_id) => (await post('command', {
+      run_id: 'cdp-test', method, params, ...(session_id ? { session_id } : {}),
+    })).result;
     const { targetId } = await command('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await command('Target.attachToTarget', { targetId, flatten: true });
     await command('Page.navigate', { url: 'data:text/html,<title>Controlled</title><input type=file id=upload>' }, sessionId);
@@ -40,10 +39,6 @@ test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, ha
     await command('DOM.setFileInputFiles', { nodeId, files: [file] }, sessionId);
     assert.equal((await command('Runtime.evaluate', { expression: 'document.querySelector("#upload").files[0].size', returnByValue: true }, sessionId)).result.value, 16);
     await command('Target.closeTarget', { targetId });
-    await post('actions', { ...lease, owner, action: 'release', request_id: 'release' });
-    lease = await post('actions', { action: 'acquire', owner, request_id: 'acquire-again' });
-    const handoff = await post('actions', { ...lease, owner, action: 'handoff', request_id: 'handoff' });
-    assert.equal(handoff.status, 'viewer_unavailable');
-    await coordinator.stop(coordinator.lease, true);
+    await post('release', { run_id: 'cdp-test' });
   } finally { await bridge.close(); rmSync(file, { force: true }); }
 });

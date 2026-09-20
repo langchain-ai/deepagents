@@ -733,80 +733,46 @@ TALON_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 uv run --group test pytest tests/integration_tests/test_steel_native.py
 ```
 
-### Local viewer and human control
+### Local viewer
 
-Normal startup prints a local sign-in link to the controlling terminal. It uses a
-fresh viewer credential per launch, separate from the agent control token. The
-credential stays in the URL fragment until the page exchanges it for an HttpOnly,
-SameSite cookie and removes the fragment. The link never goes through application
-logs or redirected output; a launch without a controlling terminal prints no link.
+Open the sign-in link printed to the controlling terminal to watch the browser at
+any time. The viewer shows the first tab of the same persistent profile the agent
+uses. Click **Pause automation** to log in, type, or scroll, then **Resume automation**.
+Pausing waits for the current browser command, not the entire agent run. Resuming
+waits for dispatched input to finish. Login cookies remain available to the agent.
 
-Open the link and click **Take**. If an agent owns the browser, the page waits for
-that run to release it; **Release** cancels the wait. The viewer shows Steel's first
-tab. Click, type, and scroll there, then **Release** to let Talon acquire the browser
-again. Release waits for dispatched input to finish before freeing ownership.
-Sign out revokes the session. A disconnected viewer pauses ownership until Release
-or session expiry; uncertain input completion blocks reuse until Talon restarts.
+The viewer link uses a fresh credential each launch and never appears in application
+logs. Sign out ends the viewer session and a healthy pause. If the viewer disconnects
+while you are interacting, automation stays paused until you resume or the session
+expires. Uncertain input completion requires restarting Talon.
 
-Set `TALON_BROWSER_LOCAL_VIEWER=false` to disable the viewer. Tunnels,
-remote sharing, channel-delivered links, and mobile access are deferred.
+Set `TALON_BROWSER_LOCAL_VIEWER=false` to disable the viewer. Remote sharing is not
+supported.
 
-### Browser tools and coordination
+### Browser tools
 
-`TALON_BROWSER_ENABLED=true` enables native `browser_cdp` and
-`browser_request_handoff` tools independently of MCP refresh. The default is off.
-Talon starts the packaged Node bridge inside its managed Steel process and
-creates/removes an owner-only runtime token
-at `<assistant-home>/browser/control-token`. The CLI supplies this path automatically;
-embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
-Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
-the local viewer uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
-Redirects, proxy environment settings, and mutation retries are disabled. Requests
-and observations are limited to 4 MiB, including error responses. Every HTTP request
-has a 35-second wall deadline, above the
-bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
-10-second deadline. Exact bridge codes `lease_busy` and `pending_limit` become
-`browser_busy`; all other failures become `browser_unavailable`, without remote
-error details. The bridge owns concurrency
-and task quotas; the native client serializes CDP commands within each run.
+`TALON_BROWSER_ENABLED=true` enables `browser_cdp` independently of MCP refresh.
+Talon starts the packaged bridge and manages an owner-only control token at
+`<assistant-home>/browser/control-token`. Embedders provide this path through
+`TALON_BROWSER_TOKEN_FILE`. Control binds to `127.0.0.1:8081`
+(`TALON_BROWSER_CONTROL_PORT` overrides it); the local viewer uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
 
-Each agent run acquires exclusive control of the shared browser. Scheduled jobs
-use the same browser without additional identity configuration. Detached local tasks
-use separate background runs and release
-only their own leases; synchronous child browser access fails closed.
-Existing tool approval policies still apply.
+One agent run uses the browser at a time. Scheduled and background runs use the
+same browser with independent run IDs. Existing tool approval policies apply.
+Competing runs receive `browser_busy`; pausing browser automation in the viewer
+returns `browser_paused`. Commands are never automatically retried. Cancellation
+releases the run after pending commands finish; uncertain completion requires restart.
 
-Use raw CDP for navigation (`Page.navigate`), DOM text and JavaScript
-(`Runtime.evaluate`), base64 screenshots (`Page.captureScreenshot`), tabs
-(`Target.*`), clicking/typing (`Input.*`), and browser-local upload/download
-operations (`DOM.setFileInputFiles`, `Browser.setDownloadBehavior`, `IO.read`).
-Optional `session_id` routes commands to attached targets. There is no convenient
-host file transfer tool and no automatic login screenshot capture. All CDP results
-are explicitly wrapped as untrusted JSON observations.
+Use `browser_cdp` for navigation, page text, screenshots, tabs, and browser-local
+file operations. Optional `session_id` routes commands to attached targets.
+Results are bounded untrusted JSON observations. Loopback authentication, exact
+Host/Origin checks, and request/response limits protect the bridge.
 
-Handoff returns only sanitized status/UUID and `PAUSED`: foreground
-`viewer_unavailable`, background `human_required`. Channel-delivered handoff links
-are deferred; the local viewer takes control only after the agent releases its lease.
-Embedders may supply `host.browser_event_handler`, receiving the bound host
-identity and sanitized event outside model context. `AgentRequest` also accepts
-optional keyword-only
-`browser_binding` and `browser_event_handler`.
-The graph receives `BrowserContext` only when a browser client is configured.
+The loopback integration tests run without Chrome or downloads:
 
-The cross-layer contract test launches the packaged Node bridge and
-coordinator on ephemeral loopback ports with a synthetic CDP transport. It exercises
-native HTTP, runtime tools, foreground/background handoff lease versions, release,
-competing owners, and the 256-command quota without internet access. It does not
-exercise Chromium or real navigation timing. Native Steel integration tests cover
-real navigation and input through a Talon invocation. From `libs/talon`,
-with Node.js available, run:
-
-```bash
-uv run --group test pytest tests/integration_tests/test_browser_bridge.py --color=no
+```sh
+uv run --group test pytest tests/integration_tests/test_browser_bridge.py
 ```
-
-Uncertain command completion fences ownership until Talon and Steel restart; it
-never silently transfers control. Shutdown closes the bridge before Chrome.
 
 ## Resources
 

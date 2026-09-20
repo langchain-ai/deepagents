@@ -48,7 +48,7 @@ test('Chromium form and fragment login preserve strict origin checks', {
     assert.equal(await page.title(), 'Local browser login');
   }
   await page.goto(`${origin}/#token=${token}`);
-  await page.waitForSelector('#take');
+  await page.waitForSelector('#automation');
   assert.ok(page.url() === `${origin}/`, 'login fragment must be removed');
   assert.equal(tokenInRequestURL, false);
   await page.goto(`${origin}/#token=${token}`);

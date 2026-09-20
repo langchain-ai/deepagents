@@ -11,7 +11,6 @@ const STEEL = `http://127.0.0.1:${process.env.PORT || 3000}`;
 const SOCKET = `ws://127.0.0.1:${process.env.PORT || 3000}/`;
 const errorStatus = (error) => {
   const code = errorCode(error);
-  if (['invalid_owner', 'wrong_owner'].includes(code)) return 403;
   if (code.startsWith('invalid_') || error instanceof SyntaxError) return 400;
   if (['request_limit', 'response_limit'].includes(code)) return 413;
   return code === 'upstream_unavailable' ? 503 : 409;
@@ -54,8 +53,8 @@ export async function discover() {
 }
 
 export class Transport {
-  constructor({ WebSocket, coordinator, lease, discoverURL = discover, timer = setTimeout, clear = clearTimeout, allowed = () => lease.mode === 'AGENT' }) {
-    Object.assign(this, { WebSocket, coordinator, lease, discoverURL, timer, clear, allowed });
+  constructor({ WebSocket, allowed, onFailure, discoverURL = discover, timer = setTimeout, clear = clearTimeout }) {
+    Object.assign(this, { WebSocket, allowed, onFailure, discoverURL, timer, clear });
     this.pending = new Map();
     this.nextId = 0;
     this.closed = false;
@@ -68,7 +67,7 @@ export class Transport {
 
   async open() {
     const url = await this.discoverURL();
-    if (this.closed) fail('lease_fenced');
+    if (this.closed) fail('browser_paused');
     const socket = this.socket = new this.WebSocket(url, { maxPayload: MAX_BYTES, handshakeTimeout: 10000, followRedirects: false, perMessageDeflate: false });
     socket.on('message', (data, binary) => this.message(data, binary));
     socket.on('error', () => this.break());
@@ -78,7 +77,7 @@ export class Transport {
       socket.once('error', () => reject(new BridgeError('upstream_unavailable')));
       socket.once('close', () => reject(new BridgeError('upstream_unavailable')));
     });
-    if (this.closed) fail('lease_fenced');
+    if (this.closed) fail('browser_paused');
   }
 
   message(data, binary) {
@@ -98,10 +97,10 @@ export class Transport {
   }
 
   async command(method, params, sessionId) {
-    if (this.closed || !this.allowed()) fail('lease_fenced');
+    if (this.closed || !this.allowed()) fail('browser_paused');
     try { await this.connect(); }
     catch { this.break(); fail('upstream_unavailable'); }
-    if (this.closed || !this.allowed()) fail('lease_fenced');
+    if (this.closed || !this.allowed()) fail('browser_paused');
     if (this.pending.size >= 32) fail('pending_limit');
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
@@ -120,14 +119,15 @@ export class Transport {
   }
 
   break() {
-    this.coordinator.failed(this.lease);
+    this.abort();
+    this.onFailure();
   }
 
   abort() {
     this.closed = true;
     for (const entry of this.pending.values()) {
       this.clear(entry.timer);
-      entry.reject(new BridgeError('lease_failed'));
+      entry.reject(new BridgeError('browser_unavailable'));
     }
     this.pending.clear();
     this.socket?.terminate();
@@ -183,37 +183,32 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
   healthy = async () => { await fixedJSON(`${STEEL}/v1/sessions`); return true; },
   controlHost = '127.0.0.1', controlPort = 8081, viewerHost = '127.0.0.1', viewerPort = 8080 }) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) fail('invalid_token_file');
-  const transport = (lease) => {
-    if (!lease.transport) lease.transport = new Transport({ WebSocket, coordinator, lease, discoverURL });
-    return lease.transport;
-  };
   const command = (envelope) => {
     commandFields(envelope);
-    const lease = coordinator.check(envelope);
-    return coordinator.command(lease, envelope, async () => {
-      const result = await coordinator.track(lease, () => transport(lease).command(envelope.method, envelope.params, envelope.session_id));
-      coordinator.check(envelope);
+    return coordinator.command(envelope.run_id, async (run) => {
+      if (!run.transport) run.transport = new Transport({ WebSocket, discoverURL,
+        allowed: () => coordinator.allowed(run), onFailure: () => coordinator.fail() });
+      const result = await run.transport.command(envelope.method, envelope.params, envelope.session_id);
       if (Buffer.byteLength(JSON.stringify({ result })) > MAX_BYTES) fail('response_limit');
       return { result };
-    }).then((result) => { coordinator.check(envelope); return result; });
+    });
   };
   const handler = (control) => async (request, response) => {
     try {
-      if (control && (request.headers.host !== `127.0.0.1:${request.socket.localPort}` || request.headers.origin)) return reply(response, 403, { error: 'local_browser_only' });
+      if (request.headers.host !== `127.0.0.1:${request.socket.localPort}` || (control && request.headers.origin)) return reply(response, 403, { error: 'local_browser_only' });
       if (request.method === 'GET' && request.url === '/health') {
         const ready = await healthy().catch(() => false);
         return reply(response, ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
       }
       if (!control && localViewer) return await localViewer.handler(request, response);
       const status = request.method === 'GET' && request.url === '/internal/browser/status';
-      const action = request.method === 'POST' && request.url === '/internal/browser/actions';
+      const release = request.method === 'POST' && request.url === '/internal/browser/release';
       const invoke = request.method === 'POST' && request.url === '/internal/browser/command';
-      if (!control || !(status || action || invoke)) return reply(response, 404, { error: 'not_found' });
+      if (!control || !(status || release || invoke)) return reply(response, 404, { error: 'not_found' });
       if (!authorized(request, token)) return reply(response, 401, { error: 'unauthorized' });
       if (status) return reply(response, 200, coordinator.status());
       const envelope = await body(request, invoke ? MAX_BYTES : 16384);
-      const result = await (action ? coordinator.action(envelope) : command(envelope));
-      if (invoke) coordinator.check(envelope);
+      const result = release ? (await coordinator.release(envelope.run_id), { status: 'released' }) : await command(envelope);
       return reply(response, 200, result);
     } catch (error) { if (!response.destroyed) reply(response, errorStatus(error), { error: errorCode(error) }); }
   };
@@ -246,7 +241,7 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
     },
     async close() {
       await localViewer?.close();
-      if (coordinator.lease) { coordinator.clear(coordinator.lease.timer); coordinator.failed(coordinator.lease); }
+      coordinator.fail();
       await Promise.all([control, viewer].map((server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); })));
     },
   };
@@ -265,9 +260,7 @@ export async function main(env = process.env) {
   const localViewer = env.TALON_BROWSER_LOCAL_VIEWER !== 'false' ? createLocalViewer({
     coordinator, WebSocket, WebSocketServer, origin: `http://127.0.0.1:${addresses.viewerPort}`,
     token: env.TALON_BROWSER_VIEWER_TOKEN,
-    createInput: (lease) => new Transport({ WebSocket, coordinator, lease,
-      allowed: () => coordinator.lease === lease && ['HUMAN', 'PAUSED'].includes(lease.mode) && !lease.expiring,
-    }),
+    createInput: (allowed) => new Transport({ WebSocket, allowed, onFailure: () => coordinator.fail() }),
   }) : null;
   const bridge = createBridge({ token: readToken(env.TALON_BROWSER_TOKEN_FILE), coordinator, WebSocket, localViewer, ...addresses });
   await bridge.start();

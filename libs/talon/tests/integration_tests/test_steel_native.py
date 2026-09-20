@@ -15,7 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError, BrowserRun
+from deepagents_talon.browser import BrowserClient, BrowserError
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest
@@ -274,22 +274,18 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
     host = TalonHost(config=config, agent=runtime)
     try:
         await host.start()
-        foreground = client.bind(BrowserBinding("telegram", "sender", "foreground"))
-        background = client.bind(
-            BrowserBinding("telegram", "sender", "background", background=True)
-        )
-        await foreground.action("acquire")
+        foreground = client.bind()
+        background = client.bind()
+        await foreground.command("Target.getTargets", {}, None)
         with pytest.raises(BrowserError, match="browser_busy"):
             await background.command("Target.getTargets", {}, None)
         await foreground.close()
-        await runtime.invoke(
-            AgentRequest(
-                "chat", "browse", browser_binding=BrowserBinding("telegram", "sender", "chat")
-            )
-        )
-        await foreground.action("acquire")
+        await runtime.invoke(AgentRequest("chat", "browse"))
+        await foreground.command("Target.getTargets", {}, None)
         assert host._steel is not None
-        await _viewer_input(host._steel, config, foreground)
+        await _viewer_input(host._steel, config)
+        await foreground.command("Target.getTargets", {}, None)
+        await foreground.close()
         targets = json.loads(await background.command("Target.getTargets", {}, None))[
             "untrusted_browser_observation"
         ]["targetInfos"]
@@ -327,7 +323,7 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
     assert not (tmp_path / "browser/profile/.talon-dirty").exists()
 
 
-async def _viewer_input(browser: SteelProcess, config: TalonConfig, agent: BrowserRun) -> None:
+async def _viewer_input(browser: SteelProcess, config: TalonConfig) -> None:
     source = browser.source
     node = json.loads((source / ".talon-prepared.json").read_text())["node"]
     process = await asyncio.create_subprocess_exec(
@@ -352,9 +348,7 @@ async def _viewer_input(browser: SteelProcess, config: TalonConfig, agent: Brows
         )
         await process.stdin.drain()
         process.stdin.close()
-        assert await asyncio.wait_for(process.stdout.readline(), 20) == b"waiting\n"
-        await agent.close()
-        assert await asyncio.wait_for(process.stdout.readline(), 30) == b"released\n"
+        assert await asyncio.wait_for(process.stdout.readline(), 30) == b"resumed\n"
         assert await asyncio.wait_for(process.wait(), 10) == 0
     finally:
         if process.returncode is None:

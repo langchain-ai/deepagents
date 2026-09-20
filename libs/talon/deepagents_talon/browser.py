@@ -1,4 +1,4 @@
-"""Opt-in native browser transport and host-owned invocation authority."""
+"""Bounded native browser tools with isolated per-run access."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ import json
 import os
 import re
 import stat
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 from langchain.tools import ToolRuntime, tool
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from langchain_core.tools import BaseTool
 
 _TOKEN_MODE = 0o400
@@ -26,28 +26,6 @@ _TOKEN_LENGTH = 43
 _LIMIT = 4 * 1024 * 1024
 _CONTROL = "http://127.0.0.1:8081"
 _ACTIVE: contextvars.ContextVar[BrowserRun | None] = contextvars.ContextVar("browser", default=None)
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class BrowserBinding:
-    """Optional host route metadata for browser handoff events."""
-
-    provider: str
-    sender_id: str
-    conversation_id: str
-    background: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class BrowserEvent:
-    """Sanitized handoff notification for host delivery outside the model."""
-
-    status: str
-    handoff_id: str
-    mode: str = "PAUSED"
-
-
-BrowserEventHandler = Callable[[BrowserEvent], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,14 +37,11 @@ class BrowserContext:
 
 @dataclass(slots=True, repr=False)
 class BrowserRun:
-    """Private per-invocation lease state."""
+    """Serialize commands and release only this invocation's browser access."""
 
     client: BrowserClient
-    binding: BrowserBinding
-    handler: BrowserEventHandler | None = None
     context: BrowserContext = field(default_factory=BrowserContext)
-    acquiring: bool = False
-    lease: dict[str, object] = field(default_factory=dict)
+    started: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -74,39 +49,11 @@ class BrowserRun:
         """Return the fresh invocation identifier."""
         return self.context.run_id
 
-    def owner(self) -> dict[str, object]:
-        """Identify the run coordinating access to the shared browser."""
-        return {"run_id": self.run_id, "background": self.binding.background}
-
-    async def action(self, action: str) -> dict[str, object]:
-        """Perform one non-retried lease transition."""
-        if action == "acquire":
-            self.acquiring = True
-        result = await self.client.post(
-            "actions",
-            {
-                "action": action,
-                "owner": self.owner(),
-                "request_id": str(uuid4()),
-                **self.lease,
-            },
-        )
-        if action != "release":
-            self.lease = _lease(result)
-        return result
-
     async def command(self, method: str, params: dict[str, object], session_id: str | None) -> str:
-        """Execute one serialized CDP command under the current lease version."""
+        """Run one command without retrying mutations."""
         async with self.lock:
-            if not self.lease:
-                await self.action("acquire")
-            body = {
-                "owner": self.owner(),
-                **self.lease,
-                "request_id": str(uuid4()),
-                "method": method,
-                "params": params,
-            }
+            self.started = True
+            body: dict[str, object] = {"run_id": self.run_id, "method": method, "params": params}
             if session_id is not None:
                 body["session_id"] = session_id
             response = await self.client.post("command", body)
@@ -115,8 +62,8 @@ class BrowserRun:
             return _observation(response["result"])
 
     async def close(self) -> None:
-        """Release only this invocation's lease without surfacing transport errors."""
-        if not self.lease and not self.acquiring:
+        """Finish cleanup even when the invocation is cancelled again."""
+        if not self.started:
             return
         cleanup = asyncio.create_task(self._release())
         cancelled = False
@@ -131,37 +78,11 @@ class BrowserRun:
 
     async def _release(self) -> None:
         try:
-            async with asyncio.timeout(35):
-                for attempt in range(3):
-                    try:
-                        if attempt or not self.lease:
-                            status = await self.client.post(
-                                "actions",
-                                {
-                                    "action": "inspect",
-                                    "owner": self.owner(),
-                                    "request_id": str(uuid4()),
-                                    **self.lease,
-                                },
-                            )
-                            if status.get("mode") not in {"AGENT", "PAUSED", "HANDOFF_PENDING"}:
-                                return
-                            if type(status.get("version")) is not int or any(
-                                status.get(key) != self.lease[key]
-                                for key in ("lease_id", "generation")
-                                if key in self.lease
-                            ):
-                                return
-                            self.lease = _lease(status)
-                        await self.action("release")
-                    except BrowserError:
-                        continue
-                    return
-        except TimeoutError:
-            return
+            await self.client.post("release", {"run_id": self.run_id})
+        except BrowserError:
+            pass  # The bridge expires abandoned runs; never retry browser commands.
         finally:
-            self.lease.clear()
-            self.acquiring = False
+            self.started = False
 
 
 class BrowserError(Exception):
@@ -169,8 +90,13 @@ class BrowserError(Exception):
 
     def __init__(self, *, code: object = None) -> None:
         """Map only allowlisted bridge codes, excluding all remote details."""
-        busy = isinstance(code, str) and code in {"lease_busy", "pending_limit"}
-        super().__init__("browser_busy" if busy else "browser_unavailable")
+        status = "browser_unavailable"
+        if isinstance(code, str):
+            if code in {"browser_busy", "pending_limit"}:
+                status = "browser_busy"
+            elif code == "browser_paused":
+                status = code
+        super().__init__(status)
 
 
 class BrowserClient:
@@ -219,15 +145,9 @@ class BrowserClient:
             await self._http.aclose()
             self._http = None
 
-    def bind(
-        self, binding: BrowserBinding | None, handler: BrowserEventHandler | None = None
-    ) -> BrowserRun | None:
-        """Create an independent run for the single shared browser."""
-        if binding is None:
-            binding = BrowserBinding("local", "", "")
-        if not isinstance(binding, BrowserBinding) or not isinstance(binding.background, bool):
-            return None
-        return BrowserRun(self, binding, None if binding.background else handler)
+    def bind(self) -> BrowserRun:
+        """Create independent access for an agent invocation."""
+        return BrowserRun(self)
 
     async def post(self, endpoint: str, body: dict[str, object]) -> dict[str, object]:
         """Bound serialized requests and streamed responses; never expose raw errors."""
@@ -257,17 +177,6 @@ class BrowserClient:
         except (httpx.HTTPError, ValueError, TypeError, RecursionError, TimeoutError):
             raise BrowserError from None
         return result
-
-
-def _lease(result: dict[str, object]) -> dict[str, object]:
-    if (
-        not isinstance(result.get("lease_id"), str)
-        or type(result.get("generation")) is not int
-        or type(result.get("version")) is not int
-        or result.get("mode") not in ("AGENT", "PAUSED", "HANDOFF_PENDING", "HUMAN", "FAILED")
-    ):
-        raise BrowserError
-    return {key: result[key] for key in ("lease_id", "generation", "version")}
 
 
 def _observation(result: object) -> str:
@@ -318,6 +227,7 @@ def browser_tools() -> list[BaseTool]:
         Input.dispatchMouseEvent/insertText for click/type, DOM.setFileInputFiles for
         browser-local uploads, Browser.setDownloadBehavior and IO.read for raw downloads.
         Upload/download paths and streams are browser-side; no file transfer convenience.
+        If browser_paused is returned, wait for the user to resume browser automation.
         """
         run = _run(runtime)
         if run is None:
@@ -327,28 +237,4 @@ def browser_tools() -> list[BaseTool]:
         except BrowserError as error:
             return _observation({"status": str(error)})
 
-    @tool
-    async def browser_request_handoff(reason: str, runtime: ToolRuntime[object]) -> str:
-        """Pause for human login; no viewer URL or automatic login screenshot is available."""
-        del reason
-        run = _run(runtime)
-        if run is None:
-            return _observation({"status": "browser_denied"})
-        try:
-            async with run.lock:
-                if not run.lease:
-                    await run.action("acquire")
-                response = await run.action("handoff")
-                status = "human_required" if run.binding.background else "viewer_unavailable"
-                handoff_id = str(UUID(str(response.get("handoff_id"))))
-                event = BrowserEvent(status, handoff_id)
-                if run.handler is not None:
-                    with suppress(Exception):
-                        await run.handler(event)
-                return _observation(asdict(event))
-        except BrowserError as error:
-            return _observation({"status": str(error)})
-        except ValueError:
-            return _observation({"status": "browser_unavailable"})
-
-    return [browser_cdp, browser_request_handoff]
+    return [browser_cdp]

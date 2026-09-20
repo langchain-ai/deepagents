@@ -4,12 +4,11 @@ import asyncio
 import json
 import shutil
 from pathlib import Path
-from uuid import UUID
 
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError
+from deepagents_talon.browser import BrowserClient, BrowserError
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.runtime import DeepAgentRuntime
@@ -22,13 +21,14 @@ _SERVER = """
 const { createBridge } = await import(process.argv[1]);
 const { Coordinator } = await import(process.argv[2]);
 const coordinator = new Coordinator();
-const create = coordinator.create.bind(coordinator);
-coordinator.create = (...args) => {
-  create(...args);
-  coordinator.lease.transport = {
+const acquire = coordinator.acquire.bind(coordinator);
+coordinator.acquire = (...args) => {
+  const run = acquire(...args);
+  run.transport ??= {
     command: async (method, params, session) => ({ method, params, session }),
     close: async () => {}, abort: () => {},
   };
+  return run;
 };
 const bridge = createBridge({ token: 'x'.repeat(43), coordinator,
   controlHost: '127.0.0.1', controlPort: 0, viewerHost: '127.0.0.1', viewerPort: 0 });
@@ -86,13 +86,7 @@ async def bridge_client(tmp_path, monkeypatch):
             await process.wait()
 
 
-@pytest.mark.parametrize("background", [False, True])
-async def test_runtime_handoff_against_node(bridge_client, tmp_path, background):
-    events = []
-
-    async def event(value):
-        events.append(value)
-
+async def test_runtime_commands_and_cleanup_against_node(bridge_client, tmp_path):
     model = ToolModel(
         responses=[
             AIMessage(
@@ -106,16 +100,6 @@ async def test_runtime_handoff_against_node(bridge_client, tmp_path, background)
                             "params": {"expression": "1 + 1"},
                             "session_id": "attached-session",
                         },
-                    }
-                ],
-            ),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "browser_request_handoff",
-                        "id": "handoff",
-                        "args": {"reason": "secret login reason"},
                     }
                 ],
             ),
@@ -133,55 +117,53 @@ async def test_runtime_handoff_against_node(bridge_client, tmp_path, background)
     )
     await runtime.start()
     try:
-        result = await runtime.invoke(
-            AgentRequest(
-                "chat",
-                "go",
-                browser_binding=BrowserBinding("telegram", "sender", "chat", background),
-                browser_event_handler=event,
-            )
-        )
-        assert result is not None
+        await runtime.invoke(AgentRequest("chat", "go"))
         state = await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})
-        observations = [
+        observation = next(
             json.loads(message.content)["untrusted_browser_observation"]
             for message in state.values["messages"]
-            if message.type == "tool" and message.name in {"browser_cdp", "browser_request_handoff"}
-        ]
-        assert observations[0] == {
+            if message.type == "tool"
+        )
+        assert observation == {
             "method": "Runtime.evaluate",
             "params": {"expression": "1 + 1"},
             "session": "attached-session",
         }
-        handoff = observations[1]
-        assert handoff["status"] == ("human_required" if background else "viewer_unavailable")
-        assert handoff["mode"] == "PAUSED"
-        UUID(handoff["handoff_id"])
-        assert len(events) == (0 if background else 1)
-        assert "secret" not in json.dumps(observations)
-        next_run = bridge_client.bind(BrowserBinding("telegram", "sender", "next"))
-        await next_run.action("acquire")
-        await next_run.close()
+        run = bridge_client.bind()
+        await run.command("Target.getTargets", {}, None)
+        await run.close()
     finally:
         await runtime.stop()
 
 
-@pytest.mark.parametrize("cancel_cleanup", [False, True])
-async def test_cancel_handoff_before_response_parsed(bridge_client, cancel_cleanup):
+async def test_competing_runs_cannot_release_each_other(bridge_client):
     await bridge_client.start()
-    run = bridge_client.bind(BrowserBinding("telegram", "sender", "chat"))
-    await run.action("acquire")
-    original = dict(run.lease)
-    received, releasing = asyncio.Event(), asyncio.Event()
-    resume = asyncio.Event()
+    run, contender = bridge_client.bind(), bridge_client.bind()
+    try:
+        await run.command("Target.getTargets", {}, None)
+        with pytest.raises(BrowserError, match="browser_busy"):
+            await contender.command("Target.getTargets", {}, None)
+        await contender.close()
+        with pytest.raises(BrowserError, match="browser_busy"):
+            await contender.command("Target.getTargets", {}, None)
+        await run.close()
+        await contender.command("Target.getTargets", {}, None)
+    finally:
+        await run.close()
+        await contender.close()
+
+
+@pytest.mark.parametrize("cancel_cleanup", [False, True])
+async def test_cancel_command_before_response_parsed(bridge_client, cancel_cleanup):
+    await bridge_client.start()
+    run = bridge_client.bind()
+    received, releasing, resume = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def intercept(response):
-        action = json.loads(response.request.content)["action"]
-        if action == "handoff":
-            assert response.status_code == 200
+        if response.request.url.path.endswith("/command"):
             received.set()
             await asyncio.Event().wait()
-        if action == "release" and cancel_cleanup:
+        elif cancel_cleanup:
             releasing.set()
             await resume.wait()
 
@@ -189,68 +171,20 @@ async def test_cancel_handoff_before_response_parsed(bridge_client, cancel_clean
 
     async def invoke():
         try:
-            await run.action("handoff")
-        finally:
-            await run.close()
-
-    task = asyncio.create_task(invoke())
-    async with asyncio.timeout(10):
-        await received.wait()
-        assert run.lease == original
-        task.cancel()
-        if cancel_cleanup:
-            await releasing.wait()
-            task.cancel()
-            resume.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not run.lease
-        next_run = bridge_client.bind(BrowserBinding("telegram", "sender", "next"))
-        await next_run.action("acquire")
-        assert next_run.lease["generation"] > original["generation"]
-        await next_run.close()
-
-
-async def test_node_busy_and_task_command_quota(bridge_client):
-    await bridge_client.start()
-    run = bridge_client.bind(BrowserBinding("telegram", "sender", "chat"))
-    contender = bridge_client.bind(BrowserBinding("telegram", "sender", "other"))
-    try:
-        await run.action("acquire")
-        with pytest.raises(BrowserError, match=r"^browser_busy$"):
-            await contender.action("acquire")
-        for _ in range(256):
             await run.command("Target.getTargets", {}, None)
-        with pytest.raises(BrowserError, match=r"^browser_unavailable$"):
-            await run.command("Target.getTargets", {}, None)
-    finally:
-        await run.close()
-
-
-async def test_cancel_acquire_before_response_parsed(bridge_client):
-    await bridge_client.start()
-    run = bridge_client.bind(BrowserBinding("telegram", "sender", "chat"))
-    received = asyncio.Event()
-
-    async def intercept(response):
-        if json.loads(response.request.content)["action"] == "acquire":
-            received.set()
-            await asyncio.Event().wait()
-
-    bridge_client._http.event_hooks["response"] = [intercept]
-
-    async def invoke():
-        try:
-            await run.action("acquire")
         finally:
             await run.close()
 
     task = asyncio.create_task(invoke())
     await asyncio.wait_for(received.wait(), 5)
     task.cancel()
+    if cancel_cleanup:
+        await asyncio.wait_for(releasing.wait(), 5)
+        task.cancel()
+        resume.set()
     with pytest.raises(asyncio.CancelledError):
         await task
     bridge_client._http.event_hooks["response"] = []
-    next_run = bridge_client.bind(BrowserBinding("telegram", "sender", "next"))
-    await next_run.action("acquire")
+    next_run = bridge_client.bind()
+    await next_run.command("Target.getTargets", {}, None)
     await next_run.close()

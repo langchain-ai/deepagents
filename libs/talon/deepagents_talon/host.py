@@ -31,7 +31,6 @@ from deepagents_talon.authorization import (
     CallbackURLRequested,
     DeviceCode,
 )
-from deepagents_talon.browser import BrowserBinding, BrowserEvent, BrowserEventHandler
 from deepagents_talon.channels.base import (
     ChannelExposure,
     ExposureMode,
@@ -242,9 +241,6 @@ class TalonHost:
         self.agent = agent
         self.channels = tuple(channels)
         self.scheduler = scheduler
-        self.browser_event_handler: (
-            Callable[[BrowserBinding, BrowserEvent], Awaitable[None]] | None
-        ) = None
         self.voice_transcriber = voice_transcriber
         self._steel = (
             SteelProcess(config)
@@ -766,12 +762,6 @@ class TalonHost:
                 conversation_id=agent_conversation_id,
                 text=message.text,
                 metadata=metadata,
-                browser_binding=BrowserBinding(
-                    route.provider or "",
-                    route.message.sender_id or "",
-                    agent_conversation_id,
-                    unattended,
-                ),
                 # A scheduled turn has no operator to ask. Approvals are auto-denied
                 # upstream for `trigger: cron`, and an authorization prompt raises on
                 # the absent sender rather than reaching anyone, so both are withheld
@@ -911,7 +901,6 @@ class TalonHost:
                         conversation_id=conversation_id,
                         text=job.prompt,
                         metadata=_scheduled_metadata(job),
-                        browser_binding=self._scheduled_browser_binding(job.id, conversation_id),
                     )
             except TimeoutError:
                 # The graph was cancelled mid-node, so this thread can end on an assistant
@@ -928,9 +917,6 @@ class TalonHost:
                     await self.agent.recover_interrupted(conversation_id)
                 raise
             return result.text
-
-    def _scheduled_browser_binding(self, job_id: str, conversation_id: str) -> BrowserBinding:
-        return BrowserBinding("cron", job_id, conversation_id, background=True)
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.
@@ -977,16 +963,6 @@ class TalonHost:
             except Exception:
                 logger.exception("Could not record final-reply delivery in history")
 
-    def _browser_handler(self, binding: BrowserBinding | None) -> BrowserEventHandler | None:
-        handler = self.browser_event_handler
-        if handler is None or binding is None or binding.background:
-            return None
-
-        async def deliver(event: BrowserEvent) -> None:
-            await handler(binding, event)
-
-        return deliver
-
     async def _invoke_agent(  # noqa: PLR0913  # Operator authority must remain separate from metadata.
         self,
         *,
@@ -997,8 +973,6 @@ class TalonHost:
         | None = None,
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
-        browser_binding: BrowserBinding | None = None,
-        browser_event_handler: BrowserEventHandler | None = None,
         message_handler: ProgressMessageHandler | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1019,9 +993,6 @@ class TalonHost:
                         conversation_id=conversation_id,
                         text=text,
                         metadata=metadata,
-                        browser_binding=browser_binding,
-                        browser_event_handler=browser_event_handler
-                        or self._browser_handler(browser_binding),
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,

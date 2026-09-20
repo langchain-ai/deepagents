@@ -73,7 +73,8 @@ nvm exec 24 uv run --directory ../../libs/talon python -m deepagents_talon.steel
 
 Keep Node 24 installed. Set `TALON_BROWSER_ENABLED=true` in your launch environment
 and restart Talon normally. Chrome is detected automatically. Open the terminal's
-sign-in link; **Take** gives you control and **Release** returns it to the agent.
+sign-in link to watch the browser. **Pause automation** lets you log in or interact;
+**Resume automation** lets the agent continue using the same profile.
 See [browser configuration](../../libs/talon/README.md#local-steel-browser) for details.
 
 ## Local Run Without Docker

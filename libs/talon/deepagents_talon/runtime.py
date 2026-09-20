@@ -46,10 +46,8 @@ from deepagents_talon.background import (
     BackgroundSubagents,
 )
 from deepagents_talon.browser import (
-    BrowserBinding,
     BrowserClient,
     BrowserContext,
-    BrowserRun,
     active_run,
     browser_tools,
     reset_run,
@@ -528,15 +526,6 @@ class DeepAgentRuntime:
             {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
         )
 
-    def _browser_run(self, request: AgentRequest) -> BrowserRun | None:
-        binding = request.browser_binding
-        if binding is not None and (
-            not isinstance(binding, BrowserBinding)
-            or binding.conversation_id != request.conversation_id
-        ):
-            binding = None
-        return self.browser.bind(binding, request.browser_event_handler) if self.browser else None
-
     def _refresh_approval_graph(self) -> ApprovalSnapshot:
         snapshot = self.approval_store.read()
         if snapshot != self._active_approvals:
@@ -583,7 +572,7 @@ class DeepAgentRuntime:
         history_token = _HISTORY_SCOPE.set(_history_scope(request))
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
-        browser_token = set_run(browser_run := self._browser_run(request))
+        browser_token = set_run(browser_run := self.browser.bind() if self.browser else None)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
         try:
             text = await self._invoke_until_text(request, activity)

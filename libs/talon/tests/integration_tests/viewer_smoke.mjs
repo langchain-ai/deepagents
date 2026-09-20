@@ -15,20 +15,15 @@ try {
   let leaked = false;
   page.on('request', (request) => { leaked ||= request.url().includes('token='); });
   await page.goto(`${origin}/#token=${token}`);
-  await page.waitForSelector('#take');
+  await page.waitForSelector('#automation');
   assert.equal(page.url(), `${origin}/`);
   assert.equal(leaked, false);
-  await page.click('#take');
-  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Waiting for the agent to finish');
-  await page.click('#release');
-  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Browser is busy');
-  await page.click('#take');
-  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Waiting for the agent to finish');
-  process.stdout.write('waiting\n');
-  await page.waitForFunction(() => document.querySelector('#status').textContent === 'You control this browser');
+  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Watching the shared browser.');
   const iframe = await page.waitForSelector('iframe[src="/viewer"]');
   const frame = await iframe.contentFrame();
   await frame.waitForFunction(() => document.querySelector('canvas')?.getContext('2d').getImageData(0, 0, 1, 1).data[3] > 0);
+  await page.click('#automation');
+  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Automation paused. You can interact.');
   const canvas = await frame.$('canvas');
   const box = await canvas.boundingBox();
   assert.ok(box);
@@ -37,13 +32,13 @@ try {
   await page.keyboard.type('human works', { delay: 30 });
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel({ deltaY: 400 });
-  // Round-trip through the shared input queue before clicking Release.
+  // Round-trip through the shared input queue before resuming automation.
   await new Promise(resolve => setTimeout(resolve, 500));
-  await page.click('#release');
-  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Available');
+  await page.click('#automation');
+  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Watching the shared browser.');
   await page.click('#logout');
   await page.waitForSelector('input[name=token]');
-  process.stdout.write('released\n');
+  process.stdout.write('resumed\n');
 } catch {
   process.stdout.write('viewer_failed\n');
   process.exitCode = 1;

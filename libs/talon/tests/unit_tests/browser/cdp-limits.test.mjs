@@ -4,29 +4,22 @@ import { EventEmitter } from 'node:events';
 import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 import { Transport } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
-const owner = { run_id: 'run', background: false };
-
-async function setup() {
-  const c = new Coordinator();
-  await c.action({ action: 'acquire', owner, request_id: 'acquire' });
-  return c;
-}
-
 test('32 pending limit rejects before operation dispatch', async () => {
-  const c = await setup();
+  const c = new Coordinator();
   let dispatched = 0;
   const resolvers = [];
-  for (let i = 0; i < 32; i++) c.track(c.lease, () => { dispatched++; return new Promise((resolve) => resolvers.push(resolve)); });
-  assert.throws(() => c.track(c.lease, () => { dispatched++; }), /pending_limit/);
+  for (let i = 0; i < 32; i++) c.command('run', () => { dispatched++; return new Promise((resolve) => resolvers.push(resolve)); });
+  assert.throws(() => c.command('run', () => { dispatched++; }), /pending_limit/);
   await Promise.resolve();
   assert.equal(dispatched, 32);
-  const pending = [...c.lease.pending];
+  const pending = [...c.run.pending];
   resolvers.forEach((resolve) => resolve());
   await Promise.all(pending);
+  await c.release('run');
 });
 
-test('handoff while discovery awaits never dispatches a CDP command', async () => {
-  const c = await setup();
+test('pause while discovery awaits never dispatches a CDP command', async () => {
+  const c = new Coordinator();
   let discover;
   let sends = 0;
   class Socket extends EventEmitter {
@@ -35,14 +28,16 @@ test('handoff while discovery awaits never dispatches a CDP command', async () =
     close() { this.readyState = 3; this.emit('close'); }
     terminate() { this.close(); }
   }
-  const t = new Transport({ WebSocket: Socket, coordinator: c, lease: c.lease, discoverURL: () => new Promise((resolve) => { discover = resolve; }) });
-  c.lease.transport = t;
-  const command = c.track(c.lease, () => t.command('Runtime.evaluate', { expression: 'sensitive()' }));
+  c.acquire('run');
+  const t = new Transport({ WebSocket: Socket, allowed: () => c.allowed(c.run), onFailure: () => c.fail(), discoverURL: () => new Promise((resolve) => { discover = resolve; }) });
+  c.run.transport = t;
+  const command = c.command('run', () => t.command('Runtime.evaluate', { expression: 'sensitive()' }));
   await Promise.resolve();
-  const handoff = c.action({ ...c.status(), owner, action: 'handoff', request_id: 'h' });
+  const pause = c.pause();
   discover('fixed');
-  await assert.rejects(command, /lease_fenced/);
-  await handoff;
+  await assert.rejects(command, /browser_paused/);
+  await pause;
   assert.equal(sends, 0);
-  assert.equal(c.status().mode, 'PAUSED');
+  assert.equal(c.paused, true);
+  await c.release('run');
 });

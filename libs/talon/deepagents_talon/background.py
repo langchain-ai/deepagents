@@ -291,11 +291,7 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         parent_browser = active_run()
-        child_browser = (
-            parent_browser.client.bind(replace(parent_browser.binding, background=True))
-            if parent_browser is not None
-            else None
-        )
+        child_browser = parent_browser.client.bind() if parent_browser is not None else None
         browser_token = set_run(child_browser)
         _IN_SUBAGENT.set(True)
         APPROVAL_OPERATOR.set(False)

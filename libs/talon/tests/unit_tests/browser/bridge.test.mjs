@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os';
 import { Coordinator } from '../../../deepagents_talon/steel_runtime/coordinator.mjs';
 import { createBridge, discover, Transport, readToken, MAX_BYTES } from '../../../deepagents_talon/steel_runtime/bridge.mjs';
 
-const owner = { run_id: 'run', background: false };
 const make = () => new Coordinator();
 class Socket extends EventEmitter {
   constructor() { super(); this.readyState = 1; this.sent = []; queueMicrotask(() => this.emit('open')); }
@@ -33,10 +32,10 @@ test('runtime token requires owner-only permissions', () => {
 
 test('remapped IDs, session routing, sanitized CDP error and command timeout fencing', async () => {
   const c = make();
-  await c.action({ action: 'acquire', owner, request_id: 'a' });
+  c.acquire('run');
   const timers = [];
-  const t = new Transport({ WebSocket: Socket, coordinator: c, lease: c.lease, discoverURL: async () => 'fixed', timer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clear() {} });
-  c.lease.transport = t;
+  const t = new Transport({ WebSocket: Socket, allowed: () => c.allowed(c.run), onFailure: () => c.fail(), discoverURL: async () => 'fixed', timer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clear() {} });
+  c.run.transport = t;
   const pending = t.command('Runtime.evaluate', { expression: '1+1' }, 'session');
   await new Promise(setImmediate);
   assert.deepEqual(t.socket.sent[0], { id: 1, method: 'Runtime.evaluate', params: { expression: '1+1' }, sessionId: 'session' });
@@ -50,11 +49,11 @@ test('remapped IDs, session routing, sanitized CDP error and command timeout fen
   await new Promise(setImmediate);
   assert.equal(timers.at(-1).ms, 30000);
   timers.at(-1).fn();
-  await assert.rejects(nav, /lease_failed/);
-  assert.equal(c.status().mode, 'FAILED');
+  await assert.rejects(nav, /browser_unavailable/);
+  assert.equal(c.failed, true);
 });
 
-test('HTTP route isolation, auth, dedup and late response fencing', async () => {
+test('HTTP route isolation, authentication and command execution', async () => {
   const coordinator = make();
   const token = randomBytes(32).toString('base64url');
   const bridge = createBridge({ token, coordinator, WebSocket: Socket, discoverURL: async () => 'fixed', healthy: async () => true, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0 });
@@ -71,39 +70,28 @@ test('HTTP route isolation, auth, dedup and late response fencing', async () => 
       http.get(`${control}/internal/browser/status`, { headers: { ...headers, Host: 'attacker.example' } }, (response) => { response.resume(); resolve(response.statusCode); }).on('error', reject);
     });
     assert.equal(rebound, 403);
-    const lease = await (await fetch(`${control}/internal/browser/actions`, { method: 'POST', headers, body: JSON.stringify({ action: 'acquire', owner, request_id: 'a' }) })).json();
-      for (const [payload, status] of [
-        [{ action: 'nonsense', owner, request_id: 'bad' }, 400],
-        [{ action: 'acquire', owner: { ...owner, run_id: null }, request_id: 'bad' }, 403],
-        [{ action: 'acquire', owner: { ...owner, run_id: 'other' }, request_id: 'bad' }, 409],
-      ]) {
-        const response = await fetch(`${control}/internal/browser/actions`, { method: 'POST', headers, body: JSON.stringify(payload) });
-        assert.equal(response.status, status);
-      }
-    const envelope = { ...lease, owner, request_id: 'eval', method: 'Runtime.evaluate', params: { expression: '2' } };
+    const envelope = { run_id: 'run', method: 'Runtime.evaluate', params: { expression: '2' } };
     const response = bridge.command(envelope);
     await new Promise(setImmediate);
-    coordinator.lease.transport.message(Buffer.from('{"id":1,"result":{"value":2}}'), false);
+    coordinator.run.transport.message(Buffer.from('{"id":1,"result":{"value":2}}'), false);
     assert.deepEqual(await response, { result: { value: 2 } });
-    assert.throws(() => bridge.command(envelope), /request_replayed/);
-    assert.equal(coordinator.lease.transport.socket.sent.length, 1);
-    const late = bridge.command({ ...envelope, request_id: 'late' });
-    await new Promise(setImmediate);
-    const handoff = coordinator.action({ ...lease, owner, action: 'handoff', request_id: 'h' });
-    coordinator.lease.transport.message(Buffer.from('{"id":2,"result":{"secret":"not delivered"}}'), false);
-    await assert.rejects(late, /stale_version|lease_fenced/);
-    await handoff;
-    await assert.rejects(async () => bridge.command(envelope), /stale_version|lease_fenced/);
+    assert.throws(() => bridge.command({ ...envelope, run_id: 'other' }), /browser_busy/);
+    assert.throws(() => bridge.command({ ...envelope, run_id: null }), /invalid_run/);
+    const released = await fetch(`${control}/internal/browser/release`, {
+      method: 'POST', headers, body: JSON.stringify({ run_id: 'run' }),
+    });
+    assert.equal(released.status, 200);
+    assert.equal(coordinator.run, null);
   } finally { await bridge.close(); }
 });
 
 test('transport oversized incoming message fails closed', async () => {
   const c = make();
-  await c.action({ action: 'acquire', owner, request_id: 'a' });
-  const t = new Transport({ WebSocket: Socket, coordinator: c, lease: c.lease });
-  c.lease.transport = t;
+  c.acquire('run');
+  const t = new Transport({ WebSocket: Socket, allowed: () => c.allowed(c.run), onFailure: () => c.fail() });
+  c.run.transport = t;
   t.message(Buffer.alloc(MAX_BYTES + 1), false);
-  assert.equal(c.status().mode, 'FAILED');
+  assert.equal(c.failed, true);
 });
 
 

@@ -15,7 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from deepagents_talon.browser import BrowserBinding, BrowserClient, BrowserError
+from deepagents_talon.browser import BrowserClient, BrowserError
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest
@@ -265,19 +265,13 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
     host = TalonHost(config=config, agent=runtime)
     try:
         await host.start()
-        foreground = client.bind(BrowserBinding("telegram", "sender", "foreground"))
-        background = client.bind(
-            BrowserBinding("telegram", "sender", "background", background=True)
-        )
-        await foreground.action("acquire")
+        foreground = client.bind()
+        background = client.bind()
+        await foreground.command("Target.getTargets", {}, None)
         with pytest.raises(BrowserError, match="browser_busy"):
             await background.command("Target.getTargets", {}, None)
         await foreground.close()
-        await runtime.invoke(
-            AgentRequest(
-                "chat", "browse", browser_binding=BrowserBinding("telegram", "sender", "chat")
-            )
-        )
+        await runtime.invoke(AgentRequest("chat", "browse"))
         await background.command("Target.getTargets", {}, None)
         await background.close()
     finally:

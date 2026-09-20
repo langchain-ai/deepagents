@@ -1,206 +1,97 @@
-import { createHash, randomInt, randomUUID } from 'node:crypto';
-
-export const OWNER_FIELDS = ['run_id', 'background'];
 export const fail = (code) => { throw new BridgeError(code); };
 export class BridgeError extends Error {}
 export const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const text = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= 1024;
-export function canonical(value) {
-  if (Array.isArray(value)) return JSON.stringify(value.map((item) => JSON.parse(canonical(item))));
-  if (!object(value)) return JSON.stringify(value);
-  return JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(canonical(value[key]))])));
-}
 
 export class Coordinator {
-  constructor({ ttl = 1800000, now = Date.now, timer = setTimeout, clear = clearTimeout, drainMs = 10000 } = {}) {
+  constructor({ ttl = 1800000, drainMs = 10000 } = {}) {
     if (!Number.isSafeInteger(ttl) || ttl < 1) fail('invalid_config');
-    Object.assign(this, { ttl, now, timer, clear, drainMs });
-    this.generation = randomInt(1, 2 ** 48 - 1);
-    this.failedLatch = false;
-    this.lease = null;
-  }
-
-  owner(owner) {
-    if (!object(owner) || Object.keys(owner).length !== OWNER_FIELDS.length ||
-        !OWNER_FIELDS.every((key) => Object.hasOwn(owner, key))) fail('invalid_owner');
-    if (!OWNER_FIELDS.filter((key) => key !== 'background').every((key) => text(owner[key])) ||
-        typeof owner.background !== 'boolean') fail('invalid_owner');
-    return canonical(owner);
+    Object.assign(this, { ttl, drainMs, run: null, paused: false, failed: false, pausing: null });
   }
 
   status() {
-    this.expire();
-    const lease = this.lease;
-    return { lease_id: lease?.id ?? null, generation: lease?.generation ?? this.generation,
-      version: lease?.version ?? 0, mode: lease?.mode ?? 'IDLE' };
+    return { paused: this.paused, busy: this.run !== null, failed: this.failed };
   }
 
-  expire() {
-    const lease = this.lease;
-    if (lease && this.now() >= lease.expires && !lease.expiring) {
-      lease.expiring = true;
-      void this.stop(lease, lease.mode === 'AGENT' || (!lease.human && ['PAUSED', 'HANDOFF_PENDING'].includes(lease.mode))).catch(() => {});
-    }
+  allowed(run) {
+    return !this.failed && !this.paused && this.run === run && !run.closing;
   }
 
-  check(envelope, agent = true, version = true) {
-    const owner = this.owner(envelope.owner);
-    this.expire();
-    const lease = this.lease;
-    if (lease && owner !== lease.owner) fail('wrong_owner');
-    if (!lease || envelope.lease_id !== lease.id || envelope.generation !== lease.generation || owner !== lease.owner) fail('invalid_lease');
-    if (version && envelope.version !== lease.version) fail('stale_version');
-    if (agent && lease.mode !== 'AGENT') fail('lease_fenced');
-    return lease;
+  acquire(id) {
+    if (!text(id)) fail('invalid_run');
+    if (this.failed) fail('browser_unavailable');
+    if (this.paused) fail('browser_paused');
+    if (this.run && (this.run.id !== id || this.run.closing)) fail('browser_busy');
+    if (!this.run) {
+      const run = this.run = { id, pending: new Set(), transport: null, closing: null };
+      run.timer = setTimeout(() => { void this.release(id).catch(() => {}); }, this.ttl);
+      run.timer.unref?.();
+    }
+    return this.run;
   }
 
-  memo(lease, envelope, operation) {
-    if (!text(envelope.request_id)) fail('invalid_request');
-    const digest = createHash('sha256').update(canonical(envelope)).digest('hex');
-    const existing = lease.requests.get(envelope.request_id);
-    if (existing) {
-      if (existing.digest !== digest) fail('request_conflict');
-      return existing.promise;
-    }
-    if (lease.requests.size >= 256) fail('request_limit');
-    const entry = { digest };
-    lease.requests.set(envelope.request_id, entry);
-    try { entry.promise = Promise.resolve(operation()); }
-    catch (error) { entry.promise = Promise.reject(error); }
-    return entry.promise;
-  }
-
-  action(envelope) {
-    if (!object(envelope) || !['acquire', 'release', 'handoff', 'inspect'].includes(envelope.action) || !text(envelope.request_id)) fail('invalid_request');
-    const owner = this.owner(envelope.owner);
-    this.expire();
-    if (envelope.action === 'acquire') {
-      if (this.failedLatch) fail('lease_fenced');
-      if (!this.lease) this.create(owner, envelope.owner.background);
-      const lease = this.lease;
-      if (lease.owner !== owner) fail('lease_busy');
-      if (lease.mode !== 'AGENT') fail('lease_fenced');
-      return this.memo(lease, envelope, () => {
-        if (lease.mode !== 'AGENT') fail('lease_fenced');
-        return this.status();
-      });
-    }
-    if (envelope.action === 'inspect') {
-      const lease = this.lease;
-      if (!lease || lease.owner !== owner) fail('wrong_owner');
-      if (envelope.lease_id !== undefined) this.check(envelope, false, false);
-      return { lease_id: lease.id, generation: lease.generation, version: lease.version, mode: lease.mode };
-    }
-    if (!Number.isSafeInteger(envelope.version)) fail('invalid_request');
-    const lease = this.check(envelope, false, false);
-    return this.memo(lease, envelope, async () => {
-      if (envelope.version !== lease.version) fail('stale_version');
-      if (envelope.action === 'release') {
-        if (!['AGENT', 'PAUSED', 'HANDOFF_PENDING', 'FAILED'].includes(lease.mode)) fail('lease_fenced');
-        await this.stop(lease, true);
-        return { status: 'released' };
-      }
-      if (lease.mode !== 'AGENT') fail('lease_fenced');
-      lease.handoff = randomUUID();
-      this.fence(lease, 'HANDOFF_PENDING');
-      await this.stop(lease, false);
-      return { ...this.status(), status: lease.background ? 'human_required' : 'viewer_unavailable', handoff_id: lease.handoff };
+  command(id, operation) {
+    const run = this.acquire(id);
+    if (run.pending.size >= 32) fail('pending_limit');
+    const pending = Promise.resolve().then(() => {
+      if (!this.allowed(run)) fail(this.paused ? 'browser_paused' : 'browser_unavailable');
+      return operation(run);
     });
+    run.pending.add(pending);
+    pending.finally(() => run.pending.delete(pending)).catch(() => {});
+    return pending;
   }
 
-  create(owner, background) {
-    const lease = { id: randomUUID(), generation: ++this.generation, version: 1, mode: 'AGENT', owner,
-      background, human: false, expires: this.now() + this.ttl, requests: new Map(), commands: new Map(), pending: new Set(), transport: null };
-    this.lease = lease;
-    lease.timer = this.timer(() => this.expire(), this.ttl);
-    lease.timer?.unref?.();
+  drain(run) {
+    if (!run) return Promise.resolve();
+    if (!run.closing) run.closing = (async () => {
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled([...run.pending]),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('drain_timeout')), this.drainMs); }),
+        ]);
+        await run.transport?.close();
+        run.transport = null;
+        if (this.failed) fail('browser_unavailable');
+      } catch {
+        this.fail();
+        fail('browser_unavailable');
+      } finally { clearTimeout(timer); }
+    })();
+    return run.closing;
   }
 
-  fence(lease, mode) {
-    if (lease.mode !== mode) { lease.mode = mode; lease.version += 1; }
+  async release(id) {
+    if (!text(id)) fail('invalid_run');
+    const run = this.run;
+    if (!run || run.id !== id) return;
+    await this.drain(run);
+    clearTimeout(run.timer);
+    if (this.run === run) this.run = null;
   }
 
-  async stop(lease, release) {
-    if (lease.mode === 'FAILED') fail('lease_failed');
-    if (lease.mode !== 'HANDOFF_PENDING') this.fence(lease, 'PAUSED');
-    if (!lease.stopping) lease.stopping = this.drain(lease);
-    await lease.stopping;
-    if (lease.mode === 'FAILED') fail('lease_failed');
-    this.fence(lease, 'PAUSED');
-    if (release && this.lease === lease) {
-      lease.requests.clear();
-      lease.commands.clear();
-      this.clear(lease.timer);
-      this.lease = null;
+  pause() {
+    if (this.failed) fail('browser_unavailable');
+    this.paused = true;
+    if (!this.pausing) this.pausing = this.drain(this.run);
+    return this.pausing;
+  }
+
+  async resume() {
+    await this.pausing;
+    if (this.failed) fail('browser_unavailable');
+    if (this.run) this.run.closing = null;
+    this.pausing = null;
+    this.paused = false;
+  }
+
+  fail() {
+    this.failed = true;
+    this.paused = true;
+    if (this.run) {
+      clearTimeout(this.run.timer);
+      this.run.transport?.abort();
     }
-  }
-
-  async drain(lease) {
-    let timer;
-    try {
-      await Promise.race([
-        Promise.allSettled([...lease.pending]),
-        new Promise((_, reject) => { timer = this.timer(() => reject(new BridgeError('drain_timeout')), this.drainMs); }),
-      ]);
-      await lease.transport?.close();
-      lease.transport = null;
-    } catch {
-      this.failed(lease);
-      fail('lease_failed');
-    } finally { this.clear(timer); }
-  }
-
-  failed(lease) {
-    this.failedLatch = true;
-    this.fence(lease, 'FAILED');
-    this.clear(lease.timer);
-    lease.transport?.abort();
-    lease.transport = null;
-    lease.requests.clear();
-    lease.commands.clear();
-    void Promise.allSettled([...lease.pending]).then(() => {
-      lease.pending.clear();
-      lease.requests.clear();
-      lease.commands.clear();
-      lease.stopping = null;
-    });
-  }
-
-  track(lease, operation) {
-    if (lease.mode !== 'AGENT') fail('lease_fenced');
-    if (lease.pending.size >= 32) fail('pending_limit');
-    const promise = Promise.resolve().then(operation);
-    lease.pending.add(promise);
-    promise.finally(() => lease.pending.delete(promise)).catch(() => {});
-    return promise;
-  }
-
-  viewer(envelope, context) {
-    if (!object(context) || this.owner(context) !== this.owner(envelope.owner)) fail('wrong_owner');
-    const lease = this.check(envelope, false);
-    if (!text(envelope.handoff_id) || lease.handoff !== envelope.handoff_id) fail('invalid_handoff');
-    return lease;
-  }
-
-  async take(envelope, context) {
-    const lease = this.viewer(envelope, context);
-    if (lease.mode !== 'PAUSED' || lease.expiring) fail('lease_fenced');
-    await lease.stopping;
-    this.viewer(envelope, context);
-    if (lease.expiring) fail('lease_fenced');
-    lease.stopping = null;
-    lease.human = true;
-    this.fence(lease, 'HUMAN');
-    return this.status();
-  }
-
-  command(lease, envelope, operation) {
-    if (!text(envelope.request_id)) fail('invalid_request');
-    const digest = createHash('sha256').update(canonical(envelope)).digest('hex');
-    const existing = lease.commands.get(envelope.request_id);
-    if (existing) fail(existing.digest === digest ? 'request_replayed' : 'request_conflict');
-    if (lease.commands.size >= 256) fail('request_limit');
-    lease.commands.set(envelope.request_id, { digest });
-    return Promise.resolve().then(operation);
   }
 }

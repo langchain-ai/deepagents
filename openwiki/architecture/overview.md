@@ -1,12 +1,11 @@
 ---
 type: repository architecture overview
 title: Repository Architecture Overview
-description: Ownership and runtime boundaries across the Deep Agents SDK, Deep Agents Code, ACP, Talon, evaluation, and partner packages. Explains how product hosts compose the SDK while retaining their own protocol, lifecycle, approval, MCP, and delegation responsibilities.
+description: Ownership and runtime boundaries across the Deep Agents SDK, Deep Agents Code, ACP, Talon, evaluation, and partner packages. Explains Talon's host-managed lifecycle and the distinct delegation behavior of interactive and cron turns.
 tags: [architecture, monorepo, deepagents, talon, acp, runtime-boundaries]
-openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
+    at: 2026-09-20T08:05:19.815Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -28,15 +27,25 @@ sources:
     resource: repo://libs/README.md
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-363e56d368aecc6ab73d3e2f
+    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
 ---
 
 # Repository Architecture Overview
@@ -113,30 +122,51 @@ Talon's CLI (`deepagents-talon`) constructs the host boundary. With a configured
 sequenceDiagram
   participant Host as Talon host
   participant Runtime as DeepAgentRuntime
-  participant Store as Approval and MCP state
+  participant Policy as Approval and MCP state
   participant Graph as SDK graph
   Host->>Runtime: start
-  Runtime->>Store: Resolve subagents and approval snapshot
+  Runtime->>Policy: resolve subagents and approval snapshot
   Runtime->>Graph: create_deep_agent
   Host->>Runtime: invoke request
-  Runtime->>Store: Refresh tools and read approval snapshot
-  Runtime->>Runtime: Set request scoped contexts
-  Runtime->>Graph: Run captured graph
-  Graph-->>Runtime: Final text or interrupt
-  Runtime->>Runtime: Reset contexts in finally
+  Runtime->>Policy: refresh tools and read approval snapshot
+  Runtime->>Runtime: set request contexts
+  Runtime->>Graph: run captured graph
+  Graph-->>Runtime: final text or interrupt
+  Runtime->>Runtime: reset contexts in finally
   Runtime-->>Host: AgentResult
   Host->>Runtime: stop
-  Runtime->>Runtime: Cancel background work
+  Runtime->>Runtime: cancel background work
 ```
-This lifecycle distinguishes Talon's operational state from the SDK graph it composes.
+This lifecycle shows the host invoking the runtime and the runtime composing, rather than owning, the SDK graph.
 
 Talon's `DeepAgentRuntime` resolves subagents and constructs its SDK graph at start; each invoke establishes request-scoped authorization, history, cron, graph, and background-result context, then resets it in a `finally` block, while stop cancels background work before releasing the graph and checkpointer resources. It refuses invocation before startup, refreshes runtime tools, and rebuilds the graph when the approval snapshot changes. If background cancellation fails, it leaves graph/checkpointer resources open rather than risk closing persistence while a worker is writing.
 
+`TalonHost` is the long-running process owner. It starts the agent runtime before channels and the optional scheduler; on a partial start it unwinds started components in reverse order. On normal shutdown it stops its background-result loop, cancels in-flight work, then stops channels, scheduler, and agent runtime while continuing past individual stop failures. Per-conversation locks serialize chat turns; a new message can cancel and replace an active turn, while a cancellation timeout blocks that conversation until restart.
+
 MCP tools arrive through Talon's `MCPToolProvider`, not through a change to SDK ownership. Reload/refresh builds a replacement graph under the runtime lock; failed refresh leaves the prior graph usable. Likewise, a saved Talon subagent edit does not alter a running turn: `reload_subagent_configuration()` validates and builds a replacement graph for subsequent turns.
 
-Talon composes additional behavior around standard SDK delegation. It replaces the SDK `SubAgentMiddleware` with `TaskTools` so a caller can attach an explicit, validated set of current catalog tools to a named local subagent for one task. Local roles compile as fresh-context `create_agent` graphs with only their configured or selected tools, Talon MCP middleware, and any applicable approval middleware. `fork` is rejected, opaque compiled/remote roles report unknown tools, and duplicate attachment names fail rather than choosing arbitrarily. Background work is Talon-managed and its results are fed back to an owning conversation; this lifecycle is distinct from the SDK's remote asynchronous-subagent mechanism.
+### Delegation has two deliberate lifecycles
 
-Talon approval policy is also host-owned. It loads a snapshot into graph `interrupt_on` configuration and captures that snapshot for an invocation; channel/cron/background handling supplies or denies decisions around resulting interrupts. A policy edit takes effect only after graph rebuild for a later invocation, not as authority inherited by an already-running task. See [Permissions and HITL](../concepts/permissions-hitl.md) for the enforcement and identity constraints.
+Talon composes additional behavior around standard SDK delegation. It replaces the SDK `SubAgentMiddleware` with `TaskTools` so a caller can attach an explicit, validated set of current catalog tools to a named local subagent for one task. Local roles compile as fresh-context `create_agent` graphs with only their configured or selected tools, Talon MCP middleware, and any applicable approval middleware. `fork` is rejected, opaque compiled/remote roles report unknown tools, and duplicate attachment names fail rather than choosing arbitrarily.
+
+For an ordinary channel turn, `BackgroundSubagents` intercepts `task` and `start_async_task`, creates an in-memory job owned by the conversation thread, and returns a task ID immediately. The worker uses its own thread ID, has a one-hour bound, cannot delegate again, has no inherited authorization handler, and is subject to global job and running-worker limits. Its completed result is injected into a later main-agent turn for the same owner; the host's background loop schedules that follow-up, and `/stop` or `/new` cancels that conversation's workers. Results are acknowledged only after the main agent completes; if the resulting reply is superseded or undelivered, they can be requeued, but repeated failed delivery attempts eventually drop them.
+
+A cron invocation is not an ordinary detached turn. `DeepAgentRuntime` marks only requests whose metadata has `trigger: cron` as scheduled, and `TalonHost.run_scheduled_job()` invokes it on a dedicated job thread while holding the job conversation lock. On that path, the same `task` or `start_async_task` call runs to completion inline and returns its result to the current model turn: it creates no background job, consumes neither ordinary background capacity nor a later delivery turn, and disallows nested delegation. Scheduled prompts replace the detached-work instructions and hide `list_subagents` and `cancel_subagent`, because neither has a job to inspect or cancel. Inline fan-out can run concurrently up to a separate semaphore and queues beyond that limit; each delegation has a shorter timeout and returns a sanitized error tool result rather than allowing a timeout to restart the graph. The whole scheduled run is also bounded, and a timeout repairs the persisted graph thread before it is re-raised to the scheduler.
+
+```mermaid
+flowchart TD
+  Entry["Talon task or start_async_task"] --> Kind{"Request trigger is cron"}
+  Kind -- "no" --> Detached["Create conversation-owned background job"]
+  Detached --> Continue["Main turn continues with task ID"]
+  Detached --> Worker["Worker runs on separate thread"]
+  Worker --> FollowUp["Host starts later result-processing turn"]
+  Kind -- "yes" --> Inline["Run delegation inside current cron turn"]
+  Inline --> Result["Return result directly to model"]
+  Result --> ScheduledReply["Scheduler delivers non-silent output"]
+```
+This decision flow distinguishes interactive work that survives the current turn from cron work that must finish within it.
+
+Talon approval policy is also host-owned. It loads a snapshot into graph `interrupt_on` configuration and captures that snapshot for an invocation; channel/cron/background handling supplies or denies decisions around resulting interrupts. Scheduled and background-result turns have no interactive approval or authorization handler, and cron tool approvals are auto-denied. A policy edit takes effect only after graph rebuild for a later invocation, not as authority inherited by an already-running task. See [Permissions and HITL](../concepts/permissions-hitl.md) for the enforcement and identity constraints.
 
 ## Evaluation and releases
 
@@ -149,7 +179,7 @@ The release manifest currently records `deepagents` 0.7.15, `deepagents-acp` 0.0
 1. **SDK behavior:** trace the public `create_deep_agent()` input into middleware, profiles, or backends. Preserve middleware order and the `DeepAgentState` message reducer.
 2. **Code behavior:** keep terminal UI, client/server streaming, product approvals, extensions, and sandbox choice in `libs/code`.
 3. **ACP behavior:** keep protocol conversion, session semantics, replay, and editor-facing configuration in `libs/acp`; do not make the SDK retain editor sessions.
-4. **Talon behavior:** keep channels, cron delivery, local MCP configuration/reload, operator approval, and local/background subagent lifecycle in `libs/talon`. Test graph replacement and running-work semantics whenever changing these seams.
+4. **Talon behavior:** keep channels, cron delivery, local MCP configuration/reload, operator approval, and local/background subagent lifecycle in `libs/talon`. Preserve the distinction between detached channel delegation and inline cron delegation; test graph replacement and running-work semantics whenever changing these seams.
 5. **Provider behavior:** put sandbox/provider mechanics in the appropriate partner package rather than coupling them to the generic harness.
 
-Focused coverage should follow ownership: SDK graph tests for reusable assembly; Code client/server tests for product flow; ACP tests for session and protocol replay; and Talon runtime/subagent tests for startup, context cleanup, approval snapshots, graph replacement, fresh-agent tool attachment, and cancellation safety.
+Focused coverage should follow ownership: SDK graph tests for reusable assembly; Code client/server tests for product flow; ACP tests for session and protocol replay; and Talon host/runtime/background tests for lifecycle unwind, conversation locking and cancellation, context cleanup, approval snapshots, graph replacement, detached result delivery and requeueing, inline cron fan-out and timeout containment, fresh-agent tool attachment, and cancellation safety.

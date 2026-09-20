@@ -1104,13 +1104,24 @@ name = "deepagents-talon"
 version = "0.0.8"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "deepagents" },
     { name = "deepagents-code" },
     { name = "discord-py" },
     { name = "fastmcp" },
+    { name = "httpx" },
+    { name = "httpx2" },
     { name = "langchain" },
+    { name = "langchain-core" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "langgraph-prebuilt" },
+    { name = "langgraph-sdk" },
+    { name = "langsmith" },
     { name = "mcp" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "tzdata" },
 ]
 
@@ -1124,6 +1135,7 @@ history-openai = [
 ]
 history-voyage = [
     { name = "langchain-voyageai" },
+    { name = "voyageai" },
 ]
 media = [
     { name = "deepagents-code", extra = ["media"] },
@@ -1144,6 +1156,8 @@ postgres = [
 
 [package.dev-dependencies]
 test = [
+    { name = "anyio" },
+    { name = "httpcore" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1156,33 +1170,47 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", editable = "../code" },
     { name = "deepagents-code", extras = ["media"], marker = "extra == 'media'", editable = "../code" },
     { name = "discord-py", specifier = ">=2.4.0,<3.0.0" },
     { name = "fastmcp", specifier = ">=4.0.0b4,<5.0.0" },
+    { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
+    { name = "httpx2", specifier = ">=2.12.0,<3.0.0" },
     { name = "langchain", specifier = ">=1.4.2,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.3,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'history-openai'", specifier = ">=1.6.2,<2.0.0" },
     { name = "langchain-voyageai", marker = "extra == 'history-voyage'", specifier = ">=0.4.1,<0.5.0" },
+    { name = "langgraph", specifier = ">=1.2.11,<2.0.0" },
+    { name = "langgraph-checkpoint", specifier = ">=4.2.0,<5.0.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=3.1.2,<3.2.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },
+    { name = "langgraph-prebuilt", specifier = ">=1.1.0,<2.0.0" },
+    { name = "langgraph-sdk", specifier = ">=0.4.4,<1.0.0" },
     { name = "langgraph-store-mongodb", marker = "extra == 'mongodb'", specifier = ">=0.4.0,<0.5.0" },
+    { name = "langsmith", specifier = ">=0.13.0" },
     { name = "librosa", marker = "extra == 'media'", specifier = ">=0.11.0,<1.0.0" },
     { name = "mcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "numpy", marker = "extra == 'media'", specifier = ">=2.5.3,<3.0.0" },
     { name = "phonemizer", marker = "extra == 'media'", specifier = ">=3.3.0,<4.0.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.3.5,<4.0.0" },
+    { name = "pydantic", specifier = ">=2.13.4,<3.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sentence-transformers", marker = "extra == 'history-local'", specifier = ">=5.2.0,<7.0.0" },
     { name = "torch", marker = "extra == 'media'", specifier = ">=2.12.1,<2.14.0" },
     { name = "torchaudio", marker = "extra == 'media'", specifier = ">=2.11.0,<2.12.0" },
     { name = "transformers", marker = "extra == 'history-local'", specifier = ">=5.16.1,<6.0.0" },
     { name = "transformers", marker = "extra == 'media'", specifier = ">=5.16.1,<6.0.0" },
     { name = "tzdata", specifier = ">=2025.2" },
+    { name = "voyageai", marker = "extra == 'history-voyage'", specifier = ">=0.5.0,<1.0.0" },
 ]
 provides-extras = ["history-local", "history-voyage", "history-openai", "mongodb", "postgres", "media"]
 
 [package.metadata.requires-dev]
 test = [
+    { name = "anyio", specifier = ">=4.14.2,<5.0.0" },
+    { name = "httpcore", specifier = ">=1.0.9,<2.0.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -2373,15 +2401,15 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint"
-version = "4.1.1"
+version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/47/886af6f886f0bff2273164a45f008694e48a96ff3cd25ff0228f2aa9480e/langgraph_checkpoint-4.1.1.tar.gz", hash = "sha256:6c2bdb530c91f91d7d9c1bd100925d0fc4f498d418c17f3587d1526279482a25", size = 184020, upload-time = "2026-05-22T16:57:38.503Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/e1/089c4c9e0a2fec7f883f82ae8e6a727138d50074cfeb6644bc2d13b1019b/langgraph_checkpoint-4.2.0.tar.gz", hash = "sha256:51a593b6bee684b0818e5d6e58e28ab340c6db7794575056ce7bd1b746a84ed7", size = 180239, upload-time = "2026-08-07T20:05:03.756Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bd/b4/71425e3e38be92611300b9cc5e46a5bf98ab23f5ea8a75b73d02a2f1413c/langgraph_checkpoint-4.1.1-py3-none-any.whl", hash = "sha256:25d29144b082827218e7bc3f1e9b0566a4bb007895cd6cc26f66a8428739f56e", size = 56212, upload-time = "2026-05-22T16:57:37.203Z" },
+    { url = "https://files.pythonhosted.org/packages/05/71/3b475f09bd57d3a5649792c66353312b4432afd843f301739dfcebd157f0/langgraph_checkpoint-4.2.0-py3-none-any.whl", hash = "sha256:0547fd228935a0b758865de3a3d6d7a2537c308895d0f9ab092ce9151b5da942", size = 56833, upload-time = "2026-08-07T20:05:02.655Z" },
 ]
 
 [[package]]

@@ -37,7 +37,7 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
-from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
+from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -105,14 +105,11 @@ _CANCEL_TIMEOUT_MESSAGE = (
     "Restart Talon to recover."
 )
 _AGENT_FAILURE_MESSAGE = "Something went wrong while working on that. Check Talon logs."
-_SCHEDULED_PREEMPT_FAILURE = (
-    "Could not stop the previous run on this job's thread; restart Talon to recover."
-)
+# Last resort, well above the per-delegation bound, for a run that neither finishes nor
+# hangs in any one subagent: the ticker runs due jobs one at a time, so an unbounded run
+# silences every other job.
+_SCHEDULED_RUN_TIMEOUT_SECONDS = 1800.0
 _BACKGROUND_FOLLOW_UP = "Process the completed background subagent results."
-_SCHEDULED_FOLLOW_UP = (
-    f"{_BACKGROUND_FOLLOW_UP} Report what the user needs to know, or reply "
-    f"{SILENT_SENTINEL} if there is nothing worth sending."
-)
 _BACKGROUND_RETRY_BASE_SECONDS = 2.0
 _BACKGROUND_RETRY_MAX_SECONDS = 60.0
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
@@ -635,7 +632,7 @@ class TalonHost:
                             metadata={**route.metadata, "background_delivery": True},
                             message=ChannelMessage(
                                 route.message.conversation_id,
-                                _follow_up_prompt(route),
+                                _BACKGROUND_FOLLOW_UP,
                                 sender_id=route.message.sender_id,
                             ),
                         ),
@@ -678,13 +675,10 @@ class TalonHost:
             # host sets. A scheduled turn's cron identity is what its tools scope by.
             **route.metadata,
         }
-        scheduled = metadata.get("trigger") == "cron"
-        unattended = scheduled or bool(route.metadata.get("background_delivery"))
-        if (
-            isinstance(self.agent, ConversationHistoryRuntime)
-            and self.agent.history_enabled
-            and not scheduled
-        ):
+        # No scheduled turn reaches here: a job's run calls `_invoke_agent` directly, and
+        # its delegations finish inside that run rather than earning a delivery turn.
+        unattended = bool(route.metadata.get("background_delivery"))
+        if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
             metadata["history_channel"] = _channel_key(channel, turn.provider)
             metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
@@ -766,14 +760,6 @@ class TalonHost:
                 message_handler=message_handler,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
-            if scheduled and is_silent(result.text):
-                log_event(
-                    logger,
-                    "cron.background_suppressed",
-                    job_id=metadata.get("cron_job_id"),
-                    job_name=metadata.get("cron_job_name"),
-                )
-                suppress_result = True
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
             result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
@@ -869,87 +855,35 @@ class TalonHost:
             Agent text output for scheduler delivery handling.
 
         Raises:
-            RuntimeError: If a turn already running on this job's thread could not be
-                stopped first.
+            TimeoutError: If the run outlasts its bound, after the thread is repaired.
         """
         conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
-        # Held across the whole run, as the per-job lock it replaces was. It keeps two
-        # fires off one graph thread, and it keeps the background dispatcher from
-        # popping this job's route before the run has had a chance to delegate.
+        # Held across the whole run, as the per-job lock it replaces was, so two fires
+        # cannot share one graph thread. A scheduled run's delegations are inline, so it
+        # now holds this for as long as its subagents take.
         async with self._conversation_lock(conversation_id):
-            await self._preempt_scheduled_turn(conversation_id)
-            self._route_scheduled_background(
-                job,
-                conversation_id,
-                await self.origin_channel(job.origin),
-            )
-            result = await self._invoke_agent(
-                conversation_id=conversation_id,
-                text=job.prompt,
-                metadata=_scheduled_metadata(job),
-            )
+            try:
+                async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
+                    result = await self._invoke_agent(
+                        conversation_id=conversation_id,
+                        text=job.prompt,
+                        metadata=_scheduled_metadata(job),
+                    )
+            except TimeoutError:
+                # The graph was cancelled mid-node, so this thread can end on an assistant
+                # message whose tool calls have no results, which fails every later fire.
+                # The scheduler awaits this coroutine directly rather than through a task,
+                # so nothing else reaches the recovery that repairs it.
+                log_event(
+                    logger,
+                    "cron.run_timeout",
+                    job_id=job.id,
+                    job_name=job.name,
+                )
+                with contextlib.suppress(Exception):
+                    await self.agent.recover_interrupted(conversation_id)
+                raise
             return result.text
-
-    async def _preempt_scheduled_turn(self, conversation_id: str) -> None:
-        """Clear a background follow-up turn before a new run writes the same thread.
-
-        Args:
-            conversation_id: Scheduled job thread about to be invoked.
-
-        Raises:
-            RuntimeError: If a turn already on this thread could not be stopped, so
-                the scheduler records the run as failed instead of writing the thread
-                underneath a live one.
-        """
-        if conversation_id in self._blocked:
-            raise RuntimeError(_SCHEDULED_PREEMPT_FAILURE)
-        active = self._tasks.get(conversation_id)
-        if active is None or active.done():
-            return
-        # Deliberately not `_cancel_conversation_tasks`: that also cancels this
-        # thread's workers and drops its route, discarding the very results the turn
-        # was consuming. Cancelling the turn alone leaves them unacknowledged -- the
-        # runtime skips `record_delivery_failure` for a cancellation -- so the
-        # dispatcher delivers them again once this run releases the thread.
-        if await self._cancel_active(conversation_id, active, recover=True) is (
-            _CancelOutcome.TIMEOUT
-        ):
-            raise RuntimeError(_SCHEDULED_PREEMPT_FAILURE)
-
-    def _route_scheduled_background(
-        self,
-        job: CronJob,
-        conversation_id: str,
-        channel: ChannelAdapter | None,
-    ) -> None:
-        """Point a scheduled job's background results at its origin conversation.
-
-        Registered before the run, not after: the scheduler swallows whatever
-        `run_scheduled_job` raises, so a run that fails after delegating would
-        otherwise strand its subagent with nothing to deliver it. A route for a job
-        that delegates nothing is dropped by the dispatcher on its next tick.
-
-        Args:
-            job: Claimed cron job about to run.
-            conversation_id: Thread the job runs on, which owns its background work.
-            channel: Channel serving the job's origin, if one does.
-        """
-        if not isinstance(self.agent, BackgroundRuntime):
-            return
-        if channel is None:
-            logger.warning(
-                "No channel serves cron job %s; its background results cannot be delivered",
-                job.id,
-            )
-            return
-        self._background_routes[conversation_id] = _BackgroundRoute(
-            channel=channel,
-            message=ChannelMessage(job.origin.conversation_id, job.prompt),
-            conversation_root=conversation_id,
-            conversation_id=conversation_id,
-            provider=job.origin.channel,
-            metadata=_scheduled_metadata(job),
-        )
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.
@@ -1801,20 +1735,6 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "cron_origin_message_id": job.origin.message_id,
         "trigger": "cron",
     }
-
-
-def _follow_up_prompt(route: _BackgroundRoute) -> str:
-    """Return the prompt that asks a conversation to process finished background work.
-
-    Args:
-        route: Conversation whose background results are ready.
-
-    Returns:
-        Prompt text; a scheduled conversation is also told how to stay silent.
-    """
-    if route.metadata.get("trigger") == "cron":
-        return _SCHEDULED_FOLLOW_UP
-    return _BACKGROUND_FOLLOW_UP
 
 
 def _conversation_key(provider: str, conversation_id: str) -> str:

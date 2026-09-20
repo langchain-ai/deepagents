@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - Route a Deep Agents maintenance task to its owning package, its focused test boundary, and the detailed operational guide. Includes current release units and links for Talon, MCP, delegation, dcode diagnostics, ACP, and releases.
+- [Deep Agents Repository Quickstart](quickstart.md) - Route Deep Agents maintenance work to its owning package and focused validation, with a focused path for Talon scheduled delegation. Links to the architecture, authority, persistence, delegation, integration, and testing guides.
 
 # Directories
 

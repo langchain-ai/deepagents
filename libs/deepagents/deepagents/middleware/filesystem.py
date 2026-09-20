@@ -65,6 +65,7 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
+    _OPENAI_FILE_MIME_TYPES,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
@@ -218,31 +219,10 @@ _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
-_OPENAI_FILE_MIME_TYPES: Final = frozenset(
-    {
-        "application/msword",
-        "application/vnd.apple.iwork",
-        "application/vnd.apple.keynote",
-        "application/vnd.apple.pages",
-        "application/vnd.google-apps.document",
-        "application/vnd.google-apps.presentation",
-        "application/vnd.google-apps.spreadsheet",
-        "application/vnd.ms-excel",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.oasis.opendocument.text",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    }
-)
-"""Binary document inputs accepted by the OpenAI Responses API."""
-
-
 def _file_block_supported(
     block: ContentBlock,
     *,
     model: "BaseChatModel | None",
-    model_settings: Mapping[str, Any],
     profile: Mapping[str, Any],
     in_tool_message: bool,
 ) -> bool:
@@ -253,18 +233,13 @@ def _file_block_supported(
         if in_tool_message and profile.get("pdf_tool_message") is False:
             return False
         return profile.get("pdf_inputs") is not False
-    return (
-        block.get("mime_type") in _OPENAI_FILE_MIME_TYPES
-        and isinstance(model, _OPENAI_FILE_MODEL_TYPES)
-        and model._use_responses_api({**model.model_kwargs, **model_settings})
-    )
+    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
 
 
 def _multimodal_block_supported(
     block: ContentBlock,
     *,
     model: "BaseChatModel | None",
-    model_settings: Mapping[str, Any],
     profile: Mapping[str, Any],
     in_tool_message: bool,
 ) -> bool:
@@ -278,7 +253,6 @@ def _multimodal_block_supported(
         return _file_block_supported(
             block,
             model=model,
-            model_settings=model_settings,
             profile=profile,
             in_tool_message=in_tool_message,
         )
@@ -310,7 +284,6 @@ def _scrub_message_multimodal_content(
     message: AnyMessage,
     *,
     model: "BaseChatModel | None",
-    model_settings: Mapping[str, Any],
     profile: Mapping[str, Any],
 ) -> AnyMessage:
     """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
@@ -325,7 +298,6 @@ def _scrub_message_multimodal_content(
         or _multimodal_block_supported(
             block,
             model=model,
-            model_settings=model_settings,
             profile=profile,
             in_tool_message=in_tool_message,
         )
@@ -337,9 +309,7 @@ def _scrub_message_multimodal_content(
     return message.model_copy(update={"content": new_blocks})
 
 
-def _scrub_unsupported_multimodal_content(
-    messages: list[AnyMessage], model: "BaseChatModel | None", *, model_settings: Mapping[str, Any] | None = None
-) -> list[AnyMessage]:
+def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
     """Replace multimodal content blocks `model.profile` marks unsupported.
 
     Some providers return a non-retryable 400 when sent a content block they
@@ -360,8 +330,7 @@ def _scrub_unsupported_multimodal_content(
     profile = model.profile if model is not None else None
     if not isinstance(profile, dict):
         profile = {}
-    settings = model_settings or {}
-    return [_scrub_message_multimodal_content(message, model=model, model_settings=settings, profile=profile) for message in messages]
+    return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
 
 
 def _handle_video_read(
@@ -3298,11 +3267,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(
-            request_messages,
-            request.model,
-            model_settings={**request.model_settings, "tools": [tool for tool in request.tools if isinstance(tool, dict)]},
-        )
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
@@ -3338,11 +3303,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(
-            request_messages,
-            request.model,
-            model_settings={**request.model_settings, "tools": [tool for tool in request.tools if isinstance(tool, dict)]},
-        )
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 

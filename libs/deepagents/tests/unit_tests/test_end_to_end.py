@@ -5072,21 +5072,9 @@ def test_binary_document_mime_allowlist_is_provider_specific(mime_type: str) -> 
 
 
 @pytest.mark.parametrize("model_type", [MaskedChatOpenAI, MaskedAzureChatOpenAI])
-@pytest.mark.parametrize(
-    ("settings", "runtime_settings", "supported"),
-    [
-        ({}, {}, False),
-        ({"use_responses_api": False}, {"reasoning": {"effort": "low"}}, False),
-        ({"use_responses_api": True}, {}, True),
-        ({"output_version": "responses/v1"}, {}, True),
-        ({"reasoning": {"effort": "low"}}, {}, True),
-        ({}, {"reasoning": {"effort": "low"}}, True),
-        ({}, {"tools": [{"type": "web_search_preview"}]}, True),
-        ({"model_kwargs": {"previous_response_id": "resp_1"}}, {}, True),
-    ],
-)
-def test_binary_files_follow_openai_endpoint(model_type, settings: dict, runtime_settings: dict, *, supported: bool) -> None:
-    model = model_type.model_construct(model_name="gpt-4o", **settings)
+@pytest.mark.parametrize(("use_responses_api", "supported"), [(False, False), (True, True)])
+def test_binary_files_require_openai_responses_api(model_type, *, use_responses_api: bool, supported: bool) -> None:
+    model = model_type.model_construct(model_name="gpt-4o", use_responses_api=use_responses_api)
     message = HumanMessage(
         content=[
             {
@@ -5096,7 +5084,7 @@ def test_binary_files_follow_openai_endpoint(model_type, settings: dict, runtime
             }
         ]
     )
-    result = filesystem_middleware._scrub_unsupported_multimodal_content([message], model, model_settings=runtime_settings)[0]
+    result = filesystem_middleware._scrub_unsupported_multimodal_content([message], model)[0]
     assert (result.content_blocks[0]["type"] == "file") is supported
 
 
@@ -5123,20 +5111,17 @@ def test_pdf_tool_message_profile_is_enforced() -> None:
     "mime_type",
     ["application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
 )
-@pytest.mark.parametrize("runtime_endpoint", ["chat", "reasoning", "builtin_tool"])
-async def test_file_mime_scrub_preserves_request_state(mime_type: str, runtime_endpoint: str, *, async_mode: bool) -> None:
+async def test_file_mime_scrub_preserves_request_state(mime_type: str, *, async_mode: bool) -> None:
     message = ToolMessage(
         content=[{"type": "file", "base64": _docx_base64(), "mime_type": mime_type}],
         tool_call_id="read-1",
         additional_kwargs={"read_file_path": "/archive.zip"},
     )
     original = message.model_copy(deep=True)
-    model = MaskedChatOpenAI.model_construct(model_name="gpt-4o")
+    model = MaskedChatOpenAI.model_construct(model_name="gpt-4o", use_responses_api=True)
     request = ModelRequest(
         model=model,
         messages=[message],
-        tools=[{"type": "web_search_preview"}] if runtime_endpoint == "builtin_tool" else [],
-        model_settings={"reasoning": {"effort": "low"}} if runtime_endpoint == "reasoning" else {},
         state={"messages": [message]},
         runtime=MagicMock(),
     )
@@ -5155,7 +5140,7 @@ async def test_file_mime_scrub_preserves_request_state(mime_type: str, runtime_e
     else:
         middleware.wrap_model_call(request, handler)
     is_docx = mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    if is_docx and runtime_endpoint != "chat":
+    if is_docx:
         assert captured[0].messages[0] == original
     else:
         assert _is_placeholder_block(captured[0].messages[0].content_blocks[0], path="/archive.zip")

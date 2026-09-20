@@ -23,6 +23,25 @@ logger = logging.getLogger(__name__)
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
+_OPENAI_FILE_MIME_TYPES: Final = frozenset(
+    {
+        "application/msword",
+        "application/vnd.apple.iwork",
+        "application/vnd.apple.keynote",
+        "application/vnd.apple.pages",
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.presentation",
+        "application/vnd.google-apps.spreadsheet",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
+"""Binary document inputs accepted by the OpenAI Responses API."""
+
 
 class InvalidGlobPatternError(ValueError):
     """A glob pattern the shared matcher refuses to compile.

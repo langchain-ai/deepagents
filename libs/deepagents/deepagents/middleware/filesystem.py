@@ -162,18 +162,24 @@ def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | Non
     tool_call = request.tool_call
     if tool_call["name"] not in _FILE_MUTATION_TOOLS:
         return None
+    path = tool_call["args"].get("file_path")
+    if not isinstance(path, str):
+        return None
     try:
-        file_path = validate_path(tool_call["args"]["file_path"])
-    except (KeyError, TypeError, ValueError):
+        file_path = validate_path(path)
+    except ValueError:
         return None
     messages = request.state.get("messages") if isinstance(request.state, Mapping) else None
     ai_message = next((message for message in reversed(messages or []) if isinstance(message, AIMessage)), None)
     for call in ai_message.tool_calls if ai_message else []:
         if call["id"] == tool_call["id"]:
             return None
+        path = call["args"].get("file_path")
+        if call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
+            continue
         try:
-            duplicate = call["name"] in _FILE_MUTATION_TOOLS and validate_path(call["args"]["file_path"]) == file_path
-        except (KeyError, TypeError, ValueError):
+            duplicate = validate_path(path) == file_path
+        except ValueError:
             continue
         if duplicate:
             return _tool_error(tool_call["name"], tool_call["id"], "Error: parallel file mutations to the same path are not allowed.")

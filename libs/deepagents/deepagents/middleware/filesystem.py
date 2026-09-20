@@ -93,10 +93,6 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
-# support today, so these providers get a hard-coded pass until profiles can
-# describe support for other office and document formats.
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
 except ImportError:
@@ -230,19 +226,179 @@ _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
-def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
-    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
+_OPENAI_NON_PDF_FILE_MIME_TYPES: Final = frozenset(
+    {
+        "application/csv",
+        "application/graphql",
+        "application/javascript",
+        "application/json",
+        "application/json5",
+        "application/msword",
+        "application/rtf",
+        "application/toml",
+        "application/typescript",
+        "application/vnd.apple.iwork",
+        "application/vnd.apple.keynote",
+        "application/vnd.apple.pages",
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.presentation",
+        "application/vnd.google-apps.spreadsheet",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/x-awk",
+        "application/x-bash",
+        "application/x-graphql",
+        "application/x-httpd-php",
+        "application/x-httpd-php-source",
+        "application/x-iif",
+        "application/x-json5",
+        "application/x-ndjson",
+        "application/x-patch",
+        "application/x-php",
+        "application/x-powershell",
+        "application/x-protobuf",
+        "application/x-rust",
+        "application/x-scala",
+        "application/x-sql",
+        "application/x-subrip",
+        "application/x-terraform",
+        "application/x-toml",
+        "application/x-yaml",
+        "application/yaml",
+        "message/rfc822",
+        "text/calendar",
+        "text/css",
+        "text/csv",
+        "text/html",
+        "text/javascript",
+        "text/jsx",
+        "text/markdown",
+        "text/plain",
+        "text/rtf",
+        "text/srt",
+        "text/tsv",
+        "text/tsx",
+        "text/vbscript",
+        "text/vtt",
+        "text/x-R",
+        "text/x-asm",
+        "text/x-astro",
+        "text/x-awk",
+        "text/x-bash",
+        "text/x-c",
+        "text/x-c++",
+        "text/x-clojure",
+        "text/x-cmake",
+        "text/x-csharp",
+        "text/x-dart",
+        "text/x-diff",
+        "text/x-dockerfile",
+        "text/x-ejs",
+        "text/x-elixir",
+        "text/x-erb",
+        "text/x-erlang",
+        "text/x-go",
+        "text/x-golang",
+        "text/x-gradle",
+        "text/x-graphql",
+        "text/x-groovy",
+        "text/x-handlebars",
+        "text/x-haskell",
+        "text/x-hcl",
+        "text/x-iif",
+        "text/x-ini",
+        "text/x-jade",
+        "text/x-java",
+        "text/x-jinja2",
+        "text/x-julia",
+        "text/x-kotlin",
+        "text/x-less",
+        "text/x-liquid",
+        "text/x-lisp",
+        "text/x-lua",
+        "text/x-makefile",
+        "text/x-mustache",
+        "text/x-objectivec",
+        "text/x-objectivec++",
+        "text/x-patch",
+        "text/x-perl",
+        "text/x-php",
+        "text/x-properties",
+        "text/x-protobuf",
+        "text/x-pug",
+        "text/x-python",
+        "text/x-r",
+        "text/x-rst",
+        "text/x-ruby",
+        "text/x-rust",
+        "text/x-sass",
+        "text/x-scala",
+        "text/x-script.python",
+        "text/x-scss",
+        "text/x-sh",
+        "text/x-shellscript",
+        "text/x-sql",
+        "text/x-subrip",
+        "text/x-swift",
+        "text/x-terraform",
+        "text/x-tex",
+        "text/x-tmpl",
+        "text/x-toml",
+        "text/x-twig",
+        "text/x-typescript",
+        "text/x-vcard",
+        "text/x-yaml",
+        "text/x-zsh",
+        "text/xml",
+    }
+)
+"""Responses API file inputs: https://developers.openai.com/api/docs/guides/file-inputs."""
+
+_GOOGLE_NON_PDF_FILE_MIME_TYPES: Final = frozenset(
+    {
+        "application/json",
+        "application/rtf",
+        "application/x-ipynb+json",
+        "application/x-javascript",
+        "application/x-python-code",
+        "application/x-typescript",
+        "text/css",
+        "text/csv",
+        "text/html",
+        "text/javascript",
+        "text/markdown",
+        "text/plain",
+        "text/rtf",
+        "text/x-python",
+        "text/x-typescript",
+        "text/xml",
+        "video/text/timestamp",
+    }
+)
+"""Text file Blob MIME types: https://ai.google.dev/api/generate-content#Blob."""
+
+
+def _model_non_pdf_file_mime_types(model: "BaseChatModel | None", model_settings: Mapping[str, Any]) -> frozenset[str]:
+    """Return direct-input MIME types allowed by the provider and selected endpoint."""
+    if isinstance(model, _GOOGLE_FILE_MODEL_TYPES):
+        return _GOOGLE_NON_PDF_FILE_MIME_TYPES
+    if isinstance(model, _OPENAI_FILE_MODEL_TYPES) and model._use_responses_api({**model.model_kwargs, **model_settings}):
+        return _OPENAI_NON_PDF_FILE_MIME_TYPES
+    return frozenset()
 
 
 def _multimodal_block_supported(
     block: ContentBlock,
     *,
     profile: Mapping[str, Any],
-    tolerates_non_pdf_files: bool,
+    non_pdf_file_mime_types: frozenset[str],
     in_tool_message: bool,
 ) -> bool:
-    """Check whether `profile` (plus the hard-coded provider exception) accepts `block`.
+    """Check whether the profile and provider MIME allowlist accept the block.
 
     Missing `ModelProfile` fields default to supported, since profile coverage is
     incomplete. Only an explicit `False` rejects a block type.
@@ -253,10 +409,7 @@ def _multimodal_block_supported(
         # include a `mime_type`, so leave them untouched.
         return True
     if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
-        # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
-        # by any `ModelProfile` field yet; only the hard-coded tolerant
-        # providers pass.
-        return tolerates_non_pdf_files
+        return block.get("mime_type") in non_pdf_file_mime_types
 
     field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
     if field is None:
@@ -281,7 +434,7 @@ def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage
     )
 
 
-def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], tolerates_non_pdf_files: bool) -> AnyMessage:
+def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], non_pdf_file_mime_types: frozenset[str]) -> AnyMessage:
     """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
     if not isinstance(message, (ToolMessage, HumanMessage)):
         return message
@@ -291,7 +444,7 @@ def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[s
     new_blocks = [
         block
         if block["type"] not in _MULTIMODAL_BLOCK_TYPES
-        or _multimodal_block_supported(block, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files, in_tool_message=in_tool_message)
+        or _multimodal_block_supported(block, profile=profile, non_pdf_file_mime_types=non_pdf_file_mime_types, in_tool_message=in_tool_message)
         else _unsupported_multimodal_placeholder(block, message)
         for block in blocks
     ]
@@ -300,7 +453,9 @@ def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[s
     return message.model_copy(update={"content": new_blocks})
 
 
-def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
+def _scrub_unsupported_multimodal_content(
+    messages: list[AnyMessage], model: "BaseChatModel | None", *, model_settings: Mapping[str, Any] | None = None
+) -> list[AnyMessage]:
     """Replace multimodal content blocks `model.profile` marks unsupported.
 
     Some providers return a non-retryable 400 when sent a content block they
@@ -321,8 +476,8 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     profile = model.profile if model is not None else None
     if not isinstance(profile, dict):
         profile = {}
-    tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)
-    return [_scrub_message_multimodal_content(message, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files) for message in messages]
+    non_pdf_file_mime_types = _model_non_pdf_file_mime_types(model, model_settings or {})
+    return [_scrub_message_multimodal_content(message, profile=profile, non_pdf_file_mime_types=non_pdf_file_mime_types) for message in messages]
 
 
 def _handle_video_read(
@@ -3259,7 +3414,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
+        request_messages = _scrub_unsupported_multimodal_content(
+            request_messages,
+            request.model,
+            model_settings={**request.model_settings, "tools": [tool for tool in request.tools if isinstance(tool, dict)]},
+        )
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
@@ -3295,7 +3454,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
+        request_messages = _scrub_unsupported_multimodal_content(
+            request_messages,
+            request.model,
+            model_settings={**request.model_settings, "tools": [tool for tool in request.tools if isinstance(tool, dict)]},
+        )
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 

@@ -50,6 +50,7 @@ from langchain_quickjs._snapshot import (
     verify_snapshot,
 )
 from langchain_quickjs._subagent import find_subagent_task_tool
+from langchain_quickjs._worker import ExecutionMode
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,18 @@ def _resolve_mode(
             return "call"
         case _:
             msg = "`mode` must be one of 'thread', 'turn', or 'call'."
+            raise ValueError(msg)
+
+
+def _resolve_execution(*, execution: str) -> ExecutionMode:
+    """Validate where a slot's REPL work runs."""
+    match execution:
+        case "worker":
+            return "worker"
+        case "inline":
+            return "inline"
+        case _:
+            msg = "`execution` must be one of 'worker' or 'inline'."
             raise ValueError(msg)
 
 
@@ -208,6 +221,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
+        execution: Where a slot's QuickJS work runs.
+            - `"worker"` (default): a dedicated OS thread with its own event
+              loop per slot, so a long `eval` never stalls the caller and one
+              slot's blocking work is isolated from the others.
+            - `"inline"`: the calling thread, and on the async tool path a
+              plain `await` on the caller's loop. For hosts whose event loop
+              cannot be woken from another thread (a Temporal workflow's
+              deterministic loop, for example), where the default hand-off
+              through `asyncio.wrap_future` never completes. The caller then
+              must not drive one slot concurrently from several threads, a
+              long `eval` blocks the caller until it returns, and PTC tools
+              should be async (a sync tool completes through an executor
+              thread, which is the same cross-thread wake-up).
 
     Example:
         ```python
@@ -239,6 +265,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
+        execution: ExecutionMode = "worker",
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -257,6 +284,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._subagents = subagents
         self._ptc = ptc
         self._mode = _resolve_mode(mode=mode)
+        self._execution = _resolve_execution(execution=execution)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
         )
@@ -272,6 +300,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
+            execution=self._execution,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}

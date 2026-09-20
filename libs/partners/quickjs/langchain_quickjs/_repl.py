@@ -51,12 +51,15 @@ from langchain_quickjs._subagent import (
     call_subagent_task_tool,
     find_subagent_task_tool,
 )
+from langchain_quickjs._worker import InlineWorker, _loop_running_here
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
+
+    from langchain_quickjs._worker import ExecutionMode, ReplWorker
 
 logger = logging.getLogger(__name__)
 
@@ -337,14 +340,15 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
-    All `ctx.*` operations are marshalled onto the worker's dedicated
-    thread because `quickjs_rs` objects are `!Send`. The public
-    methods are safe to call from any thread/loop.
+    All `ctx.*` operations go through the slot's worker. With the default
+    `ThreadWorker` that is a dedicated thread, so the public methods are
+    safe to call from any thread/loop; with an `InlineWorker` they run on
+    the caller, which then owns that guarantee.
     """
 
     def __init__(
         self,
-        worker: ThreadWorker,
+        worker: ReplWorker,
         runtime: Runtime,
         *,
         timeout: float,
@@ -708,6 +712,16 @@ class _ThreadREPL:
         # the worker loop. Sync ctx.eval can't dispatch async host functions
         # (PTC bridges are is_async=True), so routing sync callers through
         # the async path is required for PTC to work under sync invocation.
+        if isinstance(self._worker, InlineWorker) and _loop_running_here():
+            # An inline eval suspends (it drives the VM and awaits host
+            # calls), which a synchronous call from a running loop cannot
+            # do; refuse before any JavaScript runs rather than leave host
+            # tasks orphaned on the caller's loop.
+            msg = (
+                "eval_sync cannot run inline from a thread with a running "
+                'event loop; use eval_async, or execution="worker"'
+            )
+            raise RuntimeError(msg)
         return self._worker.run_sync(
             self._aeval_async(
                 code,
@@ -887,12 +901,13 @@ class _ThreadREPL:
 class _Slot:
     """One LangGraph thread's private QuickJS stack: worker + Runtime + REPL.
 
-    Each slot owns an OS thread (via `ThreadWorker`) and a Runtime. This
-    keeps per-conversation JS execution on its own event loop so one
-    user's slow computation can't block others.
+    Each slot owns a worker and a Runtime. By default the worker is an OS
+    thread (`ThreadWorker`), which keeps per-conversation JS execution on
+    its own event loop so one user's slow computation can't block others;
+    with `execution="inline"` it is the caller's own thread and loop.
     """
 
-    worker: ThreadWorker
+    worker: ReplWorker
     runtime: Runtime
     repl: _ThreadREPL
 
@@ -912,6 +927,7 @@ class _Registry:
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
+    execution: ExecutionMode = "worker"
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -972,8 +988,11 @@ class _Registry:
             new_repl.close()
 
     def _build_slot_locked(self, thread_id: str) -> _Slot:
-        name = f"quickjs-worker-{thread_id[:8]}"
-        worker = ThreadWorker(name=name)
+        worker: ReplWorker
+        if self.execution == "inline":
+            worker = InlineWorker()
+        else:
+            worker = ThreadWorker(name=f"quickjs-worker-{thread_id[:8]}")
         runtime = worker.run_sync(self._acreate_runtime())
         repl = _ThreadREPL(
             worker,
@@ -995,14 +1014,16 @@ class _Registry:
         # Best-effort; never block shutdown on a misbehaving runtime.
         with contextlib.suppress(Exception):
             slot.worker.run_sync(_aclose_runtime(slot.runtime))
-        slot.worker.close()
+        with contextlib.suppress(Exception):
+            slot.worker.close()
 
     async def _aclose_slot(self, slot: _Slot) -> None:
         with contextlib.suppress(Exception):
             await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
-        slot.worker.close()
+        with contextlib.suppress(Exception):
+            slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(

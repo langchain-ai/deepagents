@@ -1,11 +1,10 @@
 ---
-type: security and approval concept
-title: Permissions and Human Approval
-description: Explains the boundary between tool-level permissions, graph human-in-the-loop interrupts, Talon channel decisions, and MCP elicitation and OAuth authorization. Describes Talon's persisted approval policy and correct interrupt-resume behavior.
-tags: [permissions, human-in-the-loop, security, filesystem, approvals, interrupts, talon, mcp]
+type: "Reference"
+title: "Permissions and Human Approval"
+openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
+    at: 2026-09-20T08:05:19.815Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -27,6 +26,8 @@ sources:
     resource: repo://libs/deepagents/THREAT_MODEL.md
   - id: openwiki-source-8763dd662d69eb266f3bcaf0
     resource: repo://libs/talon/deepagents_talon/authorization.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
@@ -39,8 +40,12 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-4c1a7e831a8cd578116d1f18
     resource: repo://libs/talon/tests/test_mcp_middleware.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-fed7e97e2aca85ebfae626d9
     resource: repo://libs/talon/tests/unit_tests/test_mcp_adapter.py
   - id: openwiki-source-d5fcb1eee6234fc8886b27c3
@@ -51,8 +56,9 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
 ---
+
 
 # Permissions and Human Approval
 
@@ -102,7 +108,36 @@ In dcode, approval mode is per thread and fails closed to Manual. Its HITL predi
 
 Talon's `ToolApprovalStore` is a persisted exact-tool-name boolean policy, not an authorization credential. It validates and stores a bounded JSON file that must be regular and non-symlinked. Enabled names become approve/reject graph interrupt configuration; disabled or absent names do not. Updates use a locked revision compare-and-swap operation. The runtime captures a snapshot for each invocation, so a successful save is available to a later invocation rather than changing the policy that authorizes the in-flight graph.
 
-Changing approval policy is itself protected: Talon requires active invocation context and trusted operator context. This is distinct from its external authorization callback. The host accepts channel approval replies only from the sender who initiated a run when known; a reaction must also match the provider, conversation, approval-prompt message, and sender.
+Changing approval policy is itself protected: `update_tool_approvals` requires both an active invocation snapshot and an operator-context flag. That flag is computed by `TalonHost`; request or route metadata cannot grant it. For an attended channel turn, the sender must be identified and must either be in the configured operator IDs or be a self-authored message on a `self` exposure. This check gates that policy-editing tool only; it is not authorization for arbitrary callers and does not make HITL a containment boundary. The external MCP authorization callback remains a separate mechanism.
+
+The host accepts channel approval replies only from the sender who initiated a run when known; a reaction must also match the provider, conversation, approval-prompt message, and sender.
+
+### Unattended work deliberately loses the interactive path
+
+A scheduled turn is marked with `trigger: "cron"`. The runtime sets its operator context false, and the approval resolver rejects a gated call before consulting any handler. The host also withholds both tool-approval and external-authorization handlers from a scheduled invocation.
+
+A background result delivery is a new **unattended** turn, not a continuation of the originating chat turn. The host sets `background_delivery`, computes operator context false, and withholds both handlers. The runtime independently rejects a gate whenever that flag is set, even if a caller injects an approval handler or `tool_approval_operator: true`. Thus neither stale conversation metadata nor a delivery route carries an interactive decision path forward.
+
+A detached background subagent has the same posture: its worker resets `APPROVAL_OPERATOR` and clears the task-local authorization handler. If its graph interrupts for a protected tool, it reports that the action did not run rather than waiting for someone who may no longer be present.
+
+Scheduled delegation is intentionally **inline**, but inline does not mean attended. It runs within the scheduled caller's already-unattended context, completes within the tool call, and prevents nested subagent delegation. It therefore cannot inherit an interactive approval or OAuth path: the scheduled host invocation supplied neither handler, operator context is false, and a cron approval interrupt is auto-rejected. Inline execution changes result delivery and scheduling behavior, not authority.
+
+```mermaid
+flowchart TD
+    Origin["Attended channel turn"] --> Interactive["Host may provide approval and authorization handlers"]
+    Origin --> Worker["Detached background subagent"]
+    Worker --> Cleared["Clear operator context and authorization handler"]
+    Worker --> Protected["Protected call interrupts"]
+    Protected --> NotRun["Report protected action did not run"]
+    Origin --> Delivery["Background result delivery"]
+    Delivery --> Strip["Set background delivery and remove handlers"]
+    Strip --> Reject["Protected call is auto-rejected"]
+    Cron["Scheduled cron turn"] --> Inline["Inline delegation"]
+    Cron --> CronReject["Protected call is auto-rejected"]
+    Inline --> CronReject
+```
+
+Caption: Background workers, background deliveries, and cron inline delegation do not retain the attended channel's operator context or interaction handlers.
 
 ### Resuming the right kind of interrupt
 
@@ -149,7 +184,8 @@ For OAuth, the host likewise mediates messages but maintains a different pending
 ## Operations and focused tests
 
 - Treat `interrupt_on` and `tools.json` as selective graph-pausing policy, not sandboxing or tool-level authorization. Keep meaningful deny checks and backend containment in the tool/backend layer.
-- Expect gated Talon calls from cron, background delivery, or handler-less requests to be rejected. Ensure an interactive channel supplies stable sender, conversation, provider, and prompt-message identity if reactions are enabled.
+- Expect gated Talon calls from cron, background delivery, or handler-less requests to be rejected. A scheduled inline subagent is still unattended, and detached workers clear operator and authorization context; do not design either path around a later approval prompt.
+- Do not treat caller-supplied `tool_approval_operator`, sender, route, cron, or background metadata as authority. The host derives operator context from configured channel exposure and removes it for unattended delivery. Ensure an interactive channel supplies stable sender, conversation, provider, and prompt-message identity if reactions are enabled.
 - Do not route MCP elicitation to approval UI. Today Talon cancels valid elicitation requests; malformed request lists or duplicate/missing keys are failures.
 - Keep MCP authorization handlers out of model context. A missing callback handler or binding makes channel authorization unavailable rather than granting access.
 - Test the boundaries: Talon's approval-runtime tests cover policy snapshot isolation and auto-denial; `test_mcp_adapter.py` exercises real adapter invocation and cancellation/resume of elicitation; `test_mcp_middleware.py` covers marked-tool scoping, normalization, context cleanup, and protocol-error redaction; and `test_mcp_callbacks.py` verifies callback issuer preservation.

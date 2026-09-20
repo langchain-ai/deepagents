@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5a1b11024005729913791c57cecfb680720f1dc1faa88e36ec95104eb7257680",
+  "pageVersion": "sha256:a6ac494c8737b9851761935d87263ba4cd0224361d125c35b301b754a5f53305",
   "claims": [
     {
       "id": "claim_ba483a6bfba643e7bb12e38c42644451",
@@ -203,10 +203,128 @@
           "version": "repo-lines-v1:sha256:edba60b01f35f0218ff4b5cfa37ea0f3df0c8e897f544d5c340ac22459f3ba1f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyZTU4Zjc1MzY0N2UwMjNjNmJlYzk1YzUyMWFkZjdlMzBjYzAzMzFjOTlkYjY1MzBmZGI4ODAwYzBiNzZiMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmYWRmZDVhNmE1ZjZkOGU1MDg0MzAzMGMxMzc2NDZkODMzMWNhYzA0YjUyNDI5ZjdkZDllMWY3OGU5ZmJkNmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3NzkzZDZiODBmZDViZDE1M2RmOTdlZWU0OTYxY2MxYTI0Mzc5MWNiZDcyYWE3ZGI2ZWVjNTBjNjMyZmUxN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3ZTMxMjgzNzQ3ZTFmYjAzMDJhODRkODUzZmQ2OTA3NTcwNmE1OTUzMzc4NmNhYTU1NTQyY2EyMTk3MjkwMzYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_4d35299cdb6248ea9bf85f1c660ef641",
+      "statement": "During a cron turn, Talon runs task and remote async delegation inline rather than creating a background job; inline fan-out is semaphore-bounded, waits rather than refusing excess work, and turns timeout or failure into a generic, argument-free tool error while truncating oversized results.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L187-L289",
+          "version": "repo-lines-v1:sha256:a1d0582c4940a5127c35f0798ce932fcd982cc470003a6528688200ef8c2a1ab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MzJjYWM3MWNmNDFkNDIyM2MwZGZmMTA1NWIzYmE1MmRhZTU3YzliMDQyYjQ5MDJlNjUwMjEzMDI1ZjQ1Y2I2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyOWViYTdhMWYxNjAxMmM0ZjA5NmNmMTViZTg2NWFhZjUyZWUzZTFmZDBmYzFhMGY3ZTFjZTI3MDE3YjM1M2U1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyOTYwMzZlYmE2NjJiNDBlMDUwYzQyNGEyZWYyMDQ0YjZkNTU2NGM1ZTJjNGMxNzk5NWJlZWUxMWMxYWUwNzA4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhMzc0ZmRmNDE5YjliMDliMmZlNjQ5OGUxMTkwYjgwYjljZDQ3YTFhZDU0MzFmNmYwYmZiMzkwZmQ2MDNlZGVmIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L36-L56",
+          "version": "repo-lines-v1:sha256:ae0443ff3c06f193f2256f633916a1777f0c0d1e54660b6aa875646d5a76709c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1YjQ4NmZkYWMwNjU0YjA5NzliY2Q3YmUyMmFmOTRkY2Y4YjI4OTQwNDlmYWJiOWQ5ZmNkYzM3ZmZkMTZkZTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3OWRmMDJkZmM0YzRkNDAzMDY2MjM1MmNjNThhM2Y4YTUyN2MyYTM5OWMxYTM2NjZjZWI1NTJmYmRiYTg2OTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0NDQzZmFlNjk4YzFmNjI2YTcwNWNhNTIxOTE2MjE4ZTQ0MGU0MjIzMDI0YTM5YzY4Y2ZkMGNmYmVlMzc3OWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L458-L499",
+          "version": "repo-lines-v1:sha256:e782d82c27fc65e461fecb53a9920ddcff8a9f3ccb0292b1fd4755b975641863:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjNTcxZDNjMzM0ZDI1OWI3MzRkODY0M2YyNDFlNDViZTJmYTQ5ODVhNDgzMmZmNjkwNGU5MzZkNjRjY2Q4YzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4YTNlYzA2M2ZjYzJjNTVhNTQ4ZjVkZTJjNmIxZmZmZjZjMzFmZTFhMDRjOWNkZjJmOWZkMzE1MDg3YTJkNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyMzJkM2UxNjExNWY5MzgzN2JlMTViZTJlMTEyNzY0YzE3OGY4OWQyODE5MTU1MTNiMjdlOGZjYjcxZDE3ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L614-L813",
+          "version": "repo-lines-v1:sha256:8b92b1cbfbba98db21c9066eada716061b1d2c45ae718e7b5c2c52b74b9552e7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MTg1ODE5ZDAzNTk4ODE4ZTBlMWQ3NzQzZWM3ZjE1MTFlYjYyNjJmNWZmM2E3MGYwOThmZDNkZDA5NGZjODJhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4YWMwOWU3ZjRlYWM2OGNiOTFhM2FlMTM1NjMxNjM0YzU0YTdlY2NkMGYyMjdkMDg0OGY5MjZhOWZjNjRjMTk3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNWZlNTNiMTQwNGZkYTU5ODJhMmQ1YTc3NmMzNzhiNzY4ZDMyYTgxNmM0ZGMzODk4ZGI3NTYzMWQ5MTNkYjM1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjZmUwYTU3OGYwZDcyNGM0YzY5OGJjN2EzZjFlNjFkZWYxNjEzNzkyNDcyZWY5YTk3YzE3YzZiYWU1ODdkMTExIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_67c247a11391422f9424f779f6dc2145",
+      "statement": "The persistent cron scheduler claims a due job before running it, records run and delivery outcomes, suppresses `[SILENT]` output, emits structured lifecycle events, and continues its ticker after a failed scan; scheduled host runs are timeout-bounded and recover their interrupted graph thread before propagating timeout.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/cron/scheduler.py#L76-L188",
+          "version": "repo-lines-v1:sha256:b6faa6e8671723e8c7e27c079a02d3eb3434f6598415b14b0367a431904f4fab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZDViZTI3YjdkOTk1ZmY4ZGE4ZmY0MzBmMTQ0MWJiYjYxOGI0ZThiMzM5NjMzMWNiZTY4ZjkxM2VkMDVlMjJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MjlmNzJmZjIwM2U3N2MyNDA3Njc0NDYwZmRkMTM4YzI1ZDBlNDQzY2Y0YzQzMzU1YWUyMTAzZjY2ZGU5MDA2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiZWQ4NDZmZGM2ZmNlZWMzMTBlZjhhNjM0MDRhODdkYzhlNWI3NDljNjE0NzQxMzU1ODFlMzczZDg4N2M4ZGRhIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L848-L886",
+          "version": "repo-lines-v1:sha256:8d25c861048e873ee21c471812c4890d30809f8ba2cb77972fdf212407cdf93e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3NWYzZTRjNGQyZmExYTU4MDQyNTk5Y2IyNTU0YmY4Zjk1M2Q3MDljYTM2ZWFhZmQ2NzU2ZDVkM2Q4ODc3ZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkNmM1YmQyNjE1OTNmMDZiYzlhYzVlOWMwZDE0Mzc2NWYzOTUwY2M5YzE2MGJkOGVjNWZkMTlkMDdkOTM4ZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyYWI2NzdiYTZiNGMwNDJiMTA4NGRiNjViNWIzNGE3YmQ0Y2U5YzU0MGE1MmEzYjJkYjM2OWNkNzNlZDI5ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwM2FhMTY1YjhiZmZhZmYwY2EwMDc1ZGJjMGNmMDRiNWY3Y2U3NDdmZTUzN2EyYThjY2ZlMWYxMWMzNzZiYWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/cron/test_scheduler.py#L16-L182",
+          "version": "repo-lines-v1:sha256:996c8deccd5ca79bc806b67a67d4c78371364753d8a18ffd866e4c60f64fa1c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhNWFjZTY4NmQ0Y2U2MDIwNDU5OTU5OTFjNTljZTVjZGU5NDI1ZDhjMWJiNDQ1OWJhOTAzZjk5ZmI0ZTI1ZTc1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMjhiMTVhZmZhNDY3NTE3NDEyNjFhMjNiNDc4N2NiNjdjZmJjZTRlM2I4MDJjOTg3MzUxMTBiZGIzMmUwMTNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NWMxYTNmYTg1ZGFmY2VlZGEyZmU2OGFjZGJlYzYxMDRmOGFmODI3M2QzZGUxZjU1ZjY1YzBmMWYyZWZlMmFmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiZWI0YTU5NzhiMjQ2ZjgzZWQ5NzI3ZTU1Y2NhYWI3MWI0NTk5MDFmYWY1NTMwNzM1Y2U1ZjNhNzZhYTk4MmMzIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/cron/test_scheduler.py#L205-L325",
+          "version": "repo-lines-v1:sha256:a96ac4c60a63cd9656537538f965b8526b71cc9c44effdfd55d39a22cb5e7ebc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1OTFhYWI5ZDZmODE1ZjJlZTZmMDQzMWU3NDJkZjhmYTRlYjA5OGM5NWI2MmM2NzdhNjIzYTU1MTU2MTM4MjkzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwYjQ4YjkxMWJlNzAwZWE0NjQ4ZDU5NWQ1NjgxNDNlMzkzM2ExMmZiNDU3N2I2NjRiZDRhNjY1YzQ1NDNjOTk4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhYzAyZjg1ZTg5ZGQ5MWM4MTUxYWZjZDUyMGU3NjY2YmZjZDI1YmZmZDQ1NGM1MmI0NTc5MzI4YjQ4OTc5YmUxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L869-L920",
+          "version": "repo-lines-v1:sha256:f5d9f8e108148cdfa224f9abba4c5437fda32fd220c8b5dcf85f8b8813199d5b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczYmRlYWZkZWUwMjE0ZjM4ZGU1NWVlNTJkZTU0MDM5MTMxMzEyYzY4ZjU1ZWFkOGRlMWQ0NGZiNjk2MDBkMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4MWJlNTk4MWNhOTk2OWRiYjcyZTQ4ZWQ0YzUwM2ViOGJlOTcyMmEwNTZhZDdjN2M2MDYyOTAzMDk5NThiMmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_13772543ecb64c66b662f2e432c1c64d",
+      "statement": "Talon serializes all work for a conversation root, uses a dedicated cron thread to prevent overlapping fires of one job, and gives host lifecycle operations cleanup guarantees: partial startup unwinds started components and shutdown attempts every component even after failures.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L260-L302",
+          "version": "repo-lines-v1:sha256:77480022e0825252fe3c4967ef138db04e49a7b3842543ed757f9b662af87f18:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkMDI2ZDU3OGI1ZjNkM2E5YzJiNjlkY2I5OTNhNmI3MzVhZTc5NmIxMDc1ZTk2YTZhN2YyNTI2ODE1MTc3ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkOWExM2Q1NDY1OTExNDg3MWM3Y2EyNGU0MTMzNjlmZTE0NjhkMzlkN2U0YWYxZDExMTI0NWE2MGUwNjEwN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3ZTE0YjdmNmQ1ZWQ3NjRhOTI3ZjdmYjMwYmVlMjJhNDEwZGUyZDY4OGJlY2VhMzI2ZThkZmFhMzJkZjBmNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhMWQ3YWNlMGJlNWQxNmY5ZGFmMGMyODNhNzUzOTI1YjFlNmJhMmIwMjg2MmVhMDYzNTI3MmFmYzUwNGIzN2EifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L310-L401",
+          "version": "repo-lines-v1:sha256:580bfbdc191adf6300c92fc8171e9a65d482131c7cc3d831964d1d30c965019c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmRmYmI3NmM1ZmNjNGJjZDM3MjU4OTUzNThjZThiY2VhYjVjYjVlYjEyNjMwNzZlYzljYWExNjdlZWMwMzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5NTBiOTExYThhYzA0M2Y1ZTE0NjQ2ODFjMmNmMjc5MWEyZTU5MmY4NzE5MDNmYjAwMjg5NTRlMmE2N2M5YzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyYzBhMzQxOTcxODI5NjE5YzhhZDk3YWQ4ODNhMGM5ZTAxZTE2NjIxM2IxMTE4ZDk1ODU2ZDM1YmE3YWZkYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjYWQzZWYyOTA1OGM3MTFlYjEyNTgzMGJkMmI1YjM2MGViMjg4OTQ1MmIzNjBlZGY5N2I1MDZmN2I3NTNkYjAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L848-L886",
+          "version": "repo-lines-v1:sha256:8d25c861048e873ee21c471812c4890d30809f8ba2cb77972fdf212407cdf93e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3NWYzZTRjNGQyZmExYTU4MDQyNTk5Y2IyNTU0YmY4Zjk1M2Q3MDljYTM2ZWFhZmQ2NzU2ZDVkM2Q4ODc3ZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkNmM1YmQyNjE1OTNmMDZiYzlhYzVlOWMwZDE0Mzc2NWYzOTUwY2M5YzE2MGJkOGVjNWZkMTlkMDdkOTM4ZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyYWI2NzdiYTZiNGMwNDJiMTA4NGRiNjViNWIzNGE3YmQ0Y2U5YzU0MGE1MmEzYjJkYjM2OWNkNzNlZDI5ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwM2FhMTY1YjhiZmZhZmYwY2EwMDc1ZGJjMGNmMDRiNWY3Y2U3NDdmZTUzN2EyYThjY2ZlMWYxMWMzNzZiYWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L339-L354",
+          "version": "repo-lines-v1:sha256:3679526c58d90d686c718e0d29238d6695e3b5b2cb41c5df3d68cc06caa4e408:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4NTE3YWE3ODM3ZjU3NzY3N2U0NmRmZDhlNjVmMmQwY2U2NTczMjIyODQ4NzVkNTQwMzk4NTE1ZmE4MTFkNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmM1OGU3Zjg3NDEwNjM4ZDFhODk0NjMyOTE4OGZmZjAzOGQ4ZGI3ZmE1NGE4NjYwMThmNGQ2ODYzMmM3NmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZmU4ODdkYmRkZGNmODk5MzIyOTVhMmViZTZkYzRlYmZhOGE3ZjliZWUzNDZlYjgzNzQzYjU5NWFkMGU2ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlNDdlMzUzOGVlMDZkNzYzNzllMmVjZDIxZjE5OTM3YjQ3ZWZmYjBkN2MyMjIxODg2OWRjNjI1MzBkYmVlZGMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L900-L920",
+          "version": "repo-lines-v1:sha256:f7cc0e73decc200470d9587b56abcc858e1cf11f981314f9a22f171fe7ee3872:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3NjQyMDNkYWE5OTI1ODk5ZWVjOWRmNjRjNWFjNDRjMDlhZjI2NmIxNjkxN2U0NDg5M2M0Y2U2ZjYxNjk0NjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkMWY3ZGRjYzc4MjAyODUzMWU1YmI0NDIzYjY3MmE0NDE1OTcwN2RhY2MyNDVkN2ZlZDU3YzJiNWRlMjBjNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4MWJlNTk4MWNhOTk2OWRiYjcyZTQ4ZWQ0YzUwM2ViOGJlOTcyMmEwNTZhZDdjN2M2MDYyOTAzMDk5NThiMmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_33511419c4bc4a3aab982927b0180e11",
+      "statement": "Background subagent results are delivered through a synthetic follow-up turn with exponential retry spacing; when a completed turn's reply is superseded or cancelled before delivery, Talon requeues exactly the result IDs that turn acknowledged, while cancelled, unknown, delivered, or deliberately suppressed results are not resurrected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L360-L429",
+          "version": "repo-lines-v1:sha256:412cbb6d815d12ea2dc4d4705bf893f8a479dc834d7edf8ba9d4ad365fafd63f:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzOWFhNjM3YTdhMjg3ZWU1MmVkN2IxZDVmMmU2M2Y3ZWNhZjdkM2U1MmY5YTkxYWM2MzhiNTVmYzNkYzRjNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ZjUxMGNiM2FmNjZjMGM3ZGE4MmYzZjkyZWJkOGMwNDQ4NzJjM2QwMjdjODdmMzkzNzhiZjA4NTdlYzllMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZhNTU3ZTczYzhlYmYwMDM4NWQ0NDFiYTExOTQ4OWJjNTQwY2IwMGE3N2YxMjkwZTVhMTQxZjBkMDZjODhmNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlM2Q5OTk3MWVlNTg4YWRmNWIwZWI4MThhMzhiM2NkZTYyYTRjOGQxZmVlNjAyNWNiZjk0NTUzYzg5YTliNWIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L593-L658",
+          "version": "repo-lines-v1:sha256:699be1700d76be9a7210b308cbb7229ec4d9b2295fa9a61270333275f56dde56:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwNTY1YmRlOTlmOTNiNjgzMjg0NzY1YmQ4NjVkMmQyMzk0NDVmNjQzNzgwZmViNzA3YzgwZWE2MDAxZDc5NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxMDQyNGJkZTNhZDkxZmY4ZGFlYTgxYTRhYTUwNGIyZmU5ZDM3OTIzZjU5Mzc5MTUyZDU0M2Q3YjRkZWFmNzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmMmYwZDE3YmRmMTNiOTQ0Njc4N2M5MjI5NTdkNmUwZDM1MDYwMDRjYzQyZWM3ODNjOTBmODYyMDBhNTg0MWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5ZjVlMmZmNmI5NjU4MjUyOTEyYzRhYTNmYjk0OWQxMTY2NzYwOTdjMDdkNzA4MGExMGM1YjFiZTZjYjNhZmEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L779-L846",
+          "version": "repo-lines-v1:sha256:4dca108ad38d3cab24efbc6f474b3771f5cce4307377f25eae89cbb97fadebd4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ODc4NWQ0ZDc5OGM2Yzg3ZTUzNzJmZGFjN2NhNWUyNDcwMTMxOTU0NmUzZTU1MTZiYWUyZTIyZDMyMDRkZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk4MDFkYjNiNzgzYjBjOTk4ZjQ3YjNhZGJlNzU1YzZmMzYzMzhlYWYxYmI1Y2JlMDRiYWUzZmFlNTFiMjU0ODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NGU3MzY0ZmI3ODY2ZDYzMDIzZDYxNmZiMDkzMTQwM2FjZDQ5OWNkNTFlNWIwM2ExNThkMzMxYjVjNWZjYmEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L971-L1106",
+          "version": "repo-lines-v1:sha256:a749beacc3dd6ce7864ac571c396771f2c6166947a6758ce2a594439b714a1ca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZmZiNWRhMmVlMWI2ZWU2NDU0NTBlMjMzNTBlZTQ5NTI0NDJkOGMxN2UwZmRiM2E1MjYxMDcyNzdkNDRiNzdkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzI2NTVkODA0YzgyMTdhMmQzYjJlODY3NTNjZWI5ZjIxOTEzZDNmMTA5NDZlODI5N2JkN2EzODQzYjAxMWFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NjQ2MjAzOGVjOGJmNzI2NDg0NWVkOTA1OGMxNGUwMzEzODgxMzBjMWUzYmNmY2UzMmE3MGIwNGNlMjc1NDQ5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjZTY0MTMyOGFhNWJhMTczMTIyZDUwYWRhZmNiNmMzMzQ4ZWVjN2M3ZjJkNjU5NTlkOWZlYWI3MWI0NWZlYzdlIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L243-L340",
+          "version": "repo-lines-v1:sha256:29cb07a9be526d18d24d917e210bdfc06586bf700c32847f6524b1f5534ea2e2:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyZWJjMjk1ODdkOGNlNTJmZmJhOTBmY2ZjNGE1NmRmZGNkNzQ5OTdiYmRhZDMzNjc5MTYxOThkNjE5YmRhNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NmVkYThmOWNkYmQ2N2ZmNGVlZDUxMmNmNzJkYmE1MDA2ODIxZGU2MGJhZGY1ZDZhMDU0M2I0ZmQ5MDdhYzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMjdhMzVlOWEyMTNhZGNhZmRjZTZlOTkzMGY0N2EyOTIwYjE0NjQ0ZGFmODU2ODY0OWQxNjRiNTg3ZTU5YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhNWI2MzVkMzg0MGZjNjFhMmVkZTdhNzNhMmVjNDhmZjE4ZmQ4Y2ZiMmIxZWNhMDY2M2M4ZmMzODcxYmVmNjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5fb247ec4a034ebf8e6b77d1b2981659",
+      "statement": "Tool-approval authority is derived from trusted channel exposure and sender identity, not request metadata; cron and synthetic background-delivery turns are unattended, so they receive no approval or authorization handler and cannot claim operator authority.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L693-L760",
+          "version": "repo-lines-v1:sha256:3690c81b6c6651ca341afe9abe7c8550f73ce03e8d313c1ff1ec4cc13130c7d2:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1ZDg3M2I2MGU1OTM5Yjg4NDk0NDA4N2QyMmMwYmVkZjkwYzAxOGI0YWJhMjg1MjVkNzY3YjAyMDcxZDk5OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhNzgyMzE0ZWI5ODcxMWIxMTI5YzIzYjk2ZmFlZmFmZGM1ZDI4OGI3YTBmZDhlY2VmODIxNjY1YzhkYTk0NTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiYjhiYzcwOTg2ZjQ2NzdkZjc5YTg2MWEyOTY3ZDYxOWQ0Yjg4YzU1Y2UxNDdiZGNkMjQ2ZjVlNzdlY2ZmOTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3YzhhNzBhMzkyNGQyMDYwNGIyOWUwM2ZiNjUxY2NhYWU2ZjdiNmViMzczNGY0YjdhZjU0YjQ0NThiZmJlOTIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L933-L967",
+          "version": "repo-lines-v1:sha256:e3aa6a6605bd7db135102ad74152bd0dbb2df3fb290ee524c5400ca3eaa9cbea:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1YzM0ZWJiZDAzYTlhMTViM2MxOTUzNDk1MWI0ZmQ4YTA1MDRiZDY0OWY4ZDE5YzYyZWUxZWFkYzMwMzBmM2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NDhmOTIyMzRlNzI2N2I3NjczNzZiMGM2ZTZhMGVkYTUzZjUyM2Q2YWQ5M2E4NjRkM2FhNzMxYTMxZWVmNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0ZGFiZmJlZmNmMjVlNDIwYmZiMzUyMDRhZTc1ZjEzMTQ4N2JhZTg1ZjI5MGE4Yjg3MjE2NTlkYjlhMDdhZjYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py#L15-L152",
+          "version": "repo-lines-v1:sha256:8b503d218101c9cc4355ac76fed881d566aff01c06f9af3a25233ec00bbf66b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjM0NTgzYTU5ODc2N2JmNTZhZWZlYjY1ZTIwMzNhMTY1MWNjNGM4ZDdlNmYwYWYzZTVjZmQzMjkzZjkzM2IzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MTBhMDJmODAxNjE3NzRmZTVmNDE4OTY0MmZlNDk4MjA2YTVkYmZkOTI2NDZkMGE5YTgzYTJmMDI1OTJiNDM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZTUyOWNiODYyYjNmMGVmNzI1ODhlNTBlNjY4YTE0MDAyOGJhOWNlM2I4YTY0MzA1NmZiMjViZDkwZDNlZDFjIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-19T08:04:56.519Z"
+    "at": "2026-09-20T08:05:19.815Z"
   }
 }

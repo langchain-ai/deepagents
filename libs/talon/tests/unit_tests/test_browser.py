@@ -617,24 +617,14 @@ async def test_graph_context_schema_opt_in(client, tmp_path, monkeypatch, enable
         await runtime.stop()
 
 
-@pytest.mark.parametrize("legacy_owner_configured", [False, True])
-async def test_scheduled_browser_binding_reaches_runtime(tmp_path, legacy_owner_configured):
+async def test_scheduled_browser_binding_reaches_runtime(tmp_path):
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
     job = store.create_job(
         prompt="browse",
         schedule=CronSchedule.parse("in 5m"),
         origin=CronOrigin(conversation_id="chat"),
     )
-    owners = (
-        {job.id: {"provider": "telegram", "sender_id": "sender"}} if legacy_owner_configured else {}
-    )
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "test",
-            "TALON_BROWSER_SCHEDULED_OWNERS": json.dumps(owners),
-        },
-        base_home=tmp_path,
-    )
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     agent = BlockingAgent()
     host = TalonHost(config=config, agent=agent)
     assert await host.run_scheduled_job(job) == "reply:browse"

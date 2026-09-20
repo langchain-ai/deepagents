@@ -97,15 +97,22 @@ async def test_exclusive_profile_and_restart(config: TalonConfig) -> None:
     first, second = steel.SteelProcess(config), steel.SteelProcess(config)
     try:
         await first.start()
+        token = first.root / "control-token"
+        assert token.stat().st_mode & 0o777 == 0o400
+        assert token.stat().st_size == 43
         pid = int((first.root / "pid").read_text())
         with pytest.raises(RuntimeError, match="already in use"):
             await second.start()
+        assert token.exists()
         await first.stop()
+        assert not token.exists()
         assert_gone(pid)
         await second.start()
+        assert token.exists()
     finally:
         await first.stop()
         await second.stop()
+    assert not token.exists()
 
 
 @pytest.mark.parametrize("mode", ["exit", "timeout", "cancel"])

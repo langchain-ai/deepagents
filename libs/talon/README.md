@@ -656,7 +656,7 @@ make test
 
 ## Local Steel browser
 
-Talon shares one persistent local browser between you and the agent. Install
+Talon manages one persistent local Steel browser per assistant home. Install
 Chrome/Chromium, git, and uv, then run setup once from `libs/talon`:
 
 **macOS (Homebrew):**
@@ -761,17 +761,18 @@ at `<assistant-home>/browser/control-token`. The CLI supplies this path automati
 embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
 Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
 the local viewer uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
-Redirects, proxy environment settings, and mutation retries are disabled. Requests and observations are limited to 4 MiB, including
-error responses. Every HTTP request has a 35-second wall deadline, above the
+Redirects, proxy environment settings, and mutation retries are disabled. Requests
+and observations are limited to 4 MiB, including error responses. Every HTTP request
+has a 35-second wall deadline, above the
 bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
 10-second deadline. Exact bridge codes `lease_busy` and `pending_limit` become
 `browser_busy`; all other failures become `browser_unavailable`, without remote
 error details. The bridge owns concurrency
 and task quotas; the native client serializes CDP commands within each run.
 
-Each agent run acquires exclusive browser control; the local viewer uses Take/Release
-to share it with the agent. Scheduled jobs use the same browser without additional
-identity configuration. Detached local tasks use separate background runs and release
+Each agent run acquires exclusive control of the shared browser. Scheduled jobs
+use the same browser without additional identity configuration. Detached local tasks
+use separate background runs and release
 only their own leases; synchronous child browser access fails closed.
 Existing tool approval policies still apply.
 
@@ -787,7 +788,8 @@ Handoff returns only sanitized status/UUID and `PAUSED`: foreground
 `viewer_unavailable`, background `human_required`. Channel-delivered handoff links
 are deferred; the local viewer takes control only after the agent releases its lease.
 Embedders may supply `host.browser_event_handler`, receiving the bound host
-identity and sanitized event outside model context. `AgentRequest` also accepts optional keyword-only
+identity and sanitized event outside model context. `AgentRequest` also accepts
+optional keyword-only
 `browser_binding` and `browser_event_handler`.
 The graph receives `BrowserContext` only when a browser client is configured.
 

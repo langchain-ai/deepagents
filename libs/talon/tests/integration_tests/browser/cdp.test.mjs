@@ -10,7 +10,7 @@ const enabled = process.env.TALON_TEST_LIVE_CDP === '1';
 
 test('live Chrome HTTP CDP: tabs, flattened sessions, evaluation, file input, handoff', { skip: !enabled, timeout: 60000 }, async () => {
   const { WebSocket } = createRequire(`${process.env.TALON_TEST_STEEL_DIR}/package.json`)('ws');
-  const coordinator = new Coordinator({ operator: 'test', identities: { telegram: 'synthetic' } });
+  const coordinator = new Coordinator();
   const owner = { run_id: 'cdp-test', background: false };
   const token = randomBytes(32).toString('base64url');
   const bridge = createBridge({ token, coordinator, WebSocket, controlHost: '127.0.0.1', viewerHost: '127.0.0.1', controlPort: 0, viewerPort: 0,

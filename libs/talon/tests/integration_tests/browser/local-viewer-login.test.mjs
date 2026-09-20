@@ -15,7 +15,7 @@ test('Chromium form and fragment login preserve strict origin checks', {
   const puppeteer = require('puppeteer-core');
   const origin = 'http://127.0.0.1:8765';
   const token = randomBytes(32).toString('base64url');
-  const coordinator = new Coordinator({ operator: 'test', identities: { test: 'sender' } });
+  const coordinator = new Coordinator();
   const viewer = createLocalViewer({ coordinator, WebSocket, WebSocketServer, origin, token });
   const server = createServer(viewer.handler);
   let browser;

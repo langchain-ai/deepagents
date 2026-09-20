@@ -929,20 +929,8 @@ class TalonHost:
                 raise
             return result.text
 
-    def _scheduled_browser_binding(
-        self, job_id: str, conversation_id: str
-    ) -> BrowserBinding | None:
-        try:
-            owners = json.loads(self.config.env.get("TALON_BROWSER_SCHEDULED_OWNERS", "{}"))
-            owner = owners.get(job_id) if isinstance(owners, dict) else None
-            if not isinstance(owner, dict):
-                return None
-            provider, sender = owner.get("provider"), owner.get("sender_id")
-            if not isinstance(provider, str) or not isinstance(sender, str):
-                return None
-            return BrowserBinding(provider, sender, conversation_id, background=True)
-        except ValueError:
-            return None
+    def _scheduled_browser_binding(self, job_id: str, conversation_id: str) -> BrowserBinding:
+        return BrowserBinding("cron", job_id, conversation_id, background=True)
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.

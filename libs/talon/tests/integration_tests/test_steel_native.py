@@ -83,7 +83,7 @@ async def _exercise(source: Path, origin: str, login: str, phase: str) -> None:
 
 async def test_native_navigation_streaming_and_login_restart(tmp_path: Path) -> None:
     source = Path(os.environ["TALON_TEST_STEEL_DIR"])
-    port = _port()
+    port, control_port, viewer_port = _port(), _port(), _port()
     config = TalonConfig(
         "smoke",
         tmp_path / "workspace",
@@ -92,6 +92,8 @@ async def test_native_navigation_streaming_and_login_restart(tmp_path: Path) -> 
             "TALON_BROWSER_STEEL_DIR": str(source),
             "TALON_BROWSER_CHROME": os.environ["TALON_TEST_CHROME"],
             "TALON_BROWSER_PORT": str(port),
+            "TALON_BROWSER_CONTROL_PORT": str(control_port),
+            "TALON_BROWSER_VIEWER_PORT": str(viewer_port),
         },
     )
     origin = f"http://127.0.0.1:{port}"
@@ -122,7 +124,7 @@ async def test_native_navigation_streaming_and_login_restart(tmp_path: Path) -> 
 
 
 async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
-    port = _port()
+    port, control_port, viewer_port = _port(), _port(), _port()
     environment = {
         "PATH": os.defpath,
         "HOME": str(tmp_path),
@@ -132,6 +134,8 @@ async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
         "TALON_BROWSER_STEEL_DIR": os.environ["TALON_TEST_STEEL_DIR"],
         "TALON_BROWSER_CHROME": os.environ["TALON_TEST_CHROME"],
         "TALON_BROWSER_PORT": str(port),
+        "TALON_BROWSER_CONTROL_PORT": str(control_port),
+        "TALON_BROWSER_VIEWER_PORT": str(viewer_port),
     }
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -153,8 +157,9 @@ async def test_cli_ctrl_c_cleans_up(tmp_path: Path) -> None:
         process.send_signal(signal.SIGINT)
         assert await asyncio.wait_for(process.wait(), 35) == 0
         assert not (tmp_path / "talon/default/browser/profile/.talon-dirty").exists()
-        with socket.socket() as probe:
-            assert probe.connect_ex(("127.0.0.1", port)) != 0
+        for listener in (port, control_port, viewer_port):
+            with socket.socket() as probe:
+                assert probe.connect_ex(("127.0.0.1", listener)) != 0
     finally:
         if process.returncode is None:
             process.terminate()
@@ -172,6 +177,8 @@ async def test_occupied_port_fails_without_orphans(tmp_path: Path) -> None:
                 "TALON_BROWSER_STEEL_DIR": os.environ["TALON_TEST_STEEL_DIR"],
                 "TALON_BROWSER_CHROME": os.environ["TALON_TEST_CHROME"],
                 "TALON_BROWSER_PORT": str(occupied.getsockname()[1]),
+                "TALON_BROWSER_CONTROL_PORT": str(_port()),
+                "TALON_BROWSER_VIEWER_PORT": str(_port()),
             },
         )
         browser = SteelProcess(config)
@@ -241,8 +248,6 @@ async def test_native_talon_tools_and_contention(tmp_path: Path) -> None:
             "TALON_BROWSER_PORT": str(_port()),
             "TALON_BROWSER_CONTROL_PORT": str(_port()),
             "TALON_BROWSER_VIEWER_PORT": str(_port()),
-            "TALON_BROWSER_OPERATOR_ID": "test",
-            "TALON_BROWSER_IDENTITIES": '{"telegram":"sender"}',
         },
     )
     client = BrowserClient(

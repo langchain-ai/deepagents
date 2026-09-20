@@ -58,19 +58,63 @@ def assert_gone(pid: int) -> None:
         os.kill(pid, 0)
 
 
+@pytest.mark.parametrize("chrome", [None, "", "/custom/chrome"])
+def test_chrome_default_and_override(
+    config: TalonConfig, chrome: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "darwin")
+    config.env.pop("TALON_BROWSER_CHROME")
+    if chrome is not None:
+        config.env["TALON_BROWSER_CHROME"] = chrome
+    browser = steel.SteelProcess(config)
+    assert browser._environment()["CHROME_EXECUTABLE_PATH"] == (
+        chrome or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+)
+def test_linux_chrome_discovery(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steel.sys, "platform", "linux")
+    monkeypatch.setattr(
+        steel.shutil, "which", lambda candidate: f"/usr/bin/{name}" if candidate == name else None
+    )
+    assert steel._default_chrome() == f"/usr/bin/{name}"
+
+
+@pytest.mark.parametrize("platform", ["linux", "unknown"])
+def test_missing_chrome_requires_override(
+    config: TalonConfig, platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steel.sys, "platform", platform)
+    monkeypatch.setattr(steel.shutil, "which", lambda _: None)
+    assert steel.SteelProcess(config).chrome == sys.executable
+    config.env.pop("TALON_BROWSER_CHROME")
+    with pytest.raises(RuntimeError, match="set TALON_BROWSER_CHROME"):
+        steel.SteelProcess(config)
+
+
 async def test_exclusive_profile_and_restart(config: TalonConfig) -> None:
     first, second = steel.SteelProcess(config), steel.SteelProcess(config)
     try:
         await first.start()
+        token = first.root / "control-token"
+        assert token.stat().st_mode & 0o777 == 0o400
+        assert token.stat().st_size == 43
         pid = int((first.root / "pid").read_text())
         with pytest.raises(RuntimeError, match="already in use"):
             await second.start()
+        assert token.exists()
         await first.stop()
+        assert not token.exists()
         assert_gone(pid)
         await second.start()
+        assert token.exists()
     finally:
         await first.stop()
         await second.stop()
+    assert not token.exists()
 
 
 @pytest.mark.parametrize("mode", ["exit", "timeout", "cancel"])

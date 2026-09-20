@@ -656,16 +656,24 @@ make test
 
 ## Local Steel browser
 
-Talon can start and stop a native Steel browser with one persistent profile per
-assistant home. This experimental integration supports macOS with Node.js **24**,
-npm, git, and an installed Google Chrome. Runtime assets ship in the Talon package.
-Browser tools and a local viewer interface are separate follow-up changes.
+Talon manages one persistent local Steel browser per assistant home. Install
+Chrome/Chromium, git, and uv, then run setup once from `libs/talon`:
 
-Run this **once** from `libs/talon`, with Node 24 on `PATH`:
+**macOS (Homebrew):**
 
 ```sh
-uv run python -m deepagents_talon.steel_setup
+brew install node@24
+PATH="$(brew --prefix node@24)/bin:$PATH" uv run python -m deepagents_talon.steel_setup
 ```
+
+**Linux (with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) installed):**
+
+```sh
+nvm install 24
+nvm exec 24 uv run python -m deepagents_talon.steel_setup
+```
+
+Both setup commands explicitly select the required Node 24.
 
 Setup installs into `~/.deepagents/steel` by default (`--directory` overrides it).
 It checks out Steel revision `2b41124d8e2953b0afe355c534e3c9aa71edae26`,
@@ -678,8 +686,12 @@ Configure the existing Talon process environment:
 
 ```sh
 export TALON_BROWSER_ENABLED=true
-export TALON_BROWSER_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
+
+On macOS, Chrome defaults to `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
+On Linux, Talon searches `PATH` for `google-chrome`, `google-chrome-stable`,
+`chromium`, then `chromium-browser`. Set `TALON_BROWSER_CHROME` to override discovery.
+Native browser testing has been performed on macOS.
 
 From `examples/talon`, launch Talon:
 
@@ -725,27 +737,24 @@ uv run --group test pytest tests/integration_tests/test_steel_native.py
 
 `TALON_BROWSER_ENABLED=true` enables native `browser_cdp` and
 `browser_request_handoff` tools independently of MCP refresh. The default is off.
-Configure `TALON_BROWSER_OPERATOR_ID`, `TALON_BROWSER_IDENTITIES` as a JSON
-`{"telegram":"explicit-sender-id"}` mapping. Talon starts the packaged Node bridge
-inside its managed Steel process and creates/removes an owner-only runtime token
+Talon starts the packaged Node bridge inside its managed Steel process and
+creates/removes an owner-only runtime token
 at `<assistant-home>/browser/control-token`. The CLI supplies this path automatically;
 embedders using `BrowserClient(env)` supply it as `TALON_BROWSER_TOKEN_FILE`.
 Control binds to `127.0.0.1:8081` (`TALON_BROWSER_CONTROL_PORT` overrides the port);
 the reserved viewer listener uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
-Redirects, proxy environment settings and mutation
-retries are disabled. Requests and observations are limited to 4 MiB, including
-error responses. Every HTTP request has a 35-second wall deadline, above the
+Redirects, proxy environment settings, and mutation retries are disabled. Requests
+and observations are limited to 4 MiB, including error responses. Every HTTP request
+has a 35-second wall deadline, above the
 bridge's 30-second navigation deadline; ordinary CDP commands retain the bridge's
 10-second deadline. Exact bridge codes `lease_busy` and `pending_limit` become
-`browser_busy`; all other failures become
-`browser_unavailable`, without remote error details. The bridge owns concurrency
+`browser_busy`; all other failures become `browser_unavailable`, without remote
+error details. The bridge owns concurrency
 and task quotas; the native client serializes CDP commands within each run.
 
-Host route identities, not message metadata, authorize each fresh UUID run.
-Scheduled jobs require an explicit operator-managed
-`TALON_BROWSER_SCHEDULED_OWNERS` JSON mapping from job ID to
-`{"provider":"telegram","sender_id":"explicit-sender-id"}`. Missing mappings deny
-browser access. Detached local tasks use separate background runs and release
+Each agent run acquires exclusive control of the shared browser. Scheduled jobs
+use the same browser without additional identity configuration. Detached local tasks
+use separate background runs and release
 only their own leases; synchronous child browser access fails closed.
 Existing tool approval policies still apply.
 
@@ -758,10 +767,11 @@ host file transfer tool and no automatic login screenshot capture. All CDP resul
 are explicitly wrapped as untrusted JSON observations.
 
 Handoff returns only sanitized status/UUID and `PAUSED`: foreground
-`viewer_unavailable`, background `human_required`. No viewer or channel URL is available.
-Embedders may supply `host.browser_event_handler`, receiving
-the bound host identity and sanitized event outside model context. Actual channel
-delivery is deferred. `AgentRequest` also accepts optional keyword-only
+`viewer_unavailable`, background `human_required`. Viewer UI and channel-delivered
+handoff links are deferred.
+Embedders may supply `host.browser_event_handler`, receiving the bound host
+identity and sanitized event outside model context. `AgentRequest` also accepts
+optional keyword-only
 `browser_binding` and `browser_event_handler`.
 The graph receives `BrowserContext` only when a browser client is configured.
 

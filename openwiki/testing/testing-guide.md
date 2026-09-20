@@ -1,11 +1,11 @@
 ---
 type: testing strategy
 title: Testing Strategy and Local Test Guide
-description: Select package-local correctness, integration, benchmark, and evaluation coverage, and separately validate repository automation through workflow YAML contracts and executable shell harnesses. Use the narrowest boundary that proves the intended change.
-tags: [testing, pytest, ci, validation, github-actions, automation, benchmarks, evaluations]
+description: Select package-local correctness, integration, benchmark, and evaluation coverage, and separately validate repository automation through workflow YAML contracts and executable shell harnesses. Includes focused Talon regression routes for cron, delegation, host lifecycle, delivery, and unattended authority.
+tags: [testing, pytest, ci, validation, github-actions, automation, benchmarks, evaluations, talon, cron, background]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
+    at: 2026-09-20T08:05:19.815Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -23,6 +23,12 @@ sources:
     resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-363e56d368aecc6ab73d3e2f
+    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-d98b6d615a63b95a7c893810
@@ -33,17 +39,25 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
     resource: repo://libs/talon/Makefile
+  - id: openwiki-source-376016a439d0559796a191a0
+    resource: repo://libs/talon/tests/cron/test_scheduler.py
   - id: openwiki-source-d8eca7d18614ffc90856e204
     resource: repo://libs/talon/tests/integration_tests/test_core_flows.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-df8e616d4a20b5878bc1a05e
     resource: repo://libs/talon/tests/test_mcp_auth.py
   - id: openwiki-source-4c1a7e831a8cd578116d1f18
     resource: repo://libs/talon/tests/test_mcp_middleware.py
   - id: openwiki-source-9b2c01939550b673ef6b4bed
     resource: repo://libs/talon/tests/test_mcp.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+  - id: openwiki-source-8de0ff38635f214c7268d8e7
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
 ---
 
 # Testing Strategy and Local Test Guide
@@ -109,6 +123,67 @@ Deep Agents and dcode provide `update-snapshots` only for their unit smoke-test 
 ACP tests use a fake client that records session updates and permission requests. Talon uses a recording channel that captures output and defers injected input until a handler is registered; its integration flows use in-memory channels and scripted agents. These doubles make protocol and lifecycle observations possible without a live channel service.
 
 Use dcode integration coverage when the launched executable is the promise: its ACP smoke test starts `deepagents --acp --no-mcp` as a subprocess, initializes ACP over stdin/stdout, creates a session, and cleans up the process. Talon's normal socket-blocked target also covers `tests/integration_tests/`, retaining its in-memory host-orchestration contract without live channel services.
+
+## Focused Talon cron, delegation, and host routes
+
+Run these routes for changes to scheduled work, background delegation, delivery, conversation concurrency, or approval authority. They use fake tools, in-memory cron storage, recording channels, and controlled events; they are deliberately offline and remain in Talon's normal `make test` target.
+
+```bash
+cd libs/talon
+make test TEST_FILE=tests/unit_tests/test_background.py
+make test TEST_FILE=tests/cron/test_scheduler.py
+make test TEST_FILE=tests/test_host.py
+make test TEST_FILE=tests/unit_tests/test_tool_approval_authorization.py
+make test
+```
+
+### Cron delegation is inline, bounded, and safe to report
+
+A cron invocation has no interactive turn in which a detached result can later be delivered. `BackgroundSubagents` therefore changes `task` and `start_async_task` calls made during a scheduled turn into inline work: it waits for the result, sets the subagent guard so a child cannot delegate again, does not create a background job, and hides list/cancel tools whose job table is necessarily empty. The scheduled prompt tells the model to use the result in the same turn.
+
+Inline calls share a semaphore created before configured middleware copies, so the four-slot ceiling applies across graphs. Calls beyond the ceiling wait rather than fail; importantly, the timeout begins *after* a slot is acquired. This permits concurrent fan-out while bounding active work. A timeout or other exception becomes a generic error `ToolMessage`, rather than escaping to retry the graph and relaunch sibling calls. The model-visible result never contains invocation arguments; oversized text is truncated before it can grow the reused cron thread without bound.
+
+```mermaid
+sequenceDiagram
+    participant Scheduler
+    participant Host
+    participant Agent
+    participant Delegate as Background middleware
+    participant Child as Subagent
+    Scheduler->>Host: run claimed job
+    Host->>Agent: invoke cron thread
+    Agent->>Delegate: task or start_async_task
+    Delegate->>Delegate: acquire inline slot
+    Delegate->>Child: run to completion
+    Child-->>Delegate: result or failure
+    Delegate-->>Agent: result or generic tool error
+    Agent-->>Host: scheduled text
+    Host-->>Scheduler: result for delivery
+```
+
+*For a scheduled run, delegation resolves inside the cron turn rather than creating a later background-delivery obligation.*
+
+`tests/unit_tests/test_background.py` is the focused regression suite. Its scheduled cases prove inline/no-job behavior, concurrent fan-out, semaphore queuing, separate timeout and failure messages, argument redaction, result truncation, remote-stream behavior, the scheduled-only tool prompt, and cleanup of the scheduled context flag. Keep a chat delegation detached: normal chat uses the job table, task ownership/capacity controls, and a worker timeout instead. Background workers inherit scoped context needed by history and cron tools but clear the authorization handler, since an OAuth prompt cannot safely outlive its originating turn.
+
+### Scheduler lifecycle and host serialization
+
+`PersistentCronScheduler.tick_once()` claims each due job by advancing its next run before invoking it, records an `ok` or `error` status, suppresses output with `[SILENT]` at either end, and treats delivery failure as an error after a successful run. It emits structured lifecycle events in the success route—`cron.tick`, `cron.dispatch`, `cron.success`, and `cron.delivery`—and a long-lived ticker logs `cron.tick_failure` then continues scanning after an unexpected tick failure. Since due jobs are run sequentially and claiming happens first, an unbounded run can lose later fires; the host consequently bounds each scheduled agent run and repairs its interrupted graph thread before re-raising a timeout.
+
+The host holds a conversation-root lock for every message turn and for the complete scheduled job run. A new interactive message cancels and recovers the old turn before replacing it; a cancellation that does not finish within its deadline blocks further work on that conversation until restart. Scheduled runs use a job-specific `:talon-cron` thread, so two fires of one job cannot overlap. `start()` starts the agent, channels, then scheduler, and unwinds already-started components in reverse if startup fails; `stop()` cancels work and attempts every component stop even if one fails.
+
+Use `tests/cron/test_scheduler.py` for claim/status/delivery behavior, silence, lifecycle-event sequence, ticker survival, and the fleet-level stalled-job regression. Use `tests/test_host.py` for component lifecycle/unwind, replacement/cancellation/recovery, cron thread serialization and timeout repair. Assert the visible event sequence, stored status, delivered messages, and ability of the next run to proceed—not only that an internal task was created.
+
+### Background delivery is acknowledged only when it reaches the conversation
+
+Interactive delegation creates an owner-scoped in-memory job. The host's background loop polls routes, skips a conversation whose lock or foreground task is busy, and starts a synthetic follow-up turn when results are ready. Delivery retry scheduling backs off exponentially from two seconds up to sixty. A runtime acknowledges the result IDs it injected into a completed model turn, but the host owns the final delivery decision: if a newer generation supersedes the reply, or cancellation wins while it waits to deliver, it requeues exactly those acknowledged IDs. Already delivered results, deliberate suppression, cancelled jobs, and unknown/pruned IDs are not resurrected. Repeated failures to process a result ultimately drop it after three attempts with an explicit diagnostic retained in the job.
+
+`tests/unit_tests/test_background.py` covers owner isolation, cancellation, acknowledgement/requeue scope, cancellation of remote streams, worker error/timeout redaction, retry exhaustion, and inherited-versus-cleared context. `tests/test_host.py` covers dispatcher routing, requeue after supersession or cancellation, and the no-requeue cases. These are coupled contracts: test middleware-only state transitions in the unit suite, then add host coverage whenever changing generations, locks, delivery, or channel dispatch.
+
+### Unattended turns never retain interactive authority
+
+Authority comes from trusted channel exposure and the original sender, not inbound metadata. A normal channel turn receives a tool-approval handler only when the channel configuration identifies its sender as an operator. Cron runs and synthetic background-delivery turns are unattended: the host supplies neither approval nor authorization handler and forces `tool_approval_operator` false, even if route or message metadata attempts to claim authority. This also prevents a completed background result from acquiring the original user's approval or OAuth capability on its later delivery turn.
+
+Use `tests/unit_tests/test_tool_approval_authorization.py` for the exposure-mode matrix, missing trusted configuration, metadata-forgery denial, direct invocation default-deny, and both cron and background-delivery removal of authority. Keep this route focused on the host-to-runtime request boundary; detailed interactive prompt/reaction matching belongs in `tests/test_host.py`.
 
 ## Focused Talon MCP, authorization, and research-subagent routes
 

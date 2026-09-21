@@ -4,21 +4,18 @@
 
 ## [0.1.72](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.71...deepagents-code==0.1.72) (2026-09-21)
 
-
 ### Features
 
-* **code:** show `read_file` arguments when expanded ([#6392](https://github.com/langchain-ai/deepagents/issues/6392)) ([902905f](https://github.com/langchain-ai/deepagents/commit/902905f2508fe74dc0ba13d857f502e8ddbc807e))
-
+- Expanded `read_file` calls now show their arguments. ([#6392](https://github.com/langchain-ai/deepagents/pull/6392))
 
 ### Bug Fixes
 
-* **code:** align file and console debug log formatting ([#6426](https://github.com/langchain-ai/deepagents/issues/6426)) ([6c219d3](https://github.com/langchain-ai/deepagents/commit/6c219d3a39a869b55c5ec434acf76f84217eb002))
-* **code:** silence non-media path decoder traces ([#6427](https://github.com/langchain-ai/deepagents/issues/6427)) ([3693e9d](https://github.com/langchain-ai/deepagents/commit/3693e9d01a94a4e881cbb5f92438adfec27cd77e))
-
+- Aligned debug log formatting between file and console output. ([#6426](https://github.com/langchain-ai/deepagents/pull/6426))
+- Silenced unnecessary decoder traces for non-media paths. ([#6427](https://github.com/langchain-ai/deepagents/pull/6427))
 
 ### Performance Improvements
 
-* **code:** skip transcript scan on prompt submit ([#6402](https://github.com/langchain-ai/deepagents/issues/6402)) ([443d34b](https://github.com/langchain-ai/deepagents/commit/443d34bfde4f22cbc7f9ac71be766922a041e08c))
+- Skipped transcript scans when submitting prompts for faster prompt submission. ([#6402](https://github.com/langchain-ai/deepagents/pull/6402))
 
 ## [0.1.71](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.70...deepagents-code==0.1.71) (2026-09-18)
 

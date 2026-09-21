@@ -265,7 +265,7 @@ console.log({ city, normalized });
 /** Find users with the given name. */
 tools.findUsersByName(input: {
   name: string;
-}): Promise<unknown[]>
+}): Promise<{ id: number; name: string }[]>
 
 /** Get the location id for a user. */
 tools.getUserLocation(input: {

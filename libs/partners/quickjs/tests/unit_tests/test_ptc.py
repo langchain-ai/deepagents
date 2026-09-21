@@ -49,6 +49,29 @@ class _UserLookup(TypedDict):
     name: str
 
 
+class _Address(BaseModel):
+    city: str
+    postal_code: str
+
+
+class _Person(BaseModel):
+    name: str
+
+
+class _User(_Person):
+    address: _Address
+    nickname: str | None = None
+
+
+class _BatchInput(BaseModel):
+    users: list[_User]
+
+
+class _Tree(BaseModel):
+    name: str
+    children: list[_Tree] = Field(default_factory=list)
+
+
 def _greet_tool(record: list[dict] | None = None) -> BaseTool:
     """A synchronous tool that records its invocations.
 
@@ -847,10 +870,10 @@ def _stub() -> None:
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Compound types that hit `$ref` (collections of TypedDict /
-        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
-        (list[_UserLookup], "Promise<unknown[]>"),
-        (list[_Status], "Promise<unknown[]>"),
+        # Collections resolve references to their item schemas.
+        (list[_UserLookup], "Promise<{ id: number; name: string }[]>"),
+        (list[_Status], "Promise<{ status: string; count: number }[]>"),
+        (_Tree, "Promise<{ name: string; children?: unknown[] }>"),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -871,6 +894,39 @@ def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
     )
     prompt = render_ptc_prompt([tool])
     assert expected in prompt, prompt
+
+
+def test_render_ptc_prompt_nested_model_inputs() -> None:
+    """Nested and inherited fields survive input schema references."""
+    tool = StructuredTool.from_function(
+        name="normalize_users",
+        description="Normalize users.",
+        func=_stub,
+        args_schema=_BatchInput,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert (
+        "users: { name: string; address: { city: string; postal_code: string }; "
+        "nickname?: string | null }[];"
+    ) in prompt
+
+
+def test_render_ptc_prompt_nested_model_returns() -> None:
+    """Return schemas resolve multiple levels of model references."""
+
+    def normalize_users() -> list[_User]:
+        return []
+
+    tool = StructuredTool.from_function(
+        name="normalize_users",
+        description="Normalize users.",
+        func=normalize_users,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert (
+        "Promise<{ name: string; address: { city: string; postal_code: string }; "
+        "nickname?: string | null }[]>"
+    ) in prompt
 
 
 def _get_status_record() -> _Status:

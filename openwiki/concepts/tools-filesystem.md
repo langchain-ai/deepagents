@@ -20,6 +20,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-c972622237a22631e36f3625
+    resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
@@ -32,10 +34,12 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
   - id: openwiki-source-739ca0771331dc9b5a7d7fbc
     resource: repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+    at: 2026-09-21T08:06:25.442Z
 ---
 
 # Tools, Filesystem, and Shell Access
@@ -115,7 +119,7 @@ For a `CompositeBackend`, file-tool paths may be virtual routes but `execute` al
 
 ## Filesystem permissions and HITL
 
-`FilesystemPermission` is enforced inside tool implementations rather than by removing their schemas. Rules match operation and path with wcmatch glob semantics and use first-match `allow`, `deny`, or `interrupt` behavior. A denied exact operation returns an error; list and search tooling filters denied results where it can. Permission patterns must begin with `/` and cannot include `..` or `~`.
+`FilesystemPermission` is enforced inside tool implementations rather than by removing their schemas. Each filesystem tool first validates and canonicalizes its path — rejecting traversal and Windows absolute paths, normalizing redundant separators, and giving it a leading `/` — before its permission check. Rules then match operation and canonical path with wcmatch glob semantics and use first-match `allow`, `deny`, or `interrupt` behavior. A denied exact operation returns an error; list and search tooling filters denied results where it can. Permission patterns must begin with `/` and cannot include `..` or `~`.
 
 Exact-path tools (`read_file`, `write_file`, `edit_file`) test their target. Bulk tools (`ls`, `glob`, `grep`, `delete`) interrupt when their search subtree could overlap the anchored prefix of an interrupt rule. A pathless bulk call such as `grep(path=None)` fires for any relevant interrupt rule; `glob` additionally accounts for an absolute pattern that can redirect its search outside `path`. Graph assembly converts interrupt-mode permission rules into `HumanInTheLoopMiddleware` predicates. For exact operations, an earlier deny wins and does not turn into an approval request.
 
@@ -123,7 +127,7 @@ Permissions cannot safely control arbitrary shell commands. Construction therefo
 
 ## Tests and operational guidance
 
-State-backend integration tests verify that parallel `write_file` calls merge file updates, ordinary edits replace one or all matching occurrences, and invalid paths become `ToolMessage` errors. Concurrent edits to the same file are intentionally `xfail`: reducers and backends can race, so callers should serialize or avoid them until conflict handling is explicit. Filesystem-backend tests additionally exercise virtual and host paths, hidden-path glob semantics, read-window edge cases, binary classification, and large-result eviction.
+State-backend integration tests verify that parallel `write_file` calls merge updates for different files, ordinary edits replace one or all matching occurrences, and invalid paths become `ToolMessage` errors. The same-path parallel-edit regression is deliberately more specific: one call targets `/multi.txt` while the other spells the same target as `/./multi.txt`; the first succeeds, the second returns an error, and only the first replacement is present in state. Keep that test when changing path normalization, tool scheduling, or state updates: equivalent path spellings must not turn concurrent mutations of one logical file into independently successful edits. Filesystem-backend tests additionally exercise virtual and host paths, hidden-path glob semantics, read-window edge cases, binary classification, and large-result eviction.
 
 When a tool misbehaves, diagnose the layer in order:
 
@@ -136,6 +140,8 @@ When a tool misbehaves, diagnose the layer in order:
 ## Related pages
 
 - [Backends](backends.md) — implementations, routing, and execution capability.
+- [Context management](context-management.md) — eviction and model-context handling.
 - [Permissions & HITL](permissions-hitl.md) — approval policy and interrupts.
 - [MCP integration](../integrations/mcp.md) — MCP configuration and lifecycle.
 - [Sandbox partners](../integrations/sandbox-partners.md) — execution-capable backend integrations.
+- [Testing guide](../testing/testing-guide.md) — test conventions and focused regression coverage.

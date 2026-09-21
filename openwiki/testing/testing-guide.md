@@ -1,11 +1,11 @@
 ---
 type: testing strategy
-title: Testing Strategy and Local Test Guide
-description: Select package-local correctness, integration, benchmark, and evaluation coverage, and separately validate repository automation through workflow YAML contracts and executable shell harnesses. Includes focused Talon regression routes for cron, delegation, host lifecycle, delivery, and unattended authority.
-tags: [testing, pytest, ci, validation, github-actions, automation, benchmarks, evaluations, talon, cron, background]
+title: Testing Guide
+description: Route deterministic package-local tests for SDK filesystem mutation safety and Talon approval, runtime-isolation, and host-facing behavior. Use package Makefile targets and keep warnings fatal.
+tags: [testing, pytest, ci, validation, github-actions, automation, benchmarks, evaluations, talon, cron, background, filesystem, approvals]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-20T08:05:19.815Z
+    at: 2026-09-21T08:06:25.442Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -19,8 +19,12 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_media_utils.py
   - id: openwiki-source-a792fe22a007a50c07cc0c34
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_messages.py
+  - id: openwiki-source-fed4b84a38685f37e58018c5
+    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
+  - id: openwiki-source-739ca0771331dc9b5a7d7fbc
+    resource: repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
@@ -35,6 +39,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
@@ -51,16 +57,22 @@ sources:
     resource: repo://libs/talon/tests/test_mcp_middleware.py
   - id: openwiki-source-9b2c01939550b673ef6b4bed
     resource: repo://libs/talon/tests/test_mcp.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
+  - id: openwiki-source-6cf260dd7a6018657221ec15
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
 ---
 
-# Testing Strategy and Local Test Guide
+# Testing Guide
 
 Use the package that owns a runtime change for agent and library validation. Treat `.github` automation as a separate system boundary: its tests validate committed workflow/action contracts, credential placement, and shell behavior—not agent-runtime behavior. Packages under `libs/` are independently versioned; install dependencies in the package (normally `uv sync --all-groups`) and use `make help` as the current target reference. See [development operations](../operations/development.md) for setup and aggregate checks.
 
@@ -123,6 +135,59 @@ Deep Agents and dcode provide `update-snapshots` only for their unit smoke-test 
 ACP tests use a fake client that records session updates and permission requests. Talon uses a recording channel that captures output and defers injected input until a handler is registered; its integration flows use in-memory channels and scripted agents. These doubles make protocol and lifecycle observations possible without a live channel service.
 
 Use dcode integration coverage when the launched executable is the promise: its ACP smoke test starts `deepagents --acp --no-mcp` as a subprocess, initializes ACP over stdin/stdout, creates a session, and cleans up the process. Talon's normal socket-blocked target also covers `tests/integration_tests/`, retaining its in-memory host-orchestration contract without live channel services.
+
+## Focused SDK filesystem and Talon approval routes
+
+These routes cover behavior that is easy to regress through concurrency, graph replacement, or a channel adapter. Start with the exact owning file, use the package's Makefile rather than a hand-assembled pytest command, then broaden to the normal target. The Deep Agents and Talon targets are offline and socket-blocked; leave these tests deterministic by using fake models, in-memory graph checkpoints, recording channels, and explicit events instead of services or timing sleeps.
+
+```bash
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/test_file_system_tools.py
+make test
+
+cd ../talon
+make test TEST_FILE=tests/unit_tests/test_tool_approval_batch.py
+make test TEST_FILE=tests/unit_tests/test_tool_approval_runtime.py
+make test TEST_FILE=tests/test_host.py
+make test
+```
+
+### Same-path filesystem mutations
+
+`FilesystemMiddleware` checks every synchronous and asynchronous tool call before executing it. In one assistant tool-call batch, `write_file`, `edit_file`, and `delete` are mutations; after path validation and normalization, a mutation whose path matches an earlier mutation is returned as an error `ToolMessage` rather than passed to the backend. Different paths still run, and malformed paths are left for ordinary tool validation. This makes the invariant observable: the first call may change the file, but the later same-path call must not race or overwrite it.
+
+Use `tests/unit_tests/test_file_system_tools.py` for this guard. Its real-agent regression issues two edits for `/multi.txt` and `/./multi.txt`, then asserts the success/error sequence and final file text. Extend it with an end-to-end fake-model turn for a new mutating tool or canonicalization edge case; do not unit-test the helper's loop or call order in isolation. The package target runs unit tests with socket blocking, xdist, and benchmarks disabled.
+
+### Approval batches reject unsafe input before prompting
+
+A Talon invocation runs its graph until it yields interrupts. The runtime partitions resumable interrupts: MCP elicitation interrupts receive cancellation responses, while tool-approval interrupts must have unique nonempty IDs and nonempty sequences of mapping action requests. It validates the complete batch before calling an approval handler. Thus malformed action payloads raise instead of prompting an operator, and duplicate or missing IDs fail as non-resumable state rather than risking an ambiguous resume.
+
+For valid tool interrupts, Talon sends one `ToolApprovalRequest` containing actions from all action interrupts, anchored to the first interrupt ID. One approve or reject decision is then expanded to the decision count required by each interrupt and resumed alongside any elicitation cancellations. Cron and background-delivery requests are unattended and therefore auto-rejected without a prompt.
+
+```mermaid
+sequenceDiagram
+    participant Graph
+    participant Runtime
+    participant Operator
+    Graph-->>Runtime: action and elicitation interrupts
+    Runtime->>Runtime: validate ids and all action payloads
+    Runtime->>Operator: one combined approval request
+    Operator-->>Runtime: approve or reject
+    Runtime->>Graph: decisions per action interrupt
+    Runtime->>Graph: cancel elicitation responses
+```
+
+*The runtime validates the whole interrupt set before one operator decision, then resumes every interrupt with the response shape it requires.*
+
+Use `tests/unit_tests/test_tool_approval_batch.py` for aggregation across parallel graph nodes, mixed elicitation/action batches, unattended auto-denial, malformed action payloads, and invalid IDs. It is the narrow test for the resume protocol. Add `tests/unit_tests/test_tool_approval_runtime.py` when the change depends on a real network-free runtime graph, persisted policy, policy tools, or effects occurring only after approval.
+
+### Invocation snapshots and host-visible approval behavior
+
+At invocation entry, `DeepAgentRuntime` reads the approval snapshot and, if it changed, creates a replacement graph under its tool lock. It binds that selected graph and snapshot in context variables before releasing the lock, then resets all invocation context in `finally`. Consequently, a graph or approval-policy reload can serve later invocations without changing the graph/policy closure of a request already waiting for approval; saved policy edits are visible as inactive to that older turn.
+
+The host is the channel boundary for the approval handler. It renders an approval prompt, accepts textual approve/deny and approval emoji replies, and can match a reaction only when it refers to the recorded prompt message and the original sender. Test the user-visible outcomes—not internal pending-map shape—and cover both approval and rejection plus mismatch cases. The host tests also verify that default reaction logs use stable references rather than prompt IDs, sender IDs, arguments, or raw channel metadata; raw IDs appear only when `DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS=true`.
+
+`test_tool_approval_runtime.py` includes the concurrency regression: hold an old invocation at approval, persist a new policy, let a later invocation use it, then release the old one and assert each sees its own snapshot. `tests/test_host.py` is the focused host contract for prompt text/replies, emoji and reaction routing, original-sender and prompt-message scoping, ignored reactions, and redacted observability. Keep the runtime and host suites separate: the former owns graph/approval lifecycle; the latter owns channel interaction and operator-facing safety.
 
 ## Focused Talon cron, delegation, and host routes
 

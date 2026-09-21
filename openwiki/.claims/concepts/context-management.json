@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:186b1ee093de7809e578ab3413221a5ec0ba5c1ae256dcbc6d00fff4940afe07",
+  "pageVersion": "sha256:a5d0c3893d8755cbfd067b5c00814c88e4ddcbbfdbc28c7ff05937b210f1e76e",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -12,7 +12,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py",
-          "version": "repo-file-v1:sha256:08ec6d6970e4acb6021d0eacbef29b37bb1e9c1964df23c6b432911c02638853"
+          "version": "repo-file-v1:sha256:0b5d3e52779df70eba83134658739c6ed45eeb7e2b578a77ac27c6ebe42e78bc"
         }
       ]
     },
@@ -315,10 +315,56 @@
           "version": "repo-lines-v1:sha256:c381e3e94451ec6f95315ba57af4868bfc3fcdb9cb946fcd2e1102ea601d5b3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3Nzc2ZWQ3NjBiZTA4OWU5MDY0NTcwOGM2ZTYxNjgzZjRjYjM3NjIwNmEyZTgwYzQ5ODYxYTc3MjVhODRiOWM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OWFlZTllM2U2MWI5Yzc3OTEwNzJmMjU2MTNlMGExMzYyNjU0ZTQwOTMwNWQyNDllYjQ0MDljOGY1ODgxNTQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NzdjOGEzZGVlM2NiMTUzMmVmZmNjYmMxOGM3ODQ1OWI3MmMyZjExMDdiMDZlYzljOGFkNzQzMTEwYzYzZmFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MiwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMTg2YzA2YWNlOWMxZjIxZmExMjY2ODAxYmY0NzU1ZDczYjcwNDUwYTYwZjNkYjMwYmNlYjYwNzMxYzkxYzlmIn0"
         }
       ]
+    },
+    {
+      "id": "claim_c395110fb78444eaa412fef914af6322",
+      "statement": "FilesystemMiddleware's optional human-message eviction writes only a newly oversized trailing HumanMessage's text to a UUID-named conversation-history file, stores the full checkpointed message with an `lc_evicted_to` tag, and uses that tag to substitute a head-and-tail preview for model requests; a successful tag update retains the message id so it replaces in place without clobbering the same-step AI response.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1653-L1709",
+          "version": "repo-lines-v1:sha256:ff1a525ff29e33480414c3a19861dd3bfa76fbd10e3bc2adfe2dacfbdebe2469:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyYzc5MDUyMmVlNjJmZGViYzYzOThiZDI5MDNkMDYxMDM4YzIwODdmZDhmNTI1OGI5YzA4ZTk1MmY3YWM4MzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYTQ3Y2RlNWMxYzljM2QzNDBkODdkNjhkNWE2YTA4NzRlZWViM2JhMzA2YTc5N2Y3YjEzYmRmOGViZjE1YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2N2Y1ZjA3ZjUwMmZjOTMzZDMyYmE5YTBkMDE1NmU1YjZhMTAzNzBmZTc1YzdmOWIzZDc4ODE4ZmI1YzdhZmMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L3389-L3518",
+          "version": "repo-lines-v1:sha256:895a057864a7ef4e264ec4362a387f47ff99c99c10d2cee3b02c737b185d4e0f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZDhiMjYyYjdkMDA3ZDZjZTQxN2Q2MWE0ZDFkZjdiMjNiMmM3OTZmNDlhOTI4OWMxMDQzMzNlNzE3MGZlMjEzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzYWFlNjkzMGExYTc3ZmU5MmNjMDExMzlhNWEwZGQ4NWM0YjRlMjkzMDlkY2U3ZGY2MGYwMDFhYWIyODE1OGU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NDAxMDYyOWU4OGFlN2Y4MDA3NmZiZDg3YjIyYzY4MGZjNTllOWFjNDkxYmNmMjk5MjBkMWI5MDk2MGQ1NjcwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNzA5MzY3YzA3ZjViMjg5ODczNjhhZmUyYWZlZGM0NDQ4ZDc5ZGIyZjYyZWI5M2RhNjI5N2ZjMTIxYWUwNjFlIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_eviction_replay.py#L77-L104",
+          "version": "repo-lines-v1:sha256:ab86809e9a91670d36097d4e73c7b95ad038da0d325dc19776167a5cc0375821:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2YzM4NWNlY2JhMWYxYWYwMmY0NTdhMDZiNDhjOTI3Y2E4ODYwNjQ3OTE0MGVmNmFiNjI4MzEzYWQ1M2VkZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjOWNmZGQ0OTMwZWRlMDRiMzZhMzM1NDU4OGRmNmI5MTMyYWRkZjcwODEyNDYxNTBkOTJiNmE3ZDMxYzcwZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0NTg2OGFjODg4YzU2MzQyYzlmY2NjNzRiZWQ0MDY3MGY0ZGNiYzEwZjZjNjgxNWY3OGMwZjFiNzYwMWU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cc1f7ee497b34ad49fb555680982464f",
+      "statement": "For a tool-produced Command update, FilesystemMiddleware applies large-result eviction to ToolMessages while preserving non-tool messages and a leading REMOVE_ALL_MESSAGES sentinel.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L3520-L3593",
+          "version": "repo-lines-v1:sha256:edaee79a6b7e98fa71554e990411c4e0daaa80f7e93f2f16fe41f651a4edbc0a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1NTJkNDBiYzU2OTUxMThhNDdhZTUzYTExZmM3MjdiYzljMDg3ZjgzYzhmZTQxZDIyN2E0MWI2NzAwZWE5NmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiOTAwODUwMWM3MDBiNjE2ZTFlYmZhYWRhNTRiODY0YTViMGRlMGZkMDZkMmY3M2FlZThjNTU2ZGZjNWZhMjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjMDhjY2I3NWU0YmNiNTMwMjcwOGIxNjNlZWUyMjAzMzg2MTY3M2Q0Yjk5NGM1ZWUxZWIwOWU2MmRjOGM3OTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9d7ddba9627b49e090e0ee714e92b984",
+      "statement": "FilesystemMiddleware attempts execute capture-at-source only when a BaseSandbox executes the command and the large-result path resolves to that same default backend; an offloaded capture returns a recovery stub and identifies when the saved output is incomplete due to the capture limit, otherwise execution uses normal output handling and post-result eviction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L2911-L2950",
+          "version": "repo-lines-v1:sha256:29927026b6c6b70c7925222fa5e60dede6989221aeb0fed0436558962c1591f9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwY2IwZGQ4MzcxZWZiMDA3NjAzMGFmNTkxNzJiYjU1ZjJkMjdhM2U5NGZmODFiZjk3NWU5NzE1NGE3Mzc3YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljOTg2ZWE3NDI1NjBhMDExMmFkOTEzZTNjYzE2NTE5ZWU5MDhhN2RjNzM1NmNlZDA2NTBhMWM3ZmE4ZGQyZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhYzQ0MzVjZDgwYzMwOWNmZWU3YTMzMThjMmQxMWMxNjk0OWUzYWE5NzFlMDE4YjA2M2ZkMjA2YWNkMmJjMmEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L2974-L3062",
+          "version": "repo-lines-v1:sha256:4f79268abc77a93bda6383e91bcf0d7d2d04ecae53d90dc5138b3c91d1aa3f04:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyMDY2YTRiN2VmMTk1OWZkZDU2YjBjY2E5ZTI2MWRlYzhmYmI5NjA2NDAyMDM1MzAyZDM5ZjIyZDA5Y2E1NzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NGVjNTEwMmY2Yjc0NDFmMmFmYTAxMmE3ZWIyN2VlYzdkNzQzOGZlYmY2ZGUxNGJiNTM0ZWJlZjFiY2UxYTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzNzUxODVlOTQ1YTJjODNhOWMzZmU4MWIzNmMxZTRmZDAxMGMzMGM5Mjk5NGRjZjEzYjJkNzMwNWJlZGJmNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5M2E4ZjNiMWMxNjg0ZDliZWNkNzE4ZmU1MDhkZjQzMjI1MDlhNDhkYzdmYmJiMThlYjIxYjkwOGY4MmRlYWIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L3636-L3662",
+          "version": "repo-lines-v1:sha256:05419bd14628dfaf5bb562f900a6d6a4f4732d4bc90e50106f649bd70c5036cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NTJkY2RlODgxMjZjNGM1Njg1OTMwOGFjNzY3OWU1ODBkYmJiMWNhODNkYjVkYjAxZTJkMTJmMzVhNDdjZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YWUzYmNjMDBmOTg5ODE4ZGU1NDRmNmZiYWZiNTBlZWJkZTU2NmY4NjIxYWQxNDEzMjgyOTc5ZmI4ZDNiN2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzNzE2ODczNjdkOTkyMzc5OGUxZjU4ZDEzM2Q1MDI5ODZiOTJkYWYzMzc2NzIzMTU5ZDAzNDk3OTg2NTU5MGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkMzljOTgwOTA2NDFmNWU4NGRkY2QyZTJkYmVlNjZkNWJjNGY1OTQ4YjVlYWY0ZWZjODlkZWE0NTIwYmIzMzMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-21T08:06:25.442Z"
   }
 }

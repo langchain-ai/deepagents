@@ -129,8 +129,19 @@ def test_derive_impl_sets_new_graph_is_selectable():
     assert "tau3" not in code
 
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
-    assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
+    assert up.KNOWN_AGENT_IMPLS == {
+        "bare",
+        "dcode",
+        "llm-tool-selector",
+        "tau3",
+        "ts-tool-selector",
+    }
+    assert up.CODE_AGENT_IMPLS == {
+        "bare",
+        "dcode",
+        "llm-tool-selector",
+        "ts-tool-selector",
+    }
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
     import pytest

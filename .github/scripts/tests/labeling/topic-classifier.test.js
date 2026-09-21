@@ -5,12 +5,12 @@ const { classifyTopicLabels, loadTopicLabels, ENDPOINT, MODEL } = require('../..
 
 const allowed = ['topic:mcp', 'topic:models'];
 
-function response(content, status = 200, finishReason = 'stop') {
+function response(scores, status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
     async json() {
-      return { choices: [{ message: { content }, finish_reason: finishReason }] };
+      return { answers: Object.fromEntries(Object.entries(scores).map(([label, noul]) => [label, { type: 'noul', noul }])) };
     },
   };
 }
@@ -21,36 +21,55 @@ test('loads classifier choices from the cached manifest', () => {
   assert.ok(labels.every(label => label.startsWith('topic:')));
 });
 
-test('classifies with the small open model and filters output to the allowlist', async () => {
+test('uses the gateway System One contract and ignores unsolicited labels', async () => {
   let request;
-  const fetchImpl = async (url, options) => {
-    request = { url, options };
-    return response('{"labels":["topic:mcp","priority:urgent","topic:mcp"]}');
-  };
-
   const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
-    apiKey: 'secret', fetchImpl,
+    apiKey: 'secret',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return response({ 'topic:mcp': 0.95, 'topic:models': 0.3, 'priority:urgent': 1 });
+    },
   });
-
   assert.deepEqual([...labels], ['topic:mcp']);
   assert.equal(request.url, ENDPOINT);
+  assert.equal(request.options.headers.Authorization, 'Bearer secret');
   const body = JSON.parse(request.options.body);
   assert.equal(body.model, MODEL);
-  assert.equal(body.temperature, 0);
-  assert.deepEqual(body.response_format, { type: 'json_object' });
-  assert.match(body.messages[1].content, /topic:models/);
+  assert.equal(body.state, 'MCP authentication fails');
+  assert.deepEqual(Object.keys(body.questions), allowed);
+  assert.equal(body.questions['topic:mcp'].type, 'noul');
 });
 
-test('keeps at most three distinct allowed labels in relevance order', async () => {
-  const topics = ['topic:prompts', 'topic:memory', 'topic:models', 'topic:middleware'];
+test('ranks distinct labels by probability and caps them at three', async () => {
+  const scores = { a: 0.8, b: 0.99, c: 0.9, d: 0.95, e: 0.79 };
+  const labels = await classifyTopicLabels('text', [...Object.keys(scores), 'b'], {
+    apiKey: 'secret', fetchImpl: async () => response(scores),
+  });
+  assert.deepEqual([...labels], ['b', 'd', 'c']);
+});
+
+test('abstains below the threshold and accepts the threshold boundary', async () => {
+  for (const [score, expected] of [[0.79, []], [0.8, ['topic:mcp']]]) {
+    const labels = await classifyTopicLabels('text', ['topic:mcp'], {
+      apiKey: 'secret', fetchImpl: async () => response({ 'topic:mcp': score }),
+    });
+    assert.deepEqual([...labels], expected);
+  }
+});
+
+test('batches at most 32 questions and ranks across batches', async () => {
+  const topics = Array.from({ length: 33 }, (_, i) => `topic:${i}`);
+  const sizes = [];
   const labels = await classifyTopicLabels('text', topics, {
     apiKey: 'secret',
-    fetchImpl: async () => response(JSON.stringify({
-      labels: ['priority:urgent', topics[0], topics[0], ...topics.slice(1)],
-    })),
+    fetchImpl: async (_url, options) => {
+      const names = Object.keys(JSON.parse(options.body).questions);
+      sizes.push(names.length);
+      return response(Object.fromEntries(names.map(name => [name, name === 'topic:32' ? 0.99 : 0.1])));
+    },
   });
-
-  assert.deepEqual([...labels], topics.slice(0, 3));
+  assert.deepEqual(sizes, [32, 1]);
+  assert.deepEqual([...labels], ['topic:32']);
 });
 
 test('keeps the timeout active while reading the response body', async () => {
@@ -62,56 +81,33 @@ test('keeps the timeout active while reading the response body', async () => {
       });
     },
   });
-
   await assert.rejects(
     classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl, timeoutMs: 1 }),
     { name: 'AbortError' },
   );
 });
 
-test('allows reasoning to consume tokens before the final JSON', async () => {
-  const fetchImpl = async (_url, options) => {
-    const budget = JSON.parse(options.body).max_completion_tokens;
-    // Simulate a completion that needs 2,000 reasoning tokens plus its answer.
-    return budget >= 2100
-      ? response('{"labels":["topic:mcp"]}')
-      : response('', 200, 'length');
-  };
-  const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
-    apiKey: 'secret', fetchImpl,
-  });
-  assert.deepEqual([...labels], ['topic:mcp']);
+test('empty input or taxonomy does not call the gateway', async () => {
+  for (const [text, topics] of [[' ', allowed], ['text', []]]) {
+    const labels = await classifyTopicLabels(text, topics, {
+      fetchImpl: async () => assert.fail('fetch should not be called'),
+    });
+    assert.deepEqual([...labels], []);
+  }
 });
 
-for (const content of ['', '{"labels":["topic:mcp"', '{"labels":["topic:mcp"]}']) {
-  test(`rejects length-limited output even when it looks valid: ${JSON.stringify(content)}`, async () => {
-    await assert.rejects(
-      classifyTopicLabels('text', allowed, {
-        apiKey: 'secret', fetchImpl: async () => response(content, 200, 'length'),
-      }),
-      /exhausted its completion token budget/,
-    );
-  });
-}
-
-test('returns no labels for empty input without calling the model', async () => {
-  const labels = await classifyTopicLabels(' ', allowed, {
-    fetchImpl: async () => assert.fail('fetch should not be called'),
-  });
-  assert.deepEqual([...labels], []);
-});
-
-test('rejects failed and malformed model responses', async () => {
+test('rejects failed, missing, and invalid probability responses', async () => {
   await assert.rejects(
-    classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl: async () => response('{}', 429) }),
+    classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl: async () => response({}, 429) }),
     /HTTP 429/,
   );
-  await assert.rejects(
-    classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl: async () => response('not json') }),
-    /JSON/,
-  );
-  await assert.rejects(
-    classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl: async () => response('{}') }),
-    /invalid labels/,
-  );
+  for (const answer of [undefined, { type: 'choice', noul: 0.9 }, ...[null, '0.9', -1, 2, NaN].map(noul => ({ type: 'noul', noul }))]) {
+    await assert.rejects(
+      classifyTopicLabels('text', ['topic:mcp'], {
+        apiKey: 'secret',
+        fetchImpl: async () => ({ ok: true, json: async () => ({ answers: { 'topic:mcp': answer } }) }),
+      }),
+      /invalid probabilities/,
+    );
+  }
 });

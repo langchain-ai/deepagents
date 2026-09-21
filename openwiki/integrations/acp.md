@@ -3,10 +3,11 @@ type: protocol integration
 title: Agent Client Protocol Bridge
 description: Explains how deepagents-acp projects a LangGraph agent into an ACP stdio server, including session-scoped graph construction, streaming, permissions, cancellation, and optional durable recovery. It also describes dcode's ACP launcher and its separate tool, policy, and checkpoint ownership.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
 sources:
+  - id: openwiki-source-532ea636a0657c1d2714bd7a
+    resource: repo://libs/acp/CHANGELOG.md
+  - id: openwiki-source-0179ac261273b4285f3644bd
+    resource: repo://libs/acp/deepagents_acp/_version.py
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
   - id: openwiki-source-1ffb4d0f447fcc4e9ca248ef
@@ -25,7 +26,10 @@ sources:
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-5dc287d30945406e0821cb29
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-19T08:04:56.519Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
 ---
 
 # Agent Client Protocol Bridge
@@ -35,7 +39,13 @@ generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 There are two useful deployment layers:
 
 - A custom server calls `run_agent` with `AgentServerACP` around a Deep Agents or compatible LangGraph graph.
-- `dcode --acp` launches dcode's already-assembled coding-agent factory in the current process. Unlike normal dcode, it does not launch the Textual UI, `langgraph dev`, or a `RemoteGraph`; it owns local ACP session graphs instead. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md) and [SDK Construction and Agent Execution](/openwiki/architecture/sdk-construction-execution.md).
+- `dcode --acp` launches dcode's already-assembled coding-agent factory in the current process. Unlike normal dcode, it does not launch the Textual UI or use its remote client `RemoteGraph`; it owns local ACP session graphs instead. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md) and [SDK Construction and Agent Execution](/openwiki/architecture/sdk-construction-execution.md).
+
+## Release and package baseline
+
+`deepagents-acp` is currently version `0.0.12`; the package metadata and runtime version are kept in sync by release-please. It requires Python 3.11 or later and declares `agent-client-protocol>=0.10.1`, together with `deepagents` and `python-dotenv>=1.2.2`.
+
+The `0.0.12` release (2026-09-18) scopes `cancel()` requests to their requested ACP session. The immediately preceding releases added visible reasoning as ACP thought chunks (`0.0.11`) and persistent ACP session loading (`0.0.10`). Those release changes explain two important current boundaries: cancellation must not leak across sessions, and `session/load` depends on application-provided durable checkpoint storage rather than on the protocol adapter alone.
 
 ## Graph boundary and session model
 
@@ -78,7 +88,7 @@ sequenceDiagram
 
 The adapter exposes mode and model selectors as ACP session configuration options (`mode` and `model`), with compatibility handling for ACP releases that either wrap or directly use select options. `set_config_option` accepts strings only, rejects unknown option IDs and unavailable mode/model values with invalid-parameter errors, resets the session graph, and persists the changed selection when durable loading is enabled. The older `set_session_mode` operation also resets and persists a configured session mode, but does not itself validate that its `mode_id` is in the available choices.
 
-The demo is a concrete factory pattern: it uses `context.cwd` as the local-shell backend root, maps `context.mode` to an `interrupt_on` policy, forwards `context.model` to `create_deep_agent`, and shares its `MemorySaver` between factory-built graphs. The package requires Python 3.11+ and `agent-client-protocol>=0.10.1`.
+The demo is a concrete factory pattern: it uses `context.cwd` as the local-shell backend root, maps `context.mode` to an `interrupt_on` policy, forwards `context.model` to `create_deep_agent`, and shares its `MemorySaver` between factory-built graphs.
 
 ## Prompt and stream projection
 

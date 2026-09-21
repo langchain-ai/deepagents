@@ -2,6 +2,21 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.72](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.71...deepagents-code==0.1.72) (2026-09-21)
+
+### Features
+
+- Expanded `read_file` calls now show their arguments. ([#6392](https://github.com/langchain-ai/deepagents/pull/6392))
+
+### Bug Fixes
+
+- Aligned debug log formatting between file and console output. ([#6426](https://github.com/langchain-ai/deepagents/pull/6426))
+- Silenced unnecessary decoder traces for non-media paths. ([#6427](https://github.com/langchain-ai/deepagents/pull/6427))
+
+### Performance Improvements
+
+- Skipped transcript scans when submitting prompts for faster prompt submission. ([#6402](https://github.com/langchain-ai/deepagents/pull/6402))
+
 ## [0.1.71](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.70...deepagents-code==0.1.71) (2026-09-18)
 
 ### Features

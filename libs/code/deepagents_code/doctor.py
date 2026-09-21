@@ -476,6 +476,16 @@ def _collect_tracing() -> DiagnosticSection:
         items.append(DiagnosticItem("Gateway", _tracing_gateway_state(status)))
     if status.replica_project:
         items.append(DiagnosticItem("Replica project", status.replica_project))
+    from deepagents_code._server_tracing import active_tracing_diagnostics
+
+    diagnostics = active_tracing_diagnostics()
+    ingestion = (
+        "unavailable"
+        if diagnostics is None
+        else f"queued={diagnostics.queued}, retried={diagnostics.retried}, "
+        f"dropped={diagnostics.dropped}"
+    )
+    items.append(DiagnosticItem("Ingestion", ingestion))
     return DiagnosticSection(title="Tracing", items=items)
 
 

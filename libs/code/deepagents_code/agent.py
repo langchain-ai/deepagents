@@ -2914,6 +2914,13 @@ def create_cli_agent(
     agent_middleware.extend(
         [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
     )
+    from deepagents_code._server_tracing import (
+        server_tracing_flush_middleware,
+        server_tracing_is_active,
+    )
+
+    if server_tracing_is_active():
+        agent_middleware.append(server_tracing_flush_middleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     trusted_ask_user_tool: BaseTool | None = None

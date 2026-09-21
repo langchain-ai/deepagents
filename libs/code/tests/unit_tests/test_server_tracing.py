@@ -31,10 +31,14 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     sys.modules.pop("deepagents_code.server_graph", None)
     module = importlib.import_module("deepagents_code.server_graph")
     monkeypatch.setattr(run_trees, "_CLIENT", None)
+
+    def configure_tracing(client: Client | None = None) -> None:
+        configure(client=client or Mock(spec=Client))
+
     monkeypatch.setattr(
         config_module,
         "configure_langsmith_secret_redaction",
-        lambda: configure(client=Mock(spec=Client)),
+        configure_tracing,
     )
     monkeypatch.setattr(
         module,
@@ -191,3 +195,57 @@ async def test_readiness_runtime_reserves_tracing(
     with pytest.raises(WorkspaceConflictError):
         await server._workspace_runtime(other)
     assert await server._workspace_runtime(first) is runtime
+
+
+def test_server_tracing_client_logs_every_dropped_run(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from queue import PriorityQueue
+    from types import SimpleNamespace
+
+    import langsmith
+
+    import deepagents_code._server_tracing as tracing
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            self.tracing_queue = None
+
+    monkeypatch.setattr(langsmith, "Client", FakeClient)
+    client = tracing.create_server_tracing_client(
+        api_key="test-key",
+        api_url="https://example.com",
+    )
+    client.tracing_queue = PriorityQueue(maxsize=1)
+    client.tracing_queue.put_nowait(object())
+    operation = SimpleNamespace(
+        operation="patch",
+        id="run-id",
+        calculate_serialized_size=lambda: 17,
+    )
+
+    with caplog.at_level("WARNING"):
+        client._put_tracing_queue(SimpleNamespace(item=operation))
+
+    diagnostics = tracing.active_tracing_diagnostics()
+    assert diagnostics is not None
+    assert diagnostics.dropped == 1
+    assert "run-id" in caplog.text
+    assert "payload_size=17" in caplog.text
+
+
+async def test_server_tracing_flush_middleware_flushes_at_turn_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    import deepagents_code._server_tracing as tracing
+
+    flush = AsyncMock()
+    monkeypatch.setattr(tracing, "flush_server_tracing", flush)
+    middleware = tracing.server_tracing_flush_middleware()
+
+    await middleware.aafter_agent(None, None)
+
+    flush.assert_awaited_once_with()

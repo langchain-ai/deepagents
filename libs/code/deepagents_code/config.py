@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     )
 
     from langchain_core.runnables import RunnableConfig
+    from langsmith import Client
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import (
@@ -4744,7 +4745,7 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
     return bool(resolved.value), _ranked_source(resolved)
 
 
-def configure_langsmith_secret_redaction() -> bool:
+def configure_langsmith_secret_redaction(*, client: Client | None = None) -> bool:
     """Install the LangSmith SDK secret anonymizer for active agent tracing.
 
     This is a fail-closed security control: when redaction is requested but the
@@ -4799,16 +4800,18 @@ def configure_langsmith_secret_redaction() -> bool:
             "LANGSMITH_API_KEY",
         ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
-        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_url:
-            kwargs["api_url"] = api_url
-        # Reinstall the redacting client on every call rather than caching it:
-        # callers such as `/auth` re-authentication may rotate credentials, and
-        # a cached client could leave a stale or non-redacting client in place —
-        # a fail-open risk this control exists to prevent.
-        configure(client=Client(**kwargs))
+        if client is None:
+            from deepagents_code._server_tracing import active_server_tracing_client
+
+            client = active_server_tracing_client()
+        if client is None:
+            kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+            if api_key:
+                kwargs["api_key"] = api_key
+            if api_url:
+                kwargs["api_url"] = api_url
+            client = Client(**kwargs)
+        configure(client=client)
     except Exception:
         logger.exception(
             "Failed to install LangSmith secret redaction; disabling tracing so "

@@ -105,6 +105,10 @@ def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> No
     Called on the server loop with no suspension between claim and setup.
     """
     from deepagents_code.config import (
+        _resolve_env_var_from,
+        _tracing_can_upload_from,
+        _tracing_enabled_from,
+        _tracing_endpoint_from,
         _tracing_environment_values,
         configure_langsmith_secret_redaction,
         reconcile_tracing_environment,
@@ -122,9 +126,25 @@ def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> No
     _server_tracing_settings = settings
     if not _server_tracing_initialized:
         reconcile_tracing_environment(environ)
-        # Keep redaction on the server task: its fail-closed disable must
-        # reach this task's LangSmith ContextVar, not a worker's copied context.
-        configure_langsmith_secret_redaction()
+        if _tracing_enabled_from(environ) and _tracing_can_upload_from(environ):
+            from langsmith.anonymizer import create_secret_anonymizer
+
+            from deepagents_code._server_tracing import (
+                create_server_tracing_client,
+            )
+
+            client = create_server_tracing_client(
+                api_key=_resolve_env_var_from(environ, "LANGSMITH_API_KEY")
+                or _resolve_env_var_from(environ, "LANGCHAIN_API_KEY"),
+                api_url=_tracing_endpoint_from(environ),
+                anonymizer=create_secret_anonymizer() if redact else None,
+            )
+            if redact:
+                configure_langsmith_secret_redaction()
+            else:
+                from langsmith import configure
+
+                configure(client=client)
         _server_tracing_initialized = True
 
 

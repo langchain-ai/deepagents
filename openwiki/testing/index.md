@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Strategy and Local Test Guide](testing-guide.md) - Select package-local correctness, integration, benchmark, and evaluation coverage, and separately validate repository automation through workflow YAML contracts and executable shell harnesses. Includes focused Talon regression routes for cron, delegation, host lifecycle, delivery, and unattended authority.
+- [Testing Guide](testing-guide.md) - Route deterministic package-local tests for SDK filesystem mutation safety and Talon approval, runtime-isolation, and host-facing behavior. Use package Makefile targets and keep warnings fatal.

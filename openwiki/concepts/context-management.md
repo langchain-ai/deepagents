@@ -3,9 +3,6 @@ type: context-management concept
 title: Context Management and Offloading
 description: How Deep Agents and dcode reduce model-visible context through recoverable result eviction, summary events, overflow recovery, and server-owned offload. Covers storage, state effects, concurrency, and safe operational changes.
 tags: [context-management, summarization, compaction, eviction, offload, middleware, conversation-history]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -29,7 +26,12 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-67a4b4f67d5f273ea2b7de14
+    resource: repo://libs/deepagents/tests/unit_tests/test_eviction_replay.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-21T08:06:25.442Z
 ---
 
 # Context Management and Offloading
@@ -58,7 +60,11 @@ Caption: Result eviction is independent of conversation compaction; compaction p
 
 ## Result eviction and recovery paths
 
-`FilesystemMiddleware` proactively offloads oversized tool-result text through the shared helper. It writes extracted text to `{large_tool_results_prefix}/{sanitized_tool_call_id}` and replaces text with `TOO_LARGE_TOOL_MSG`: a line-numbered head-and-tail preview that tells the model to call `read_file` with `offset` and `limit`. A failed backend write returns no replacement, so the original result remains. The replacement preserves `tool_call_id`, message id, metadata, artifact, status, and non-text content blocks; an image or other media remains model-visible.
+`FilesystemMiddleware` proactively offloads oversized tool-result text through the shared helper. It writes extracted text to `{large_tool_results_prefix}/{sanitized_tool_call_id}` and replaces text with `TOO_LARGE_TOOL_MSG`: a line-numbered head-and-tail preview that tells the model to call `read_file` with `offset` and `limit`. A failed backend write returns no replacement, so the original result remains. The replacement preserves `tool_call_id`, message id, metadata, artifact, status, and non-text content blocks; an image or other media remains model-visible. This wrapper processes both a direct `ToolMessage` and tool-produced `Command` message updates, retaining a leading `REMOVE_ALL_MESSAGES` sentinel and every non-tool update message.
+
+`human_message_token_limit_before_evict` is a separate, request-time path. When the newest `HumanMessage` exceeds its character-derived threshold, the middleware writes its text to a new UUID-named markdown file under `conversation_history`, tags the checkpointed full message with `additional_kwargs["lc_evicted_to"]`, and supplies a head-and-tail `TOO_LARGE_HUMAN_MSG` preview to the model. On later requests every tagged human message is previewed again from the full checkpointed content. The tag update reuses the original message id and is emitted by itself so the message reducer replaces it without deleting the model response written in the same super-step; a failed write neither tags nor truncates the new message. Non-text blocks remain in the model-visible preview message.
+
+For sandbox `execute`, capture-at-source is another distinct optimization: it is attempted only when the execution backend is a `BaseSandbox` and the large-result path resolves to that same default backend. `execute_with_offload` can then write output directly to the recovery path and return the tool-result stub. Its capture result explicitly says when the saved file is incomplete because the capture size limit truncated output; otherwise execution falls back to ordinary execution and post-result eviction.
 
 The summarizer uses `CompositeBackend.artifacts_root` when available, producing paths under its artifact root; a non-composite backend uses `/conversation_history` and `/large_tool_results`. A displayed path is useful only when the same backend exposed to `read_file` can resolve it. See [Tools and Filesystem](/openwiki/concepts/tools-filesystem.md).
 
@@ -128,7 +134,8 @@ Large tool-result artifacts normally use a hardened per-user temporary directory
 ## Safe changes checklist
 
 - **Preserve recovery:** alter trigger/keep logic only with tests that prove the reduced request is smaller, valid tool-call/result pairs remain intact, and irreducible system/tool/output overhead never reaches the provider.
-- **Preserve artifact routing:** changing `artifacts_root`, archive names, or fallback routes requires validating `read_file` against every backend that can receive the pointer.
+- **Preserve artifact routing:** changing `artifacts_root`, archive names, or fallback routes requires validating `read_file` against every backend that can receive the pointer. For execute capture, also prove that its path routes to the same sandbox that ran the command.
+- **Keep state ownership distinct:** tool-result eviction replaces checkpointed tool text; human-message eviction deliberately retains the full checkpointed message and only makes it model-visible as a preview; SDK summary events preserve raw history; `/offload` must never write `messages`.
 - **Treat archive failure separately from summary failure:** SDK compaction may continue without an archive; server offload has ordered reservation, append, verification, and rollback semantics that must not be collapsed into one write.
 - **Keep the HTTP allowlist and model trust boundary:** do not permit `messages` writes or client-selected model transport in `/offload` without reworking concurrency and credential-threat assumptions.
-- **Test both sync and async paths:** recovery and eviction have separate sync/async implementations; dcode’s archive serialization specifically applies to asynchronous paths.
+- **Test both sync and async paths:** recovery and eviction have separate sync/async implementations; include replay coverage for tagged human-message updates and capture-at-source failure/truncation paths. dcode’s archive serialization specifically applies to asynchronous paths.

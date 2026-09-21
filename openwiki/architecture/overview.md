@@ -1,11 +1,11 @@
 ---
 type: repository architecture overview
 title: Repository Architecture Overview
-description: Ownership and runtime boundaries across the Deep Agents SDK, Deep Agents Code, ACP, Talon, evaluation, and partner packages. Explains Talon's host-managed lifecycle and the distinct delegation behavior of interactive and cron turns.
+description: Ownership and runtime boundaries across the Deep Agents SDK, Deep Agents Code, ACP, Talon, evaluation, and partner packages. Covers Talon's host-managed lifecycle, approval-resume boundary, and the distinct delegation behavior of interactive and cron turns.
 tags: [architecture, monorepo, deepagents, talon, acp, runtime-boundaries]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-20T08:05:19.815Z
+    at: 2026-09-21T08:06:25.442Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -17,8 +17,12 @@ sources:
     resource: repo://libs/ARCHITECTURE.md
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
+  - id: openwiki-source-6c2e9cfaa20096e021221d47
+    resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
@@ -37,15 +41,19 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-267468fe937003d4716fe6c2
+    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
     resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-6cf260dd7a6018657221ec15
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
 ---
 
 # Repository Architecture Overview
@@ -166,13 +174,13 @@ flowchart TD
 ```
 This decision flow distinguishes interactive work that survives the current turn from cron work that must finish within it.
 
-Talon approval policy is also host-owned. It loads a snapshot into graph `interrupt_on` configuration and captures that snapshot for an invocation; channel/cron/background handling supplies or denies decisions around resulting interrupts. Scheduled and background-result turns have no interactive approval or authorization handler, and cron tool approvals are auto-denied. A policy edit takes effect only after graph rebuild for a later invocation, not as authority inherited by an already-running task. See [Permissions and HITL](../concepts/permissions-hitl.md) for the enforcement and identity constraints.
+Talon approval policy is also host-owned. The runtime loads an immutable, exact-name policy snapshot into graph `interrupt_on` configuration and captures that snapshot for an invocation; a saved policy change rebuilds the graph for a later invocation rather than changing an already-running task. When LangGraph returns approval interrupts, the runtime requires unique resumable IDs, groups every protected action in that interrupt batch into one handler request, and resumes the graph with an explicit decision payload for each interrupt ID. MCP elicitations in the same batch are cancelled rather than presented as tool approvals. The host bridges that handler to the originating channel: it holds the turn on a per-conversation pending future, prompts the operator, and accepts an approve/reject reply only from the sender who started the run; validated channel reactions can resolve the same pending request. Scheduled and background-result turns have no interactive approval or authorization handler, so they are denied; cron tool approvals are auto-denied. See [Permissions and HITL](../concepts/permissions-hitl.md) for the enforcement and identity constraints.
 
 ## Evaluation and releases
 
 The evaluation suite runs agents against real LLMs, captures tool calls, file mutations, and final responses, and scores correctness and efficiency; its Harbor integration runs sandboxed benchmarks such as Terminal Bench 2.0. Use it for changes that alter assembled-agent trajectories, alongside focused package tests for the boundary changed.
 
-The release manifest currently records `deepagents` 0.7.15, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.71, `deepagents-talon` 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages. Release Please is configured for separate draft pull requests and independent Python package releases with package-specific version files and changelogs; it uses component-bearing tags separated by `==` and excludes package test paths from release analysis.
+The release manifest currently records `deepagents` 0.7.15, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.72, `deepagents-talon` 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages. Code's own `pyproject.toml` and current changelog agree on 0.1.72. Release Please is configured for separate draft pull requests and independent Python package releases with package-specific version files and changelogs; it uses component-bearing tags separated by `==` and excludes package test paths from release analysis.
 
 ## Safe change guide
 
@@ -182,4 +190,4 @@ The release manifest currently records `deepagents` 0.7.15, `deepagents-acp` 0.0
 4. **Talon behavior:** keep channels, cron delivery, local MCP configuration/reload, operator approval, and local/background subagent lifecycle in `libs/talon`. Preserve the distinction between detached channel delegation and inline cron delegation; test graph replacement and running-work semantics whenever changing these seams.
 5. **Provider behavior:** put sandbox/provider mechanics in the appropriate partner package rather than coupling them to the generic harness.
 
-Focused coverage should follow ownership: SDK graph tests for reusable assembly; Code client/server tests for product flow; ACP tests for session and protocol replay; and Talon host/runtime/background tests for lifecycle unwind, conversation locking and cancellation, context cleanup, approval snapshots, graph replacement, detached result delivery and requeueing, inline cron fan-out and timeout containment, fresh-agent tool attachment, and cancellation safety.
+Focused coverage should follow ownership: SDK graph tests for reusable assembly; Code client/server tests for product flow; ACP tests for session and protocol replay; and Talon host/runtime/background tests for lifecycle unwind, conversation locking and cancellation, context cleanup, approval snapshots and multi-interrupt resume payloads, operator identity at the pending-approval boundary, graph replacement, detached result delivery and requeueing, inline cron fan-out and timeout containment, fresh-agent tool attachment, and cancellation safety.

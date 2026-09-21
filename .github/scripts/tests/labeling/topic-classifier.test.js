@@ -41,6 +41,18 @@ test('classifies with the small open model and filters output to the allowlist',
   assert.match(body.messages[1].content, /topic:models/);
 });
 
+test('keeps at most three distinct allowed labels in relevance order', async () => {
+  const topics = ['topic:prompts', 'topic:memory', 'topic:models', 'topic:middleware'];
+  const labels = await classifyTopicLabels('text', topics, {
+    apiKey: 'secret',
+    fetchImpl: async () => response(JSON.stringify({
+      labels: ['priority:urgent', topics[0], topics[0], ...topics.slice(1)],
+    })),
+  });
+
+  assert.deepEqual([...labels], topics.slice(0, 3));
+});
+
 test('keeps the timeout active while reading the response body', async () => {
   const fetchImpl = async (_url, options) => ({
     ok: true,

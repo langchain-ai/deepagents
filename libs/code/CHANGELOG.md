@@ -2,6 +2,36 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.72](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.71...deepagents-code==0.1.72) (2026-09-21)
+
+### Features
+
+- Expanded `read_file` calls now show their arguments. ([#6392](https://github.com/langchain-ai/deepagents/pull/6392))
+
+### Bug Fixes
+
+- Aligned debug log formatting between file and console output. ([#6426](https://github.com/langchain-ai/deepagents/pull/6426))
+- Silenced unnecessary decoder traces for non-media paths. ([#6427](https://github.com/langchain-ai/deepagents/pull/6427))
+
+### Performance Improvements
+
+- Skipped transcript scans when submitting prompts for faster prompt submission. ([#6402](https://github.com/langchain-ai/deepagents/pull/6402))
+
+## [0.1.71](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.70...deepagents-code==0.1.71) (2026-09-18)
+
+### Features
+
+- Moved MCP support onto FastMCP and `langchain.mcp`. ([#5922](https://github.com/langchain-ai/deepagents/pull/5922))
+- Condensed the current working directory in the status bar from the middle, preserving the end of the path. ([#6252](https://github.com/langchain-ai/deepagents/pull/6252))
+
+### Bug Fixes
+
+- Replaced the composer with prompt search and prevented query feedback. ([#6346](https://github.com/langchain-ai/deepagents/pull/6346))
+- Kept absolute paths intact in normal input mode. ([#6379](https://github.com/langchain-ai/deepagents/pull/6379))
+- Pinned resumed history to the newest message. ([#6225](https://github.com/langchain-ai/deepagents/pull/6225))
+- Improved handling of overflowing pasted content in the chat input so it scrolls correctly. ([#6382](https://github.com/langchain-ai/deepagents/pull/6382))
+- Wrapped debug logs before the scrollbar. ([#6219](https://github.com/langchain-ai/deepagents/pull/6219))
+
 ## [0.1.70](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.69...deepagents-code==0.1.70) (2026-09-16)
 
 ### Bug Fixes

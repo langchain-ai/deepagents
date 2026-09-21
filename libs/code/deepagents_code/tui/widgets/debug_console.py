@@ -314,7 +314,7 @@ class _DebugLogView(ScrollView, can_focus=True):
         start = len(self._contents)
         self._records.extend(records)
         self._contents.extend(_record_to_content(record) for record in records)
-        width = self._cached_width or self.size.width
+        width = self._cached_width or self.scrollable_content_region.width
         if width <= 0:
             self._scroll_end_after_layout = self._scroll_end_after_layout or at_bottom
             # Not yet sized (e.g. first poll before layout). Assume one visual
@@ -349,7 +349,7 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._hover_index = None
         self._selected_index = None
         self._render_line_cache.clear()
-        self.virtual_size = Size(self.size.width, 0)
+        self.virtual_size = Size(self.scrollable_content_region.width, 0)
         self.refresh()
 
     def show_notice(self, message: str) -> None:
@@ -380,7 +380,7 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._total_visual = self._wrap_prefix[-1]
 
     def _reflow(self) -> None:
-        width = self.size.width
+        width = self.scrollable_content_region.width
         if width <= 0:
             width = self._cached_width
         if width <= 0:
@@ -452,7 +452,7 @@ class _DebugLogView(ScrollView, can_focus=True):
     def render_line(self, y: int) -> Strip:
         _scroll_x, scroll_y = self.scroll_offset
         abs_y = scroll_y + y
-        width = self.size.width
+        width = self.scrollable_content_region.width
         key = (
             abs_y,
             width,
@@ -504,9 +504,9 @@ class _DebugLogView(ScrollView, can_focus=True):
         super().notify_style_update()
         self._render_line_cache.clear()
 
-    def on_resize(self, event: events.Resize) -> None:
+    def on_resize(self, _event: events.Resize) -> None:
         """Re-wrap log entries when the view width changes."""
-        if event.size.width != self._cached_width:
+        if self.scrollable_content_region.width != self._cached_width:
             self._reflow()
         if self._scroll_end_after_layout:
             self._scroll_end_after_layout = False

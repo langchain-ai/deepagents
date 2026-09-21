@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.embeddings import Embeddings
@@ -11,6 +12,10 @@ from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.history_backends import open_history
 from deepagents_talon.store_archive import StoreConversationArchive
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
 
 SCOPE = ArchiveScope(talon_history_channel="test", talon_history_chat="one")
 OTHER = ArchiveScope(talon_history_channel="test", talon_history_chat="two")
@@ -116,5 +121,38 @@ async def assert_store_archive_contract(metadata, vectors, tmp_path, *, history_
         assert not await archive.sessions(SCOPE)
         assert not await archive.vectors.store.asearch(vector_namespace)
         assert [entry["text"] for entry in await archive.entries(OTHER)] == ["private car"]
+
+    await _assert_content_reuse(hybrid, config)
     assert not config.checkpoint_path.exists()
     assert not config.history_vector_path.exists()
+
+
+async def _assert_content_reuse(
+    hybrid: Callable[[TalonConfig], AbstractAsyncContextManager[StoreConversationArchive]],
+    config: TalonConfig,
+) -> None:
+    first, edited = "a" * 4000 + "original", "a" * 4000 + "edited"
+    async with hybrid(config) as archive:
+        for text in (first, edited):
+            await archive.append(SCOPE, "revisions", "time", [HumanMessage(text, id="message")])
+        await _wait_for_content_vectors(archive)
+        entries = await archive.entries(SCOPE, session_id="revisions", limit=20)
+        assert "".join(entry["text"] for entry in entries) == first + edited
+    async with hybrid(config) as archive:
+        await archive.append(SCOPE, "revisions", "later", [HumanMessage(edited, id="another")])
+        await _wait_for_content_vectors(archive)
+        await archive.delete_session("revisions")
+        assert not await archive.vectors.store.asearch(archive.vectors.namespace("test", "one"))
+
+
+async def _wait_for_content_vectors(archive: StoreConversationArchive) -> None:
+    async with asyncio.timeout(60):
+        while True:
+            pending = await archive.vectors.archive.pending(SCOPE)
+            vectors = await archive.vectors.store.asearch(
+                archive.vectors.namespace("test", "one"), limit=20
+            )
+            if not pending and len(vectors) >= 3:
+                assert len(vectors) == 3
+                return
+            await asyncio.sleep(0.02)

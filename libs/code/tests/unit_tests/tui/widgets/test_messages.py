@@ -1385,6 +1385,28 @@ class TestToolCallMessageExpandHint:
             event.stop.assert_called_once()
             assert app.msg._expanded is True
 
+    async def test_expanded_read_file_shows_call_arguments(self) -> None:
+        """Expanded file output includes the exact range the tool read."""
+        args = {"file_path": "/tmp/x.py", "offset": 40, "limit": 20}
+        app = _tool_msg_app("read_file", args)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("41  value = 1")
+            await pilot.pause()
+
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert full.plain == (
+                'Arguments\n  {\n    "file_path": "/tmp/x.py",\n'
+                '    "offset": 40,\n    "limit": 20\n  }\n\n41  value = 1'
+            )
+
     async def test_short_read_file_error_force_expanded_has_no_collapse_hint(
         self,
     ) -> None:

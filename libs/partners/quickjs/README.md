@@ -229,6 +229,56 @@ CodeInterpreterMiddleware(ptc=[search_tool])             # explicit tool object 
 
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
 
+### Calling Jev from interpreter code
+
+Wrap Jev in a regular LangChain tool, then allowlist that tool for PTC. The host tool owns the `TYPESAFE_API_KEY`; it is never exposed to QuickJS.
+
+```bash
+uv add langchain-quickjs langchain-typesafe
+export TYPESAFE_API_KEY=...
+```
+
+```python
+from deepagents import create_deep_agent
+from langchain_core.tools import tool
+from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_typesafe import Noul, TypeSafeClassifier
+
+jev = TypeSafeClassifier()
+
+
+@tool
+async def ask_jev(state: str, question: str) -> dict:
+    """Ask Jev a binary probabilistic question about the supplied state."""
+    response = await jev.ainvoke(
+        {
+            "state": state,
+            "questions": {"decision": Noul(instructions=question)},
+        }
+    )
+    return response.nouls["decision"].model_dump()
+
+
+agent = create_deep_agent(
+    model="claude-sonnet-4-6",
+    tools=[ask_jev],
+    middleware=[CodeInterpreterMiddleware(ptc=[ask_jev])],
+)
+```
+
+The agent can now call Jev from generated JavaScript and branch on its calibrated probability in one interpreter call:
+
+```js
+const answer = await tools.askJev({
+  state: "The database is unavailable in every region.",
+  question: "Does this incident require immediate escalation?",
+});
+
+answer.noul >= 0.8
+  ? { escalate: true, confidence: answer.noul }
+  : { escalate: false, confidence: 1 - answer.noul }
+```
+
 ### What the model sees
 
 When PTC is on, the system-prompt snippet grows an *API Reference — `tools` namespace* section listing every exposed tool as a TypeScript-ish signature derived from the tool's args schema:

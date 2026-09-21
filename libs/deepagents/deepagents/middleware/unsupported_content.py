@@ -8,10 +8,8 @@ from langchain.agents.middleware.unsupported_content import (
 from langchain_core.messages import AnyMessage
 from langchain_core.messages.content import ContentBlock
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
-# support today, so these providers get a hard-coded pass until profiles can
-# describe support for other office and document formats.
+from deepagents.backends.utils import _OPENAI_FILE_MIME_TYPES
+
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
 except ImportError:
@@ -19,22 +17,10 @@ except ImportError:
 else:
     _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
 
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
-except ImportError:
-    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
-
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
 
 _PDF_MIME_TYPE: Final = "application/pdf"
-
-
-def _model_has_expanded_file_support(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
-    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
 
 
 class UnsupportedContentMiddleware(_UnsupportedContentMiddleware):
@@ -42,18 +28,17 @@ class UnsupportedContentMiddleware(_UnsupportedContentMiddleware):
 
     Extends the base middleware with the two things specific to a deep agent:
 
-    - Non-PDF base64 `file` blocks (what `read_file` emits for a `.docx`) pass only
-      for provider classes known to accept them, since no `ModelProfile` field
-      describes them yet.
+    - Non-PDF base64 `file` blocks pass only when their MIME type is supported by
+      an OpenAI Responses model, since no `ModelProfile` field describes them yet.
     - The placeholder names the file `read_file` was asked for, so the model can tell
       which attachment went missing.
     """
 
     def is_supported(self, block: ContentBlock, *, model: "BaseChatModel", in_tool_message: bool) -> bool:
-        """Gate non-PDF `file` blocks on the provider class, else defer to the profile."""
-        if block["type"] == "file" and "base64" in block and block.get("mime_type") != _PDF_MIME_TYPE:
-            return _model_has_expanded_file_support(model)
-        return super().is_supported(block, model=model, in_tool_message=in_tool_message)
+        """Gate non-PDF `file` blocks on MIME type and the OpenAI endpoint."""
+        if block["type"] != "file" or "base64" not in block or block.get("mime_type") == _PDF_MIME_TYPE:
+            return super().is_supported(block, model=model, in_tool_message=in_tool_message)
+        return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
 
     def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock:
         """Name the `read_file` path in the placeholder the model sees."""

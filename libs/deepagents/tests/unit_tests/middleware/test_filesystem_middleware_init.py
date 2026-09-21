@@ -20,9 +20,8 @@ from deepagents.middleware.filesystem import (
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
     FilesystemState,
-    _file_block_supported,
-    _scrub_unsupported_multimodal_content,
 )
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 if TYPE_CHECKING:
     from langchain_core.messages.content import ContentBlock
@@ -59,7 +58,7 @@ def test_openai_docx_support_uses_provider_class_and_responses_api(
     block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": _DOCX_MIME_TYPE}
 
     assert model._llm_type == "langchain-chat"
-    assert _file_block_supported(block, model=model, profile={}, in_tool_message=True) is supported
+    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=True) is supported
 
 
 @pytest.mark.parametrize(
@@ -72,7 +71,7 @@ def test_openai_docx_support_uses_provider_class_and_responses_api(
 def test_binary_file_allowlist(model: BaseChatModel, mime_type: str, *, supported: bool) -> None:
     block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": mime_type}
 
-    assert _file_block_supported(block, model=model, profile={}, in_tool_message=False) is supported
+    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=False) is supported
 
 
 @pytest.mark.parametrize("mime_type", ["text/csv", "text/markdown"])
@@ -84,30 +83,27 @@ def test_openai_responses_preserves_non_utf8_text_files(mime_type: str) -> None:
     }
     message = HumanMessage(content=[block])
 
-    accepted = _scrub_unsupported_multimodal_content([message], ChatOpenAI.model_construct(use_responses_api=True))
-    rejected = _scrub_unsupported_multimodal_content([message], ChatOpenAI.model_construct(use_responses_api=False))
+    middleware = UnsupportedContentMiddleware()
+    accepted = middleware._filter_message(message, model=ChatOpenAI.model_construct(use_responses_api=True))
+    rejected = middleware._filter_message(message, model=ChatOpenAI.model_construct(use_responses_api=False))
 
-    assert accepted == [message]
-    assert accepted[0] is message
-    assert rejected[0].content_blocks[0]["type"] == "text"
+    assert accepted is message
+    assert rejected.content_blocks[0]["type"] == "text"
 
 
 @pytest.mark.parametrize("reference", [{"file_id": "file_1"}, {"url": "https://example.com/archive.zip"}])
 def test_file_references_bypass_allowlist(reference: dict[str, str]) -> None:
     block: ContentBlock = {"type": "file", **reference}
 
-    assert _file_block_supported(block, model=None, profile={}, in_tool_message=False)
+    model = ChatOpenAI.model_construct(use_responses_api=False)
+    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=False)
 
 
 def test_pdf_tool_message_profile_is_enforced() -> None:
     block: ContentBlock = {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}
 
-    assert not _file_block_supported(
-        block,
-        model=None,
-        profile={"pdf_inputs": True, "pdf_tool_message": False},
-        in_tool_message=True,
-    )
+    model = ChatOpenAI.model_construct(profile={"pdf_inputs": True, "pdf_tool_message": False})
+    assert not UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=True)
 
 
 class TestLargeToolResultGuidanceInToolDescriptions:

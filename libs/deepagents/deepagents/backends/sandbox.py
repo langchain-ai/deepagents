@@ -1373,7 +1373,7 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     )
 
 
-def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteOffloadResult:
+def _parse_capture_execute_output(response: ExecuteResponse) -> ExecuteOffloadResult:
     r"""Parse capture-wrapper stdout into an `ExecuteOffloadResult`.
 
     The wrapper emits a meta line followed by the body:
@@ -1386,25 +1386,25 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     first newline is the body (full output when inline, head/tail preview when
     offloaded).
 
-    Falls back to `offloaded=False` with the raw output when the meta line is
-    absent or malformed — e.g. if the backend truncated transport; the caller
-    must not re-run the command in that case. `response.truncated` is set when the
-    captured output hit the size cap (the saved file is incomplete) or
-    `backend_truncated` is passed through from the underlying `execute`.
+    Falls back to `offloaded=False` with the original response when the meta line
+    is absent or malformed — e.g. if the backend timed out or truncated transport;
+    the caller must not re-run the command in that case. `response.truncated` is
+    set when the captured output hit the size cap (the saved file is incomplete)
+    or the underlying `execute` response was truncated.
     """
-    first, _, body = output.partition("\n")
+    first, _, body = response.output.partition("\n")
     parts = first.split(" ")
     # Expect exactly the four meta fields described above; anything else is not
     # our wrapper's output, so fall back to returning it verbatim.
     if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
-        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+        return ExecuteOffloadResult(offloaded=False, response=response)
     try:
         exit_code = int(parts[1])
     except ValueError:
-        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+        return ExecuteOffloadResult(offloaded=False, response=response)
     return ExecuteOffloadResult(
         offloaded=parts[2] == "1",
-        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
+        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or response.truncated),
     )
 
 
@@ -1492,7 +1492,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
-        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+        return _parse_capture_execute_output(result)
 
     async def aexecute_with_offload(
         self,
@@ -1510,7 +1510,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
-        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+        return _parse_capture_execute_output(result)
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""

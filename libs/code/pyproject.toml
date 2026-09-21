@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     # Framework
     "deepagents==0.7.15",
-    "langchain>=1.4.1,<2.0.0",
+    "langchain>=1.4.2,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
@@ -58,7 +58,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.12.6",
+    "langsmith[sandbox]>=0.13.0",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",

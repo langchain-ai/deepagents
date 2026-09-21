@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import langchain.mcp as langchain_mcp
 import pytest
@@ -767,7 +767,7 @@ def test_make_llm_tool_selector_graph_adds_selector(
 
     graph = langgraph_agent.make_llm_tool_selector_graph({"configurable": {"model": "test:model"}})
 
-    assert graph["middleware"] == [("llm-selector", "model")]
+    assert cast("dict[str, object]", graph)["middleware"] == [("llm-selector", "model")]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

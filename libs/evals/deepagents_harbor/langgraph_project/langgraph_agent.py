@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -427,11 +428,8 @@ def _make_bare_graph(
     if selector == "llm":
         middleware = [LLMToolSelectorMiddleware(model=model)]
     elif selector == "typesafe":
-        from langchain_typesafe.experimental.middleware import (  # noqa: PLC0415
-            TsToolSelectorMiddleware,
-        )
-
-        middleware = [TsToolSelectorMiddleware()]
+        typesafe_middleware = import_module("langchain_typesafe.experimental.middleware")
+        middleware = [typesafe_middleware.TsToolSelectorMiddleware()]
     else:
         middleware = []
     return create_deep_agent(

@@ -244,6 +244,7 @@ async def test_runtime_gates_real_config_writes(
     store.update({"update_mcp_server": requires_approval}, snapshot.revision)
     runtime = DeepAgentRuntime(
         model=model,
+        env={},
         tools=[],
         reload_tools=reload_tools,
         backend=StateBackend(),

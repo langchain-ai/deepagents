@@ -115,3 +115,30 @@ test('rejects failed and malformed model responses', async () => {
     /invalid labels/,
   );
 });
+
+test('environment selects the provider and defaults to Groq', async t => {
+  const previous = process.env.TOPIC_CLASSIFIER_PROVIDER;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TOPIC_CLASSIFIER_PROVIDER;
+    else process.env.TOPIC_CLASSIFIER_PROVIDER = previous;
+  });
+  for (const provider of [undefined, '', 'groq', 'semif', 'invalid']) {
+    if (provider === undefined) delete process.env.TOPIC_CLASSIFIER_PROVIDER;
+    else process.env.TOPIC_CLASSIFIER_PROVIDER = provider;
+    const options = {
+      apiKey: 'secret',
+      fetchImpl: async (url) => {
+        assert.equal(url, provider === 'semif' ? 'https://gateway.smith.langchain.com/v1/systemone' : ENDPOINT);
+        return provider === 'semif'
+          ? { ok: true, json: async () => ({ answers: { 'topic:mcp': { type: 'noul', noul: 0.95 } } }) }
+          : response('{"labels":["topic:mcp"]}');
+      },
+    };
+    if (provider === 'invalid') {
+      options.fetchImpl = async () => assert.fail('invalid provider must not make a request');
+      await assert.rejects(classifyTopicLabels('text', ['topic:mcp'], options), /must be groq or semif/);
+    } else {
+      assert.deepEqual([...await classifyTopicLabels('text', ['topic:mcp'], options)], ['topic:mcp']);
+    }
+  }
+});

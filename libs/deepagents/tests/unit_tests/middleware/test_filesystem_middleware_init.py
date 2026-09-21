@@ -1,5 +1,6 @@
 """Unit tests for FilesystemMiddleware initialization and configuration."""
 
+import base64
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -7,6 +8,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentState
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.store.memory import InMemoryStore
@@ -19,6 +21,7 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
     _file_block_supported,
+    _scrub_unsupported_multimodal_content,
 )
 
 if TYPE_CHECKING:
@@ -70,6 +73,23 @@ def test_binary_file_allowlist(model: BaseChatModel, mime_type: str, *, supporte
     block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": mime_type}
 
     assert _file_block_supported(block, model=model, profile={}, in_tool_message=False) is supported
+
+
+@pytest.mark.parametrize("mime_type", ["text/csv", "text/markdown"])
+def test_openai_responses_preserves_non_utf8_text_files(mime_type: str) -> None:
+    block: ContentBlock = {
+        "type": "file",
+        "base64": base64.b64encode(b"value\n\xff\n").decode(),
+        "mime_type": mime_type,
+    }
+    message = HumanMessage(content=[block])
+
+    accepted = _scrub_unsupported_multimodal_content([message], ChatOpenAI.model_construct(use_responses_api=True))
+    rejected = _scrub_unsupported_multimodal_content([message], ChatOpenAI.model_construct(use_responses_api=False))
+
+    assert accepted == [message]
+    assert accepted[0] is message
+    assert rejected[0].content_blocks[0]["type"] == "text"
 
 
 @pytest.mark.parametrize("reference", [{"file_id": "file_1"}, {"url": "https://example.com/archive.zip"}])

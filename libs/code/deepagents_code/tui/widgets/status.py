@@ -1143,7 +1143,7 @@ class StatusBar(Vertical):
         """Format the last cache write and remaining retention window.
 
         Returns:
-            Compact local timestamp and remaining minimum or maximum retention.
+            Compact local timestamp and remaining retention countdown.
         """
         written = (
             f"wrote {self.cache_written_at.astimezone():%H:%M:%S}"
@@ -1156,11 +1156,10 @@ class StatusBar(Vertical):
             0, int((self.cache_expires_at - datetime.now(UTC)).total_seconds())
         )
         minutes, seconds = divmod(remaining, 60)
-        bound = "min" if self.cache_retention_confidence == "may_be_cold" else "max"
         countdown = (
-            "retention uncertain"
-            if remaining == 0 and bound == "min"
-            else f"retention {bound} {minutes}:{seconds:02d}"
+            "uncertain"
+            if remaining == 0 and self.cache_retention_confidence == "may_be_cold"
+            else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown
 

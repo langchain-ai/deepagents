@@ -293,8 +293,8 @@ class TestCacheTimingDisplay:
     @pytest.mark.parametrize(
         ("confidence", "before", "after"),
         [
-            ("may_be_cold", "retention min 0:30", "retention uncertain"),
-            ("expired", "retention max 0:30", "retention max 0:00"),
+            ("may_be_cold", "/ 0:30", "/ uncertain"),
+            ("expired", "/ 0:30", "/ 0:00"),
         ],
     )
     async def test_retention_bound_passes(
@@ -334,7 +334,7 @@ class TestCacheTimingDisplay:
 
             rendered = str(pilot.app.query_one("#cache-display").render())
             assert f"wrote {written_at.astimezone():%H:%M:%S}" in rendered
-            assert "retention max 4:2" in rendered
+            assert "/ 4:2" in rendered
             assert bar._cache_timer is not None
 
     async def test_clear_stops_countdown(self) -> None:

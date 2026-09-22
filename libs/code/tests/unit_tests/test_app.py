@@ -5839,10 +5839,10 @@ class TestCacheTiming:
     @pytest.mark.parametrize(
         ("model", "endpoint", "retention", "expected"),
         [
-            ("openai:gpt-5.6", "default", None, "retention min 29:"),
-            ("openai:gpt-5.4", "default", "in_memory", "retention max 59:"),
-            ("openai:gpt-5.4", "default", "24h", "retention max 1439:"),
-            ("anthropic:claude-sonnet-4-6", "default", None, "retention max 4:"),
+            ("openai:gpt-5.6", "default", None, "/ 29:"),
+            ("openai:gpt-5.4", "default", "in_memory", "/ 59:"),
+            ("openai:gpt-5.4", "default", "24h", "/ 1439:"),
+            ("anthropic:claude-sonnet-4-6", "default", None, "/ 4:"),
             ("openai:gpt-5.6", "https://gateway.example.com", None, None),
         ],
     )
@@ -5870,7 +5870,7 @@ class TestCacheTiming:
             assert "wrote" in rendered
             assert "bust" not in rendered
             if expected is None:
-                assert "retention" not in rendered
+                assert bar.cache_expires_at is None
             else:
                 assert expected in rendered
 
@@ -5920,7 +5920,7 @@ class TestCacheTiming:
             assert bar.cache_written_at == (written_at if observed_write else None)
             assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
             rendered = str(app.query_one("#cache-display").render())
-            assert "retention max 4:" in rendered
+            assert " 4:" in rendered
             assert ("wrote" in rendered) is observed_write
 
             # A turn without cache activity must not renew the countdown.
@@ -5987,7 +5987,7 @@ class TestCacheTiming:
             await pilot.pause()
 
             rendered = str(app.query_one("#cache-display").render())
-            assert ("retention min 29:" in rendered) is shows_retention
+            assert (" 29:" in rendered) is shows_retention
             assert bar.cache_expires_at == (
                 requested_at + timedelta(minutes=30) if shows_retention else None
             )

@@ -411,6 +411,17 @@ class RemoteAgent:
             raise TypeError(msg)
         return response["text"]
 
+    async def arefresh_side_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
+        """Refresh side spend without replacing potentially uncommitted graph usage.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Updated presentation total, or `None` if accounting is unavailable.
+        """
+        return await self._read_session_cost(config, side_only=True)
+
     async def aget_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
         """Read the server's display total separately from graph state.
 
@@ -421,7 +432,19 @@ class RemoteAgent:
             Combined usage, the last known total on failure, or `None` if
             accounting is unavailable and no prior total has been read.
         """
+        return await self._read_session_cost(config, side_only=False)
+
+    async def _read_session_cost(
+        self, config: Mapping[str, Any], *, side_only: bool
+    ) -> SessionCost | None:
+        """Read accounting, optionally retaining the latest streamed graph usage.
+
+        Returns:
+            Refreshed usage, the last known total on failure, or `None`.
+        """
         from langgraph_sdk.errors import NotFoundError
+
+        from deepagents_code.btw_cost import combine_session_cost
 
         thread_id = _require_thread_id(config)
         previous = self._session_costs.get(thread_id)
@@ -440,6 +463,21 @@ class RemoteAgent:
                     "Invalid session cost response; retaining the last total"
                 )
                 return self._session_costs.get(thread_id)
+            latest = self._session_costs.get(thread_id)
+            if side_only and latest is not None:
+                if "graph_total" not in latest or "side_breakdown" not in cost:
+                    return latest
+                side = cost["side_breakdown"]
+                known_side = latest.get("side_breakdown")
+                if known_side is not None and (
+                    side is None
+                    or known_side["total_cost_usd"] > side["total_cost_usd"]
+                ):
+                    side = known_side
+                self._session_costs[thread_id] = combine_session_cost(
+                    latest["graph_total"], latest.get("graph_breakdown"), side
+                )
+                return self._session_costs[thread_id]
             # A streamed total received during this read is newer than the
             # checkpoint the request may have observed.
             if self._session_costs.get(thread_id) is previous:
@@ -685,6 +723,12 @@ class RemoteAgent:
                     "total": data["total"],
                     "breakdown": data.get("breakdown"),
                 }
+                if "graph_total" in data:
+                    self._session_costs[thread_id].update(
+                        graph_total=data["graph_total"],
+                        graph_breakdown=data.get("graph_breakdown"),
+                        side_breakdown=data.get("side_breakdown"),
+                    )
             yield (ns, mode, data)
 
         if dropped_count:

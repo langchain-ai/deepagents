@@ -335,6 +335,47 @@ async def test_server_cost_events_are_passed_through() -> None:
     assert events[1][2] == nested
 
 
+@pytest.mark.parametrize("concurrent_stream", [False, True])
+@pytest.mark.parametrize("saved_side_total", [0.25, 0.5, 0.75])
+async def test_side_refresh_preserves_streamed_graph_cost(
+    *, concurrent_stream: bool, saved_side_total: float
+) -> None:
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=2.0, request_count=2)
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    event = {"type": "session_cost", **combine_session_cost(2.0, main, side)}
+    agent = _make_agent([((), "custom", event)])
+
+    async def stream() -> None:
+        async for _event in agent.astream({}, config=_config()):
+            pass
+
+    if not concurrent_stream:
+        await stream()
+
+    saved_side = side.copy()
+    saved_side["total_cost_usd"] = saved_side_total
+
+    async def read(_path: str) -> dict[str, object]:
+        if concurrent_stream:
+            await stream()
+        return {"cost": combine_session_cost(1.0, None, saved_side)}
+
+    agent._graph.client.http.get = read
+    for _ in range(2):
+        cost = await agent.arefresh_side_cost(_config())
+        assert cost is not None
+        expected = 2.0 + max(0.5, saved_side_total)
+        assert cost["total"] == pytest.approx(expected)
+        assert cost["breakdown"] is not None
+        assert cost["breakdown"]["total_cost_usd"] == pytest.approx(expected)
+        assert cost["breakdown"]["request_count"] == 3
+
+
 async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 

@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from collections import deque
 from contextlib import closing
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
@@ -41,10 +41,46 @@ logger = logging.getLogger(__name__)
 
 
 class SessionCost(TypedDict):
-    """Server-owned presentation total, separate from graph checkpoint values."""
+    """Server-owned presentation total, separate from graph checkpoint values.
+
+    Components let clients refresh side spend while preserving live graph costs.
+    They are optional for compatibility with older servers' combined totals.
+    """
 
     total: float
     breakdown: CostBreakdown | None
+    graph_total: NotRequired[float]
+    graph_breakdown: NotRequired[CostBreakdown | None]
+    side_breakdown: NotRequired[CostBreakdown | None]
+
+
+def combine_session_cost(
+    graph_total: float,
+    graph_breakdown: CostBreakdown | None,
+    side_breakdown: CostBreakdown | None,
+) -> SessionCost:
+    """Combine independent spend while retaining its sources for live refreshes.
+
+    Args:
+        graph_total: Main graph's cumulative spend, possibly uncommitted.
+        graph_breakdown: Main graph's structured usage.
+        side_breakdown: Separately persisted side-question usage.
+
+    Returns:
+        Presentation total with the independent accounting components.
+    """
+    return {
+        "total": graph_total
+        + (side_breakdown["total_cost_usd"] if side_breakdown else 0),
+        "breakdown": (
+            _merge_cost_breakdowns(graph_breakdown, side_breakdown)
+            if side_breakdown is not None
+            else graph_breakdown
+        ),
+        "graph_total": graph_total,
+        "graph_breakdown": graph_breakdown,
+        "side_breakdown": side_breakdown,
+    }
 
 
 async def delete_cost(conn: aiosqlite.Connection, thread_id: str) -> None:
@@ -125,12 +161,7 @@ def session_cost(values: Mapping[str, Any], thread_id: str) -> SessionCost:
     cost = _load_saved_cost(thread_id) if thread_id else None
     total = values.get("_session_cost_usd", 0.0)
     breakdown = values.get("_session_cost_breakdown")
-    if cost is None:
-        return {"total": total, "breakdown": breakdown}
-    return {
-        "total": total + cost["total_cost_usd"],
-        "breakdown": _merge_cost_breakdowns(breakdown, cost),
-    }
+    return combine_session_cost(total, breakdown, cost)
 
 
 def _persist_cost(thread_id: str, state: CostState) -> CostBreakdown | None:

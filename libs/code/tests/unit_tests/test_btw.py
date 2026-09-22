@@ -568,6 +568,75 @@ async def test_remote_uses_side_route_not_runs() -> None:
     graph.client.runs.assert_not_called()
 
 
+@pytest.mark.parametrize("main_total", [1.0, 2.0])
+@pytest.mark.parametrize("provisional", [0.0, 0.2])
+async def test_side_cost_survives_main_cancellation(
+    main_total: float, provisional: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    remote._graph = graph
+    app = DeepAgentsApp(agent=MagicMock())
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(app, "_ui_adapter", MagicMock())
+    monkeypatch.setattr(app, "_ensure_goal_state_notice", AsyncMock(return_value=True))
+    monkeypatch.setattr(remote, "abtw", AsyncMock(return_value="Side answer"))
+    started = asyncio.Event()
+
+    async def execute(*_args: object, **_kwargs: object) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+    )
+    async with app.run_test() as pilot:
+        app._connecting = False
+        app._agent_running = True
+        app._lc_thread_id = "btw-cancellation"
+        config = {"configurable": {"thread_id": app._lc_thread_id}}
+        # The last observed main total may be ahead of its durable checkpoint.
+        graph.client.http.get = AsyncMock(
+            return_value={"cost": combine_session_cost(main_total, None, None)}
+        )
+        await remote.aget_session_cost(config)
+        app._set_session_cost(main_total)
+        app._add_provisional_cost(provisional, request_id="unfinished")
+        side = _empty_cost_breakdown()
+        side.update(total_cost_usd=0.5, request_count=1)
+        graph.client.http.get.return_value = {
+            "cost": combine_session_cost(1.0, None, side)
+        }
+        main = asyncio.create_task(app._run_agent_task("main"))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            await app._handle_command("/btw why")
+            await pilot.pause()
+            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert not main.done()
+        finally:
+            main.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await main
+        assert not app._agent_running
+        assert app._displayed_cost_usd == pytest.approx(main_total + 0.5 + provisional)
+        # Re-reading the same side subtotal must neither double-charge it nor
+        # settle the unfinished main request's provisional estimate.
+        await pilot.press("escape")
+        await app._handle_command("/btw again")
+        await pilot.pause()
+        assert app._displayed_cost_usd == pytest.approx(main_total + 0.5 + provisional)
+        app._add_provisional_cost(
+            -provisional, request_id="unfinished", is_correction=True
+        )
+        assert app._displayed_cost_usd == pytest.approx(main_total + 0.5)
+
+
 @pytest.mark.parametrize("question", ["", "Why this approach?"])
 async def test_app_modal_while_main_run_continues(
     question: str, monkeypatch: pytest.MonkeyPatch
@@ -577,6 +646,7 @@ async def test_app_modal_while_main_run_continues(
     app = DeepAgentsApp(agent=MagicMock())
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
     remote = MagicMock(spec=RemoteAgent)
+    remote.arefresh_side_cost = AsyncMock(return_value=None)
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -630,6 +700,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
     app = DeepAgentsApp(agent=MagicMock())
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
     remote = MagicMock(spec=RemoteAgent)
+    remote.arefresh_side_cost = AsyncMock(return_value=None)
     remote.abtw = AsyncMock(return_value="\n\n".join(f"Line {i}" for i in range(80)))
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     main_started = asyncio.Event()
@@ -710,18 +781,21 @@ async def test_idle_side_answer_refreshes_displayed_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-cost")
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-    remote = MagicMock(spec=RemoteAgent)
-    remote.abtw = AsyncMock(return_value="Side answer")
-    remote.aget_session_cost = AsyncMock(return_value={"total": 1.5, "breakdown": None})
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
-    monkeypatch.setattr(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(return_value={"_session_cost_usd": 1.5}),
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    remote._graph = graph
+    monkeypatch.setattr(remote, "abtw", AsyncMock(return_value="Side answer"))
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    graph.client.http.get = AsyncMock(
+        return_value={"cost": combine_session_cost(1.0, None, side)}
     )
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
         app._connecting = False

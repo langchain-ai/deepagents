@@ -9027,12 +9027,14 @@ class DeepAgentsApp(App):
         thread_id: str = "",
         pricing_ok: bool | None = None,
         breakdown: Mapping[str, Any] | None = None,
+        preserve_provisional: bool = False,
     ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
         Used for both the restored checkpoint total and the totals the graph
         streams during a turn. Either supersedes anything the message stream
-        contributed provisionally, so that add-on is dropped.
+        contributed provisionally, so that add-on is dropped unless this refresh
+        only updates independently settled side-question spend.
 
         Args:
             cost_usd: Non-negative cumulative estimated cost in US dollars.
@@ -9047,6 +9049,8 @@ class DeepAgentsApp(App):
                 alone, so a source that cannot speak to pricing health (a
                 restored checkpoint read) does not erase what a stream said.
             breakdown: Optional authoritative thread-wide structured detail.
+            preserve_provisional: Keep streamed estimates when only side-question
+                spend changed; the main graph has not settled those requests.
         """
         if thread_id and thread_id != self._lc_thread_id:
             logger.debug(
@@ -9060,9 +9064,12 @@ class DeepAgentsApp(App):
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         if breakdown is not None:
             self._session_cost_breakdown = breakdown
-        self._provisional_cost_usd = 0.0
-        self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
-        self._provisional_cost_by_request.clear()
+        if not preserve_provisional:
+            self._provisional_cost_usd = 0.0
+            self._settled_provisional_request_ids.update(
+                self._provisional_cost_by_request
+            )
+            self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
         if (
@@ -16907,8 +16914,15 @@ class DeepAgentsApp(App):
                 text = await remote.abtw(
                     question, config={"configurable": {"thread_id": thread_id}}
                 )
-                if not self._agent_running and thread_id == self._lc_thread_id:
-                    await self._sync_session_cost_from_checkpoint()
+                cost = await remote.arefresh_side_cost(
+                    {"configurable": {"thread_id": thread_id}}
+                )
+                if cost is not None and thread_id == self._lc_thread_id:
+                    self._set_session_cost(
+                        cost["total"],
+                        breakdown=cost["breakdown"],
+                        preserve_provisional=True,
+                    )
                 return text
 
             self.push_screen(

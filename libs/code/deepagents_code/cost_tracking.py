@@ -3272,9 +3272,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 {
                     "type": SESSION_COST_EVENT_TYPE,
                     "version": SESSION_COST_EVENT_VERSION,
-                    "total": cost["total"],
+                    **cost,
                     "thread_id": _thread_id(runtime) or "",
-                    "breakdown": cost["breakdown"],
                     # Pricing runs here, which in a remote deployment is not the
                     # client's process. Without this the client can only inspect
                     # its own install and would blame the user's model choice

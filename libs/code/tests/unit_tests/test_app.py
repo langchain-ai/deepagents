@@ -2454,8 +2454,13 @@ class TestModalScreenShiftTabHandling:
 
         from deepagents_code.tui.modals.btw import BtwScreen
 
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-editing")
         monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        monkeypatch.setattr(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value={"messages": [{"type": "human", "content": "hi"}]}),
+        )
         answer = AsyncMock(return_value="Side answer")
         remote = MagicMock(abtw=answer, arefresh_side_cost=AsyncMock(return_value=None))
         monkeypatch.setattr(app, "_remote_agent", lambda: remote)

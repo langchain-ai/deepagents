@@ -22,6 +22,7 @@ from textual.widgets import Markdown, Static, TextArea
 from deepagents_code.btw import BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen
+from deepagents_code.tui.widgets.messages import UserMessage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -624,6 +625,11 @@ async def test_side_cost_survives_main_cancellation(
     app = DeepAgentsApp(agent=MagicMock())
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [HumanMessage(content="main")]}),
+    )
     monkeypatch.setattr(app, "_ui_adapter", MagicMock())
     monkeypatch.setattr(app, "_ensure_goal_state_notice", AsyncMock(return_value=True))
     monkeypatch.setattr(remote, "abtw", AsyncMock(return_value="Side answer"))
@@ -679,13 +685,41 @@ async def test_side_cost_survives_main_cancellation(
 
 
 @pytest.mark.parametrize("question", ["", "Why this approach?"])
+async def test_app_requires_a_message_before_btw(
+    question: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-empty")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
+    remote = MagicMock(spec=RemoteAgent)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    notify = MagicMock()
+    monkeypatch.setattr(app, "notify", notify)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._connecting = False
+        composer = app.query_one("#chat-input", TextArea)
+        composer.focus()
+        await pilot.press(*f"/btw {question}")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, BtwScreen)
+        remote.abtw.assert_not_called()
+        notify.assert_called_once_with("Send a message before asking /btw.")
+
+
+@pytest.mark.parametrize("question", ["", "Why this approach?"])
 async def test_app_modal_while_main_run_continues(
     question: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
 
-    app = DeepAgentsApp(agent=MagicMock())
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-inflight")
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
     remote = MagicMock(spec=RemoteAgent)
     remote.arefresh_side_cost = AsyncMock(return_value=None)
     started = asyncio.Event()
@@ -704,6 +738,8 @@ async def test_app_modal_while_main_run_continues(
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
         app._agent_running = True
+        app._agent_turn_started = True
+        app._active_user_message = UserMessage("main")
         app._connecting = False
         before = app._message_store.get_all_messages()
         app._model_override = "provider:selected"
@@ -738,8 +774,13 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
 
-    app = DeepAgentsApp(agent=MagicMock())
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-scroll")
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [HumanMessage(content="main")]}),
+    )
     remote = MagicMock(spec=RemoteAgent)
     remote.arefresh_side_cost = AsyncMock(return_value=None)
     remote.abtw = AsyncMock(return_value="\n\n".join(f"Line {i}" for i in range(80)))

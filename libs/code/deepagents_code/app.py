@@ -16912,6 +16912,9 @@ class DeepAgentsApp(App):
             if remote is None or self._connecting or self._thread_switching:
                 self.notify("Connect to a dcode session before asking /btw.")
                 return
+            if not await self._has_conversation_messages():
+                self.notify("Send a message before asking /btw.")
+                return
             parts = command.strip().split(maxsplit=1)
             question = parts[1].strip() if len(parts) > 1 else ""
             thread_id = self._lc_thread_id

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents_code.btw_cost import SessionCost
+    from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
     from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
@@ -422,20 +424,64 @@ class RemoteAgent:
         """
         return await self._read_session_cost(config, side_only=True)
 
-    async def aget_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
+    async def aget_session_cost(
+        self,
+        config: Mapping[str, Any],
+        *,
+        checkpoint: Mapping[str, object] | None = None,
+    ) -> SessionCost | None:
         """Read the server's display total separately from graph state.
 
         Args:
             config: Config with `configurable.thread_id`.
+            checkpoint: Fresh graph state to reconcile with cached side spend
+                when the accounting refresh fails.
 
         Returns:
-            Combined usage, the last known total on failure, or `None` if
-            accounting is unavailable and no prior total has been read.
+            Combined usage, reconciling checkpoint and cached side spend on
+            failure. Without a usable checkpoint, a cached fallback is marked
+            `cached` so callers preserve provisional usage. `None` means no
+            accounting source is available.
         """
-        return await self._read_session_cost(config, side_only=False)
+        return await self._read_session_cost(
+            config, side_only=False, checkpoint=checkpoint
+        )
+
+    def _fallback_session_cost(
+        self, thread_id: str, checkpoint: Mapping[str, object] | None
+    ) -> SessionCost | None:
+        """Reconcile fresh graph state, or identify an entirely cached fallback.
+
+        Returns:
+            Checkpoint usage plus known side spend, or an unsettled cached total.
+        """
+        from deepagents_code.btw_cost import combine_session_cost
+
+        previous = self._session_costs.get(thread_id)
+        total = checkpoint.get("_session_cost_usd") if checkpoint else None
+        if not isinstance(total, int | float) or not math.isfinite(total):
+            return {**previous, "cached": True} if previous is not None else None
+        breakdown = checkpoint.get("_session_cost_breakdown") if checkpoint else None
+        graph_breakdown = (
+            cast("CostBreakdown", breakdown) if isinstance(breakdown, Mapping) else None
+        )
+        if previous is not None and previous.get("graph_total", 0.0) > total:
+            total = previous["graph_total"]
+            graph_breakdown = previous.get("graph_breakdown")
+        cost = combine_session_cost(
+            max(float(total), 0.0),
+            graph_breakdown,
+            previous.get("side_breakdown") if previous else None,
+        )
+        self._session_costs[thread_id] = cost
+        return cost
 
     async def _read_session_cost(
-        self, config: Mapping[str, Any], *, side_only: bool
+        self,
+        config: Mapping[str, Any],
+        *,
+        side_only: bool,
+        checkpoint: Mapping[str, object] | None = None,
     ) -> SessionCost | None:
         """Read accounting, optionally retaining the latest streamed graph usage.
 
@@ -462,7 +508,7 @@ class RemoteAgent:
                 logger.warning(
                     "Invalid session cost response; retaining the last total"
                 )
-                return self._session_costs.get(thread_id)
+                return self._fallback_session_cost(thread_id, checkpoint)
             latest = self._session_costs.get(thread_id)
             if side_only and latest is not None:
                 if "graph_total" not in latest or "side_breakdown" not in cost:
@@ -483,12 +529,14 @@ class RemoteAgent:
             if self._session_costs.get(thread_id) is previous:
                 self._session_costs[thread_id] = cast("SessionCost", cost)
         except NotFoundError:
-            return None  # Older servers do not expose a combined accounting view.
+            # Older servers do not expose a combined accounting view.
+            return self._fallback_session_cost(thread_id, checkpoint)
         except Exception:
             logger.warning(
                 "Could not refresh session costs; retaining the last total",
                 exc_info=True,
             )
+            return self._fallback_session_cost(thread_id, checkpoint)
         return self._session_costs.get(thread_id)
 
     async def aoffload(

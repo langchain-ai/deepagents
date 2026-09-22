@@ -539,6 +539,76 @@ async def test_remote_uses_side_route_not_runs() -> None:
 
 
 @pytest.mark.parametrize("main_total", [1.0, 2.0])
+@pytest.mark.parametrize("refresh_error", [RuntimeError("unavailable"), TimeoutError()])
+async def test_checkpoint_reconciles_cost_when_accounting_fails(
+    main_total: float, refresh_error: Exception, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    remote._graph = graph
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    graph.client.http.get = AsyncMock(
+        return_value={"cost": combine_session_cost(1.0, None, side)}
+    )
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="reconcile")
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=main_total, request_count=2)
+    state = {"_session_cost_usd": main_total, "_session_cost_breakdown": main}
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value=state))
+    config = {"configurable": {"thread_id": app._lc_thread_id}}
+    await remote.aget_session_cost(config)
+    app._set_session_cost(1.5)
+    app._add_provisional_cost(1.0, request_id="missed-final-event")
+    graph.client.http.get.side_effect = refresh_error
+
+    await app._sync_session_cost_from_checkpoint()
+
+    assert app._displayed_cost_usd == pytest.approx(main_total + 0.5)
+    assert app._session_cost_breakdown is not None
+    assert app._session_cost_breakdown["total_cost_usd"] == pytest.approx(
+        main_total + 0.5
+    )
+    assert app._session_cost_breakdown["request_count"] == 3
+    # A later side refresh must retain the graph total recovered from state.
+    graph.client.http.get.side_effect = None
+    refreshed = await remote.arefresh_side_cost(config)
+    assert refreshed is not None
+    assert refreshed["total"] == pytest.approx(main_total + 0.5)
+
+
+async def test_cached_cost_without_checkpoint_preserves_provisional_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    remote._graph = graph
+    graph.client.http.get = AsyncMock(
+        return_value={"cost": {"total": 1.5, "breakdown": None}}
+    )
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="reconcile")
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
+    await remote.aget_session_cost({"configurable": {"thread_id": app._lc_thread_id}})
+    app._set_session_cost(1.5)
+    app._add_provisional_cost(1.0, request_id="unfinished")
+    graph.client.http.get.side_effect = TimeoutError()
+
+    await app._sync_session_cost_from_checkpoint()
+
+    assert app._displayed_cost_usd == pytest.approx(2.5)
+    app._add_provisional_cost(-1.0, request_id="unfinished", is_correction=True)
+    assert app._displayed_cost_usd == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize("main_total", [1.0, 2.0])
 @pytest.mark.parametrize("provisional", [0.0, 0.2])
 async def test_side_cost_survives_main_cancellation(
     main_total: float, provisional: float, monkeypatch: pytest.MonkeyPatch

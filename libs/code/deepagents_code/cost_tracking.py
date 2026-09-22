@@ -3257,17 +3257,22 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         if not isinstance(prior_usd, int | float) or not math.isfinite(prior_usd):
             prior_usd = 0.0
         try:
-            from deepagents_code.btw_cost import session_cost
+            from deepagents_code.btw_cost import combine_session_cost, session_cost
 
             prior_breakdown = state.get("_session_cost_breakdown")
             absolute_breakdown = _merge_cost_breakdowns(prior_breakdown, breakdown)
-            cost = session_cost(
-                {
-                    "_session_cost_usd": max(float(prior_usd), 0.0) + delta_usd,
-                    "_session_cost_breakdown": absolute_breakdown,
-                },
-                _thread_id(runtime) or "",
-            )
+            total = max(float(prior_usd), 0.0) + delta_usd
+            try:
+                cost = session_cost(
+                    {
+                        "_session_cost_usd": total,
+                        "_session_cost_breakdown": absolute_breakdown,
+                    },
+                    _thread_id(runtime) or "",
+                )
+            except Exception:
+                logger.debug("Could not read side-question costs", exc_info=True)
+                cost = combine_session_cost(total, absolute_breakdown, None)
             writer(
                 {
                     "type": SESSION_COST_EVENT_TYPE,

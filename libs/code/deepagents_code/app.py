@@ -9656,13 +9656,18 @@ class DeepAgentsApp(App):
         remote = self._remote_agent()
         cost = (
             await remote.aget_session_cost(
-                {"configurable": {"thread_id": self._lc_thread_id}}
+                {"configurable": {"thread_id": self._lc_thread_id}},
+                checkpoint=state_values,
             )
             if remote is not None
             else None
         )
         if cost is not None:
-            self._set_session_cost(cost["total"], breakdown=cost["breakdown"])
+            self._set_session_cost(
+                cost["total"],
+                breakdown=cost["breakdown"],
+                preserve_provisional=cost.get("cached", False),
+            )
         else:
             self._sync_session_cost_from_state(state_values)
         self._sync_cache_state_from_state(state_values)
@@ -19824,7 +19829,8 @@ class DeepAgentsApp(App):
         remote = self._remote_agent()
         if remote is not None:
             cost = await remote.aget_session_cost(
-                {"configurable": {"thread_id": thread_id}}
+                {"configurable": {"thread_id": thread_id}},
+                checkpoint=state_values,
             )
             if cost is not None:
                 payload = replace(

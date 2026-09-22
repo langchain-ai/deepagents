@@ -52,6 +52,8 @@ class SessionCost(TypedDict):
     graph_total: NotRequired[float]
     graph_breakdown: NotRequired[CostBreakdown | None]
     side_breakdown: NotRequired[CostBreakdown | None]
+    cached: NotRequired[bool]
+    """Client fallback with no fresh accounting or checkpoint to settle usage."""
 
 
 def combine_session_cost(

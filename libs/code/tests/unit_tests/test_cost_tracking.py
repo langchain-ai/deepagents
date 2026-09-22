@@ -2346,6 +2346,41 @@ class TestGraphCostOwnership:
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
 
 
+@pytest.mark.parametrize("pricing_ok", [False, True])
+@pytest.mark.parametrize(
+    "error", [sqlite3.OperationalError("database is locked"), OSError("unavailable")]
+)
+def test_side_database_failure_preserves_main_cost_event(
+    error: Exception, monkeypatch: pytest.MonkeyPatch, *, pricing_ok: bool
+) -> None:
+    from deepagents_code import btw_cost
+
+    monkeypatch.setattr(btw_cost, "_load_saved_cost", MagicMock(side_effect=error))
+    prior = cost_tracking._empty_cost_breakdown()
+    prior.update(total_cost_usd=1.0, request_count=1)
+    delta = cost_tracking._empty_cost_breakdown()
+    delta.update(total_cost_usd=0.5, request_count=1)
+    events: list[dict[str, Any]] = []
+
+    CostTrackingMiddleware._emit_total(
+        {"messages": [], "_session_cost_usd": 1.0, "_session_cost_breakdown": prior},
+        _runtime(thread_id=THREAD_ID, events=events),
+        0.5,
+        delta,
+        pricing_ok=pricing_ok,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["type"] == SESSION_COST_EVENT_TYPE
+    assert event["thread_id"] == THREAD_ID
+    assert event["total"] == event["graph_total"] == pytest.approx(1.5)
+    assert event["breakdown"] == event["graph_breakdown"]
+    assert event["breakdown"]["request_count"] == 2
+    assert event["side_breakdown"] is None
+    assert event["pricing_ok"] is pricing_ok
+
+
 async def test_side_question_cost_is_durable_without_another_turn(
     recorder: _SessionCostRecorder,
     side_cost_db: Path,

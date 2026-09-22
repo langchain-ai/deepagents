@@ -66,7 +66,7 @@ when the inputs (thread data + config) haven't changed."""
 
 _COL_TID = 10
 _COL_AGENT = 12
-_COL_MSGS = 6
+_COL_MSGS = 8
 _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
@@ -300,7 +300,7 @@ def _format_column_value(
         value = thread.get("agent_name") or _UNKNOWN_AGENT_LABEL
     elif key == "messages":
         raw_count = thread.get("message_count")
-        value = str(raw_count) if raw_count is not None else "..."
+        value = str(raw_count) if raw_count is not None else "Loading"
     elif key == "created_at":
         value = fmt(thread.get("created_at"))
     elif key == "updated_at":
@@ -310,7 +310,11 @@ def _format_column_value(
     elif key == "cwd":
         value = format_path(thread.get("cwd"))
     elif key == "initial_prompt":
-        value = _collapse_whitespace(thread.get("initial_prompt") or "")
+        value = (
+            _collapse_whitespace(thread["initial_prompt"] or "")
+            if "initial_prompt" in thread
+            else "Loading"
+        )
     else:
         value = ""
 

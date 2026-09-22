@@ -3478,6 +3478,74 @@ class TestUpdateLockLocationFallback:
         assert shared.parent.is_dir()
         assert not profile.parent.exists()
 
+    @pytest.mark.parametrize(
+        "legacy_entry",
+        [None, "install.lock.d", "install.lock.reclaim.d", "update.lock", "symlink"],
+    )
+    def test_update_lock_cleans_only_an_empty_legacy_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_entry: str | None
+    ) -> None:
+        """An update migrates empty roots without disturbing older processes."""
+        tool_dir = tmp_path / "tools"
+        monkeypatch.setattr(sys, "prefix", str(tool_dir / "deepagents-code"))
+        snapshot = _paths._capture_paths(
+            str(tmp_path / "profile"), launch_home=tmp_path
+        )
+        monkeypatch.setattr(update_check, "PATHS", snapshot)
+        lock = snapshot.installation.locks_dir / "update.lock"
+        monkeypatch.setattr(update_check, "UPDATE_LOCK_FILE", lock)
+        legacy = tool_dir / ".deepagents-code.deepagents-code-locks"
+        tool_dir.mkdir()
+        target = tmp_path / "symlink-target"
+        if legacy_entry == "symlink":
+            target.mkdir()
+            legacy.symlink_to(target, target_is_directory=True)
+        else:
+            legacy.mkdir()
+            if legacy_entry == "update.lock":
+                (legacy / legacy_entry).touch()
+            elif legacy_entry:
+                (legacy / legacy_entry).mkdir()
+
+        with update_check.update_install_lock() as acquired:
+            assert acquired
+            assert lock.exists()
+            assert not lock.is_relative_to(tool_dir)
+            assert legacy.exists() is (legacy_entry is not None)
+            if legacy_entry == "symlink":
+                assert legacy.is_symlink()
+                assert target.is_dir()
+
+    @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
+    def test_update_lock_leaves_uv_tool_list_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The persistent advisory lock stays outside uv's tool enumeration."""
+        tool_dir = tmp_path / "tools"
+        monkeypatch.setattr(sys, "prefix", str(tool_dir / "deepagents-code"))
+        snapshot = _paths._capture_paths(
+            str(tmp_path / "profile"), launch_home=tmp_path
+        )
+        monkeypatch.setattr(update_check, "PATHS", snapshot)
+        monkeypatch.setattr(
+            update_check,
+            "UPDATE_LOCK_FILE",
+            snapshot.installation.locks_dir / "update.lock",
+        )
+        (tool_dir / ".deepagents-code.deepagents-code-locks").mkdir(parents=True)
+        with update_check.update_install_lock() as acquired:
+            assert acquired
+        listing = subprocess.run(
+            ["uv", "--no-cache", "--no-config", "tool", "list"],
+            env={**os.environ, "UV_TOOL_DIR": str(tool_dir)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        assert listing.returncode == 0, listing.stderr
+        assert "warning:" not in listing.stderr
+
     def test_falls_back_to_the_profile_lock(self, tmp_path: Path) -> None:
         # An existing file where the lock directory should go reproduces the
         # `mkdir` failure an unwritable prefix produces.

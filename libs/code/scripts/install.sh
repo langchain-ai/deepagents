@@ -1156,6 +1156,7 @@ acquire_install_lock() {
   local installation_root
   local installation_parent
   local installation_name
+  local lock_parent
   local lock_root
   local resolution
   local guessed
@@ -1168,7 +1169,12 @@ acquire_install_lock() {
   [ "$guessed" != "$resolution" ] || guessed=false
   installation_parent="${installation_root%/*}"
   installation_name="${installation_root##*/}"
-  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  # uv treats every directory inside its tool directory as a package. Keep
+  # locks beside that directory, outside the environment uv replaces on upgrade.
+  # Mirror _paths._installation_paths, including custom UV_TOOL_DIR locations.
+  installation_parent="${installation_parent:-/}"
+  lock_parent="$(dirname "$installation_parent")"
+  lock_root="${lock_parent%/}/.${installation_parent##*/}.${installation_name}.deepagents-code-locks"
   if [ -L "$lock_root" ]; then
     log_error "Installer lock root is a symlink: $lock_root"
     log_error "Remove it or choose a different uv tool directory, then retry."
@@ -1181,6 +1187,7 @@ acquire_install_lock() {
   if [ ! -d "$lock_root" ]; then
     if ! mkdir -p "$lock_root"; then
       log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "Check that the parent of the uv tool directory is writable."
       log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
       exit 1
     fi
@@ -1260,6 +1267,9 @@ acquire_install_lock() {
   fix_file_owner "$INSTALL_LOCK_DIR" "$INSTALL_LOCK_DIR/token" \
     "$INSTALL_LOCK_DIR/pid" "$INSTALL_LOCK_DIR/started_at"
   INSTALL_LOCK_KIND="mkdir"
+  # Only remove an empty legacy root. rmdir cannot remove another process's
+  # install/reclaim directory, an advisory update.lock file, or a symlink.
+  rmdir "${installation_parent}/.${installation_name}.deepagents-code-locks" 2>/dev/null || true
 }
 
 release_install_lock() {

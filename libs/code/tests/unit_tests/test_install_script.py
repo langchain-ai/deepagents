@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import pty
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -1979,12 +1981,29 @@ def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
     )
 
 
-def test_install_script_lock_is_independent_of_deepagents_home(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "legacy_entry",
+    [None, "install.lock.d", "install.lock.reclaim.d", "update.lock", "symlink"],
+)
+def test_install_script_lock_is_independent_of_deepagents_home(
+    tmp_path: Path, legacy_entry: str | None
+) -> None:
     """Installer serialization follows the uv tool environment, not a profile."""
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
     configured = tmp_path / "custom-home"
+    legacy = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    target = tmp_path / "symlink-target"
+    if legacy_entry == "symlink":
+        target.mkdir()
+        legacy.symlink_to(target, target_is_directory=True)
+    else:
+        legacy.mkdir()
+        if legacy_entry == "update.lock":
+            (legacy / legacy_entry).touch()
+        elif legacy_entry:
+            (legacy / legacy_entry).mkdir()
     env = {
         **_clean_environ(),
         "HOME": str(home),
@@ -2008,7 +2027,62 @@ def test_install_script_lock_is_independent_of_deepagents_home(tmp_path: Path) -
     assert proc.returncode == 0, proc.stderr
     assert not configured.exists()
     assert not (home / ".deepagents").exists()
-    assert (tmp_path / "tools/.deepagents-code.deepagents-code-locks").is_dir()
+    assert (tmp_path / ".tools.deepagents-code.deepagents-code-locks").is_dir()
+    assert legacy.exists() is (legacy_entry is not None)
+    if legacy_entry == "symlink":
+        assert legacy.is_symlink()
+        assert target.is_dir()
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
+@pytest.mark.parametrize("legacy_root", [False, True])
+def test_install_script_leaves_uv_tool_list_clean(
+    tmp_path: Path, *, legacy_root: bool
+) -> None:
+    """Persistent installer locks must not appear in uv's tool enumeration."""
+    if legacy_root:
+        (tmp_path / "tools/.deepagents-code.deepagents-code-locks").mkdir(parents=True)
+    proc, args = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "1"},
+        installed_version=None,
+        latest_version="0.1.0",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert args.is_file()
+    listing = subprocess.run(
+        ["uv", "--no-cache", "--no-config", "tool", "list"],
+        env={**_clean_environ(), "UV_TOOL_DIR": str(tmp_path / "tools")},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert listing.returncode == 0, listing.stderr
+    assert "warning:" not in listing.stderr
+
+
+@pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
+def test_install_script_reports_unwritable_tool_parent(tmp_path: Path) -> None:
+    """A custom writable tool directory may have an unwritable parent."""
+    env = _env(tmp_path, {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "1"}, latest_version="0.1.0")
+    tmp_path.chmod(0o555)
+    try:
+        proc = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            check=False,
+            timeout=10,
+        )
+    finally:
+        tmp_path.chmod(0o755)
+    assert proc.returncode == 1, proc.stderr
+    assert "parent of the uv tool directory is writable" in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()
 
 
 def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> None:
@@ -2142,7 +2216,7 @@ def test_install_lock_fails_when_lock_root_cannot_create_child(
 ) -> None:
     """An unwritable existing lock root fails instead of waiting forever."""
     installation_root = tmp_path / "tools" / "deepagents-code"
-    lock_root = tmp_path / "tools" / ".deepagents-code.deepagents-code-locks"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_root.mkdir(parents=True)
     script = tmp_path / "unwritable_lock_harness.sh"
     script.write_text(
@@ -2204,8 +2278,8 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
     called. A filesystem marker sequences the two calls: each runs in a `$(...)`
     subshell, so a shell-variable counter would not carry across them.
     """
-    installation_root = tmp_path / "deepagents-code"
-    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -2271,8 +2345,8 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
     tmp_path: Path,
 ) -> None:
     """Stale reclaim renames the canonical lock only while peers are guarded."""
-    installation_root = tmp_path / "deepagents-code"
-    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -2347,7 +2421,7 @@ def test_install_script_release_removes_lock_only_when_token_matches(
     owner now holds. The reclaim guard is left untouched here
     (INSTALL_LOCK_RECLAIM_TOKEN empty), so only the canonical lock is exercised.
     """
-    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "token").write_text(f"{on_disk_token}\n")
@@ -2388,8 +2462,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
     release) or the `exit` (install proceeds tokenless, so release never matches
     and the lock leaks permanently).
     """
-    installation_root = tmp_path / "deepagents-code"
-    lock_root = tmp_path / ".deepagents-code.deepagents-code-locks"
+    installation_root = tmp_path / "tools" / "deepagents-code"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_root.mkdir(parents=True)
     script = tmp_path / "token_write_harness.sh"
     script.write_text(
@@ -2453,7 +2527,7 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -2503,7 +2577,7 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    lock_root = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
+    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -4574,63 +4648,43 @@ _NORMALIZE_PARITY_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "tool_dir",
-    [
-        "/opt/uv/tools",
-        "/Users/someone/.local/share/uv/tools",
-        "/tmp/a b/tools",
-        "/var//lib/uv/tools",
-    ],
-)
-def test_shell_lock_root_matches_python_installation_paths(tool_dir: str) -> None:
-    """The installer and dcode must derive the same install/update lock root.
+@pytest.mark.parametrize("tool_name", ["tools", "custom tools", "a/../tools"])
+def test_shell_lock_root_matches_python_installation_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    """The actual installer acquires its lock where Python expects it."""
+    from deepagents_code._paths import _installation_paths, _normalize_absolute
 
-    `install.sh` says it mirrors `_paths._installation_paths`, but the existing
-    checks compare against hardcoded strings, so the two could drift while the
-    claim still read as verified. If they drift, a `curl | bash` install and a
-    dcode self-upgrade stop sharing a lock and nothing fails.
-    """
-    from deepagents_code._paths import _normalize_absolute
-
-    installation_root = _normalize_absolute(Path(tool_dir) / "deepagents-code")
-    expected = (
-        installation_root.parent / f".{installation_root.name}.deepagents-code-locks"
+    root = _normalize_absolute(tmp_path / tool_name / "deepagents-code")
+    monkeypatch.setattr("sys.prefix", str(root))
+    expected = _installation_paths().locks_dir
+    functions = "\n".join(
+        _extract_shell_function(name)
+        for name in (
+            "acquire_install_lock",
+            "release_install_lock",
+            "release_install_lock_reclaim_guard",
+        )
     )
-
-    # The three lines `acquire_install_lock` uses to build `lock_root`.
     script = (
-        'installation_root="$1"\n'
-        'installation_parent="${installation_root%/*}"\n'
-        'installation_name="${installation_root##*/}"\n'
-        "printf '%s' "
-        '"${installation_parent}/.${installation_name}.deepagents-code-locks"\n'
+        "set -eu\n"
+        f"resolve_installation_root() {{ printf '%s' {shlex.quote(str(root))}; }}\n"
+        "fix_file_owner() { :; }\n"
+        "path_is_under_home() { return 1; }\n"
+        "wait_for_install_lock_reclaim_guard() { :; }\n"
+        f"{functions}\n"
+        "acquire_install_lock\n"
+        'printf "%s" "${INSTALL_LOCK_DIR%/*}"\n'
+        "release_install_lock\n"
     )
     proc = subprocess.run(
-        ["bash", "-c", script, "bash", str(installation_root)],
-        check=False,
-        capture_output=True,
-        text=True,
+        ["bash", "-c", script], capture_output=True, text=True, check=False, timeout=10
     )
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == str(expected)
-
-
-def test_shell_lock_root_formula_is_the_one_the_installer_uses() -> None:
-    """Pin the formula above to the real `acquire_install_lock` source.
-
-    The test above reproduces three lines rather than running the function,
-    which needs uv. Fail if those lines change.
-    """
-    source = _extract_shell_function("acquire_install_lock")
-
-    assert 'installation_parent="${installation_root%/*}"' in source
-    assert 'installation_name="${installation_root##*/}"' in source
-    assert (
-        'lock_root="${installation_parent}/.${installation_name}'
-        '.deepagents-code-locks"' in source
-    )
+    assert expected.is_dir()
+    assert not expected.is_relative_to(root.parent)
 
 
 @pytest.mark.parametrize(

@@ -2291,6 +2291,16 @@ release on a different one.
 """
 
 
+def _remove_empty_legacy_lock_dir() -> None:
+    """Remove only an empty pre-migration lock directory from uv's tool list."""
+    root = PATHS.installation.root
+    legacy = root.parent / f".{root.name}.deepagents-code-locks"
+    # A lock file may still be held by an older process. Never unlink it,
+    # recurse into a lock directory, or follow a symlink during cleanup.
+    with suppress(OSError):
+        legacy.rmdir()
+
+
 def _resolve_update_lock_file() -> Path | None:
     """Return the first usable lock path, preferring installation scope.
 
@@ -2431,6 +2441,7 @@ def update_install_lock() -> Iterator[bool]:
             yield True
             return
         try:
+            _remove_empty_legacy_lock_dir()
             yield True
         finally:
             # Releasing must not mask the install's own outcome, and the lock is

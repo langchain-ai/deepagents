@@ -223,6 +223,50 @@ async def test_synchronous_agent_wiring_preserves_checkpoint(tmp_path: Path) -> 
     assert before == after
 
 
+@pytest.mark.parametrize("synchronous", [False, True])
+async def test_effective_instructions_survive_restart_and_eviction(
+    *,
+    synchronous: bool,
+) -> None:
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import dynamic_prompt
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    @dynamic_prompt
+    def extension_prompt(_request: ModelRequest) -> str:
+        return "Current model identity. Extension instruction: answer in Spanish."
+
+    model = FakeMessagesListChatModel(responses=[AIMessage(content="main")])
+    warm = BtwOperation(model, "Bootstrap instructions", None)
+    graph = create_agent(
+        model, middleware=[extension_prompt, warm], checkpointer=InMemorySaver()
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "instruction-parity"}}
+    inputs = {"messages": [HumanMessage("Hello")]}
+    if synchronous:
+        await asyncio.to_thread(graph.invoke, inputs, config)
+    else:
+        await graph.ainvoke(inputs, config)
+    checkpoint = await graph.aget_state(config)
+    cold = BtwOperation(model, "Bootstrap instructions", None)
+    prompts: list[str] = []
+
+    def answer(messages: list[BaseMessage], **_kwargs: object) -> AIMessage:
+        prompts.append(messages[0].text)
+        return AIMessage(content="Respuesta")
+
+    with patch.object(
+        FakeMessagesListChatModel, "ainvoke", new=AsyncMock(side_effect=answer)
+    ):
+        for operation in (warm, cold):
+            await operation.answer("instruction-parity", checkpoint.values, "Why?")
+        warm._snapshots.clear()
+        await warm.answer("instruction-parity", checkpoint.values, "Why?")
+    assert len(set(prompts)) == 1
+    assert "Extension instruction: answer in Spanish." in prompts[0]
+    assert (await graph.aget_state(config)) == checkpoint
+
+
 @pytest.fixture
 def instruction_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from deepagents_code import agent

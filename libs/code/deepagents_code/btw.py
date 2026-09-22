@@ -7,14 +7,17 @@ import json
 from collections import OrderedDict
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -27,6 +30,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableBinding
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -51,6 +55,12 @@ _OPTION_CONTAINERS = ("model_kwargs", "extra_body")
 
 class _InstructionState(MemoryState, SkillsState):
     """Local copy of the checkpoint channels used to assemble instructions."""
+
+
+class _BtwState(AgentState):
+    """Effective instructions saved with the main model's successful response."""
+
+    _btw_system_prompt: Annotated[NotRequired[str], PrivateStateAttr]
 
 
 async def _restore_system(
@@ -163,6 +173,8 @@ def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
 class BtwOperation(AgentMiddleware):
     """Remember server-resolved models without running the agent for side answers."""
 
+    state_schema = _BtwState
+
     def __init__(
         self,
         model: str | BaseChatModel,
@@ -187,8 +199,12 @@ class BtwOperation(AgentMiddleware):
             str, tuple[BaseChatModel, SystemMessage, dict[str, Any]]
         ] = OrderedDict()
 
-    def _remember_model(self, request: ModelRequest) -> None:
-        """Snapshot resolved settings before either kind of main model call."""
+    def _remember_model(self, request: ModelRequest) -> Command | None:
+        """Snapshot resolved settings before either kind of main model call.
+
+        Returns:
+            Instructions to checkpoint on success, or `None` for nested calls.
+        """
         info = request.runtime.execution_info
         if info is not None and info.thread_id and "|" not in info.checkpoint_ns:
             self._snapshots[info.thread_id] = (
@@ -199,12 +215,18 @@ class BtwOperation(AgentMiddleware):
             self._snapshots.move_to_end(info.thread_id)
             while len(self._snapshots) > _MAX_SNAPSHOTS:
                 self._snapshots.popitem(last=False)
+            return Command(
+                update={
+                    "_btw_system_prompt": (request.system_message or self._system).text
+                }
+            )
+        return None
 
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+    ) -> ExtendedModelResponse:
         """Capture the resolved main model for synchronous runs.
 
         Args:
@@ -212,16 +234,16 @@ class BtwOperation(AgentMiddleware):
             handler: Callback that executes the main model request.
 
         Returns:
-            The unchanged main response.
+            The main response with private instruction metadata to checkpoint.
         """
-        self._remember_model(request)
-        return handler(request)
+        command = self._remember_model(request)
+        return ExtendedModelResponse(model_response=handler(request), command=command)
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+    ) -> ExtendedModelResponse:
         """Capture the resolved main model for asynchronous runs.
 
         Args:
@@ -229,10 +251,12 @@ class BtwOperation(AgentMiddleware):
             handler: Callback that executes the main model request.
 
         Returns:
-            The unchanged main response.
+            The main response with private instruction metadata to checkpoint.
         """
-        self._remember_model(request)
-        return await handler(request)
+        command = self._remember_model(request)
+        return ExtendedModelResponse(
+            model_response=await handler(request), command=command
+        )
 
     async def answer(
         self,
@@ -244,8 +268,9 @@ class BtwOperation(AgentMiddleware):
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
-        memory and skills through the main agent's loaders when no live snapshot
-        exists, without writing their updates back to the conversation.
+        the checkpointed effective instructions when no live snapshot exists.
+        New and legacy threads restore memory and skills through the main
+        agent's loaders without writing updates back to the conversation.
 
         Args:
             thread_id: Thread whose conversation supplies context.
@@ -284,9 +309,13 @@ class BtwOperation(AgentMiddleware):
                 msg = "Side questions require an unbound chat model."
                 raise TypeError(msg)
             if snapshot is None:
-                system = await _restore_system(
-                    system, model, state, self._instruction_middleware
-                )
+                saved_system = state.get("_btw_system_prompt")
+                if isinstance(saved_system, str):
+                    system = SystemMessage(content=saved_system)
+                else:
+                    system = await _restore_system(
+                        system, model, state, self._instruction_middleware
+                    )
             model = _tool_free_model(model)
             messages = [
                 SystemMessage(content=f"{system.text}\n\n{_INSTRUCTIONS}"),

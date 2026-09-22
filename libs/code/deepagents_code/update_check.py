@@ -2291,16 +2291,6 @@ release on a different one.
 """
 
 
-def _remove_empty_legacy_lock_dir() -> None:
-    """Remove only an empty pre-migration lock directory from uv's tool list."""
-    root = PATHS.installation.root
-    legacy = root.parent / f".{root.name}.deepagents-code-locks"
-    # A lock file may still be held by an older process. Never unlink it,
-    # recurse into a lock directory, or follow a symlink during cleanup.
-    with suppress(OSError):
-        legacy.rmdir()
-
-
 def _resolve_update_lock_file() -> Path | None:
     """Return the first usable lock path, preferring installation scope.
 
@@ -2329,22 +2319,21 @@ def _resolve_update_lock_file() -> Path | None:
 
 
 def _legacy_update_lock_file() -> Path | None:
-    """Find a legacy lock without letting inaccessible paths disable updates.
+    """Prepare the lock path shared with sessions launched before migration.
 
     Returns:
-        The legacy path, or `None` when absent, unsafe, or inaccessible.
+        The legacy path, or `None` when unsafe or inaccessible.
     """
     root = PATHS.installation.root
     legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
     try:
-        if (
-            not legacy.parent.is_symlink()
-            and not legacy.is_symlink()
-            and legacy.is_file()
-        ):
+        if legacy.parent.is_symlink() or legacy.is_symlink():
+            return None
+        legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not legacy.exists() or legacy.is_file():
             return legacy
     except OSError:
-        logger.warning("Could not inspect legacy update lock %s", legacy, exc_info=True)
+        logger.warning("Could not prepare legacy update lock %s", legacy, exc_info=True)
     return None
 
 
@@ -2375,9 +2364,10 @@ def update_install_lock() -> Iterator[bool]:
     Non-blocking by design: a loser returns immediately rather than stalling
     startup behind an install it does not need.
 
-    If a pre-migration lock file remains, hold it alongside the current lock
-    for the entire install to coordinate with sessions launched before the
-    lock directory moved.
+    Hold the pre-migration lock alongside the current lock for the entire
+    install, creating it if necessary: older sessions may attempt their first
+    update after we acquire the current lock. Keep its inode after release so
+    those sessions always contend on the same file.
 
     The locking itself never raises; exceptions from the caller's own body
     propagate as usual. When the lock is unusable — an unwritable state
@@ -2443,9 +2433,7 @@ def update_install_lock() -> Iterator[bool]:
         harden_state_dir(lock_file.parent)
         legacy = _legacy_update_lock_file()
         lock_files = [lock_file]
-        # Keep the legacy inode locked for the entire install so older sessions
-        # and new ones exclude each other. Do not recreate obsolete directories
-        # on fresh installs or follow symlinks left in the legacy location.
+        # Keep the legacy inode locked even if no older session has used it yet.
         if legacy is not None:
             lock_files.append(legacy)
         acquired_locks = []
@@ -2475,7 +2463,6 @@ def update_install_lock() -> Iterator[bool]:
                     yield True
                     return
                 acquired_locks.append(file_lock)
-            _remove_empty_legacy_lock_dir()
             yield True
         finally:
             for file_lock in reversed(acquired_locks):

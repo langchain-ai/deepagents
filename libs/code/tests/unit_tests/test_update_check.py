@@ -90,6 +90,16 @@ from deepagents_code.update_check import (
 from unit_tests.conftest import redirect_managed_config
 
 
+@pytest.fixture(autouse=True)
+def isolated_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep migration lock creation away from the test runner's installation."""
+    with patch.object(sys, "prefix", str(tmp_path / "tools" / "deepagents-code")):
+        snapshot = _paths._capture_paths(
+            str(tmp_path / "profile"), launch_home=tmp_path
+        )
+    monkeypatch.setattr(update_check, "PATHS", snapshot)
+
+
 @pytest.fixture
 def cache_file(tmp_path):
     """Override CACHE_FILE to use a temporary directory."""
@@ -1526,6 +1536,42 @@ class TestUpdateInstallLock:
         for path in (lock_file, legacy_lock_file):
             with FileLock(path, timeout=0):
                 pass
+
+    @pytest.mark.parametrize("missing_directory", [False, True])
+    def test_older_session_first_update_is_excluded(
+        self,
+        lock_file: Path,
+        legacy_lock_file: Path,
+        missing_directory: bool,
+    ) -> None:
+        """A late old process cannot acquire even an initially absent legacy lock."""
+        legacy_lock_file.unlink()
+        if missing_directory:
+            legacy_lock_file.parent.rmdir()
+        script = (
+            "import sys\n"
+            "from filelock import FileLock, Timeout\n"
+            "try:\n"
+            "    with FileLock(sys.argv[1], timeout=0):\n"
+            "        sys.exit(1)\n"
+            "except Timeout:\n"
+            "    sys.exit(0)\n"
+        )
+        with update_install_lock() as holding:
+            assert holding is True
+            assert lock_file.exists()
+            inode = legacy_lock_file.stat().st_ino
+            contender = subprocess.run(
+                [sys.executable, "-c", script, str(legacy_lock_file)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            assert contender.returncode == 0, contender.stderr
+        with update_install_lock() as holding:
+            assert holding is True
+            assert legacy_lock_file.stat().st_ino == inode
 
     @staticmethod
     @contextmanager
@@ -3571,10 +3617,10 @@ class TestUpdateLockLocationFallback:
         "legacy_entry",
         [None, "install.lock.d", "install.lock.reclaim.d", "update.lock", "symlink"],
     )
-    def test_update_lock_cleans_only_an_empty_legacy_directory(
+    def test_update_lock_preserves_legacy_entries(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_entry: str | None
     ) -> None:
-        """An update migrates empty roots without disturbing older processes."""
+        """Migration retains the shared inode and leaves other legacy entries alone."""
         tool_dir = tmp_path / "tools"
         monkeypatch.setattr(sys, "prefix", str(tool_dir / "deepagents-code"))
         snapshot = _paths._capture_paths(
@@ -3600,40 +3646,10 @@ class TestUpdateLockLocationFallback:
             assert acquired
             assert lock.exists()
             assert not lock.is_relative_to(tool_dir)
-            assert legacy.exists() is (legacy_entry is not None)
+            assert legacy.exists()
             if legacy_entry == "symlink":
                 assert legacy.is_symlink()
                 assert target.is_dir()
-
-    @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
-    def test_update_lock_leaves_uv_tool_list_clean(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The persistent advisory lock stays outside uv's tool enumeration."""
-        tool_dir = tmp_path / "tools"
-        monkeypatch.setattr(sys, "prefix", str(tool_dir / "deepagents-code"))
-        snapshot = _paths._capture_paths(
-            str(tmp_path / "profile"), launch_home=tmp_path
-        )
-        monkeypatch.setattr(update_check, "PATHS", snapshot)
-        monkeypatch.setattr(
-            update_check,
-            "UPDATE_LOCK_FILE",
-            snapshot.installation.locks_dir / "update.lock",
-        )
-        (tool_dir / ".deepagents-code.deepagents-code-locks").mkdir(parents=True)
-        with update_check.update_install_lock() as acquired:
-            assert acquired
-        listing = subprocess.run(
-            ["uv", "--no-cache", "--no-config", "tool", "list"],
-            env={**os.environ, "UV_TOOL_DIR": str(tool_dir)},
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        assert listing.returncode == 0, listing.stderr
-        assert "warning:" not in listing.stderr
 
     def test_falls_back_to_the_profile_lock(self, tmp_path: Path) -> None:
         # An existing file where the lock directory should go reproduces the

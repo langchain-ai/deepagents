@@ -2,8 +2,8 @@
 
 Delegates streaming, state management, and SSE handling to
 `langgraph.pregel.remote.RemoteGraph`. This wrapper converts streamed message
-dicts into LangChain message objects for the app's Textual adapter. State messages
-remain serialized; cost views include the server's separately stored side spend.
+dicts into LangChain message objects for the app's Textual adapter. State snapshots
+remain unchanged; accounting is read separately from the server.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
-    from langchain_core.runnables import RunnableConfig
-
-    from deepagents_code.cost_tracking import CostBreakdown
+    from deepagents_code.btw_cost import SessionCost
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
     from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
@@ -332,8 +330,8 @@ class RemoteAgent:
     Wraps `langgraph.pregel.remote.RemoteGraph` which handles SSE parsing,
     stream-mode negotiation (`messages-tuple`), namespace extraction, and
     interrupt detection. This class adds streamed message-object conversion for
-    the Textual adapter, thread-ID normalization, and presentation of combined
-    graph and side-question costs.
+    the Textual adapter and thread-ID normalization. Graph state and accounting
+    responses remain separate.
     """
 
     def __init__(
@@ -366,7 +364,7 @@ class RemoteAgent:
         self._workspace_config: dict[str, Any] | None = None
         self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
-        self._btw_costs: dict[str, CostBreakdown | None] = {}
+        self._session_costs: dict[str, SessionCost] = {}
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -411,55 +409,49 @@ class RemoteAgent:
         if not isinstance(response, dict) or not isinstance(response.get("text"), str):
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
-        if isinstance(response.get("cost"), dict):
-            self._btw_costs[thread_id] = cast("CostBreakdown", response["cost"])
         return response["text"]
 
-    async def _load_btw_cost(self, thread_id: str) -> None:
+    async def aget_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
+        """Read the server's display total separately from graph state.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Combined usage, the last known total on failure, or `None` if
+            accounting is unavailable and no prior total has been read.
+        """
         from langgraph_sdk.errors import NotFoundError
 
+        thread_id = _require_thread_id(config)
+        previous = self._session_costs.get(thread_id)
         try:
             async with asyncio.timeout(2):
                 response = await self._get_graph().client.http.get(
-                    f"/dcode/threads/{thread_id}/btw/cost"
+                    f"/dcode/threads/{thread_id}/cost"
                 )
+            cost = response["cost"]
+            if (
+                not isinstance(cost, dict)
+                or not isinstance(cost.get("total"), int | float)
+                or "breakdown" not in cost
+            ):
+                logger.warning(
+                    "Invalid session cost response; retaining the last total"
+                )
+                return self._session_costs.get(thread_id)
+            # A streamed total received during this read is newer than the
+            # checkpoint the request may have observed.
+            if self._session_costs.get(thread_id) is previous:
+                self._session_costs[thread_id] = cast("SessionCost", cost)
         except NotFoundError:
-            return  # Older servers have no side-question accounting route.
+            return None  # Older servers do not expose a combined accounting view.
         except Exception:
             logger.warning(
-                "Could not refresh side-question costs; retaining the last total",
+                "Could not refresh session costs; retaining the last total",
                 exc_info=True,
             )
-            return
-        cost = cast("CostBreakdown | None", response["cost"])
-        current = self._btw_costs.get(thread_id)
-        # A read started before a concurrent /btw completed must not erase the
-        # newer subtotal returned by that answer.
-        if current is None or (
-            cost is not None and cost["request_count"] >= current["request_count"]
-        ):
-            self._btw_costs[thread_id] = cost
-
-    def _include_btw_event_cost(
-        self, thread_id: str, data: dict[str, Any]
-    ) -> dict[str, Any]:
-        from deepagents_code.btw_cost import include_cost
-
-        cost = self._btw_costs.get(thread_id)
-        if cost is None or data.get("type") != "session_cost":
-            return data
-        values = include_cost(
-            {
-                "_session_cost_usd": data["total"],
-                "_session_cost_breakdown": data.get("breakdown"),
-            },
-            cost,
-        )
-        return {
-            **data,
-            "total": values["_session_cost_usd"],
-            "breakdown": values["_session_cost_breakdown"],
-        }
+        return self._session_costs.get(thread_id)
 
     async def aoffload(
         self,
@@ -621,7 +613,6 @@ class RemoteAgent:
         from langchain_core.messages import BaseMessage
 
         thread_id = _require_thread_id(config)
-        await self._load_btw_cost(thread_id)
 
         graph = self._get_graph()
         config = _prepare_config(config)
@@ -683,9 +674,17 @@ class RemoteAgent:
                 yield (ns, "updates", update_data)
                 continue
 
-            if not ns and mode == "custom" and isinstance(data, dict):
-                yield (ns, mode, self._include_btw_event_cost(thread_id, data))
-                continue
+            if (
+                not ns
+                and mode == "custom"
+                and isinstance(data, dict)
+                and data.get("type") == "session_cost"
+                and isinstance(data.get("total"), int | float)
+            ):
+                self._session_costs[thread_id] = {
+                    "total": data["total"],
+                    "breakdown": data.get("breakdown"),
+                }
             yield (ns, mode, data)
 
         if dropped_count:
@@ -701,7 +700,7 @@ class RemoteAgent:
         """Get the current state of a thread.
 
         Returns `None` when the thread does not exist on the server (404) or
-        when the thread has neither a checkpoint nor saved side-question usage.
+        when the thread has no checkpoint yet.
         All other errors (network, auth, 500) are logged at WARNING and
         re-raised so callers can handle them.
 
@@ -714,16 +713,13 @@ class RemoteAgent:
 
         Returns:
             Thread state object with `values` and `next` attributes, or `None`
-                if the thread is not found or has no checkpoint or side usage.
+                if the thread is not found or has no checkpoint.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
             TypeError: If the server returns an unexpected state shape.
         """  # noqa: DOC502 — raised by _require_thread_id
-        from langgraph.types import StateSnapshot
         from langgraph_sdk.errors import NotFoundError
-
-        from deepagents_code.btw_cost import include_cost
 
         thread_id = _require_thread_id(config)
 
@@ -754,22 +750,7 @@ class RemoteAgent:
                 "Failed to get state for thread %s", thread_id, exc_info=True
             )
             raise
-        await self._load_btw_cost(thread_id)
-        cost = self._btw_costs.get(thread_id)
-        if cost is None:
-            return snapshot
-        if snapshot is None:
-            snapshot = StateSnapshot(
-                values={},
-                next=(),
-                config=cast("RunnableConfig", prepared),
-                metadata=None,
-                created_at=None,
-                parent_config=None,
-                tasks=(),
-                interrupts=(),
-            )
-        return snapshot._replace(values=include_cost(snapshot.values, cost))
+        return snapshot
 
     async def acancel_active_runs(self, config: dict[str, Any]) -> None:
         """Cancel pending/running runs on the configured thread.

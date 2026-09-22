@@ -2354,7 +2354,7 @@ async def test_side_question_cost_is_durable_without_another_turn(
 
     from deepagents_code import offload_api
     from deepagents_code.btw import BtwOperation
-    from deepagents_code.btw_cost import include_cost, load_cost
+    from deepagents_code.btw_cost import load_cost, session_cost
     from deepagents_code.client.remote_client import RemoteAgent
 
     agent = create_agent(
@@ -2411,21 +2411,39 @@ async def test_side_question_cost_is_durable_without_another_turn(
         async with AsyncClient(
             transport=ASGITransport(app=offload_api.app), base_url="http://test"
         ) as client:
-            response = await client.get(path)
+            with patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ):
+                response = await client.get(path)
         assert response.status_code == 200
         return response.json()
 
     graph.client.http.get = read_cost
     remote._graph = graph
     restored = await remote.aget_state(dict(config))
-    assert restored.values["_session_cost_usd"] == pytest.approx(2 * one_call)
-    assert restored.values["_session_cost_breakdown"]["request_count"] == 2
-    assert restored.values["messages"] == before["messages"]
+    assert restored is checkpoint
+    display_cost = await remote.aget_session_cost(dict(config))
+    assert display_cost is not None
+    assert display_cost["total"] == pytest.approx(2 * one_call)
+    assert display_cost["breakdown"] is not None
+    assert display_cost["breakdown"]["request_count"] == 2
 
-    await agent.ainvoke({"messages": [HumanMessage("continue")]}, config)
-    after = include_cost((await agent.aget_state(config)).values, cost)
-    assert after["_session_cost_usd"] == pytest.approx(3 * one_call)
-    assert after["_session_cost_breakdown"]["request_count"] == 3
+    events = [
+        event
+        async for event in agent.astream(
+            {"messages": [HumanMessage("continue")]}, config, stream_mode="custom"
+        )
+    ]
+    totals = [event["total"] for event in events if event.get("type") == "session_cost"]
+    assert totals[-1] == pytest.approx(3 * one_call)
+    after = (await agent.aget_state(config)).values
+    display_cost = session_cost(after, THREAD_ID)
+    assert display_cost["total"] == pytest.approx(3 * one_call)
+    assert display_cost["breakdown"] is not None
+    assert display_cost["breakdown"]["request_count"] == 3
+    assert after["_session_cost_usd"] == pytest.approx(2 * one_call)
     assert len(after["messages"]) == 4
     assert recorder.drain(THREAD_ID) == []
 
@@ -2439,6 +2457,49 @@ def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(btw_cost, "_database_path", lambda: path)
     monkeypatch.setattr(btw_cost, "_PENDING_COSTS", {})
     return path
+
+
+@pytest.mark.parametrize("saved_before_deletion", [False, True])
+async def test_thread_deletion_erases_cost_and_discards_late_settlements(
+    side_cost_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    saved_before_deletion: bool,
+) -> None:
+    from deepagents_code import btw_cost, sessions
+    from deepagents_code.btw import BtwOperation
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: side_cost_db)
+    operation = BtwOperation(_repeating_fake_model("answer"), "system", None)
+
+    async def answer(thread_id: str) -> tuple[str, cost_tracking.CostBreakdown | None]:
+        return await btw_cost.answer_with_cost(
+            operation.answer(thread_id, {}, "aside"),
+            thread_id=thread_id,
+            state={"messages": []},
+        )
+
+    if saved_before_deletion:
+        await answer(THREAD_ID)
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            btw_cost,
+            "_read_cost",
+            MagicMock(side_effect=sqlite3.OperationalError("database is locked")),
+        )
+        text, cost = await answer(THREAD_ID)
+        assert text
+        assert cost is None
+    await sessions.delete_thread(THREAD_ID)
+    # Retrying an old charge and completing another answer cannot restore spend.
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) is None
+    text, cost = await answer(THREAD_ID)
+    assert text
+    assert cost is None
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) is None
+    _, other_cost = await answer("other-thread")
+    assert other_cost is not None
+    assert other_cost["request_count"] == 1
 
 
 @pytest.mark.parametrize("retry_with_answer", [False, True])

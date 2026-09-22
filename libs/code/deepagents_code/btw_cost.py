@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from collections import deque
 from contextlib import closing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
@@ -30,12 +30,42 @@ from deepagents_code.workspace import _database_path
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
+    import aiosqlite
+
 
 _PENDING_COSTS: dict[str, deque[tuple[_SessionCostRecorder, CostState]]] = {}
 _SETTLEMENT_LOCK = threading.Lock()
 """Serialize retries and retain failed recorders until their writes succeed."""
 
 logger = logging.getLogger(__name__)
+
+
+class SessionCost(TypedDict):
+    """Server-owned presentation total, separate from graph checkpoint values."""
+
+    total: float
+    breakdown: CostBreakdown | None
+
+
+async def delete_cost(conn: aiosqlite.Connection, thread_id: str) -> None:
+    """Erase spend in the caller's thread-deletion transaction.
+
+    Retain only an ID tombstone to discard pending retries and late provider
+    completions, including answers that have not written their first charge.
+
+    Args:
+        conn: Sessions connection whose transaction owns thread deletion.
+        thread_id: Thread whose charges must be erased.
+    """
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS dcode_btw_costs "
+        "(thread_id TEXT PRIMARY KEY NOT NULL, breakdown TEXT NOT NULL)"
+    )
+    await conn.execute(
+        "INSERT INTO dcode_btw_costs VALUES (?, 'null') "
+        "ON CONFLICT(thread_id) DO UPDATE SET breakdown = 'null'",
+        (thread_id,),
+    )
 
 
 def _read_cost(conn: sqlite3.Connection, thread_id: str) -> CostBreakdown | None:
@@ -61,34 +91,45 @@ def load_cost(thread_id: str) -> CostBreakdown | None:
     """
     with _SETTLEMENT_LOCK:
         _retry_pending_costs(thread_id)
-        path = _database_path()
-        if not path.exists():
-            return None
-        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as conn:
-            return _read_cost(conn, thread_id)
+        return _load_saved_cost(thread_id)
 
 
-def include_cost(
-    values: Mapping[str, Any], cost: CostBreakdown | None
-) -> dict[str, Any]:
-    """Combine persisted subtotals for presentation without changing graph state.
-
-    Args:
-        values: Original graph state values.
-        cost: Independently persisted side-question subtotal.
+def _load_saved_cost(thread_id: str) -> CostBreakdown | None:
+    """Read without taking the settlement lock or retrying writes.
 
     Returns:
-        A state view with combined cost and usage totals.
+        The persisted subtotal, or `None` when none has been saved.
     """
+    path = _database_path()
+    if not path.exists():
+        return None
+    with closing(
+        sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.05)
+    ) as conn:
+        return _read_cost(conn, thread_id)
+
+
+def session_cost(values: Mapping[str, Any], thread_id: str) -> SessionCost:
+    """Read the combined total without modifying or settling graph state.
+
+    Live graph events use this read-only path so a pending side settlement
+    cannot delay a main turn. Explicit cost reads retry settlements separately.
+
+    Args:
+        values: Graph-owned cost values, optionally including an uncommitted delta.
+        thread_id: Thread that owns any separately persisted side spend.
+
+    Returns:
+        Combined cost and usage for presentation only.
+    """
+    cost = _load_saved_cost(thread_id) if thread_id else None
+    total = values.get("_session_cost_usd", 0.0)
+    breakdown = values.get("_session_cost_breakdown")
     if cost is None:
-        return dict(values)
+        return {"total": total, "breakdown": breakdown}
     return {
-        **values,
-        "_session_cost_usd": values.get("_session_cost_usd", 0.0)
-        + cost["total_cost_usd"],
-        "_session_cost_breakdown": _merge_cost_breakdowns(
-            values.get("_session_cost_breakdown"), cost
-        ),
+        "total": total + cost["total_cost_usd"],
+        "breakdown": _merge_cost_breakdowns(breakdown, cost),
     }
 
 
@@ -106,6 +147,16 @@ def _persist_cost(thread_id: str, state: CostState) -> CostBreakdown | None:
                 "CREATE TABLE IF NOT EXISTS dcode_btw_costs "
                 "(thread_id TEXT PRIMARY KEY NOT NULL, breakdown TEXT NOT NULL)"
             )
+            # Deletion leaves only an ID tombstone. It prevents a late provider
+            # completion or an in-memory retry from resurrecting deleted spend.
+            deleted = conn.execute(
+                "SELECT 1 FROM dcode_btw_costs "
+                "WHERE thread_id = ? AND breakdown = 'null'",
+                (thread_id,),
+            ).fetchone()
+            if deleted:
+                prepared.commit()
+                return None
             previous = _read_cost(conn, thread_id)
             total = _merge_cost_breakdowns(previous, prepared.breakdown)
             conn.execute(

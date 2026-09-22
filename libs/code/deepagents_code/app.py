@@ -9425,8 +9425,8 @@ class DeepAgentsApp(App):
     def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
         """Adopt the checkpoint's cumulative cost as the displayed total.
 
-        Server-owned totals include separately persisted side-question usage and
-        supersede the provisional figure the message stream produced. State with no
+        Graph totals supersede the provisional figure the stream produced when
+        the separate server accounting view is unavailable. State with no
         cost channel at all (a read that failed or a graph without the
         middleware) is left alone rather than treated as zero spend.
 
@@ -9646,7 +9646,18 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
             return
-        self._sync_session_cost_from_state(state_values)
+        remote = self._remote_agent()
+        cost = (
+            await remote.aget_session_cost(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+            if remote is not None
+            else None
+        )
+        if cost is not None:
+            self._set_session_cost(cost["total"], breakdown=cost["breakdown"])
+        else:
+            self._sync_session_cost_from_state(state_values)
         self._sync_cache_state_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
@@ -19796,6 +19807,17 @@ class DeepAgentsApp(App):
             model_spec=model_spec,
             model_params=model_params,
         )
+        remote = self._remote_agent()
+        if remote is not None:
+            cost = await remote.aget_session_cost(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            if cost is not None:
+                payload = replace(
+                    payload,
+                    session_cost_usd=cost["total"],
+                    session_cost_breakdown=cost["breakdown"],
+                )
         messages = state_values.get("messages", [])
 
         if not messages:

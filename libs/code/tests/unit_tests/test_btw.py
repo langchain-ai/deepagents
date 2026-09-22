@@ -715,6 +715,7 @@ async def test_idle_side_answer_refreshes_displayed_cost(
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
     remote = MagicMock(spec=RemoteAgent)
     remote.abtw = AsyncMock(return_value="Side answer")
+    remote.aget_session_cost = AsyncMock(return_value={"total": 1.5, "breakdown": None})
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(
         app,

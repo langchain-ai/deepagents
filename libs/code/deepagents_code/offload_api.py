@@ -1255,7 +1255,7 @@ app = Starlette(
     lifespan=_lifespan,
     routes=[
         Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
-        Route("/dcode/threads/{thread_id:str}/btw/cost", btw_cost, methods=["GET"]),
+        Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/workspace",
             workspace,

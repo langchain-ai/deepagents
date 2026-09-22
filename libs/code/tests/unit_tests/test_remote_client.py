@@ -294,12 +294,17 @@ async def test_accounting_failure_preserves_main_stream_and_state(
 
     side = _empty_cost_breakdown()
     side.update(total_cost_usd=0.5, request_count=1)
-    event = {"type": "session_cost", "total": 1.0}
+    event = {"type": "session_cost", "total": 2.0}
     agent = _make_agent([((), "custom", event)])
-    agent._btw_costs[_TEST_THREAD_ID] = side
+    agent._graph.client.http.get.return_value = {
+        "cost": {"total": 1.5, "breakdown": side}
+    }
+    saved_cost = await agent.aget_session_cost(_config())
+    assert saved_cost is not None
+    assert saved_cost["total"] == pytest.approx(1.5)
     agent._graph.client.http.get.side_effect = error
     events = [item async for item in agent.astream({}, config=_config())]
-    assert events[0][2]["total"] == pytest.approx(1.5)
+    assert events[0][2]["total"] == pytest.approx(2.0)
 
     from langgraph.types import StateSnapshot
 
@@ -315,23 +320,19 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     )
     agent._graph.aget_state = AsyncMock(return_value=snapshot)
     state = await agent.aget_state(_config())
-    assert state.values["_session_cost_usd"] == pytest.approx(1.5)
-    assert agent._btw_costs[_TEST_THREAD_ID] == side
+    assert state is snapshot
+    cost = await agent.aget_session_cost(_config())
+    assert cost is not None
+    assert cost["total"] == pytest.approx(2.0)
 
 
-async def test_side_cost_is_included_in_main_stream_but_not_nested_events() -> None:
-    from deepagents_code.cost_tracking import _empty_cost_breakdown
-
-    side = _empty_cost_breakdown()
-    side.update(total_cost_usd=0.5, request_count=1, priced_request_count=1)
-    main = {"type": "session_cost", "total": 1.0, "thread_id": _TEST_THREAD_ID}
+async def test_server_cost_events_are_passed_through() -> None:
+    main = {"type": "session_cost", "total": 1.5, "thread_id": _TEST_THREAD_ID}
     nested = {"type": "session_cost", "total": 0.2}
     agent = _make_agent([((), "custom", main), (("tools:child",), "custom", nested)])
-    agent._graph.client.http.get.return_value = {"cost": side}
     events = [event async for event in agent.astream({}, config=_config())]
-    assert events[0][2]["total"] == pytest.approx(1.5)
+    assert events[0][2] == main
     assert events[1][2] == nested
-    assert main["total"] == pytest.approx(1.0)
 
 
 async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
@@ -344,13 +345,17 @@ async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
     graph.aget_state = AsyncMock(
         side_effect=TypeError("'NoneType' object is not subscriptable")
     )
-    graph.client.http.get = AsyncMock(return_value={"cost": side})
+    graph.client.http.get = AsyncMock(
+        return_value={"cost": {"total": 0.5, "breakdown": side}}
+    )
     agent._graph = graph
     state = await agent.aget_state(_config())
-    assert state.values["_session_cost_usd"] == pytest.approx(0.5)
-    assert state.values["_session_cost_breakdown"]["request_count"] == 1
-    assert state.values.get("messages", []) == []
-    assert state.next == ()
+    assert state is None
+    cost = await agent.aget_session_cost(_config())
+    assert cost is not None
+    assert cost["total"] == pytest.approx(0.5)
+    assert cost["breakdown"] is not None
+    assert cost["breakdown"]["request_count"] == 1
 
 
 # ---------------------------------------------------------------------------

@@ -2355,6 +2355,10 @@ def update_install_lock() -> Iterator[bool]:
     Non-blocking by design: a loser returns immediately rather than stalling
     startup behind an install it does not need.
 
+    If a pre-migration lock file remains, hold it alongside the current lock
+    for the entire install to coordinate with sessions launched before the
+    lock directory moved.
+
     The locking itself never raises; exceptions from the caller's own body
     propagate as usual. When the lock is unusable — an unwritable state
     directory, or a filesystem whose locking the OS refuses — this yields
@@ -2417,49 +2421,65 @@ def update_install_lock() -> Iterator[bool]:
         # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
         # abandoning the lock would disable this protection for no reason.
         harden_state_dir(lock_file.parent)
-        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+        root = PATHS.installation.root
+        legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+        lock_files = [lock_file]
+        # Keep the legacy inode locked for the entire install so older sessions
+        # and new ones exclude each other. Do not recreate obsolete directories
+        # on fresh installs or follow symlinks left in the legacy location.
+        if (
+            not legacy.parent.is_symlink()
+            and not legacy.is_symlink()
+            and legacy.is_file()
+        ):
+            lock_files.append(legacy)
+        acquired_locks = []
         try:
-            file_lock.acquire()
-        # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
-        # clause MUST stay above the one below. Reorder them and every "another
-        # process is installing" case silently becomes a fail-open `yield True`
-        # — the concurrent double-install this lock exists to prevent.
-        except Timeout:
-            logger.info(
-                "Skipping update install; %s is held by another dcode process",
-                lock_file,
-            )
-            yield False
-            return
-        except OSError:
-            logger.warning(
-                "Proceeding without the update lock; could not acquire %s. "
-                "If this persists, removing that file may clear it.",
-                lock_file,
-                exc_info=True,
-            )
-            yield True
-            return
-        try:
+            for lock_file in lock_files:
+                file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+                try:
+                    file_lock.acquire()
+                # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
+                # clause MUST stay above the one below. Reorder them and every "another
+                # process is installing" case silently becomes a fail-open `yield True`
+                # — the concurrent double-install this lock exists to prevent.
+                except Timeout:
+                    logger.info(
+                        "Skipping update install; %s is held by another dcode process",
+                        lock_file,
+                    )
+                    yield False
+                    return
+                except OSError:
+                    logger.warning(
+                        "Proceeding without the update lock; could not acquire %s. "
+                        "If this persists, removing that file may clear it.",
+                        lock_file,
+                        exc_info=True,
+                    )
+                    yield True
+                    return
+                acquired_locks.append(file_lock)
             _remove_empty_legacy_lock_dir()
             yield True
         finally:
-            # Releasing must not mask the install's own outcome, and the lock is
-            # dropped when the process exits regardless. But it is not harmless:
-            # `UnixFileLock._release` clears its fd handle *before* unlocking, so
-            # a raising `flock` leaks an fd that still holds the lock, and every
-            # later attempt in this session then reports a phantom concurrent
-            # install. Log it, or that failure is undiagnosable.
-            try:
-                file_lock.release()
-            except OSError:
-                logger.warning(
-                    "Failed to release the update lock at %s; further update "
-                    "attempts in this session may report a concurrent install "
-                    "until dcode is restarted",
-                    lock_file,
-                    exc_info=True,
-                )
+            for file_lock in reversed(acquired_locks):
+                # Releasing must not mask the install's own outcome, and the lock is
+                # dropped when the process exits regardless. But it is not harmless:
+                # `UnixFileLock._release` clears its fd handle *before* unlocking, so
+                # a raising `flock` leaks an fd that still holds the lock, and every
+                # later attempt in this session then reports a phantom concurrent
+                # install. Log it, or that failure is undiagnosable.
+                try:
+                    file_lock.release()
+                except OSError:
+                    logger.warning(
+                        "Failed to release the update lock at %s; further update "
+                        "attempts in this session may report a concurrent install "
+                        "until dcode is restarted",
+                        file_lock.lock_file,
+                        exc_info=True,
+                    )
     finally:
         _UPDATE_INSTALL_THREAD_LOCK.release()
 

@@ -1438,6 +1438,59 @@ class TestUpdateInstallLock:
         with patch("deepagents_code.update_check.UPDATE_LOCK_FILE", path):
             yield path
 
+    @pytest.fixture
+    def legacy_lock_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Model a lock file left behind by an older session."""
+        root = tmp_path / "tools" / "deepagents-code"
+        monkeypatch.setattr(sys, "prefix", str(root))
+        snapshot = _paths._capture_paths(
+            str(tmp_path / "profile"), launch_home=tmp_path
+        )
+        monkeypatch.setattr(update_check, "PATHS", snapshot)
+        legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+        legacy.parent.mkdir(parents=True)
+        legacy.touch()
+        return legacy
+
+    def test_older_process_blocks_new_install(
+        self, lock_file: Path, legacy_lock_file: Path
+    ) -> None:
+        """An older session's lock excludes new sessions throughout migration."""
+        from filelock import FileLock
+
+        with self._lock_held_by_subprocess(legacy_lock_file):
+            with update_install_lock() as holding:
+                assert holding is False
+            # A refused attempt must release the new lock too.
+            with FileLock(lock_file, timeout=0):
+                pass
+        with update_install_lock() as holding:
+            assert holding is True
+
+    @pytest.mark.parametrize("raise_in_body", [False, True])
+    def test_new_install_holds_and_releases_legacy_lock(
+        self, lock_file: Path, legacy_lock_file: Path, raise_in_body: bool
+    ) -> None:
+        """Older sessions cannot install until the new session exits its body."""
+        from filelock import FileLock, Timeout
+
+        expected = (
+            pytest.raises(RuntimeError, match="install failed")
+            if raise_in_body
+            else nullcontext()
+        )
+        with expected, update_install_lock() as holding:
+            assert holding is True
+            for path in (lock_file, legacy_lock_file):
+                with pytest.raises(Timeout), FileLock(path, timeout=0):
+                    pass
+            if raise_in_body:
+                msg = "install failed"
+                raise RuntimeError(msg)
+        for path in (lock_file, legacy_lock_file):
+            with FileLock(path, timeout=0):
+                pass
+
     @staticmethod
     @contextmanager
     def _lock_held_by_subprocess(path: Path) -> Iterator[None]:

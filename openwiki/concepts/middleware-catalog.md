@@ -3,9 +3,6 @@ type: capability reference
 title: Middleware Capability Catalog
 description: Capability-to-owner lookup for Deep Agents middleware, covering request shaping, filesystem access, context, memory, skills, delegation, quality gates, permissions, caching, and profile enforcement. Use it to select the owning layer and understand its important lifecycle boundaries.
 tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
@@ -41,7 +38,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T16:46:37.183Z
 ---
 
 # Middleware Capability Catalog
@@ -66,7 +66,7 @@ This page is a capability lookup, not a complete construction guide. See [Middle
 | Prompt-cache optimization | `append_prompt_caching_middleware` | Adds provider middleware during graph assembly before memory. |
 | Harness/profile tool consistency | `_ToolExclusionMiddleware` | Filters tools at model-call time and rejects excluded call names at dispatch. |
 
-The package re-exports the public filesystem, context, memory, skills, delegation, and rubric classes and associated supporting types from `deepagents.middleware`. Underscore-prefixed modules are assembly helpers rather than the stable consumer import surface.
+`deepagents.middleware` re-exports the public filesystem, memory, skills, delegation, summarization, and rubric classes and associated supporting types through its `__all__`. `PatchToolCallsMiddleware` is current built-in harness behavior—graph construction imports and appends it—but it is not part of that package-level export list. Underscore-prefixed modules are assembly helpers rather than the stable consumer import surface.
 
 ## Request and state lifecycle
 
@@ -121,7 +121,7 @@ If a normal request raises `ContextOverflowError`, summarization is attempted ev
 
 `RubricMiddleware` is inert without a caller-supplied `rubric`. At a natural agent stop it sends a bounded, sanitized transcript to a lazily built separate grader agent, whose `GraderResponse` is constrained to `satisfied`, `needs_revision`, or `failed` and criterion-level consistency. Only `needs_revision` appends tagged grader feedback as a synthetic `HumanMessage` and jumps back to the model. `max_iterations_reached` and `grader_error` are middleware terminal results, not grader verdicts; non-satisfied terminal outcomes preserve the main agent's last response, so callers must inspect private state, events, or the callback to branch. Grader transcript contents are explicitly treated as untrusted observation, while the rubric defines done.
 
-`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call whose id has no `ToolMessage`, it inserts a synthetic cancelled response—or a malformed-arguments response for invalid calls—and rewrites the complete message list.
+`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call with an id that has no `ToolMessage`, it inserts an error `ToolMessage`: valid calls are recorded as incomplete (possibly cancelled or interrupted), while invalid calls are recorded as malformed or truncated. It then rewrites the complete message list.
 
 Profiles may omit middleware and tools. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: it removes excluded tools from the model request and rejects an excluded name at the tool-call boundary, preventing a custom request wrapper from re-advertising it. This aligns advertised and executable tools; it is not a security boundary.
 
@@ -129,4 +129,4 @@ Profiles may omit middleware and tools. `_ToolExclusionMiddleware` is deliberate
 
 Add a plain tool for isolated, consumer-specific work; add middleware only when request shaping, stack-wide availability, or persistent state is required. Keep storage behind `BackendProtocol`, keep sensitive or non-propagating values private, and preserve recovery behavior when a backend offload fails. Keep filesystem policy enforcement distinct from profile presentation filtering and HITL assembly.
 
-Focused coverage is in `tests/unit_tests/middleware/`: filesystem initialization and video behavior, memory and skills sync/async behavior, compaction and summarization factory behavior, rubric iteration, subagent initialization, tool exclusion, and tool schemas. Also run the relevant integration coverage under `tests/unit_tests/` for permissions, synchronous/async subagents, middleware stack construction, and profiles when changing an assembly boundary.
+Focused coverage is in `tests/unit_tests/middleware/`: filesystem initialization and video behavior, memory and skills sync/async behavior, compaction and summarization factory behavior, rubric iteration, subagent initialization, tool exclusion, and tool schemas. Also run the relevant unit coverage in `tests/unit_tests/` for permissions, synchronous/async subagents, middleware stack construction, and profiles, plus integration coverage in `tests/integration_tests/` for filesystem, HITL, sandbox, and subagent boundaries when changing assembly behavior.

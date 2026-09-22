@@ -1,6 +1,6 @@
 # langchain-quickjs
 
-A [`deepagents`](../deepagents) middleware that gives an agent a persistent, sandboxed **JavaScript REPL** tool, backed by [`quickjs-rs`](../../../quickjs-wasm) (QuickJS embedded via PyO3 + rquickjs).
+A [`deepagents`](../../deepagents) middleware that gives an agent a persistent, sandboxed **JavaScript REPL** tool, backed by `quickjs-rs` (QuickJS embedded via PyO3 + rquickjs).
 
 Instead of issuing N serial tool calls, the model can write one block of JavaScript that orchestrates work in-loop — variables and functions defined in one call survive into the next, `Promise.all` runs concurrent work, configured subagents are dispatchable as `await task({...})`, and (opt-in) agent tools are callable from inside the REPL as `await tools.<name>(...)`.
 

@@ -209,6 +209,23 @@ def _mcp_server_info_payload(
     return None if server_info is None else [asdict(server) for server in server_info]
 
 
+def _workspace_conflict_response(exc: WorkspaceConflictError) -> JSONResponse:
+    """Build a 409 for a workspace refusal, with diagnostics when available.
+
+    The `detail` message is unchanged, and `diagnostics` is added only when
+    the conflict carries it, so older clients and pinned response shapes are
+    unaffected. Diagnostics carry only allowlisted policy values — never
+    paths, model parameters, prompts, or credentials.
+
+    Returns:
+        A 409 JSON response with `detail` and, when present, `diagnostics`.
+    """
+    body: dict[str, Any] = {"detail": str(exc)}
+    if exc.diagnostics is not None:
+        body["diagnostics"] = exc.diagnostics.to_dict()
+    return JSONResponse(body, status_code=409)
+
+
 async def workspace(request: Request) -> JSONResponse:
     """Create or verify the durable workspace assigned to a thread.
 
@@ -293,7 +310,7 @@ async def workspace(request: Request) -> JSONResponse:
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=409)
+        return _workspace_conflict_response(exc)
 
     # Build the runtime here so a refusal reaches the client as a 409 before any
     # thread state exists. This is its own block: request validation above maps
@@ -302,7 +319,7 @@ async def workspace(request: Request) -> JSONResponse:
     try:
         runtime = await get_server_runtime(binding)
     except WorkspaceConflictError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=409)
+        return _workspace_conflict_response(exc)
     except SystemExit:
         logger.exception("Workspace runtime build failed for thread %s", thread_id)
         detail = _runtime_unavailable_detail("this workspace cannot be used")

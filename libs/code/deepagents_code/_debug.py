@@ -36,6 +36,10 @@ from deepagents_code._env_vars import (
 
 logger = logging.getLogger(__name__)
 
+DEBUG_LOG_FORMATTER = logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s %(message)s"
+)
+
 _DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
 _CONFIGURED_LOGGERS: weakref.WeakSet[logging.Logger] = weakref.WeakSet()
 _ACTIVE_THREAD_ID: str | None = None
@@ -362,7 +366,7 @@ def _attach_debug_handler(target: logging.Logger, debug_path: Path, level: int) 
         return
     setattr(handler, _DEBUG_HANDLER_ATTR, True)
     handler.setLevel(level)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    handler.setFormatter(DEBUG_LOG_FORMATTER)
     target.addHandler(handler)
 
 

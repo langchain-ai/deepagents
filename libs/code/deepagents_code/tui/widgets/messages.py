@@ -4052,7 +4052,17 @@ class ToolCallMessage(Vertical):
         if self._expanded:
             # Show full output with formatting
             self._preview_row.display = False
-            self._full_widget.update(full.content)
+            content = full.content
+            if self._tool_name == "read_file":
+                content = Content("\n").join(
+                    (
+                        Content.styled("Arguments", "bold dim"),
+                        self._format_args_detail(),
+                        Content(""),
+                        full.content,
+                    )
+                )
+            self._full_widget.update(content)
             self._full_row.display = True
             # Only offer a collapse affordance when collapsing would actually
             # hide something. Errors are force-expanded (see `set_error`), so a

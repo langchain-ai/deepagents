@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -187,6 +188,55 @@ class TestTokenDisplayCallbacks:
 
 class TestCostDisplayCallbacks:
     """Verify persisted thread cost is restored and accumulated in the TUI."""
+
+    @pytest.mark.parametrize("preload", [False, True])
+    async def test_history_restores_cost_breakdown(
+        self, monkeypatch: pytest.MonkeyPatch, *, preload: bool
+    ) -> None:
+        """Resume and prefetched thread switches restore saved cost detail."""
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+        breakdown = _empty_cost_breakdown()
+        breakdown.update(request_count=2, input_tokens=100, total_cost_usd=1.25)
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._agent = object()
+        monkeypatch.setattr(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(
+                return_value={
+                    "_session_cost_usd": 1.25,
+                    "_session_cost_breakdown": breakdown,
+                }
+            ),
+        )
+        payload = await app._fetch_thread_history_data("thread-1") if preload else None
+
+        await app._load_thread_history(preloaded_payload=payload)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+        assert app._session_cost_breakdown == breakdown
+
+    @pytest.mark.parametrize("saved_breakdown", [None, "invalid", []])
+    async def test_history_without_breakdown_clears_previous_thread_detail(
+        self, saved_breakdown: object
+    ) -> None:
+        """Legacy or malformed history must not inherit another thread's detail."""
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+        app = DeepAgentsApp(thread_id="thread-2")
+        app._set_session_cost(2.5, breakdown=_empty_cost_breakdown())
+        payload = app._goal_rubric_payload_from_state(
+            {"_session_cost_usd": 1.25, "_session_cost_breakdown": saved_breakdown},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        await app._load_thread_history(preloaded_payload=payload)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+        assert app._session_cost_breakdown is None
 
     def test_unreported_pricing_health_leaves_the_last_value(self) -> None:
         """A checkpoint read says nothing about pricing and must not erase it."""

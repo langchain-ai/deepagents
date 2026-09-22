@@ -922,7 +922,7 @@ class TestPrewarmThreadMessageCounts:
             ),
             patch.object(
                 sessions,
-                "populate_thread_checkpoint_details",
+                "_enrich_thread_checkpoint_details",
                 new_callable=AsyncMock,
                 return_value=threads,
             ) as mock_populate,
@@ -933,6 +933,7 @@ class TestPrewarmThreadMessageCounts:
             threads,
             include_message_count=True,
             include_initial_prompt=False,
+            source="startup-prewarm",
         )
 
 
@@ -1448,6 +1449,38 @@ class TestBatchCheckpointSummaries:
         assert results["t1"].initial_prompt == "hello"
         assert results["t2"].message_count == 1
 
+    async def test_selects_latest_checkpoint_across_namespaces(self) -> None:
+        """The latest checkpoint should win without filtering its namespace."""
+        serde = JsonPlusSerializer()
+        older = serde.dumps_typed({"channel_values": {"messages": []}})
+        newer = serde.dumps_typed(
+            {"channel_values": {"messages": [{"role": "user", "content": "new"}]}}
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "type TEXT, checkpoint BLOB, metadata TEXT)"
+            )
+            await conn.executemany(
+                "INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, '{}')",
+                [
+                    ("t1", "", "cp_1", older[0], older[1]),
+                    ("t1", "subgraph", "cp_2", newer[0], newer[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_latest_checkpoint_summaries_batch(
+                conn, ["t1"], serde
+            )
+
+        assert results["t1"].message_count == 1
+        assert results["t1"].initial_prompt == "new"
+
     async def test_batch_chunking_returns_all_results(self) -> None:
         """Chunking across multiple batches should merge all results."""
         serde = JsonPlusSerializer()
@@ -1546,6 +1579,37 @@ class TestLoadInitialPromptsFromWritesBatch:
             await conn.commit()
 
             results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": "first"}
+
+    async def test_preserves_namespace_and_channel_selection(self) -> None:
+        """Earliest messages write should win regardless of its namespace."""
+        serde = JsonPlusSerializer()
+        first = serde.dumps_typed([{"role": "user", "content": "first"}])
+        later = serde.dumps_typed([{"role": "user", "content": "later"}])
+        ignored = serde.dumps_typed([{"role": "user", "content": "ignored"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, ?, ?, '', ?, ?, ?, ?)",
+                [
+                    ("t1", "subgraph", "cp_a", 1, "messages", first[0], first[1]),
+                    ("t1", "", "cp_b", 0, "messages", later[0], later[1]),
+                    ("t1", "", "cp_0", 0, "other", ignored[0], ignored[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(
                 conn, ["t1"], serde
             )
 

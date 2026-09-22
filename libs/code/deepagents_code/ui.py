@@ -243,7 +243,15 @@ def show_help() -> None:
         "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
         "comma-separated tool names (must include 'read_file')"
     )
-    console.print("  -n, --non-interactive MSG  Run a single task and exit")
+    console.print(
+        "  -n, --non-interactive MSG  Run one task and exit; no human approvals"
+    )
+    console.print(
+        "                             Can change files and access the network"
+    )
+    console.print(
+        "                             Shell off unless a shell allow-list is configured"
+    )
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
         "  --no-stream                Buffer full response instead of streaming"

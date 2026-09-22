@@ -11,7 +11,6 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
-    _SCHEDULED_FOLLOW_UP,
     TalonHost,
     _BackgroundRoute,
     _save_conversation_resets,
@@ -234,9 +233,10 @@ class MediaAgent(BlockingAgent):
 
 
 class ApprovalAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, action_count: int = 1) -> None:
         super().__init__()
         self.approvals: list[ToolApprovalRequest] = []
+        self.action_count = action_count
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -251,7 +251,8 @@ class ApprovalAgent(BlockingAgent):
                     "name": "dangerous_tool",
                     "args": {"path": "/secret"},
                 },
-            ),
+            )
+            * self.action_count,
         )
         self.approvals.append(approval)
         decision = await request.approval_handler(approval)
@@ -858,56 +859,6 @@ async def test_cancellation_timeout_blocks_until_host_restart(
     await host.stop()
 
 
-class DelegatingCronAgent(BlockingAgent):
-    """Agent that delegates on a scheduled run and answers the follow-up turn."""
-
-    def __init__(self, *, follow_up: str = "digest", history: bool = False) -> None:
-        super().__init__()
-        self.background = StubBackground()
-        self.follow_up = follow_up
-        self.history_enabled = history
-        self.fires = 0
-
-    async def invoke(self, request: AgentRequest) -> AgentResult:
-        self.requests.append(request)
-        if request.text.startswith(_BACKGROUND_FOLLOW_UP):
-            self.background.pending.discard(request.conversation_id)
-            return AgentResult(text=self.follow_up)
-        self.fires += 1
-        if self.fires == 1:
-            self.background.pending.add(request.conversation_id)
-        return AgentResult(text="[SILENT]")
-
-
-class BlockingFollowUpCronAgent(DelegatingCronAgent):
-    """Agent whose background follow-up turn blocks until released."""
-
-    async def invoke(self, request: AgentRequest) -> AgentResult:
-        if request.text.startswith(_BACKGROUND_FOLLOW_UP):
-            self.requests.append(request)
-            await self.released.wait()
-            return AgentResult(text=self.follow_up)
-        return await super().invoke(request)
-
-
-class RouteAssertingCronAgent(BlockingAgent):
-    """Agent that records whether its route existed, then fails the run."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.background = StubBackground()
-        self.host: TalonHost | None = None
-        self.routed_at_invoke: list[bool] = []
-
-    async def invoke(self, request: AgentRequest) -> AgentResult:
-        self.requests.append(request)
-        assert self.host is not None
-        self.routed_at_invoke.append(request.conversation_id in self.host._background_routes)
-        self.background.pending.add(request.conversation_id)
-        message = "scheduled run exploded"
-        raise RuntimeError(message)
-
-
 def _cron_job(tmp_path: Path, *, prompt: str = "scan the market", channel: str | None = None):
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
     return store.create_job(
@@ -917,232 +868,33 @@ def _cron_job(tmp_path: Path, *, prompt: str = "scan the market", channel: str |
     )
 
 
-async def test_cron_background_result_reaches_the_job_origin_chat(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = DelegatingCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    cron_id = f"{job.id}:talon-cron"
-    await host.start()
-    try:
-        assert await host.run_scheduled_job(job) == "[SILENT]"
-        assert channel.sent == []
-
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[cron_id], 2)
-
-        assert channel.sent == [("chat", "digest")]
-        assert agent.requests[-1].conversation_id == cron_id
-        assert agent.requests[-1].text.startswith(_BACKGROUND_FOLLOW_UP)
-    finally:
-        await host.stop()
-
-
-@pytest.mark.parametrize("origin_channel", [None, "test"])
-async def test_cron_background_turn_keeps_the_job_identity(
-    tmp_path: Path, origin_channel: str | None
+async def test_scheduled_run_timeout_repairs_the_job_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    channel = RecordingChannel()
-    agent = DelegatingCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path, channel=origin_channel)
-    await host.start()
-    try:
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[f"{job.id}:talon-cron"], 2)
+    """A run that never returns is bounded, and its thread is left usable.
 
-        metadata = agent.requests[-1].metadata
-        assert metadata["trigger"] == "cron"
-        assert metadata["cron_job_id"] == job.id
-        assert metadata["origin_conversation_id"] == "chat"
-        # `_same_origin_scope` compares the channel too, so a follow-up turn that
-        # reported the resolved provider here could not find its own job.
-        assert metadata["channel"] == origin_channel
-        # Identical to the run's own metadata in every field the runtime reads, so
-        # the follow-up turn cannot behave as a different kind of turn.
-        run_metadata = agent.requests[0].metadata
-        assert {key: metadata[key] for key in run_metadata} == dict(run_metadata)
-    finally:
-        await host.stop()
-
-
-async def test_cron_background_turn_gets_no_operator_handlers(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = DelegatingCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    await host.start()
-    try:
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[f"{job.id}:talon-cron"], 2)
-
-        # An approval prompt would be keyed by the cron thread but answered in the
-        # chat thread, and the wait on it has no timeout.
-        assert agent.requests[-1].approval_handler is None
-        assert agent.requests[-1].authorization_handler is None
-    finally:
-        await host.stop()
-
-
-async def test_cron_background_turn_is_not_archived_into_the_chat(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = DelegatingCronAgent(history=True)
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    await host.start()
-    try:
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[f"{job.id}:talon-cron"], 2)
-
-        assert "history_chat" not in agent.requests[-1].metadata
-        assert "history_channel" not in agent.requests[-1].metadata
-    finally:
-        await host.stop()
-
-
-@pytest.mark.parametrize("reply", ["[SILENT]", "nothing moved [SILENT]"])
-async def test_cron_background_reply_is_suppressed_when_silent(
-    tmp_path: Path, reply: str, caplog
-) -> None:
-    channel = RecordingChannel()
-    agent = DelegatingCronAgent(follow_up=reply)
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    await host.start()
-    try:
-        with caplog.at_level(logging.INFO, logger="deepagents_talon.host"):
-            await host.run_scheduled_job(job)
-            await host._dispatch_background_results()
-            await asyncio.wait_for(host._tasks[f"{job.id}:talon-cron"], 2)
-
-        assert channel.sent == []
-        events = _talon_events(caplog, "cron.background_suppressed")
-        assert [event["job_id"] for event in events] == [job.id]
-    finally:
-        await host.stop()
-
-
-async def test_cron_route_is_registered_before_the_run(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = RouteAssertingCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    agent.host = host
-    job = _cron_job(tmp_path)
-    await host.start()
-    try:
-        with pytest.raises(RuntimeError, match="scheduled run exploded"):
-            await host.run_scheduled_job(job)
-
-        # The scheduler swallows this raise, so a run that fails after delegating
-        # still needs the route its subagent will be delivered through.
-        assert agent.routed_at_invoke == [True]
-        assert f"{job.id}:talon-cron" in host._background_routes
-    finally:
-        await host.stop()
-
-
-async def test_cron_route_is_dropped_when_the_job_delegates_nothing(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = RoutedAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    await host.start()
-    try:
-        assert await host.run_scheduled_job(job) == "reply:scan the market"
-        assert f"{job.id}:talon-cron" in host._background_routes
-
-        await host._dispatch_background_results()
-
-        assert host._background_routes == {}
-        assert host._locks == {}
-        assert dict(host._generations) == {}
-    finally:
-        await host.stop()
-
-
-async def test_cron_route_addresses_the_channel_matching_the_job_origin(tmp_path: Path) -> None:
-    first = RecordingChannel(provider="whatsapp")
-    second = RecordingChannel(provider="telegram")
-    agent = DelegatingCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[first, second])
-    job = _cron_job(tmp_path, channel="telegram")
-    await host.start()
-    try:
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[f"{job.id}:talon-cron"], 2)
-
-        assert first.sent == []
-        assert second.sent == [("chat", "digest")]
-    finally:
-        await host.stop()
-
-
-async def test_second_cron_run_preempts_a_pending_background_turn(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = BlockingFollowUpCronAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    cron_id = f"{job.id}:talon-cron"
-    await host.start()
-    try:
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await _wait_for_request(agent, _SCHEDULED_FOLLOW_UP)
-        follow_up = host._tasks[cron_id]
-
-        await host.run_scheduled_job(job)
-
-        assert follow_up.cancelled()
-        assert agent.recoveries == [cron_id]
-        # The turn was cancelled, not the workers: the results it was consuming are
-        # still pending, so the dispatcher delivers them again.
-        assert agent.background.pending == {cron_id}
-        assert cron_id in host._background_routes
-        assert channel.sent == []
-    finally:
-        agent.released.set()
-        await host.stop()
-
-
-async def test_preempting_a_turn_blocked_on_the_conversation_lock_completes(
-    tmp_path: Path,
-) -> None:
-    """A run preempts a follow-up turn while holding the lock that turn is awaiting.
-
-    `_run_agent_turn` takes the conversation lock only to deliver, so a follow-up
-    turn can be parked on it at the moment a scheduled run acquires it and preempts.
-    Cancellation has to be what releases it; anything that waited for the turn to
-    make progress instead would deadlock the scheduler against its own thread.
+    The scheduler awaits `run_scheduled_job` directly rather than through `_tasks`, so
+    nothing else reaches the recovery that patches dangling tool calls. Without it the
+    thread ends on an assistant message whose tool calls have no results, and every
+    later fire of the job fails against the provider.
     """
+    monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.05)
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    cron_id = "job:talon-cron"
+    job = _cron_job(tmp_path, prompt="block")
+    cron_id = f"{job.id}:talon-cron"
     await host.start()
     try:
-        parked = asyncio.Event()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(host.run_scheduled_job(job), 2)
 
-        async def blocked_turn() -> None:
-            parked.set()
-            async with host._conversation_lock(cron_id):
-                pass
-
-        async with host._conversation_lock(cron_id):
-            turn = asyncio.create_task(blocked_turn())
-            host._tasks[cron_id] = turn
-            await asyncio.wait_for(parked.wait(), 2)
-            for _ in range(10):
-                await asyncio.sleep(0)
-
-            await asyncio.wait_for(host._preempt_scheduled_turn(cron_id), 2)
-
-        assert turn.cancelled()
         assert agent.recoveries == [cron_id]
-        assert cron_id not in host._blocked
+
+        # The job is still usable: the next fire runs rather than inheriting a wedged
+        # thread, and it is not blocked behind the abandoned run.
+        agent.released.set()
+        assert await asyncio.wait_for(host.run_scheduled_job(job), 2) == "reply:block"
     finally:
         await host.stop()
 
@@ -1209,17 +961,6 @@ class BackgroundResultAgent(BlockingAgent):
             text=self.text if self.text is not None else f"reply:{request.text}",
             background_results=("subagent-1",),
         )
-
-
-class SilentFollowUpAgent(BackgroundResultAgent):
-    """Scheduled agent whose background follow-up turn blocks, then chooses silence."""
-
-    async def invoke(self, request: AgentRequest) -> AgentResult:
-        self.requests.append(request)
-        if request.text.startswith(_BACKGROUND_FOLLOW_UP):
-            await self.released.wait()
-            return AgentResult(text="[SILENT]", background_results=("subagent-1",))
-        return AgentResult(text="[SILENT]")
 
 
 async def _park_turn_at_delivery(agent: BlockingAgent) -> None:
@@ -1363,61 +1104,6 @@ async def test_suppressed_turn_does_not_requeue_when_also_discarded(
 
         assert agent.background.requeued == []
         assert channel.sent == []
-    finally:
-        await host.stop()
-
-
-@pytest.mark.parametrize("discard", ["superseded", "cancelled"])
-async def test_silent_scheduled_turn_does_not_requeue_when_also_discarded(
-    tmp_path: Path, discard: str
-) -> None:
-    """The same for a scheduled follow-up that answered with the silent sentinel."""
-    channel = RecordingChannel()
-    agent = SilentFollowUpAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    cron_id = f"{job.id}:talon-cron"
-    await host.start()
-    try:
-        agent.background.pending.add(cron_id)
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await _wait_for_request(agent, _SCHEDULED_FOLLOW_UP)
-        turn = host._tasks[cron_id]
-
-        async with host._conversation_lock(cron_id):
-            await _park_turn_at_delivery(agent)
-            if discard == "superseded":
-                host._generations[cron_id] += 1
-            else:
-                turn.cancel()
-                for _ in range(50):
-                    await asyncio.sleep(0)
-
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(turn, 2)
-
-        assert agent.background.requeued == []
-        assert channel.sent == []
-    finally:
-        await host.stop()
-
-
-async def test_silent_scheduled_turn_does_not_requeue(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = BackgroundResultAgent(text="[SILENT]")
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    job = _cron_job(tmp_path)
-    cron_id = f"{job.id}:talon-cron"
-    await host.start()
-    try:
-        agent.background.pending.add(cron_id)
-        await host.run_scheduled_job(job)
-        await host._dispatch_background_results()
-        await asyncio.wait_for(host._tasks[cron_id], 2)
-
-        assert channel.sent == []
-        assert agent.background.requeued == []
     finally:
         await host.stop()
 
@@ -2389,5 +2075,39 @@ async def test_reset_counter_rollback_failure_is_logged_and_still_reverted(
         assert host._agent_conversation_id("test:chat") == "test:chat"
         assert json.loads(config.conversation_state_path.read_text()) == {"test:chat": 1}
         assert "Could not roll back the conversation reset counter" in caplog.text
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("reply", ["approve", "deny"])
+async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent(action_count=2)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text="run", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 1)
+        assert "run ALL actions" in channel.sent[0][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="other")
+        )
+        await _wait_for_sent_count(channel, 2)
+        assert "Only the operator" in channel.sent[1][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=f"{reply} 1", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 3)
+        assert channel.sent[2] == channel.sent[0]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 4)
+        decision = "approve" if reply == "approve" else "reject"
+        assert channel.sent[3] == ("chat", f"decision:{decision}")
+        assert len(agent.requests) == 1
+        assert not host._pending_tool_approvals
     finally:
         await host.stop()

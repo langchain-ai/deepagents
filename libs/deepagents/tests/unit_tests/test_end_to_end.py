@@ -20,8 +20,6 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -170,24 +168,6 @@ class SummaryFilteringModel(FixedGenericFakeChatModel):
         if any(isinstance(m.content, str) and "<messages>" in m.content for m in messages):
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="summary"))])
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
-
-class MaskedChatOpenAI(ChatOpenAI):
-    @property
-    def _llm_type(self) -> str:
-        return "langchain-chat"
-
-
-class MaskedAzureChatOpenAI(AzureChatOpenAI):
-    @property
-    def _llm_type(self) -> str:
-        return "langchain-chat"
-
-
-class MaskedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
-    @property
-    def _llm_type(self) -> str:
-        return "langchain-chat"
 
 
 class TestDeepAgentEndToEnd:
@@ -4331,7 +4311,7 @@ def test_summarization_clips_ls_batch_on_overflow() -> None:
     `ls` isn't read_file, so the tail-clip path falls through to
     `_offload_tool_message_content`: full content written under
     `/large_tool_results/{tcid}` and the message replaced with a
-    `TOO_LARGE_TOOL_MSG` stub.
+    large-tool-result stub.
     """
     fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
     fake_model.call_history = []
@@ -4871,7 +4851,13 @@ def _docx_base64() -> str:
     return base64.b64encode(b"PK\x03\x04 fake docx bytes").decode("ascii")
 
 
-def _read_file_agent(*, model: FixedGenericFakeChatModel, file_path: str, file_base64: str) -> CompiledStateGraph:
+def _read_file_agent(
+    *,
+    model: FixedGenericFakeChatModel,
+    file_path: str,
+    file_content: str,
+    encoding: str = "base64",
+) -> CompiledStateGraph:
     model.messages = iter(
         [
             AIMessage(
@@ -4885,7 +4871,7 @@ def _read_file_agent(*, model: FixedGenericFakeChatModel, file_path: str, file_b
     agent.invoke(
         {
             "messages": [HumanMessage(content=f"read {file_path}")],
-            "files": {file_path: create_file_data(file_base64, encoding="base64")},
+            "files": {file_path: create_file_data(file_content, encoding=encoding)},
         }
     )
     return agent
@@ -4910,7 +4896,7 @@ class TestMultimodalProfileScrubNoProfile:
 
     def test_pdf_passes_through_with_no_profile_set(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]))
-        _read_file_agent(model=model, file_path="/report.pdf", file_base64=_docx_base64())
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
 
         tool_message = _second_call_tool_message(model)
         blocks = tool_message.content_blocks
@@ -4921,7 +4907,7 @@ class TestMultimodalProfileScrubNoProfile:
 class TestMultimodalProfileScrubProfileGatedBlocks:
     def test_pdf_stripped_when_profile_disallows(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), profile={"pdf_inputs": False})
-        _read_file_agent(model=model, file_path="/report.pdf", file_base64=_docx_base64())
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.pdf")
@@ -4929,7 +4915,7 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
     def test_image_stripped_when_profile_disallows(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": False})
         img_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
-        _read_file_agent(model=model, file_path="/photo.png", file_base64=img_b64)
+        _read_file_agent(model=model, file_path="/photo.png", file_content=img_b64)
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
@@ -4938,74 +4924,29 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
         """A model may allow images generally but reject them specifically in a `ToolMessage`."""
         model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": True, "image_tool_message": False})
         img_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
-        _read_file_agent(model=model, file_path="/photo.png", file_base64=img_b64)
+        _read_file_agent(model=model, file_path="/photo.png", file_content=img_b64)
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
 
 
-class TestMultimodalProfileScrubNonPdfFileProviderGate:
-    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet."""
+class TestMultimodalProfileScrubFileProviderGate:
+    """Binary document `file` blocks have no `ModelProfile` field yet."""
 
     def test_docx_stripped_for_anthropic(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), llm_type="anthropic-chat")
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            MaskedChatOpenAI.model_construct(),
-            MaskedAzureChatOpenAI.model_construct(),
-            MaskedChatGoogleGenerativeAI.model_construct(),
-        ],
-    )
-    def test_provider_class_tolerates_docx_when_llm_type_is_masked(self, model: ChatOpenAI | ChatGoogleGenerativeAI) -> None:
-        message = ToolMessage(
-            content_blocks=[
-                {
-                    "type": "file",
-                    "base64": _docx_base64(),
-                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-            tool_call_id="docx-read-1",
-            additional_kwargs={"read_file_path": "/report.docx"},
-        )
-
-        assert model._llm_type == "langchain-chat"
-        scrubbed = filesystem_middleware._scrub_unsupported_multimodal_content([message], model)
-        assert scrubbed[0].content_blocks[0]["base64"] == _docx_base64()
 
     @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])
     def test_llm_type_does_not_grant_docx_support(self, llm_type: str) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), llm_type=llm_type)
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
-
-
-class TestMultimodalProfileScrubFileReferencesPassThrough:
-    """`file_id`/`url` references aren't `read_file`'s base64 attachments.
-
-    They should never be scrubbed, even for a provider that doesn't tolerate
-    non-PDF base64 uploads.
-    """
-
-    def test_file_id_reference_untouched(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
-        agent = create_deep_agent(model=model)
-        file_id_block = {"type": "file", "file_id": "file_abc123"}
-
-        agent.invoke({"messages": [HumanMessage(content=[file_id_block])]})
-
-        assert model.captured_messages
-        first_call = model.captured_messages[0]
-        human_message = next(m for m in first_call if isinstance(m, HumanMessage))
-        assert human_message.content_blocks[0] == file_id_block
 
 
 class TestMultimodalProfileScrubAsyncPath:
@@ -5033,3 +4974,23 @@ class TestMultimodalProfileScrubAsyncPath:
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+
+def test_file_reference_reaches_model_unchanged() -> None:
+    model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
+    agent = create_deep_agent(model=model)
+    file_id_block = {"type": "file", "file_id": "file_abc123"}
+
+    agent.invoke({"messages": [HumanMessage(content=[file_id_block])]})
+
+    human_message = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
+    assert human_message.content_blocks[0] == file_id_block
+
+
+def test_utf8_text_read_reaches_model_as_text() -> None:
+    model = FixedGenericFakeChatModel(messages=iter([]))
+    _read_file_agent(model=model, file_path="/notes.txt", file_content="plain text", encoding="utf-8")
+
+    tool_message = _second_call_tool_message(model)
+    assert isinstance(tool_message.content, str)
+    assert "plain text" in tool_message.content

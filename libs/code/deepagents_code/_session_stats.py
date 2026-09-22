@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sys
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
@@ -176,22 +177,24 @@ class RecordedUsage:
     """
 
 
-UsageLedgerKey = str | tuple[Hashable, str]
-"""Key of the recorded-request ledger: a message ID, optionally scoped.
+@dataclass(frozen=True, slots=True)
+class ModelInvocationKey:
+    """Stable identity of one model invocation in the usage ledger."""
 
-A bare message-ID string keys requests recorded without an attempt scope
-(the legacy behavior). When a caller passes `attempt_scope` to
-`record_message_usage`/`record_model_usage_event`, the key is
-`(attempt_scope, message_id)` instead, so a retry that reuses the provider's
-message ID is a separate request while chunks of one attempt still merge.
-Callers that retain this ledger across retries should use this widened key type.
+    invocation_id: str
 
-The two shapes coexist in one ledger, so de-duplication cannot rely on the
-key alone: an attempt scope lives for one model call, while a HITL resume pass
-replays messages with no scope open. `finalize_recorded_requests` closes that
-gap by projecting every scoped key down to its bare message ID at each round
-boundary -- see its docstring.
-"""
+
+@dataclass(frozen=True, slots=True)
+class MessageUsageKey:
+    """Message identity, optionally scoped to one model attempt."""
+
+    message_id: str
+    attempt_scope: Hashable | None = None
+
+
+UsageLedgerKey = ModelInvocationKey | MessageUsageKey
+"""Model run identities and message aliases for recorded requests."""
+
 
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
@@ -453,67 +456,67 @@ class RecordedRequest:
     round. A later chunk for a finalized request is a replay, not a revision.
     """
 
+    message_ids: frozenset[str] = frozenset()
+    """Provider and framework message IDs observed for this invocation."""
+
+    ledger_key: UsageLedgerKey | None = None
+    """Canonical ledger entry, promoted when a model run identity is learned."""
+
+    request_bucket: str | None = None
+    """Stable provisional bucket even when a legacy record gains a run identity."""
+
+    invocation_id: str | None = None
+    """Strong run identity, when supplied by either delivery path."""
+
+    aliases: frozenset[UsageLedgerKey] = frozenset()
+    """Scoped identities pointing to this canonical record."""
+
 
 def finalize_recorded_requests(
     recorded_requests: dict[UsageLedgerKey, RecordedRequest],
 ) -> None:
-    """Close every request in a ledger that outlives its stream round.
-
-    A chunked request is left open between chunks so later ones can revise it.
-    That is only correct *within* one round: when a consumer reuses its ledger
-    across HITL resume passes, the replayed chunks of an already-recorded
-    request would otherwise merge a second time and double its tokens and cost.
-    Closing the ledger at each round boundary makes the replay indistinguishable
-    from the stray-chunk case `record_message_usage` already rejects.
-
-    Attempt-scoped keys need one extra step. A scope identifies one model
-    attempt and is closed when that attempt ends, so the replay on the next
-    resume pass arrives with no scope and keys by the bare message ID -- which
-    would miss the `(attempt_scope, message_id)` entry entirely and count the
-    whole request a second time. Project each scoped entry down to its bare
-    message ID as well, so the replay finds a finalized row whichever shape it
-    keys by. Later attempts overwrite earlier ones, leaving the values from the
-    attempt that actually succeeded; the projected row exists only to reject
-    replays, so its counts are never added to `stats` again.
-
-    Args:
-        recorded_requests: Ledger to close. Mutated in place.
-    """
+    """Finalize canonical records and expose message aliases for unscoped replay."""
     for request_id, recorded in list(recorded_requests.items()):
-        closed = recorded if recorded.finalized else replace(recorded, finalized=True)
-        recorded_requests[request_id] = closed
-        if isinstance(request_id, tuple):
-            recorded_requests[request_id[1]] = closed
+        if request_id != recorded.ledger_key:
+            continue
+        closed = replace(recorded, finalized=True)
+        for alias in closed.aliases:
+            if recorded_requests.get(alias) is recorded:
+                recorded_requests[alias] = closed
+        for message_id in closed.message_ids:
+            recorded_requests[MessageUsageKey(message_id)] = closed
 
 
 def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
-    """Return a string key naming the request a provisional delta belongs to.
-
-    The consumer keys a pool of provisional dollars by this value, so it must
-    separate exactly what the ledger separates. An attempt-scoped key therefore
-    keeps its scope: two attempts that reuse one provider message ID are
-    distinct requests, and collapsing them to the bare ID would let one
-    attempt's late retraction draw on the other attempt's deposit.
-
-    Scope cannot change under a request while it still reports deltas. A chunk
-    or completion whose record is already finalized is rejected before any
-    delta is built, and `finalize_recorded_requests` closes every entry at the
-    end of a stream round -- so one request's deltas all carry one scope, and
-    the key stays stable for as long as the pool holds its money.
-
-    Args:
-        request_id: Ledger key for the request, or `None` when the message
-            carried no usable ID.
-
-    Returns:
-        An opaque bucket key, or `None` when there is no ledger key to name.
-    """
+    """Return the initial provisional bucket, retained when run identity improves."""
     if request_id is None:
         return None
-    if isinstance(request_id, tuple):
-        attempt_scope, message_id = request_id
-        return f"{attempt_scope!r}\x00{message_id}"
-    return request_id
+    if isinstance(request_id, ModelInvocationKey):
+        return repr(request_id.invocation_id)
+    if request_id.attempt_scope is not None:
+        return repr((request_id.attempt_scope, request_id.message_id))
+    return request_id.message_id
+
+
+def _usage_ledger_key(
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    message_id: str | None,
+    attempt_scope: Hashable | None,
+    invocation_id: str | None,
+) -> tuple[UsageLedgerKey | None, frozenset[UsageLedgerKey]]:
+    """Return a canonical key and compatible scoped aliases, never across runs."""
+    message_key = MessageUsageKey(message_id, attempt_scope) if message_id else None
+    run_key = ModelInvocationKey(invocation_id) if invocation_id else None
+    aliases = frozenset(key for key in (run_key, message_key) if key is not None)
+    for key in (run_key, message_key):
+        previous = recorded_requests.get(key) if key is not None else None
+        if previous is not None and (
+            not invocation_id
+            or not previous.invocation_id
+            or previous.invocation_id == invocation_id
+        ):
+            return previous.ledger_key, aliases
+    return run_key or message_key, aliases
 
 
 def _names_a_model(message: object) -> bool:
@@ -783,6 +786,7 @@ def _move_request_to_named_model(
         cost_usd=cost_usd,
         usage_metadata=previous.usage_metadata,
         finalized=previous.finalized,
+        message_ids=previous.message_ids,
     )
     return _cost_delta(
         previous.cost_usd,
@@ -887,6 +891,12 @@ def _finalize_from_completed(
         cost_usd=cost_usd,
         usage_metadata=usage,
         finalized=True,
+        message_ids=previous.message_ids
+        | (
+            frozenset({message_id})
+            if (message_id := getattr(message, "id", None))
+            else frozenset()
+        ),
     )
     return RecordedUsage(
         input_tokens=input_count - previous.input_tokens,
@@ -913,6 +923,7 @@ def record_message_usage(
     kind: UsageKind = "assistant",
     recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
     attempt_scope: Hashable | None = None,
+    invocation_id: str | None = None,
 ) -> RecordedUsage | None:
     """Record usage attached to one streamed model message.
 
@@ -947,13 +958,12 @@ def record_message_usage(
             this specific request, when available.
         kind: Request class used by the type breakdown.
         recorded_requests: Ledger of requests this stream consumer has already
-            recorded, keyed by message ID -- or by `(attempt_scope, message_id)`
-            when `attempt_scope` is set. Mutated in place.
-        attempt_scope: Identity of the attempt that produced this message, or
-            `None` for legacy unscoped recording. Retries of one logical request
-            can reuse the provider's message ID; scoping keeps each attempt's
-            usage separate, while chunks and corrections of one attempt (same
-            scope, same ID) still merge into a single request.
+            recorded, keyed by stable invocation identity when available and by
+            message ID otherwise. Mutated in place.
+        attempt_scope: Lifecycle identity of the attempt that produced this
+            message. Keeps retries distinct when no model run ID is available.
+        invocation_id: LangChain model run ID shared by streaming and callback
+            deliveries for this invocation. Preferred over provider message IDs.
 
     Returns:
         The tokens and cost *this message* contributed, or `None` when it has no
@@ -966,18 +976,89 @@ def record_message_usage(
     if not isinstance(usage, Mapping) or not usage:
         return None
 
-    # Imported here, not at module scope: this module is deliberately free of
-    # heavy top-level dependencies (see the module docstring).
-    from langchain_core.messages import AIMessageChunk
+    from deepagents_code.cost_tracking import _MODEL_INVOCATION_METADATA_KEY
 
     if recorded_requests is None:
         recorded_requests = {}
-    message_id = getattr(message, "id", None)
-    request_id: UsageLedgerKey | None = (
-        message_id if isinstance(message_id, str) and message_id else None
+    raw_message_id = getattr(message, "id", None)
+    message_id = (
+        raw_message_id if isinstance(raw_message_id, str) and raw_message_id else None
     )
-    if request_id is not None and attempt_scope is not None:
-        request_id = (attempt_scope, request_id)
+    metadata_id = (request_metadata or {}).get(_MODEL_INVOCATION_METADATA_KEY)
+    invocation_id = invocation_id or (
+        metadata_id if isinstance(metadata_id, str) and metadata_id else None
+    )
+    if not invocation_id and message_id and message_id.startswith("lc_run--"):
+        # Non-streaming generations append an index to the model run UUID.
+        # Preserve the existing inference for IDs without a generation suffix.
+        match = re.fullmatch(
+            r"lc_run--([0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})"
+            r"(?:-\d+)?",
+            message_id,
+        )
+        invocation_id = match[1] if match else message_id.removeprefix("lc_run--")
+    request_id, aliases = _usage_ledger_key(
+        recorded_requests, message_id, attempt_scope, invocation_id
+    )
+    previous = recorded_requests.get(request_id) if request_id is not None else None
+    request_bucket = (
+        previous.request_bucket if previous else _provisional_bucket_key(request_id)
+    )
+    if previous is not None and invocation_id:
+        request_id = ModelInvocationKey(invocation_id)
+        recorded_requests[request_id] = previous
+    result = _record_message_usage(
+        stats,
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        request_metadata=request_metadata,
+        kind=kind,
+        recorded_requests=recorded_requests,
+        request_id=request_id,
+    )
+    if request_id is not None and (updated := recorded_requests.get(request_id)):
+        aliases |= (
+            frozenset(
+                alias
+                for alias in previous.aliases
+                if recorded_requests.get(alias) is previous
+            )
+            if previous
+            else frozenset()
+        )
+        updated = replace(
+            updated,
+            ledger_key=request_id,
+            request_bucket=request_bucket,
+            invocation_id=invocation_id
+            or (previous.invocation_id if previous else None),
+            aliases=aliases | {request_id},
+            message_ids=updated.message_ids | ({message_id} if message_id else set()),
+        )
+        for alias in updated.aliases:
+            recorded_requests[alias] = updated
+    return replace(result, request_id=request_bucket) if result else None
+
+
+def _record_message_usage(
+    stats: SessionStats,
+    message: object,
+    *,
+    fallback_model: str,
+    fallback_provider: str,
+    request_metadata: Mapping[str, Any] | None,
+    kind: UsageKind,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    request_id: UsageLedgerKey | None,
+) -> RecordedUsage | None:
+    """Return the usage delta applied to the resolved canonical request."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, Mapping) or not usage:
+        return None
+
+    from langchain_core.messages import AIMessageChunk
+
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
         previous = recorded_requests[request_id]
@@ -1102,6 +1183,7 @@ def record_message_usage(
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,
+            message_ids=previous.message_ids if previous else frozenset(),
         )
     # Provisional pricing needs this message's delta, while the context display
     # needs the request's running token total after folding the message in.
@@ -1176,6 +1258,7 @@ def record_model_usage_event(
         )
         return None
     request_id = data.get("request_id")
+    invocation_id = data.get("invocation_id")
     thread_id = data.get("thread_id")
     scope = data.get("scope")
     usage = data.get("usage_metadata")
@@ -1183,6 +1266,7 @@ def record_model_usage_event(
     if (
         not isinstance(request_id, str)
         or not request_id
+        or (invocation_id is not None and not isinstance(invocation_id, str))
         or not isinstance(thread_id, str)
         or not thread_id
         or not isinstance(scope, str)
@@ -1220,6 +1304,7 @@ def record_model_usage_event(
         kind="subagent",
         recorded_requests=recorded_requests,
         attempt_scope=attempt_scope,
+        invocation_id=invocation_id or None,
     )
 
 

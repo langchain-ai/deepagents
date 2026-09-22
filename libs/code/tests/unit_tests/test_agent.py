@@ -3,11 +3,13 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -1545,6 +1547,27 @@ class TestGetSystemPromptFilesystemTools:
 class TestGetSystemPromptPlaceholderValidation:
     """Tests for unreplaced placeholder detection."""
 
+    def test_includes_current_date_and_time(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        match = re.search(
+            r"The current date and time at session start is `([^`]+)` "
+            r"\(local timezone `([^`]+)`\)",
+            prompt,
+        )
+        assert match is not None
+        assert datetime.fromisoformat(match.group(1)).tzinfo is not None
+        assert match.group(2)
+        assert not any(
+            "unreplaced placeholders" in record.message for record in caplog.records
+        )
+
     def test_no_unreplaced_placeholders_in_interactive(self) -> None:
         mock_settings = Mock()
         runtime_state.model_name = None
@@ -1553,8 +1576,6 @@ class TestGetSystemPromptPlaceholderValidation:
             prompt = get_system_prompt("test-agent", interactive=True)
 
         # No raw {placeholder} patterns should remain
-        import re
-
         assert not re.findall(r"\{[a-z_]+\}", prompt)
 
     def test_no_unreplaced_placeholders_in_non_interactive(self) -> None:
@@ -1563,8 +1584,6 @@ class TestGetSystemPromptPlaceholderValidation:
 
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
-
-        import re
 
         assert not re.findall(r"\{[a-z_]+\}", prompt)
 

@@ -8,6 +8,7 @@ import re
 import shutil
 import warnings
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1666,6 +1667,19 @@ def get_system_prompt(
             f"use `{cwd}/research_project/file.md`\n"
             f"- Never use relative paths - always construct full absolute paths\n\n"
         )
+
+    now = datetime.now(tz=UTC)
+    local_timezone = now.astimezone().tzname() or "unknown"
+    date_section = (
+        "### Current Date and Time\n\n"
+        f"The current date and time at session start is `{now.isoformat()}` "
+        f"(local timezone `{local_timezone}`).\n\n"
+        '- Resolve every relative time expression ("today", "last 7 days", '
+        '"since last week") against this value; never guess the current date.\n'
+        "- This value is captured at session start. In a long session, re-check "
+        "with `date -u` before constructing a time window.\n\n"
+    )
+    working_dir_section = date_section + working_dir_section
 
     result = (
         template.replace("{mode_description}", mode_description)

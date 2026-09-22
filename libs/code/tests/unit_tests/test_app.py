@@ -2187,6 +2187,113 @@ class TestModalScreenEscapeDismissal:
             assert app.interrupt_called is False
 
 
+async def test_thread_selector_ctrl_c_copies_highlighted_id() -> None:
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": f"thread-{name}",
+            "initial_prompt": name,
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+        for name in ("first", "second")
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+        patch("deepagents_code.app._monotonic", side_effect=[0.0, 2.0, 4.0]),
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("down", "ctrl+c")
+            copy.assert_called_once_with(app, "thread-second")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "first"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_called_once_with(app, "thread-first")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "no-matching-thread"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_not_called()
+            assert app.screen is screen
+
+
+@pytest.mark.parametrize("filter_text", ["first", "no-matching-thread"])
+async def test_thread_selector_ctrl_c_quit_flow(filter_text: str) -> None:
+    """Rapid Ctrl+C arms quit even when the thread filter has no matches."""
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": "thread-first",
+            "initial_prompt": "first",
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.query_one("#thread-filter", Input).value = filter_text
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(app, "notify") as notify,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 1.0, 2.1],
+                ),
+            ):
+                await pilot.press("ctrl+c")
+                assert app._quit_pending is False
+                notify.reset_mock()
+                await pilot.press("ctrl+c")
+                exit_mock.assert_not_called()
+                assert app.screen is screen
+
+                notify.assert_called_once_with(
+                    "Press Ctrl+C again to quit", timeout=3, markup=False
+                )
+                await pilot.press("ctrl+c")
+                exit_mock.assert_called_once()
+
+                if filter_text == "first":
+                    copy.assert_called_once_with(app, "thread-first")
+                else:
+                    copy.assert_not_called()
+
+
 class TestModalScreenCtrlDHandling:
     """Tests for app-level Ctrl+D behavior while modals are open."""
 

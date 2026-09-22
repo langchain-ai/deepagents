@@ -1514,6 +1514,8 @@ def _same_turn_user_answers(
             turn_id=turn_id_of_exchange,
         )
         if exchange_rows:
+            for row in exchange_rows:
+                row["turn_id"] = turn_id_of_exchange
             validated.append((exchange_rows, prompt_index))
 
     kept_start = len(validated)
@@ -1654,6 +1656,11 @@ _CLASSIFIER_POLICY = (
     "prompts from this turn and earlier turns of this thread. Each entry pairs "
     "the question the server confirmed was displayed to the user and answered "
     "with the user's answer; unselected choices are omitted and grant nothing. "
+    "Each entry's trusted turn_id matches its prompt in authorization_evidence; "
+    "the answer follows that prompt and precedes the next turn's prompt. "
+    "Use this ordering to distinguish consent revoked by a later instruction "
+    "from consent renewed by a later answer. Entries within a turn are in "
+    "history order. "
     "An entry from an earlier turn is preserved evidence of what the user "
     "answered then, not blanket permission: it grants consent for an action "
     "now only when the latest literal_user_text or active_user_directives "

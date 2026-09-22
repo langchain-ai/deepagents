@@ -2659,6 +2659,7 @@ async def test_real_agent_resume_forwards_ask_user_receipt_to_classifier(
     assert model.classifier_payloads[0]["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "How should I integrate?",
             "answer": answer,
         }
@@ -2715,6 +2716,7 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": question,
             "answer": selected_answer,
         }
@@ -2811,7 +2813,12 @@ async def test_short_affirmative_attaches_to_bound_ask_user_question(
     # The bound proposal (question) is paired with the short affirmative so the
     # classifier can attach "yes" to the exact action and target it names.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
@@ -2893,7 +2900,12 @@ async def test_affirmative_to_negated_question_grants_nothing(
     # The negated question is surfaced verbatim so the classifier can see that
     # "yes" agrees to avoid the action rather than consent to performing it.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert plan["decisions"][0]["disposition"] == "policy_deny"
 
@@ -3001,7 +3013,12 @@ async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
     # sees one question covering one of the two actions under review. The
     # dispositions below are the stub's canned verdicts, not proof of the policy.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     reviewed = {action["tool_call_id"] for action in payload["current_actions"]}
     assert reviewed == {"bound-call", "extra-call"}
@@ -3058,7 +3075,12 @@ async def test_multiple_questions_pair_each_answer_with_its_own_question(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": text, "answer": value}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": text,
+            "answer": value,
+        }
         for text, value in zip(questions, answers, strict=True)
     ]
 
@@ -3103,6 +3125,7 @@ async def test_blank_answer_is_skipped_without_shifting_later_pairs(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": questions[1],
             "answer": "yes",
         }
@@ -3158,6 +3181,7 @@ async def test_unselected_multi_select_is_skipped_like_a_blank_answer(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": questions[1],
             "answer": "yes",
         }
@@ -3212,6 +3236,7 @@ async def test_declined_multi_select_does_not_evict_a_real_affirmative(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": answered_question,
             "answer": "yes",
         }
@@ -3311,6 +3336,7 @@ async def test_selected_multi_select_reaches_the_classifier_encoded(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": question,
             "answer": '["build/old.log"]',
         }
@@ -3354,7 +3380,12 @@ async def test_bound_proposal_for_other_target_is_denied(tmp_path: Path) -> None
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert payload["current_actions"][0]["arguments"]["file_path"] == other_file
     assert plan["decisions"][0]["disposition"] == "policy_deny"
@@ -3471,7 +3502,12 @@ async def test_ambiguous_affirmative_does_not_grant_escalation(
     # The full affirmative (including the smuggled escalation) is surfaced so the
     # classifier can see that the extra request exceeds the bound proposal.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": answer}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": answer,
+        }
     ]
     dispositions = {
         decision["tool_call_id"]: decision["disposition"]
@@ -3678,11 +3714,13 @@ async def test_all_valid_same_turn_ask_user_exchanges_are_classifier_evidence(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": first_answer,
         },
         {
             "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": latest_answer,
         },
@@ -3733,6 +3771,7 @@ async def test_reused_ask_user_call_id_drops_only_the_ambiguous_exchanges(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": "Push feature to origin",
         }
@@ -3942,6 +3981,7 @@ async def test_unanswered_questions_do_not_evict_valid_receipt(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "Optional question 20?",
             "answer": "Delete build/old.log",
         }
@@ -3988,13 +4028,63 @@ async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert any(
         row.get("literal_user_text") == "sounds right — go ahead with that"
         for row in payload["authorization_evidence"]
     )
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+@pytest.mark.parametrize("approval_turn", [2, 4])
+async def test_receipt_payload_orders_consent_relative_to_revocation(
+    tmp_path: Path, approval_turn: int
+) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(request, answer="unrelated answer")
+    for turn, text in enumerate(
+        ["clean up scratch files", "do NOT delete build/old.log", "continue"],
+        start=2,
+    ):
+        _append_trusted_user_prompt(request, text, turn_id=f"turn-{turn}")
+        if turn == approval_turn:
+            _append_ask_user_exchange(
+                request,
+                ask_call_id="ask-delete",
+                answer="yes",
+                questions=[{"question": "Delete build/old.log?", "type": "text"}],
+                receipt_turn_id=f"turn-{turn}",
+            )
+    request.runtime.context["turn_id"] = "turn-4"
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm build/old.log"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    turns = [row["turn_id"] for row in payload["authorization_evidence"]]
+    answers = payload["same_turn_user_answers"]
+    assert answers[0]["turn_id"] == "turn-1"
+    assert answers[1]["ask_user_tool_call_id"] == "ask-delete"
+    answer_position = turns.index(answers[1]["turn_id"])
+    revocation_position = turns.index("turn-3")
+    assert (answer_position < revocation_position) == (approval_turn == 2)
 
 
 async def test_receipt_preserves_instructions_before_its_turn(tmp_path: Path) -> None:
@@ -4129,7 +4219,12 @@ async def test_prior_turn_receipt_evidence_includes_all_intervening_instructions
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     evidence_texts = [
         row.get("literal_user_text") for row in payload["authorization_evidence"]
@@ -4374,6 +4469,7 @@ async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invali
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-2",
             "question": "How should I integrate the remote branch?",
             "answer": "Rebase onto origin/main",
         }
@@ -4436,6 +4532,7 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": answer,
         }

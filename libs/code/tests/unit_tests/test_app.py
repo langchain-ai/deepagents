@@ -5819,6 +5819,23 @@ class TestCopyCommand:
 class TestCacheTiming:
     """Cache hits renew retention without pretending to be writes."""
 
+    @staticmethod
+    def _record_activity(
+        app: DeepAgentsApp, requested_at: datetime, *, write: bool = False
+    ) -> None:
+        activity = {
+            "requested_at": requested_at.isoformat(),
+            "model_spec": app._last_cache_model_spec,
+            "endpoint": app._last_cache_endpoint,
+            "params": app._last_cache_model_params,
+        }
+        app._sync_cache_state_from_state(
+            {
+                "_last_cache_use": activity,
+                **({"_last_cache_write": activity} if write else {}),
+            }
+        )
+
     @pytest.mark.parametrize(
         ("model", "endpoint", "retention", "expected"),
         [
@@ -5843,7 +5860,10 @@ class TestCacheTiming:
             app._last_model_request_at = datetime.now(UTC).isoformat()
             bar.set_cache_tokens(0, 2000, input_tokens=2000)
             app.query_one("#cache-display").visible = True
-            await app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+            self._record_activity(
+                app, datetime.fromisoformat(app._last_model_request_at), write=True
+            )
+            await app._refresh_cache_timing()
             await pilot.pause()
 
             rendered = str(app.query_one("#cache-display").render())
@@ -5869,7 +5889,8 @@ class TestCacheTiming:
             app._last_cache_endpoint = "default"
             if observed_write:
                 app._last_model_request_at = written_at.isoformat()
-                await app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+                self._record_activity(app, written_at, write=True)
+                await app._refresh_cache_timing()
 
             def execute(
                 *_args: object, turn_stats: SessionStats, **_kwargs: object
@@ -5878,6 +5899,7 @@ class TestCacheTiming:
 
             def sync_checkpoint() -> None:
                 app._last_model_request_at = hit_at.isoformat()
+                self._record_activity(app, hit_at)
 
             with (
                 patch.object(app, "_ensure_goal_state_notice", return_value=True),
@@ -5903,7 +5925,7 @@ class TestCacheTiming:
 
             # A turn without cache activity must not renew the countdown.
             app._last_model_request_at = (hit_at + timedelta(minutes=1)).isoformat()
-            await app._refresh_cache_timing(SessionStats())
+            await app._refresh_cache_timing()
             assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
 
     @pytest.mark.parametrize(
@@ -5945,6 +5967,7 @@ class TestCacheTiming:
             app._last_cache_model_spec = "openai:gpt-6-astra"
             app._last_cache_endpoint = endpoint
             app._last_model_request_at = requested_at.isoformat()
+            self._record_activity(app, requested_at)
             bar.set_cache_tokens(2000, 0, input_tokens=2000)
             app.query_one("#cache-display").visible = True
             config = MagicMock()
@@ -5960,7 +5983,7 @@ class TestCacheTiming:
                     else frozenset(),
                 ),
             ):
-                await app._refresh_cache_timing(SessionStats(cache_read_tokens=2000))
+                await app._refresh_cache_timing()
             await pilot.pause()
 
             rendered = str(app.query_one("#cache-display").render())
@@ -5968,6 +5991,73 @@ class TestCacheTiming:
             assert bar.cache_expires_at == (
                 requested_at + timedelta(minutes=30) if shows_retention else None
             )
+
+    @pytest.mark.parametrize("activity", ["write_read", "subagent", "new_identity"])
+    async def test_multiple_requests_do_not_misattribute_timing(
+        self, activity: str
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=2)
+            read_at = written_at + timedelta(minutes=1)
+            app._lc_thread_id = "cache-attribution"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if activity != "subagent":
+                self._record_activity(app, written_at, write=True)
+                if activity == "new_identity":
+                    app._last_cache_model_spec = "openai:gpt-5.4"
+                    app._last_cache_model_params = {"prompt_cache_retention": "24h"}
+                self._record_activity(app, read_at)
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_write_tokens = 2000
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                # The final call is a different model with no cache activity.
+                app._sync_cache_state_from_state(
+                    {
+                        "_last_model_request_at": datetime.now(UTC).isoformat(),
+                        "_last_cache_model_spec": "openai:gpt-5.6",
+                        "_last_cache_endpoint": "default",
+                    }
+                )
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            assert bar.cache_written_at == (
+                written_at if activity == "write_read" else None
+            )
+            expected_expiry = (
+                None
+                if activity == "subagent"
+                else read_at
+                + (
+                    timedelta(hours=24)
+                    if activity == "new_identity"
+                    else timedelta(minutes=5)
+                )
+            )
+            assert bar.cache_expires_at == expected_expiry
 
 
 class TestRunAgentTaskMediaTracker:

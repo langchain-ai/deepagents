@@ -1461,12 +1461,14 @@ def _same_turn_user_answers(
 
     call_id_counts: dict[str, int] = {}
     exchanges: list[tuple[ToolCall, ToolMessage, str, int]] = []
+    trusted_prompt_indices: list[int] = []
     exchange_turn_id: str | None = None
     exchange_prompt_index: int | None = None
     for index, message in enumerate(messages):
         if isinstance(message, HumanMessage):
             prompt_rows, _index = _trusted_prompt_rows([message])
             if prompt_rows:
+                trusted_prompt_indices.append(index)
                 exchange_turn_id = prompt_rows[0]["turn_id"]
                 exchange_prompt_index = index
             continue
@@ -1520,9 +1522,16 @@ def _same_turn_user_answers(
 
     kept_start = len(validated)
     row_count = 0
+    earliest_available_prompt = trusted_prompt_indices[
+        -min(len(trusted_prompt_indices), _MAX_AUTHORIZATION_EVIDENCE_ROWS)
+    ]
     for position in range(len(validated) - 1, -1, -1):
-        exchange_rows, _prompt_index = validated[position]
-        if row_count + len(exchange_rows) > _MAX_ASK_USER_ANSWER_ROWS:
+        exchange_rows, prompt_index = validated[position]
+        # Keep whole exchanges only when every subsequent instruction fits.
+        if (
+            prompt_index < earliest_available_prompt
+            or row_count + len(exchange_rows) > _MAX_ASK_USER_ANSWER_ROWS
+        ):
             break
         row_count += len(exchange_rows)
         kept_start = position

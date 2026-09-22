@@ -4280,6 +4280,60 @@ async def test_prior_turn_receipt_fails_closed_when_instruction_history_truncate
     assert len(payload["authorization_evidence"]) == 20
 
 
+@pytest.mark.parametrize("prior_turn", [2, 3])
+async def test_stale_receipts_do_not_suppress_recent_consent(
+    tmp_path: Path, prior_turn: int
+) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(request, ask_call_id="stale")
+    for turn in range(2, 103):
+        _append_trusted_user_prompt(request, "continue", turn_id=f"turn-{turn}")
+        if turn == prior_turn:
+            _append_ask_user_exchange(
+                request, ask_call_id="prior", receipt_turn_id=f"turn-{turn}"
+            )
+    request.runtime.context["turn_id"] = "turn-102"
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="fresh",
+        receipt_turn_id="turn-102",
+        questions=[
+            {"question": "Delete build/old.log?", "type": "text"},
+            {"question": "Delete build/older.log?", "type": "text"},
+        ],
+        answers=["yes", "yes"],
+    )
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm build/old.log"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    answers = payload["same_turn_user_answers"]
+    # Turn 3 needs exactly 100 prompts of context; turn 2 needs 101.
+    expected_calls = ["prior", "fresh", "fresh"] if prior_turn == 3 else ["fresh"] * 2
+    assert [row["ask_user_tool_call_id"] for row in answers] == expected_calls
+    assert [row["question"] for row in answers[-2:]] == [
+        "Delete build/old.log?",
+        "Delete build/older.log?",
+    ]
+    evidence = payload["authorization_evidence"]
+    expected_start = 3 if prior_turn == 3 else 83
+    assert [row["turn_id"] for row in evidence] == [
+        f"turn-{turn}" for turn in range(expected_start, 103)
+    ]
+
+
 async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
     tmp_path: Path,
 ) -> None:

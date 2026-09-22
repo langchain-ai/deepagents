@@ -922,7 +922,7 @@ class TestPrewarmThreadMessageCounts:
             ),
             patch.object(
                 sessions,
-                "populate_thread_checkpoint_details",
+                "_enrich_thread_checkpoint_details",
                 new_callable=AsyncMock,
                 return_value=threads,
             ) as mock_populate,
@@ -933,6 +933,7 @@ class TestPrewarmThreadMessageCounts:
             threads,
             include_message_count=True,
             include_initial_prompt=False,
+            source="startup-prewarm",
         )
 
 

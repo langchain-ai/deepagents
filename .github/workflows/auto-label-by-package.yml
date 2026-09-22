@@ -68,7 +68,10 @@ jobs:
         if: github.event.action == 'opened'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          TOPIC_CLASSIFIER_PROVIDER: ${{ vars.TOPIC_CLASSIFIER_PROVIDER }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_WORKSPACE_ID: ${{ vars.LANGSMITH_WORKSPACE_ID }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -79,8 +82,19 @@ jobs:
 
             let topics;
             try {
+              const allowed = new Set(loadTopicLabels());
+              const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+                owner, repo, per_page: 100,
+              });
+              const descriptions = Object.fromEntries(labels
+                .filter(label => allowed.has(label.name) && typeof label.description === 'string' && label.description.trim())
+                .map(label => [label.name, label.description]));
+              const missing = [...allowed].filter(name => !Object.hasOwn(descriptions, name));
+              if (missing.length) core.warning(`Skipping topics without descriptions: ${missing.join(', ')}`);
+              if (!Object.keys(descriptions).length) return;
               topics = await classifyTopicLabels(
-                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, loadTopicLabels(),
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, Object.keys(descriptions),
+                { descriptions, debug: core.debug, info: core.info },
               );
             } catch (error) {
               core.warning(`Topic classification failed: ${error.message}`);

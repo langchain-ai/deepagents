@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -101,12 +101,13 @@ def console() -> Console:
     return Console(quiet=True)
 
 
-def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
+def test_mixed_id_usage_counts_once_in_headless_stats(console: Console) -> None:
     state = StreamState(thread_id="thread-1")
     event = {
         "type": "model_usage",
         "version": 1,
         "request_id": "child-1",
+        "invocation_id": "child-run",
         "usage_metadata": {
             "input_tokens": 1_000,
             "output_tokens": 100,
@@ -118,12 +119,23 @@ def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
         "scope": "tools:task",
     }
 
-    _process_stream_chunk(
-        (("tools:task",), "custom", event),
-        state,
-        console,
-        FileOpTracker(assistant_id="assistant"),
+    message = AIMessageChunk(
+        content="",
+        id="lc_run--child-run",
+        usage_metadata={
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        },
     )
+    deliveries = [
+        (("tools:task",), "messages", (message, {})),
+        (("tools:task",), "custom", event),
+    ]
+    for delivery in deliveries:
+        _process_stream_chunk(
+            delivery, state, console, FileOpTracker(assistant_id="assistant")
+        )
 
     assert state.stats.request_count == 1
     assert state.stats.per_kind["subagent"].request_count == 1
@@ -4483,8 +4495,8 @@ class TestAttemptLifecycle:
         assert "Retrying model request 1/5" in output.getvalue()
         assert () in state.active_attempts  # scope untouched
 
-    def test_unscoped_usage_remains_legacy(self) -> None:
-        """Without a lifecycle scope, message usage keys stay bare IDs."""
+    def test_unscoped_usage_deduplicates_replayed_messages(self) -> None:
+        """Without a lifecycle scope, replayed messages still count only once."""
         console = Console(quiet=True)
         state = StreamState(thread_id="thread-1")
         tracker = FileOpTracker(assistant_id="assistant")
@@ -4497,7 +4509,11 @@ class TestAttemptLifecycle:
 
         _process_stream_chunk(((), "messages", (msg, {})), state, console, tracker)
 
-        assert list(state.recorded_usage_requests) == ["msg-1"]
+        _process_stream_chunk(((), "messages", (msg, {})), state, console, tracker)
+
+        assert state.stats.request_count == 1
+        assert state.stats.input_tokens == 1
+        assert state.stats.output_tokens == 1
 
     def test_usage_is_scoped_per_attempt(self) -> None:
         """A retry reusing the provider message ID records both attempts."""
@@ -4545,8 +4561,6 @@ class TestAttemptLifecycle:
         # The same provider message ID under a new attempt scope counts again
         # rather than being deduped as a replay.
         assert state.stats.request_count == 2
-        assert len(state.recorded_usage_requests) == 2
-        assert all(isinstance(key, tuple) for key in state.recorded_usage_requests)
 
     def _lifecycle_state(self, tmp_path: Path, **kwargs: Any) -> StreamState:
         transcripts = TranscriptStore(tmp_path / "transcripts")

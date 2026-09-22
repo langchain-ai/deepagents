@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f5638ab2b317aae0a2ce7a32c33597b416fe81278c4f7bd8931c206e2b83c1a3",
+  "pageVersion": "sha256:f20b3a008398de34ad5930b8a50366ac6280f7617bb04f2a590394381fa8b2f1",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -18,17 +18,17 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
     {
       "id": "claim_40b27e72b5c8466491476f2b545b4c2e",
-      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries that reject configuration-policy drift and prevent a process-wide sandbox from being shared by different workspaces.",
+      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries keyed by workspace and runtime identity, reject configuration-policy drift, and prevent a process-wide sandbox from being shared by different workspaces.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -68,7 +68,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
+          "version": "repo-file-v1:sha256:382336636929637ef6fdbb837ebcacb9709ef53de4c4c97b225137aafbd5c6a7"
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_retry.py",
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -116,7 +116,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -134,11 +134,11 @@
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py",
-          "version": "repo-file-v1:sha256:42b784f6ef15656744dd10f8f057c87b4cf196db1ed723f311f5b9674295c27e"
+          "version": "repo-file-v1:sha256:2798d8213dc0da5808612a7a74592057efc88c7ceb04eb7d0533b02f4a3e11ac"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:c06239c3cdc31ff4b2b6655649bc93b69bbbae7276d4bdd7795207862ffb7457"
+          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_manager.py",
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:a25170d022328226a30df49726fb546b4bde07c9a179f583892843a8b8e8444a"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/_server_config.py",
-          "version": "repo-file-v1:sha256:50b93c4306c0a4162ad9112ba68dd87a1da4ddf86b713be8abf33585fcf6be0c"
+          "version": "repo-file-v1:sha256:def2cecf5deef444d845dce9c15be64480c2d305ef7b4e6fd288896f813b8be4"
         },
         {
           "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
@@ -196,13 +196,99 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
+        }
+      ]
+    },
+    {
+      "id": "claim_994f1d38d6084e8bad9ccc4f48b1d3af",
+      "statement": "The server-owned offload route serializes operations per thread, refuses active or pending-work threads and stale checkpoints, requires the thread's durable workspace binding, and allowlists checkpoint channels so offload cannot write conversation messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L60-L76",
+          "version": "repo-lines-v1:sha256:0395d0938da1d73d8177ce0cdd8eedef0cd8e11c6acf2b0ba82e6667662ed49d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZTNlZGYxMTRjMGJjNzNkMDc1OTM2YzQ0ZTc5NDRhMTIxZGI1OGJhYTlhNTFlNzAzMWE5ZGZjMmRhNjUzZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZTM2NDI2OTU1MDY4ODI5N2Y0YTAxZmQ3NGRkMGJhOTE5OWJhMjg5OGNmMTBmMTM1ZDBlNzYwMmFkOTExN2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0ZDgyZTI1NzVjM2IzZjQ2NWFkYWVmODhiYzU0OTcwYjUzYzQ4NmM3NzJmYTkwZjZjMTgzZmNmODAzZDEzYmQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L959-L1122",
+          "version": "repo-lines-v1:sha256:ffcfd0b0daa0f3b754cbee2348f8f904da31d0aff62dc2dabe337e64b850f89c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NDQzODM3MjgzMTU3ZTIyNmVkYWI0MjkwZjYyMDE2ZjA4MTVlYmY5ZDg5MmRmMTY0NzVkZmMyYWJiMTYzNGE2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NTIyMDI4Y2ExZWY1M2VkMDkyYTliZGZkYmFkNjljN2YwZmM0MjhjMDQ0N2IzZmY3ZjMwNGU3ZmEzYTNkN2MzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNDZkZjRiZGRlMmE3MGQ4MDc4M2MxMDhjNTU4M2ZhMmE0ZWYyZTlmZGI0ZWZiZGUxZmI2NzEwMWQ2NGFmMWQ2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_de15dfc51ffb4704a09ba1f3451d4bf6",
+      "statement": "At the offload HTTP boundary, client-selected endpoint and transport parameters are stripped, and model selection is replaced with checkpointed model settings so a client cannot redirect credentialed provider calls or choose a model for server-owned compaction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1007-L1035",
+          "version": "repo-lines-v1:sha256:70f60a0c6f9768c24cee804909bd3bff89e21ad052c68f8db80ce5bb00a9f27b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlMWM5ZjUwNDU3OGRhYjAxNmNiZTU4ODgxYzUwOWQzNjI4YmJmYzJkOTY3YjE3OTYxZDFhYzE5NzQ4NDI5YTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1ZWI1MjFkZTc1MWYzY2Y0YjZhMzViZGE1ZTMzYWEzYjk0Nzc2NmM2NjdjZjY2OWM3NDYyOTM0OWYwNDdiZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1YjVlNjM5MjFhODZmNmE2NzBjNTE5YTA1OTFjYWNkNmM4ZmE5MGRiZTY1OTQxMGE3Y2U3M2ZhMTYxM2UwMWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViNTNiNDAwYjQ4NGM2NzJjOTJhYjA3MTA1MjIxNTU2YTZiMzU0NThjNjg3NjJlNzM0YmZkN2I4MjMxMzZmYmYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L473-L550",
+          "version": "repo-lines-v1:sha256:0ea454049dd2e3ffd06a99051957d9f8aed85444c334d35c1d1d66263aecb063:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTg1YTQ1ZWQyYmJkMTk0ZDI1NWM1ZDg2N2VhMjAwNjJjNjM5NzU3YmIxNDYwN2RiMjMwNTRkMDQzMGJjOWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OWRjM2I5Yzk5ZTA4OTc3YmI2YjRkOTIwY2ExZGQ3NmI1YTMxNGM4ZTE4MzU3ZDFiMjNkNGY1MmFmMDYxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZWI3YjlmOGMwOWY4MTE1MWRiZWVjYjlkYzRiNDJhMTZiZjU1NzhmOTkxYTM4NWUyZjE3ZDg0MjAwNmNlYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OTQ4MWQ0ZTU0NTZjOGU2NzlhMjY2ZDIyMjI5YThjOTBmYzE2YTAwMWRlZjJiNzU3Zjc2NDgxZTBkZGE5YzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L682-L721",
+          "version": "repo-lines-v1:sha256:6c474335022ba63de918799d0a62ef7f5871d054d0d13b8f9ab1962894ad638d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYzg3ZDA4NjFkYzc5OTU3MjkzNGNmM2Q3MGQxNmY0YjkwNjRlY2Q3ZGIyNjZlZDQ1M2FkMWFhZWE3YWM1ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMmNhYWEyMmU0ZDFmYmJjMGY1MDYzMDVkZTdlMzhlMzg2NGUwNTkxZGFlN2ViYjNkMzJiZDZjYjVhZjMxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_08139d4670de472ab4b584fcfd0a2c65",
+      "statement": "Offload settles its drained cost reservation conservatively: it rolls back when a failed state write is confirmed unchanged, commits when the checkpoint advanced or cannot be reread to avoid double charging, and rolls back a deferred archive append when its checkpoint link is confirmed absent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L755-L860",
+          "version": "repo-lines-v1:sha256:a922e1933f9c89ad27d6f6d59154285a3a7c0a86413fa13225e741b7c2363ff0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNjY0OTBmNmNiNDNiY2RmOTEyZjI0ZWVjNTAxMzY5Mjg5ZWE2MGMyZTdlYTZiYWFlYmJiNjY5NDg4YTM3MGQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNGI1OTkyMDZjZWEzOTIxNDU5ZmM4ZTY2YzA4MjUxZjZlOTA4ZDI0ODFiODk3NGQ0YmNhOTAzNjZkNTc5NDNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZDgyY2M0M2Y1MjVhNGRjNzQ0OTA2MTZmNTZiNTdmMDY4MTk3MGU1NWE1YTMxOTJlNDgxYTZmZDc3Y2I3YTQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMTYxNGY5NzAyMzc1NDdkOGEwOTk3ZDg3MWVkNzE3YmI3MjI3MzMyYTU1MGM4ZTU5MWVlZDcwZTQ1MmUyODUwIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L886-L939",
+          "version": "repo-lines-v1:sha256:2c62e957b142ee3d3ab33aa6cb1d548fcc512bc2a19409db7d346cfb4902590a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYTVlNzEyNzliOGY2MDRjYTA4YTJkZThiMDIwN2IxNWE1ZjAwMDIxZjI5MTIyNTNlNzg1YTdkY2Y4Y2NlY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzY2FkOTY0OGVhNjViNTY4MWE3NjAwZmUzYjU2MjBmNmRlZDk2ZmVmZjZkYzljMDgzZWYzM2JiNDQzYmZjMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzYThmYWJhMTNiNGVhOWQxN2UwMTlkZjhjNDlhZDI3ODFmMzczNGQzMTIyMmUyMGE4OWU4YjgyMjJhOTczNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYTVmNWVhZjYxYzVhN2JkYWQ3ZTA4NjhlZmI5ZDMyNzkxOTBlMWY4NTc3Y2U2MGI1ZTZhNTQzMzk5YTVhMjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_749a9da45e824dadadc3ad28a9da2a3b",
+      "statement": "The offload protocol uses a stable operation ID across hook-resume POST rounds, retains bounded terminal outcomes for cancellation races, and defers caller cancellation until checkpoint and archive settlement completes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L356-L480",
+          "version": "repo-lines-v1:sha256:12ed34671981a43c2563b53cee12b8f600249d3e38dba49d1ceed598a1861ee5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTViMTA1ZmYxYmZmZTI5YjQ4ZWE1ZTk1YzVjMjBiZDc2MDVmYzVjMmEwODhkMTk0ZDU4YzVkMTY2NzA2MzA0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1108-L1122",
+          "version": "repo-lines-v1:sha256:cc17ce40aff9ae9b3f276057e2c583a42b934c58d034952098f9f9058e79cc4c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZGU4YTBjZjE4Nzc1NWMyNmMxMzMyMjFiOTdlZDJhMzFlOGVmZjI0MTI0YzIyZjVlZDMwYzk3YjBkMzM5MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0NDM4MzcyODMxNTdlMjI2ZWRhYjQyOTBmNjIwMTZmMDgxNWViZjlkODkyZGYxNjQ3NWRmYzJhYmIxNjM0YTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3MDg5NzBjOGI3OWNhZWIzM2RhN2Y3MWQzZWNjODY1MWE5ODlmMjFhZjc0ZmQ2NWJkZGFiMTljMWM1MTdiYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NmRmNGJkZGUyYTcwZDgwNzgzYzEwOGM1NTgzZmEyYTRlZjJlOWZkYjRlZmJkZTFmYjY3MTAxZDY0YWYxZDYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1213-L1233",
+          "version": "repo-lines-v1:sha256:5cafda8183260b518a5ee0298deb3cb1e8a9be1ad62eccbe4860da1647a7e1bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMWU0OTEzODBlMDc2MWM3NTNhYjEzMDg1OWJhNDc3ZTgyYTA1YWJhZmJlMmMzNmQ5MTcxOTdkNjE4M2VlYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkN2FhNGNlMTkwNWRjMWUyNDcxNzI0NWZkM2Y2OGRmMDY0YzZlY2M0NTYyNWI1MjdlMDdlODExZGM2YzBjYTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNTZmN2RiYmIyNzg5NjE1Mjc5MTIxMDY0MTljYWRjMDUzMWYwNjIwY2EyZDkwNmE4MWUzNjJlOGZjMWRhMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4NTQ2NTRkOTM5Yzk2ZjU1NTNhMTFiZGQ0YzM5NTYzMzRmZjEyZGMxNDI0MWU4ZGUzMTc5MDQzZTQ4MDg5NWUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L78-L84",
+          "version": "repo-lines-v1:sha256:2e66a4f0aa6440304ce52985a57143c90f7773b24939d8952946f0b0cc26eec4:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTViMGUxZmM2MjYwMTY2ZGEzMDNjZTRiOTZlNGQ5ZjMyMmYxODA2M2YzZjdkYzBkYzJjZTMyMzMzMWU3NjA0NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjdiZDVjZTNjM2MxODFkNGZlMDE4OWFmMjNiYzRiODkwNjdhOTdmNjEyZTcxMzU2OWYxMWM1ZTk2NDVlOWEyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjIwNzZmNTI1NDMxOGRlNWRlOTZjMzM5NGQyNDQ2NzkwMmRkZTk4MWE5ZGEyNTdmMjM3YjA2YjJjYWFkNzQ4NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzI3NTM2NTRjNDAxNGQ1YWM1NDRiYjJmMmU5OWFmMTFjYThkMjgyN2UzNjJkZjUzODYwNjI3NTFhZmEzMmFhNSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L942-L956",
+          "version": "repo-lines-v1:sha256:16a9ad07a8c0edfcaf442e36b79680120b77bafdf978a43a812fbe756cb64232:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3NDg0NTZmMjUwNzQ3MGYzOTVhNWExYzJlMDYyZGQ0ZmJlZGM3Mzc0ZTI0OTQxZjZlOTU2YzMwN2U0MWU1NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2ZDY3NDBiNzM4ZDY0ZWE0NmFhOTViYTFkMzI0YzgyZTMxMzk2NDM5MmI2ZTZiMzRmNDJhZTE0ZTY5NTZlMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ1YmIxMGE4YTZiMzc2NDMxZDk0NzFhMDI5YThhM2YwYmQ0NTgyZWU0ZmQ5ODE2NTc4NjZjZjdjMThiMmNmYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwMDhiMWYwOWY2ZWVhMGIzYzQ2OTY1NzFmNzQyMzE5NjE2ZmEwNDU3ZTNiODIyOGUzOWI0Mzk0NTU3ZmQ0YTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e864e4d2cd094f1099373b47c2a73ba5",
+      "statement": "Focused offload API tests cover workspace preflight and runtime failures, client policy rejection, checkpoint-model trust, archive-link rollback, and cancellation settlement; non-interactive tests verify forwarding server options and buffered versus incremental stream output.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_non_interactive.py",
+          "version": "repo-file-v1:sha256:592a14a312a1e1e759d689a2cb56d7a1784468313c9837c1a01033ad48f54aeb"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py",
+          "version": "repo-file-v1:sha256:5915a62816377190910aa0f751e2347241cc27172305d69d800adbc1b908db9a"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-22T08:05:41.799Z"
   }
 }

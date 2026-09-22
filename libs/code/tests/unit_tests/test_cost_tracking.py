@@ -8,10 +8,11 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, create_autospec, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from deepagents.backends import StateBackend
@@ -24,8 +25,19 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+    LLMResult,
+)
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -34,8 +46,15 @@ from langgraph.types import Command, Overwrite
 
 from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
+from deepagents_code._session_stats import (
+    SessionStats,
+    finalize_recorded_requests,
+    record_message_usage,
+    record_model_usage_event,
+)
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
+    _MODEL_INVOCATION_METADATA_KEY,
     _RECORDER_VAR,
     MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
@@ -46,14 +65,18 @@ from deepagents_code.cost_tracking import (
     _set_configured_model_metadata,
     estimate_cost,
 )
+from deepagents_code.model_retry import CodeModelRetryMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from pathlib import Path
 
     from genai_prices import UpdatePrices
     from genai_prices.types import Provider
-    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.callbacks import (
+        AsyncCallbackManagerForLLMRun,
+        CallbackManagerForLLMRun,
+    )
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
@@ -231,6 +254,40 @@ def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[A
 class TestEstimateCost:
     """Tests for the shared `genai-prices` adapter."""
 
+    @pytest.mark.parametrize("details_reported", [False, True])
+    def test_category_cost_completeness_requires_usage_details(
+        self, details_reported: bool
+    ) -> None:
+        usage = _usage()
+        if details_reported:
+            usage["input_token_details"] = {}
+            usage["output_token_details"] = {}
+        estimate = cost_tracking._estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        assert estimate is not None
+        breakdown = cost_tracking._breakdown_for_estimate(estimate)
+
+        detailed_usage = _usage(cache_read=200, cache_write=100)
+        detailed_usage["output_token_details"] = {"reasoning": 50}
+        detailed_estimate = cost_tracking._estimate_cost(
+            detailed_usage, KNOWN_MODEL, KNOWN_PROVIDER
+        )
+        assert detailed_estimate is not None
+        detailed_breakdown = cost_tracking._breakdown_for_estimate(detailed_estimate)
+        merged = cost_tracking._merge_cost_breakdowns(breakdown, detailed_breakdown)
+
+        for category in ("cache_read", "cache_creation", "reasoning"):
+            cost = getattr(estimate, f"{category}_cost_usd")
+            if details_reported:
+                assert cost == pytest.approx(0.0)
+            else:
+                assert cost is None
+            assert dict(breakdown)[f"{category}_cost_complete"] is details_reported
+            assert dict(merged)[f"{category}_cost_complete"] is details_reported
+            assert dict(merged)[f"{category}_tokens_complete"] is details_reported
+            assert dict(merged)[f"{category}_cost_usd"] == pytest.approx(
+                dict(detailed_breakdown)[f"{category}_cost_usd"]
+            )
+
 
 def _override_catalog(
     models: list[dict[str, Any]],
@@ -272,6 +329,77 @@ def _override_model(
 
 class TestPriceOverrides:
     """Local pricing catalogs consulted after a primary `LookupError`."""
+
+    @pytest.mark.parametrize("reasoning_rate", [None, 20.0, 0.0])
+    def test_reasoning_cost_preserves_explicit_override_rates(
+        self, monkeypatch: pytest.MonkeyPatch, reasoning_rate: float | None
+    ) -> None:
+        prices = {"input_mtok": 2.0, "output_mtok": 10.0}
+        if reasoning_rate is not None:
+            prices["output_reasoning_mtok"] = reasoning_rate
+        self._install_built_ins(monkeypatch, [_override_model(_OVERRIDE_MODEL, prices)])
+        usage = _usage(output_tokens=1_000)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        expected = 500 * (10 if reasoning_rate is None else reasoning_rate) / 1_000_000
+        assert estimate.reasoning_cost_usd == pytest.approx(expected)
+        assert estimate.output_cost_usd == pytest.approx(0.005 + expected)
+        assert estimate.total_cost_usd == pytest.approx(0.007 + expected)
+
+    @pytest.mark.parametrize(
+        ("input_tokens", "reasoning_cost"), [(1_000, 0.005), (3_000, 0.01)]
+    )
+    def test_inherited_reasoning_cost_uses_parent_pricing_tier(
+        self, monkeypatch: pytest.MonkeyPatch, input_tokens: int, reasoning_cost: float
+    ) -> None:
+        model = _override_model(_OVERRIDE_MODEL, {"input_mtok": 2.0})
+        model["prices"]["output_mtok"] = {
+            "base": 10.0,
+            "tiers": [{"start": 2_000, "price": 20.0}],
+        }
+        self._install_built_ins(monkeypatch, [model])
+        usage = _usage(input_tokens=input_tokens, output_tokens=1_000)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        assert estimate.reasoning_cost_usd == pytest.approx(reasoning_cost)
+        assert estimate.output_cost_usd == pytest.approx(reasoning_cost * 2)
+
+    def test_inherited_cache_cost_preserves_explicit_rates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {
+                        "input_mtok": 2.0,
+                        "output_mtok": 10.0,
+                        "cache_write_mtok": 3.0,
+                        "cache_write_1h_mtok": 4.0,
+                    },
+                )
+            ],
+        )
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_read": 100,
+            "ephemeral_5m_input_tokens": 200,
+            "ephemeral_1h_input_tokens": 300,
+        }
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        assert estimate.cache_read_cost_usd == pytest.approx(0.0002)
+        assert estimate.cache_creation_cost_usd == pytest.approx(0.0018)
+        assert estimate.input_cost_usd == pytest.approx(0.0028)
 
     def _install_raw_built_ins(
         self, monkeypatch: pytest.MonkeyPatch, raw: list[dict[str, Any]]
@@ -542,6 +670,90 @@ class TestPriceCatalogGuard:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
+    @pytest.mark.parametrize("path", ["message", "recorder", "operation"])
+    @pytest.mark.parametrize("provider", ["openai", "ollama", "openai_codex"])
+    def test_unpriced_requests_retain_reported_tokens(
+        self, recorder: _SessionCostRecorder, path: str, provider: str
+    ) -> None:
+        usage = _usage(cache_read=200, cache_write=100)
+        usage["output_token_details"] = {"reasoning": 50}
+        model = "uncatalogued-test-model"
+        if path != "message":
+            _collect(recorder, _record(model=model, provider=provider, usage=usage))
+        state: CostState = {
+            "messages": (
+                [_message(usage, model=model, provider=provider)]
+                if path == "message"
+                else []
+            ),
+        }
+        events: list[dict[str, Any]] = []
+
+        result = (
+            cost_tracking.prepare_operation_cost(state, THREAD_ID).update
+            if path == "operation"
+            else CostTrackingMiddleware().after_model(
+                state, _runtime(thread_id=THREAD_ID, events=events)
+            )
+        )
+
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        assert breakdown["request_count"] == 1
+        assert breakdown["priced_request_count"] == 0
+        for category, count in (
+            ("input", 1_000),
+            ("output", 100),
+            ("cache_read", 200),
+            ("cache_creation", 100),
+            ("reasoning", 50),
+        ):
+            assert breakdown[f"{category}_tokens"] == count
+            assert breakdown[f"{category}_tokens_complete"] is True
+            assert breakdown[f"{category}_cost_complete"] is False
+        assert breakdown["total_cost_usd"] == 0
+        if path != "operation":
+            assert events[0]["breakdown"] == breakdown
+
+    @pytest.mark.parametrize("details_reported", [False, True])
+    def test_unpriced_usage_distinguishes_missing_details_from_zero(
+        self, details_reported: bool
+    ) -> None:
+        usage = _usage()
+        if details_reported:
+            usage["input_token_details"] = {}
+            usage["output_token_details"] = {}
+        result = CostTrackingMiddleware().after_model(
+            {"messages": [_message(usage, provider="openai_codex")]}, _runtime()
+        )
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        for category in ("cache_read", "cache_creation", "reasoning"):
+            assert breakdown[f"{category}_tokens"] == 0
+            assert breakdown[f"{category}_tokens_complete"] is details_reported
+
+    @pytest.mark.parametrize(
+        ("provider", "output"), [("ollama", 100), ("perplexity", 300)]
+    )
+    def test_unpriced_usage_normalizes_cache_and_reasoning_counts(
+        self, provider: str, output: int
+    ) -> None:
+        usage = _usage(cache_read=900)
+        usage["input_token_details"].update(
+            ephemeral_5m_input_tokens=80, ephemeral_1h_input_tokens=80
+        )
+        usage["output_token_details"] = {"reasoning": 200}
+        result = CostTrackingMiddleware().after_model(
+            {"messages": [_message(usage, model="uncatalogued", provider=provider)]},
+            _runtime(),
+        )
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        assert breakdown["cache_read_tokens"] == 900
+        assert breakdown["cache_creation_tokens"] == 100
+        assert breakdown["output_tokens"] == output
+        assert breakdown["reasoning_tokens"] == min(output, 200)
+
     def test_prepared_operation_cost_can_commit_or_rollback(
         self,
         recorder: _SessionCostRecorder,
@@ -564,12 +776,116 @@ class TestCostTrackingMiddleware:
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
 
         assert one_call is not None
-        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert prepared.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert prepared.update["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
         prepared.rollback()
         retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
-        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert retried.update["_session_cost_usd"] == pytest.approx(one_call)
+        assert retried.update["_session_cost_breakdown"]["request_count"] == 1
+
+    @pytest.mark.parametrize("saved_breakdown", [None, {}, {"version": 999}])
+    @pytest.mark.parametrize("saved_cost", [0.0, 1.25])
+    def test_prepared_operation_preserves_legacy_history_gap(
+        self,
+        recorder: _SessionCostRecorder,
+        saved_breakdown: object,
+        saved_cost: float,
+    ) -> None:
+        """The first post-upgrade offload must not erase missing historical detail."""
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {
+                "messages": [_message(_usage(), provider="ollama")],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+                "_session_cost_usd": saved_cost,
+                "_session_cost_breakdown": saved_breakdown,
+            },
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+
+        assert (
+            prepared.update["_session_cost_breakdown"]["historical_complete"] is False
+        )
+
+    @pytest.mark.parametrize("saved_breakdown", [None, {}, {"version": 999}])
+    @pytest.mark.parametrize("saved_cost", [0.0, 1.25])
+    def test_new_request_preserves_legacy_history_gap(
+        self, saved_breakdown: object, saved_cost: float
+    ) -> None:
+        """Checkpoint and stream retain the gap after an old thread continues."""
+        state = cast(
+            "CostState",
+            {
+                "messages": [
+                    _message(_usage(), provider="openai_codex", message_id="old"),
+                    _message(_usage(), message_id="new-request"),
+                ],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+                "_session_cost_usd": saved_cost,
+                "_session_cost_breakdown": saved_breakdown,
+            },
+        )
+        events: list[dict[str, Any]] = []
+
+        result = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID, events=events)
+        )
+
+        assert result is not None
+        assert result["_session_cost_breakdown"]["historical_complete"] is False
+        assert events[0]["breakdown"]["historical_complete"] is False
+        assert events[0]["total"] == pytest.approx(
+            saved_cost + result["_session_cost_usd"]
+        )
+        state["_session_cost_breakdown"] = result["_session_cost_breakdown"]
+        state["messages"].append(_message(_usage(), message_id="later-request"))
+        later = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID, events=events)
+        )
+        assert later is not None
+        assert events[-1]["breakdown"]["historical_complete"] is False
+        assert events[-1]["breakdown"]["request_count"] == 2
+
+    @pytest.mark.parametrize("path", ["message", "recorder", "operation"])
+    def test_first_request_has_complete_history(
+        self, recorder: _SessionCostRecorder, path: str
+    ) -> None:
+        if path != "message":
+            _collect(recorder, _record())
+        state: CostState = {
+            "messages": [] if path == "operation" else [_message(_usage())],
+            "_session_cost_usd": 0.0,
+        }
+        events: list[dict[str, Any]] = []
+        if path == "operation":
+            prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+            result = prepared.update
+            prepared.commit()
+        else:
+            result = CostTrackingMiddleware().after_model(
+                state, _runtime(thread_id=THREAD_ID, events=events)
+            )
+            assert events[0]["breakdown"]["historical_complete"] is True
+
+        assert result is not None
+        assert result["_session_cost_breakdown"]["historical_complete"] is True
+        assert result["_session_cost_breakdown"]["request_count"] == 1
+        state["_session_cost_breakdown"] = result["_session_cost_breakdown"]
+        state["messages"].append(_message(_usage(), message_id="later-request"))
+        later = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID, events=events)
+        )
+        assert later is not None
+        assert events[-1]["breakdown"]["historical_complete"] is True
+        assert events[-1]["breakdown"]["request_count"] == 2
 
     def test_committed_prepare_does_not_restore_records(
         self,
@@ -651,6 +967,116 @@ class TestCostTrackingMiddleware:
         assert result["_session_cost_usd"] == pytest.approx(
             estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         )
+
+    def test_unpriceable_main_with_priced_side_counts_each_request_once(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """State fallback replaces an unpriceable matching recorder contribution."""
+        _collect(
+            recorder,
+            _record(message_id="side", model=KNOWN_MODEL),
+        )
+        _collect(
+            recorder,
+            _record(message_id="main", model="missing-model"),
+        )
+        real_request_estimate = cost_tracking._request_estimate
+
+        def request_estimate(
+            usage_metadata: dict[str, Any] | None,
+            model_name: str,
+            provider: str = "",
+        ) -> object:
+            if model_name == "missing-model":
+                return None
+            return real_request_estimate(usage_metadata, model_name, provider)
+
+        monkeypatch.setattr(cost_tracking, "_request_estimate", request_estimate)
+        state: CostState = {
+            "messages": [_message(_usage(), message_id="main")],
+            "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        }
+
+        result = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID)
+        )
+
+        assert result is not None
+        assert result["_session_cost_breakdown"]["request_count"] == 2
+        assert result["_session_cost_breakdown"]["priced_request_count"] == 2
+
+    def test_zero_cost_breakdown_is_persisted_and_emitted(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Free requests keep tokens and request counts despite a zero USD delta."""
+        _collect(recorder, _record(message_id="free"))
+        estimate = cost_tracking._estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        assert estimate is not None
+        monkeypatch.setattr(
+            cost_tracking,
+            "_request_estimate",
+            lambda *_args: replace(
+                estimate,
+                total_cost_usd=0.0,
+                input_cost_usd=0.0,
+                output_cost_usd=0.0,
+            ),
+        )
+        events: list[dict[str, Any]] = []
+
+        result = CostTrackingMiddleware().after_model(
+            cast("CostState", {"messages": [_message(_usage(), message_id="free")]}),
+            _runtime(thread_id=THREAD_ID, events=events),
+        )
+
+        assert result is not None
+        assert "_session_cost_usd" not in result
+        assert result["_session_cost_breakdown"]["request_count"] == 1
+        assert events[0]["total"] == pytest.approx(0.0)
+        assert events[0]["breakdown"]["request_count"] == 1
+
+    def test_nested_zero_cost_breakdown_transfers_to_parent(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nested free requests transfer structured detail without positive cost."""
+        _collect(
+            recorder,
+            _record(message_id="free", scope="tools:a"),
+            checkpoint_ns="tools:a|model:a",
+        )
+        monkeypatch.setattr(cost_tracking, "_request_estimate", lambda *_args: None)
+        middleware = CostTrackingMiddleware(nested=True)
+        runtime = _runtime(
+            thread_id=THREAD_ID,
+            checkpoint_ns="tools:a|CostTrackingMiddleware.after_model:a",
+        )
+        update = middleware.after_model(
+            cast("CostState", {"messages": [_message(_usage(), message_id="free")]}),
+            runtime,
+        )
+        assert update is not None
+
+        transfer = middleware.after_agent(
+            cast(
+                "CostState",
+                {
+                    "messages": [],
+                    "_session_cost_breakdown": update["_session_cost_breakdown"],
+                },
+            ),
+            runtime,
+        )
+
+        assert transfer is not None
+        pending = transfer["_session_cost_transfers"].value
+        assert pending["tools:a"]["cost_usd"] == pytest.approx(0.0)
+        assert pending["tools:a"]["breakdown"]["request_count"] == 1
 
     def test_nested_agent_checkpoints_and_transfers_cost(
         self, recorder: _SessionCostRecorder
@@ -742,8 +1168,12 @@ class TestCostTrackingMiddleware:
 
         one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         assert one_call is not None
-        assert first == {"_session_cost_usd": pytest.approx(one_call)}
-        assert second == {"_session_cost_usd": pytest.approx(one_call)}
+        assert first is not None
+        assert second is not None
+        assert first["_session_cost_usd"] == pytest.approx(one_call)
+        assert second["_session_cost_usd"] == pytest.approx(one_call)
+        assert first["_session_cost_breakdown"]["request_count"] == 1
+        assert second["_session_cost_breakdown"]["request_count"] == 1
         assert recorder.drain(THREAD_ID) == []
 
     def test_nested_agent_claims_only_transfers_owned_by_its_graph(self) -> None:
@@ -843,7 +1273,10 @@ class TestCostTrackingMiddleware:
         assert priced_providers
         assert set(priced_providers) == {configured_provider}
         if expected_delta is None:
-            assert result is None
+            assert result is not None
+            assert "_session_cost_usd" not in result
+            assert result["_session_cost_breakdown"]["request_count"] == 1
+            assert result["_session_cost_breakdown"]["priced_request_count"] == 0
         else:
             assert result is not None
             assert result["_session_cost_usd"] == pytest.approx(expected_delta)
@@ -916,6 +1349,107 @@ class TestCostTrackingMiddleware:
 class TestSessionCostRecorder:
     """Tests for the callback handler that collects completed requests."""
 
+    async def test_langgraph_stream_carries_invocation_id_from_first_chunk(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Guard the private LangGraph metadata bridge using real callbacks.
+
+        No handler or metadata mocks: upstream changes to callback ordering or
+        per-run metadata must fail here, even before a usage chunk arrives.
+        """
+        agent = create_agent(model=_ResponsesStyleStreamingModel(), tools=[])
+        invocation_ids: list[str] = []
+        async for message, metadata in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, AIMessageChunk)
+            assert isinstance(metadata, dict)
+            if not invocation_ids:
+                assert message.id == "resp_child"
+                assert not message.usage_metadata
+            # Read immediately so later metadata mutation cannot hide a late ID.
+            invocation_id = metadata.get(_MODEL_INVOCATION_METADATA_KEY)
+            assert isinstance(invocation_id, str), (
+                "LangGraph must expose the model invocation ID on every chunk"
+            )
+            invocation_ids.append(invocation_id)
+
+        assert invocation_ids
+        records = recorder.drain(THREAD_ID)
+        assert len(records) == 1
+        assert set(invocation_ids) == {records[0].invocation_id}
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_batched_responses_keep_separate_usage(
+        self, recorder: _SessionCostRecorder, asynchronous: bool
+    ) -> None:
+        from dataclasses import dataclass
+
+        from langgraph.graph import END, START, StateGraph
+
+        @dataclass
+        class BatchState:
+            prompt: str = "hello"
+
+        model = _fake_model(
+            _message(_usage(), message_id="batch-1"),
+            _message(_usage(), message_id="batch-2"),
+        )
+        prompts: list[list[BaseMessage]] = [
+            [HumanMessage("first")],
+            [HumanMessage("second")],
+        ]
+
+        def batch(state: BatchState, config: RunnableConfig) -> BatchState:
+            model.generate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        async def abatch(state: BatchState, config: RunnableConfig) -> BatchState:
+            await model.agenerate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        builder = StateGraph(BatchState)
+        builder.add_node("batch", abatch if asynchronous else batch)
+        builder.add_edge(START, "batch")
+        builder.add_edge("batch", END)
+        graph = builder.compile()
+        deliveries: list[tuple[BaseMessage, dict[str, Any]]] = []
+        async for message, metadata in graph.astream(
+            BatchState(),
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, BaseMessage)
+            assert isinstance(metadata, dict)
+            deliveries.append((message, metadata))
+        stats = SessionStats()
+        ledger = {}
+        for message, metadata in deliveries:
+            record_message_usage(
+                stats, message, request_metadata=metadata, recorded_requests=ledger
+            )
+
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2 * _usage()["input_tokens"]
+        assert stats.output_tokens == 2 * _usage()["output_tokens"]
+        assert {
+            metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in deliveries
+        } == {record.invocation_id for record in recorder.drain(THREAD_ID)}
+        finalize_recorded_requests(ledger)
+        for message, metadata in deliveries:
+            assert (
+                record_message_usage(
+                    stats, message, request_metadata=metadata, recorded_requests=ledger
+                )
+                is None
+            )
+
     def test_nested_request_emits_provisional_usage(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -938,8 +1472,10 @@ class TestSessionCostRecorder:
                 "provider": KNOWN_PROVIDER,
                 "thread_id": THREAD_ID,
                 "scope": "tools:task",
+                "invocation_id": str(events[0]["invocation_id"]),
             }
         ]
+        UUID(events[0]["invocation_id"])
         assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
             "child-1"
         ]
@@ -1066,6 +1602,57 @@ class _QueuedFakeModel(_ToolBindingFakeModel):
 def _fake_model(*messages: AIMessage) -> _QueuedFakeModel:
     """Build a fake model that returns the given responses in order."""
     return _QueuedFakeModel(queue=iter(messages))
+
+
+class _ResponsesStyleStreamingModel(_QueuedFakeModel):
+    """Emit a provider ID first and usage on an ID-less final chunk."""
+
+    disable_streaming: bool = False
+    provider_usage_id: bool = False
+    fail_first: bool = False
+    calls: int = 0
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        self.calls += 1
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", id="resp_child"))
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="done",
+                id="resp_child" if self.provider_usage_id else None,
+                usage_metadata={
+                    "input_tokens": 1_000,
+                    "output_tokens": 100,
+                    "total_tokens": 1_100,
+                },
+            )
+        )
+        if self.fail_first and self.calls == 1:
+            msg = "Retry after partial usage"
+            raise TimeoutError(msg)
+
+
+class _TwiceMiddleware(AgentMiddleware):
+    """Exercise multiple model invocations within a single retry attempt."""
+
+    def __init__(self, *, concurrent: bool) -> None:
+        super().__init__()
+        self.concurrent = concurrent
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        if self.concurrent:
+            return (await asyncio.gather(handler(request), handler(request)))[-1]
+        await handler(request)
+        return await handler(request)
 
 
 def _repeating_fake_model(message_id_prefix: str) -> _QueuedFakeModel:
@@ -1245,6 +1832,121 @@ class TestGraphCostOwnership:
             middleware=stack,
             checkpointer=InMemorySaver(),
         )
+
+    @pytest.mark.parametrize(
+        ("scenario", "provider_usage_id"),
+        [
+            ("plain", False),
+            ("plain", True),
+            ("sequential", True),
+            ("concurrent", True),
+            ("retry", False),
+            ("retry", True),
+        ],
+    )
+    async def test_responses_style_stream_and_callback_share_invocation_id(
+        self, provider_usage_id: bool, scenario: str
+    ) -> None:
+        model = _ResponsesStyleStreamingModel(
+            provider_usage_id=provider_usage_id, fail_first=scenario == "retry"
+        )
+        middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            CostTrackingMiddleware(nested=True)
+        ]
+        if scenario != "plain":
+            middleware.append(CodeModelRetryMiddleware(max_retries=1))
+        if scenario in {"sequential", "concurrent"}:
+            middleware.append(_TwiceMiddleware(concurrent=scenario == "concurrent"))
+        child = create_agent(model=model, tools=[], middleware=middleware)
+
+        @tool
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run the child model."""
+            result = await child.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        parent_call = _message(_usage(), message_id="parent-1")
+        parent_call.tool_calls = [
+            {"name": "task", "args": {"query": "go"}, "id": "t1", "type": "tool_call"}
+        ]
+        agent = self._agent(
+            model=_fake_model(parent_call, _message(_usage(), message_id="parent-2")),
+            tools=[task],
+        )
+        deliveries: list[tuple[str, Any, tuple[tuple[str, ...], str, int] | None]] = []
+        active = {}
+        async for namespace, mode, data in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode=["messages", "custom"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            if not namespace:
+                continue
+            assert isinstance(namespace, tuple)
+            if (
+                mode == "custom"
+                and isinstance(data, dict)
+                and data.get("type") == "model_attempt"
+            ):
+                if data["phase"] == "start":
+                    active[namespace] = (namespace, data["call_id"], data["attempt"])
+                else:
+                    active.pop(namespace, None)
+            elif mode == "messages" or (
+                isinstance(data, dict) and data.get("type") == MODEL_USAGE_EVENT_TYPE
+            ):
+                deliveries.append((mode, data, active.get(namespace)))
+
+        chunks = [
+            (message, metadata)
+            for mode, data, _scope in deliveries
+            if mode == "messages"
+            for message, metadata in [data]
+            if isinstance(message, AIMessageChunk) and message.usage_metadata
+        ]
+        events = [data for mode, data, _scope in deliveries if mode == "custom"]
+        assert len(chunks) == model.calls
+        run_ids = {metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in chunks}
+        assert len(run_ids) == model.calls
+        assert {event["invocation_id"] for event in events} <= run_ids
+
+        stats = SessionStats()
+        ledger = {}
+        for mode, data, scope in deliveries:
+            if mode == "messages":
+                message, metadata = data
+                record_message_usage(
+                    stats,
+                    message,
+                    request_metadata=metadata,
+                    kind="subagent",
+                    recorded_requests=ledger,
+                    attempt_scope=scope,
+                )
+            else:
+                record_model_usage_event(
+                    stats,
+                    data,
+                    active_thread_id=THREAD_ID,
+                    recorded_requests=ledger,
+                    attempt_scope=scope,
+                )
+        assert model.calls == (1 if scenario == "plain" else 2)
+        assert stats.request_count == model.calls
+        assert stats.input_tokens == model.calls * _usage()["input_tokens"]
+        assert stats.output_tokens == model.calls * _usage()["output_tokens"]
+        assert stats.per_kind["subagent"].request_count == model.calls
+        finalize_recorded_requests(ledger)
+        for message, _metadata in chunks:
+            assert (
+                record_message_usage(stats, message, recorded_requests=ledger) is None
+            )
+        for event in events:
+            assert (
+                record_model_usage_event(stats, event, recorded_requests=ledger) is None
+            )
+        assert stats.request_count == model.calls
 
     async def test_streamed_total_matches_the_checkpoint(self) -> None:
         agent = self._agent(model=_fake_model(_message(_usage(), message_id="a")))

@@ -468,7 +468,7 @@ test('topic labels come from the modules a PR touched', () => {
     ['libs/deepagents/deepagents/backends/sandbox.py', ['topic:backends', 'topic:sandboxes']],
     ['libs/code/deepagents_code/mcp_tools.py', ['topic:mcp']],
     ['libs/code/deepagents_code/skills/index.py', ['topic:skills']],
-    ['libs/deepagents/deepagents/profiles/harness/base.py', ['topic:harness']],
+    ['libs/deepagents/deepagents/profiles/harness/base.py', []],
     ['libs/code/deepagents_code/_tracing.py', ['topic:tracing']],
     ['README.md', []],
     ['libs/deepagents/pyproject.toml', []],

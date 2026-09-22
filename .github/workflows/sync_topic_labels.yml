@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 8 * * *"
   workflow_dispatch:
+    inputs:
+      classifier_issue:
+        description: Issue number for a live classifier dry run
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,7 +18,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  classifier-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.classifier_issue != ''
+    environment: labeling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Classify issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CLASSIFIER_ISSUE: ${{ inputs.classifier_issue }}
+          TOPIC_CLASSIFIER_PROVIDER: semif
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_WORKSPACE_ID: ${{ vars.LANGSMITH_WORKSPACE_ID }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { owner, repo } = context.repo;
+            const issue_number = Number.parseInt(process.env.CLASSIFIER_ISSUE, 10);
+            if (!Number.isSafeInteger(issue_number) || issue_number < 1) throw new Error('Invalid issue number');
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+            const { classifyTopicLabels, loadTopicLabels } = require('./.github/scripts/labeling/topic-classifier.js');
+            const allowed = new Set(loadTopicLabels());
+            const labels = await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 });
+            const descriptions = Object.fromEntries(labels
+              .filter(label => allowed.has(label.name) && typeof label.description === 'string' && label.description.trim())
+              .map(label => [label.name, label.description]));
+            let artifact;
+            await classifyTopicLabels(
+              `${issue.title ?? ''}\n\n${issue.body ?? ''}`, Object.keys(descriptions),
+              { descriptions, debug: message => { artifact = message; } },
+            );
+            if (!artifact) throw new Error('Classifier did not emit validated scores');
+            fs.writeFileSync('classifier-scores.json', `${artifact}\n`, { mode: 0o600 });
+
+      - name: Upload scores
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: classifier-scores-${{ inputs.classifier_issue }}
+          path: classifier-scores.json
+          if-no-files-found: error
+
   sync:
+    if: inputs.classifier_issue == ''
     runs-on: ubuntu-latest
     permissions:
       contents: read

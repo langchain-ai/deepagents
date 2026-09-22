@@ -19009,8 +19009,6 @@ class DeepAgentsApp(App):
                 # very next send report "no record of when this thread last
                 # reached the model" seconds after a turn that plainly did.
                 await self._stamp_cache_identity_locally()
-                if turn_stats.cache_write_tokens > 0:
-                    self._refresh_cache_timing()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

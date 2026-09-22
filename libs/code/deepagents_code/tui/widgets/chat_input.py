@@ -2192,6 +2192,18 @@ class ChatInput(Vertical):
         display: none;
     }
 
+    ChatInput #thread-picker-hint {
+        display: none;
+        width: auto;
+        height: 1;
+        margin-left: 1;
+        color: $primary;
+    }
+
+    ChatInput.thread-completion-active #thread-picker-hint {
+        display: block;
+    }
+
     ChatInput .input-row {
         height: auto;
         width: 100%;
@@ -2411,6 +2423,9 @@ class ChatInput(Vertical):
         # Action buttons float on their own z-layer over the top border line so
         # they cost no content row and never overlap the draft text.
         with Horizontal(id="input-actions"):
+            yield Static(
+                "[ ctrl+r browse threads ]", id="thread-picker-hint", markup=False
+            )
             yield InputActionButton(
                 "[ X ]",
                 "clear",
@@ -4233,6 +4248,10 @@ class ChatInput(Vertical):
         prev_suggestions = self._current_suggestions
         self._current_suggestions = suggestions
         self._current_selected_index = selected_index
+        self.set_class(
+            bool(suggestions) and self.active_thread_query() is not None,
+            "thread-completion-active",
+        )
 
         if self._popup:
             # If only the selection changed (same items), skip full rebuild
@@ -4248,6 +4267,7 @@ class ChatInput(Vertical):
         """Clear/hide the completion popup."""
         self._current_suggestions = []
         self._current_selected_index = 0
+        self.remove_class("thread-completion-active")
 
         if self._popup:
             self._popup.hide()

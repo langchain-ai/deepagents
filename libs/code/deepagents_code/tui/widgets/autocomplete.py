@@ -520,7 +520,9 @@ class ThreadCompletionController:
                     filter(
                         None,
                         (
-                            thread.get("agent_name"),
+                            thread.get("agent_name")
+                            if thread.get("agent_name") != "agent"
+                            else None,
                             format_relative_timestamp(thread.get("updated_at")),
                             thread["thread_id"][:8],
                         ),

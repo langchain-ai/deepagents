@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 from inspect import Parameter, signature
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ModelRequest
@@ -51,18 +52,12 @@ def _make_mock_model() -> MagicMock:
 
 
 def _make_messages(n: int, *, total_tokens: int = 120_000) -> list[Any]:
-    """Create a list of mock messages with unique IDs.
+    """Create a list of messages with unique IDs.
 
     The last message is a real AIMessage with usage_metadata so that
     `_is_eligible_for_compaction` can evaluate reported token usage.
     """
-    messages: list[Any] = []
-    for i in range(n - 1):
-        msg = MagicMock()
-        msg.id = f"msg-{i}"
-        msg.content = f"Message {i}"
-        msg.additional_kwargs = {}
-        messages.append(msg)
+    messages: list[Any] = [HumanMessage(content=f"Message {i}", id=f"msg-{i}") for i in range(n - 1)]
     messages.append(
         AIMessage(
             content=f"Message {n - 1}",
@@ -230,7 +225,7 @@ class TestCompactSuccess:
         mw = _make_middleware()
         messages = _make_messages(20)
 
-        prior_summary = MagicMock()
+        prior_summary = HumanMessage(content="Prior summary.")
         prior_event = {
             "cutoff_index": 5,
             "summary_message": prior_summary,
@@ -350,6 +345,116 @@ class TestOffloadFailure:
         event = result.update["_summarization_event"]
         assert event["file_path"] is None
         assert "Summarized 4 messages" in result.update["messages"][0].content
+
+
+_PNG_BYTES = b"\x89PNG\r\n\x1a\nnot-a-real-png"
+_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode("ascii")
+
+
+def _make_media_messages() -> list[Any]:
+    """Messages whose first entry carries an inline base64 image block."""
+    image_block = {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}
+    return [
+        HumanMessage(content=[{"type": "text", "text": "what is in this image?"}, image_block], id="msg-media"),
+        HumanMessage(content="follow up", id="msg-1"),
+        AIMessage(
+            content="answer",
+            usage_metadata={"input_tokens": 0, "output_tokens": 0, "total_tokens": 120_000},
+            response_metadata={"model_provider": _TEST_PROVIDER},
+        ),
+    ]
+
+
+def _make_uploading_backend() -> MagicMock:
+    """Mock backend that accepts media uploads."""
+    backend = _make_mock_backend()
+    upload_resp = MagicMock()
+    upload_resp.error = None
+    backend.upload_files.return_value = [upload_resp]
+    backend.aupload_files = AsyncMock(return_value=[upload_resp])
+    return backend
+
+
+def _assert_media_offloaded(messages: list[Any]) -> None:
+    """The media message must reference an uploaded path, not a `data:` URL."""
+    media_msg = messages[0]
+    assert "data:image/png;base64" not in str(media_msg.content)
+    image_refs = [b for b in media_msg.content_blocks if b.get("type") == "image"]
+    assert len(image_refs) == 1
+    assert image_refs[0]["url"].startswith("/conversation_history/media/")
+
+
+class TestCompactOffloadsInlineMedia:
+    """The compact path must upload inline media before summary and archive.
+
+    Regression: `_run_compact` / `_arun_compact` called `_create_summary` and
+    `_offload_to_backend` on raw messages, so inline `data:` media was dropped
+    by the XML history renderer and never reached the summary prompt.
+    """
+
+    def test_compact_offloads_inline_media_sync(self) -> None:
+        """Sync compact archives and summarizes media as path references."""
+        backend = _make_uploading_backend()
+        mw = _make_middleware(backend=backend)
+        runtime = _make_runtime(_make_media_messages())
+        captured: dict[str, Any] = {}
+
+        def fake_create_summary(msgs: list[Any]) -> str:
+            captured["summary"] = msgs
+            return "Summary."
+
+        def fake_offload(_backend: MagicMock, msgs: list[Any], _session: str) -> str:
+            captured["archive"] = msgs
+            return "/conversation_history/t.md"
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=2),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_create_summary", side_effect=fake_create_summary),
+            patch.object(mw._summarization, "_offload_to_backend", side_effect=fake_offload),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        backend.upload_files.assert_called_once()
+        _assert_media_offloaded(captured["summary"])
+        _assert_media_offloaded(captured["archive"])
+
+    async def test_compact_offloads_inline_media_async(self) -> None:
+        """Async compact archives and summarizes media as path references."""
+        backend = _make_uploading_backend()
+        mw = _make_middleware(backend=backend)
+        runtime = _make_runtime(_make_media_messages())
+        captured: dict[str, Any] = {}
+
+        async def fake_acreate_summary(msgs: list[Any]) -> str:
+            captured["summary"] = msgs
+            return "Summary."
+
+        async def fake_aoffload(_backend: MagicMock, msgs: list[Any], _session: str) -> str:
+            captured["archive"] = msgs
+            return "/conversation_history/t.md"
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=2),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_acreate_summary", side_effect=fake_acreate_summary),
+            patch.object(mw._summarization, "_aoffload_to_backend", side_effect=fake_aoffload),
+        ):
+            result = await mw._arun_compact(runtime)
+
+        assert isinstance(result, Command)
+        backend.aupload_files.assert_called_once()
+        _assert_media_offloaded(captured["summary"])
+        _assert_media_offloaded(captured["archive"])
 
 
 class TestCompactErrorHandling:

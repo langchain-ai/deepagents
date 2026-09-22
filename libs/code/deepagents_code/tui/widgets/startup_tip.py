@@ -27,6 +27,7 @@ _TIPS: dict[str, int] = {
     "Ask /btw side questions and follow-ups while the agent keeps working": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
+    "When the cache expires, press Enter for a summarized new thread or Esc to stay": 1,
     "Use /context-doctor to audit the token cost of injected context": 1,
     "Use /copy to copy the latest message": 3,
     "Press Ctrl+R to search and reuse submitted prompts": 2,

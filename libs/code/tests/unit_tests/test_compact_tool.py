@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents.backends.protocol import BackendProtocol
-    from langchain_core.messages import AnyMessage
 
 
 class TestHITLGating:
@@ -221,6 +220,29 @@ class TestCLICompactionMiddleware:
 
         assert plan is not None
         assert plan.update(None)["_summarization_event"]["file_path"] is None
+        summarization._aoffload_to_backend.assert_not_awaited()
+
+    async def test_handoff_summarizes_even_a_short_recent_tail(self) -> None:
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 0
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        messages: list[AnyMessage] = [HumanMessage("one"), HumanMessage("latest task")]
+
+        assert (
+            await middleware._aplan_forced_compaction_update(
+                {"messages": messages}, runtime
+            )
+            is None
+        )
+        plan = await middleware._aplan_forced_compaction_update(
+            {"messages": messages}, runtime, summarize_all=True
+        )
+
+        assert plan is not None
+        summarization._acreate_summary.assert_awaited_once_with(messages)
+        assert plan.update(None)["_summarization_event"]["cutoff_index"] == 2
         summarization._aoffload_to_backend.assert_not_awaited()
 
     async def test_operation_path_returns_an_absolute_cutoff(self) -> None:

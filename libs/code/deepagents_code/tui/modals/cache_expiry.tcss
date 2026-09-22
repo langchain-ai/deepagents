@@ -1,0 +1,30 @@
+CacheExpiryScreen {
+    align: center middle;
+}
+
+CacheExpiryScreen > Vertical {
+    width: 76;
+    max-width: 90%;
+    height: auto;
+    background: $surface;
+    border: solid $warning;
+    padding: 1 2;
+}
+
+CacheExpiryScreen Static {
+    height: auto;
+}
+
+CacheExpiryScreen .title {
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+
+CacheExpiryScreen .choices {
+    margin: 1 0;
+}
+
+CacheExpiryScreen .hint {
+    color: $text-muted;
+}

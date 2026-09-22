@@ -2143,6 +2143,39 @@ class TestRouteRegistration:
         # converter name and the key it indexes agree.
         assert calls == [("thread-42", "op-1")]
 
+    @pytest.mark.parametrize("summarize_all", [True, "true"])
+    def test_handoff_mode_validation(self, summarize_all: bool | str) -> None:
+        from starlette.testclient import TestClient
+
+        from deepagents_code import offload_api
+        from deepagents_code.offload_middleware import unchanged_offload_result
+
+        execute = AsyncMock(
+            return_value={
+                "status": "complete",
+                "result": unchanged_offload_result("noop", messages=1, tokens=5),
+            }
+        )
+        with (
+            patch.object(offload_api, "_execute_offload", execute),
+            TestClient(offload_api.app) as client,
+        ):
+            response = client.post(
+                "/dcode/threads/thread-42/offload",
+                json={
+                    "operation_id": "handoff",
+                    "context": {},
+                    "summarize_all": summarize_all,
+                },
+            )
+        if isinstance(summarize_all, str):
+            assert response.status_code == 422
+            execute.assert_not_awaited()
+        else:
+            assert response.status_code == 200
+            assert execute.await_args is not None
+            assert execute.await_args.kwargs["summarize_all"] is True
+
     def test_cancel_path_is_registered(self) -> None:
         from starlette.testclient import TestClient
 

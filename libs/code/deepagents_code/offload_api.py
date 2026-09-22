@@ -654,6 +654,9 @@ def _operation_payload(
     if not isinstance(responses, dict):
         msg = "hook_responses must be a JSON object."
         raise TypeError(msg)
+    if not isinstance(payload.get("summarize_all", False), bool):
+        msg = "summarize_all must be a boolean."
+        raise TypeError(msg)
     validated_context = {str(key): value for key, value in context.items()}
     _validate_context(validated_context)
     return (
@@ -964,6 +967,7 @@ async def _execute_offload(
     operation_id: str,
     context: dict[str, Any],
     hook_responses: dict[str, object],
+    summarize_all: bool = False,
 ) -> OffloadResponse:
     """Execute and commit one server-owned offload attempt.
 
@@ -972,6 +976,7 @@ async def _execute_offload(
         operation_id: Opaque client-generated attempt identity.
         context: Runtime model and hooks context.
         hook_responses: Accumulated hook replies keyed by invocation id.
+        summarize_all: Include the recent tail in a fresh-thread summary.
 
     Returns:
         A complete result or a hook request that must be answered.
@@ -1054,7 +1059,9 @@ async def _execute_offload(
         token = var_child_runnable_config.set(config)
         try:
             with operation_hook_responses(hook_responses):
-                execution = await server.offload.execute(state, runtime)
+                execution = await server.offload.execute(
+                    state, runtime, **({"summarize_all": True} if summarize_all else {})
+                )
         except HookTransportInterruptError as interrupt:
             return {
                 "status": "interrupt",
@@ -1168,7 +1175,9 @@ async def offload(request: Request) -> JSONResponse:
     # misreported to the client as a 4xx and, worse, swallowed without a log.
     try:
         thread_id = request.path_params["thread_id"]
-        operation_id, context, hook_responses = _operation_payload(await request.json())
+        payload = await request.json()
+        operation_id, context, hook_responses = _operation_payload(payload)
+        summarize_all = payload.get("summarize_all", False)
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
@@ -1184,6 +1193,7 @@ async def offload(request: Request) -> JSONResponse:
                 operation_id=operation_id,
                 context=context,
                 hook_responses=hook_responses,
+                **({"summarize_all": True} if summarize_all else {}),
             )
         except asyncio.CancelledError:
             outcome = "cancelled"

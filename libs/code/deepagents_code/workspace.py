@@ -24,14 +24,18 @@ from deepagents_code.workspace_diagnostics import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+_STRICT_LEGACY_SCHEMA_VERSION = 3
 """Binding schema generation.
 
-Version 3 resolves project policy per workspace. Version 2 used the launch
-config's fingerprint for every directory, so its project policy values may
-differ from the newly resolved ones. After checking workspace identity and
-session policy, `_bind` migrates old rows instead of rejecting that mismatch
-as configuration drift.
+Version 4 splits the single config fingerprint into a durable policy
+fingerprint (trust/tool/sandbox/approval + workspace identity) and a full
+runtime fingerprint (which also covers model settings). Version 3 resolves
+project policy per workspace. Version 2 used the launch config's fingerprint
+for every directory. `_bind` migrates older rows in place only when the old
+full fingerprint still matches exactly — proof nothing policy-relevant
+changed; otherwise the row is rejected as unprovable. Missing fingerprint
+information is never treated as permission equivalence.
 """
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
@@ -63,11 +67,24 @@ class WorkspaceBinding:
     resource_key: str
     config_fingerprint: str
     workspace_config_json: str
+    policy_fingerprint: str = ""
+    """Durable access-policy fingerprint; empty on pre-v4 rows until migrated."""
+
+    runtime_fingerprint: str = ""
+    """Full runtime identity fingerprint; empty on pre-v4 rows until migrated."""
 
     def to_payload(self) -> WorkspacePayload:
-        """Return the public runtime-context representation."""
+        """Return the public runtime-context representation.
+
+        Fingerprints stay server-side: the payload is workspace *identity*
+        (which the client echoes verbatim), while policy and runtime
+        compatibility are checked against the server-resolved config, not a
+        client-claimed fingerprint.
+        """
         payload = asdict(self)
         payload.pop("workspace_config_json")
+        payload.pop("policy_fingerprint")
+        payload.pop("runtime_fingerprint")
         return cast("WorkspacePayload", payload)
 
     def workspace_config(self) -> dict[str, Any]:
@@ -202,8 +219,8 @@ def resolve_workspace(
     Returns:
         A canonical, fingerprinted binding including the resource policy.
     """
-    config_json, policy_fingerprint = canonical_workspace_config(workspace_config)
-    config_fingerprint = config_fingerprint or policy_fingerprint
+    config_json, payload_fingerprint = canonical_workspace_config(workspace_config)
+    config_fingerprint = config_fingerprint or payload_fingerprint
     canonical_cwd = _canonical_directory(cwd, field="cwd")
     from deepagents_code.project_utils import find_project_root
 
@@ -216,8 +233,22 @@ def resolve_workspace(
             "project_root": str(project_root) if project_root else None,
         }
     )
+    # Durable access-policy compatibility: the persisted payload (policy)
+    # fingerprinted together with the resolved workspace identity. Cosmetic
+    # model settings and runtime-only fields are excluded, so a model change
+    # does not invalidate the binding.
+    policy_fingerprint = canonical_fingerprint(
+        {
+            "cwd": str(canonical_cwd),
+            "policy": json.loads(config_json),
+            "project_root": str(project_root) if project_root else None,
+        }
+    )
+    # `resource_key` is the stable policy+identity key: it must NOT change when
+    # only the runtime identity (model) does, or the payload comparison and
+    # runtime cache would treat a permitted model switch as a new workspace.
     resource_key = canonical_fingerprint(
-        {"workspace_id": workspace_id, "config_fingerprint": config_fingerprint}
+        {"workspace_id": workspace_id, "policy_fingerprint": policy_fingerprint}
     )
     return WorkspaceBinding(
         schema_version=_SCHEMA_VERSION,
@@ -228,6 +259,11 @@ def resolve_workspace(
         resource_key=resource_key,
         config_fingerprint=config_fingerprint,
         workspace_config_json=config_json,
+        policy_fingerprint=policy_fingerprint,
+        # The runtime fingerprint is the full (to_env) fingerprint the caller
+        # passes as `config_fingerprint`; the payload-only fallback covers
+        # callers that supply no server config.
+        runtime_fingerprint=config_fingerprint,
     )
 
 
@@ -262,6 +298,16 @@ def _initialize(conn: sqlite3.Connection) -> None:
             "ALTER TABLE dcode_thread_workspaces "
             "ADD COLUMN workspace_config_json TEXT NOT NULL DEFAULT '{}'"
         )
+    if "policy_fingerprint" not in columns:
+        conn.execute(
+            "ALTER TABLE dcode_thread_workspaces "
+            "ADD COLUMN policy_fingerprint TEXT NOT NULL DEFAULT ''"
+        )
+    if "runtime_fingerprint" not in columns:
+        conn.execute(
+            "ALTER TABLE dcode_thread_workspaces "
+            "ADD COLUMN runtime_fingerprint TEXT NOT NULL DEFAULT ''"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS dcode_workspace_snapshots (
@@ -284,6 +330,8 @@ def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
         resource_key=row["resource_key"],
         config_fingerprint=row["config_fingerprint"],
         workspace_config_json=row["workspace_config_json"],
+        policy_fingerprint=row["policy_fingerprint"],
+        runtime_fingerprint=row["runtime_fingerprint"],
     )
 
 
@@ -382,13 +430,52 @@ def _is_migratable(existing: WorkspaceBinding) -> bool:
     return not existing.config_fingerprint or existing.schema_version < _SCHEMA_VERSION
 
 
+def _policy_drift_names(
+    existing: WorkspaceBinding, proposed: WorkspaceBinding
+) -> list[str]:
+    """Name the durable policy fields that changed between two bindings.
+
+    Compares the persisted policy payloads, tolerating `None`-vs-empty and
+    excluding nothing — the payload already omits cosmetic model settings and
+    runtime-only fields, so any difference here is real policy drift.
+
+    Returns:
+        The drifted policy field names, sorted; empty when policy matches.
+    """
+    bound_policy = existing.workspace_config()
+    proposed_policy = proposed.workspace_config()
+    return sorted(
+        key
+        for key in bound_policy.keys() | proposed_policy.keys()
+        if bound_policy.get(key) != proposed_policy.get(key)
+    )
+
+
 def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> bool:
+    """Whether the proposed binding is incompatible with the persisted one.
+
+    Returns:
+        `True` when the binding must be refused (see `_binding_conflict`).
+    """
     if existing.workspace_id != proposed.workspace_id:
         return True
     if not _is_migratable(existing):
+        # Current rows: only durable policy (and identity) invalidate a binding.
+        # A full-runtime (model) change must not; the runtime fingerprint change
+        # rebuilds the runtime rather than rebinding the thread.
+        if existing.policy_fingerprint:
+            return existing.policy_fingerprint != proposed.policy_fingerprint
         return existing.config_fingerprint != proposed.config_fingerprint
     if not existing.config_fingerprint:
         # Pre-fingerprint rows have no recorded policy to preserve.
+        return False
+    # A v3 row's old fingerprint covered the full runtime and policy. Exact
+    # equality is the only proof that project policy did not change; unlike v2,
+    # v3 recorded enough information to fail closed rather than infer safety
+    # from the narrower session-policy payload.
+    if existing.schema_version >= _STRICT_LEGACY_SCHEMA_VERSION:
+        return existing.config_fingerprint != proposed.config_fingerprint
+    if existing.config_fingerprint == proposed.config_fingerprint:
         return False
     from deepagents_code._server_config import SESSION_WORKSPACE_FIELDS
 
@@ -472,11 +559,12 @@ def _binding_conflict(
                 server_schema_version=proposed.schema_version,
             ),
         )
-    bound_policy = existing.workspace_config()
-    proposed_policy = proposed.workspace_config()
-    drifted = drifted_project_fields(bound_policy, proposed_policy)
-    if drifted:
-        changes = diff_snapshots(snapshot, proposed_snapshot, changed_names=drifted)
+    drifted = _policy_drift_names(existing, proposed)
+    project_drift = drifted_project_fields(
+        existing.workspace_config(), proposed.workspace_config()
+    )
+    changes = diff_snapshots(snapshot, proposed_snapshot, changed_names=drifted)
+    if project_drift:
         return WorkspaceConflictError.from_reason(
             PROJECT_POLICY_DRIFT_REASON,
             diagnostics=WorkspaceDiagnostics(
@@ -486,12 +574,6 @@ def _binding_conflict(
                 snapshot_status=snapshot_status,
             ),
         )
-    session_drift = sorted(
-        key
-        for key in bound_policy.keys() | proposed_policy.keys()
-        if bound_policy.get(key) != proposed_policy.get(key)
-    )
-    changes = diff_snapshots(snapshot, proposed_snapshot, changed_names=session_drift)
     return WorkspaceConflictError.from_reason(
         SERVER_CONFIG_DRIFT_REASON,
         diagnostics=WorkspaceDiagnostics(
@@ -516,8 +598,9 @@ def _bind(
             """
             INSERT OR IGNORE INTO dcode_thread_workspaces (
                 thread_id, schema_version, workspace_id, cwd, project_root,
-                generation, resource_key, config_fingerprint, workspace_config_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                generation, resource_key, config_fingerprint,
+                workspace_config_json, policy_fingerprint, runtime_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thread_id,
@@ -529,6 +612,8 @@ def _bind(
                 proposed.resource_key,
                 proposed.config_fingerprint,
                 proposed.workspace_config_json,
+                proposed.policy_fingerprint,
+                proposed.runtime_fingerprint,
             ),
         )
         if cursor.rowcount:
@@ -558,12 +643,16 @@ def _bind(
             raise conflict
         if _is_migratable(existing):
             # Guard on the fingerprint this transaction actually read, so a
-            # concurrent migration cannot be overwritten after the fact.
+            # concurrent migration cannot be overwritten after the fact. The
+            # migration rewrites the row to the current schema with the new
+            # policy/runtime fingerprints; conversation checkpoints and history
+            # live in separate tables and are untouched.
             conn.execute(
                 """
                 UPDATE dcode_thread_workspaces
                 SET schema_version = ?, resource_key = ?, config_fingerprint = ?,
-                    workspace_config_json = ?
+                    workspace_config_json = ?, policy_fingerprint = ?,
+                    runtime_fingerprint = ?
                 WHERE thread_id = ? AND config_fingerprint = ?
                 """,
                 (
@@ -571,8 +660,36 @@ def _bind(
                     proposed.resource_key,
                     proposed.config_fingerprint,
                     proposed.workspace_config_json,
+                    proposed.policy_fingerprint,
+                    proposed.runtime_fingerprint,
                     thread_id,
                     existing.config_fingerprint,
+                ),
+            )
+            return proposed
+        # Policy-compatible rebind of a current row: refresh the full runtime
+        # fingerprint when the runtime identity (model/params/prompt) changed,
+        # so runtime validation accepts the new model and the runtime cache
+        # rebuilds. The policy fingerprint and workspace identity are unchanged,
+        # and the snapshot/comparison evidence is left intact. Guarded on the
+        # policy fingerprint actually read so a concurrent policy change cannot
+        # be overwritten after the fact.
+        if (
+            existing.policy_fingerprint
+            and existing.policy_fingerprint == proposed.policy_fingerprint
+            and existing.runtime_fingerprint != proposed.runtime_fingerprint
+        ):
+            conn.execute(
+                """
+                UPDATE dcode_thread_workspaces
+                SET runtime_fingerprint = ?, config_fingerprint = ?
+                WHERE thread_id = ? AND policy_fingerprint = ?
+                """,
+                (
+                    proposed.runtime_fingerprint,
+                    proposed.config_fingerprint,
+                    thread_id,
+                    existing.policy_fingerprint,
                 ),
             )
             return proposed
@@ -650,8 +767,12 @@ async def require_thread_workspace(
         msg = "workspace context is required"
         raise TypeError(msg)
     data = cast("dict[str, Any]", payload)
+    # An explicit full `config_fingerprint` (the runtime identity) wins over
+    # recomputing one from `workspace_config`: the payload omits model/runtime
+    # fields, so its digest can never match a stored full fingerprint. Only
+    # fall back to the payload digest when no explicit fingerprint is given.
     claimed_fingerprint = config_fingerprint
-    if workspace_config is not None:
+    if claimed_fingerprint is None and workspace_config is not None:
         _, claimed_fingerprint = canonical_workspace_config(workspace_config)
 
     def _require() -> WorkspaceBinding:

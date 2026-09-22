@@ -4,34 +4,14 @@ title: Context Management and Offloading
 description: How Deep Agents and dcode reduce model-visible context through recoverable result eviction, summary events, overflow recovery, and server-owned offload. Covers storage, state effects, concurrency, and safe operational changes.
 tags: [context-management, summarization, compaction, eviction, offload, middleware, conversation-history]
 sources:
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
     resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-c100a7d2ff8c43af8ad1b816
-    resource: repo://libs/code/deepagents_code/offload_middleware.py
-  - id: openwiki-source-9b6cab59e92c8914079f0f53
-    resource: repo://libs/code/deepagents_code/offload.py
-  - id: openwiki-source-6e002fd7a8a5dcb5186cae05
-    resource: repo://libs/code/tests/integration_tests/test_compact_resume.py
-  - id: openwiki-source-71b99fa3b7baf6ea6b10c6fc
-    resource: repo://libs/code/tests/integration_tests/test_offload_server_side.py
   - id: openwiki-source-6a586415ef68cbe7c7967a41
     resource: repo://libs/code/tests/unit_tests/test_offload_api.py
-  - id: openwiki-source-9841bc6daf811e4615c54a88
-    resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
-  - id: openwiki-source-64b92f60456305edc143f48a
-    resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-f763e99e439a1356866a7aa4
-    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-  - id: openwiki-source-67a4b4f67d5f273ea2b7de14
-    resource: repo://libs/deepagents/tests/unit_tests/test_eviction_replay.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-21T08:06:25.442Z
+    at: 2026-09-22T08:05:41.799Z
 ---
 
 # Context Management and Offloading
@@ -105,7 +85,8 @@ flowchart TD
     Check -->|No| Conflict
     Check -->|Yes| Reserve["Commit permitted summary and cost channels"]
     Reserve --> Append["Append archive under session lock"]
-    Append --> Link["Commit archive path"]
+    Append -->|Write failed| SummaryOnly["Return compacted summary without archive path"]
+    Append -->|Written| Link["Commit archive path"]
     Link -->|Absent| Rollback["Restore prior archive snapshot"]
     Link -->|Unreadable| Unknown["Return indeterminate error"]
     Link -->|Present| Done["Return compacted result"]
@@ -117,9 +98,13 @@ Caption: Server offload reserves checkpoint state before its archive side effect
 
 The endpoint obtains `thread_id` from the URL and requires a non-empty `operation_id`, context, and hook-response mapping. It permits only idle or error-status threads, rejects pending graph work, serializes a thread locally, and rereads checkpoint identity before commit. An `(thread_id, operation_id)` registry rejects duplicate active and remembered terminal attempts; the cancellation endpoint cancels an active operation and waits for a terminal result.
 
-The route is deliberately not a message-rewrite API. `OffloadStateUpdate` permits only `_summarization_event`, `_summarization_session_id`, and `_session_cost_usd`; a runtime allowlist rejects `messages` or any future unapproved channel. If the checkpoint advanced while the summary model was running, no offload state is committed. This prevents overwriting a concurrent turn, though the discarded summary work can still have incurred model cost.
+The route is deliberately not a message-rewrite API. `OffloadStateUpdate` permits only `_summarization_event`, `_summarization_session_id`, `_session_cost_usd`, and `_session_cost_breakdown`; a runtime allowlist rejects `messages` or any future unapproved channel. If the checkpoint advanced while the summary model was running, no offload state is committed. This prevents overwriting a concurrent turn, though the discarded summary work can still have incurred model cost.
 
-For an archive-bearing plan, `_PendingArchive` snapshots the prior archive and is written only after the summary reservation commits. The follow-up event update links the path. If that update is confirmed absent, `_ArchiveAppend.rollback` restores the exact previous content or removes a newly created file; if its outcome cannot be read back, the operation reports an indeterminate error rather than success. Cancellation waits for the deferred settlement task, then re-raises the original cancellation.
+For an archive-bearing plan, `_PendingArchive` snapshots the prior archive and is written only after the summary reservation commits. An append failure is logged but does not undo that already-reserved summary: the completed result has no archive path. When an append succeeds, the follow-up event update links its path. If that update is confirmed absent, `_ArchiveAppend.rollback` restores the exact previous content or removes a newly created file; if its outcome cannot be read back, the operation reports an indeterminate error rather than success. Cancellation waits for the deferred settlement task, then re-raises the original cancellation.
+
+### Focused verification
+
+`test_offload_api.py` exercises the boundary’s failure-sensitive seams: a changed checkpoint makes the operation perform neither a state write nor an archive append; a forbidden channel is rejected before state persistence and returns drained cost records; a failed archive-path link rolls back its append; and cancellation waits for settlement. The same unit suite verifies that request-supplied model transport cannot replace checkpointed trusted settings. These are the regression cases to preserve when changing the commit order or HTTP payload.
 
 Model selection is server-owned at this HTTP trust boundary. Client-supplied model, `model_params`, and `summarization_model` are discarded; trusted main-model settings are restored from checkpoint when present, while the summary model uses server launch configuration. Transport, proxy, client, and header parameters are stripped so a client cannot redirect a credentialed summary request to a chosen endpoint.
 

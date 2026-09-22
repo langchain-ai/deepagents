@@ -4,6 +4,8 @@ title: Models and Harness Profiles
 description: Explains Deep Agents model resolution, provider-construction profiles, and harness profiles that overlay prompts, middleware, and request-time tool visibility. Also covers dcode model construction, runtime switching, and resume-safe per-call settings.
 tags: [profiles, model-resolution, provider-profiles, harness-profiles, dcode, middleware]
 sources:
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-55d5c39401ac52584ce1f973
@@ -38,8 +40,8 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+    at: 2026-09-22T08:05:41.799Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
 ---
 
 # Models and Harness Profiles
@@ -144,9 +146,9 @@ Within a provider `params` table, flat values are provider-wide and a model-name
 
 `profile_overrides` in dcode are different from a `HarnessProfile`: they merge capability metadata into `model.profile` (for example, `max_input_tokens`). dcode reads that metadata into `ModelResult` as context limit and unsupported modalities. It also resolves a retry budget and stamps it on the constructed model; known provider retry loops are disabled so SDK retries do not multiply dcode's model-node retry budget.
 
-`ConfigurableModelMiddleware` is ordinarily outermost, so each model call can read a `CLIContext` from `runtime.context`. A different `model` spec is built with `create_model`; `model_params` shallow-merge into that request's `model_settings`. On a cross-provider move away from Anthropic it removes Anthropic-only settings, and it refreshes the Model Identity prompt section from the new result. Per-thread prompt-cache routing settings are added for Fireworks or OpenAI where eligible without overwriting a user-supplied key.
+`ConfigurableModelMiddleware` is ordinarily outermost, so each model call can read a `CLIContext` from `runtime.context`. dcode installs a state-persisting instance on the main agent with construction-time `ModelResult` metadata; subagent instances disable persistence, and the rubric-grader instance uses strict resolution. A different `model` spec is built with `create_model`; `model_params` shallow-merge into that request's `model_settings`. On a cross-provider move away from Anthropic it removes Anthropic-only settings, and it refreshes the Model Identity prompt section from the new result. Per-thread prompt-cache routing settings are added for Fireworks or OpenAI where eligible without overwriting a user-supplied key.
 
-An invalid runtime replacement normally logs and continues with the current model, but `strict_model_resolution` propagates the configuration error. `ModelNotAllowedError` always propagates rather than silently falling back. Async switching performs model construction off the event loop.
+An invalid runtime replacement normally logs and continues with the current model, but `strict_model_resolution` propagates the configuration error. `ModelNotAllowedError` always propagates rather than silently falling back. Async switching and the configuration/credential reads needed to calculate cache endpoint and effective cache parameters run off the event loop.
 
 After a successful parent call, the middleware returns an `ExtendedModelResponse` carrying a private checkpoint `Command`. It stores the resolved model spec and runtime-only `model_params` for resume; endpoint and effective cache-identity parameters go to separate fields. This separation prevents configured defaults such as headers, temperature, or retry settings from becoming stale session overrides. A failed call produces no update, and subagent middleware instances disable parent-thread persistence.
 
@@ -162,7 +164,9 @@ When extending the system, put reusable client-construction behavior in a `Provi
 
 ## Related pages
 
-- [Middleware stack](/openwiki/architecture/middleware-stack.md)
-- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
 - [Configuration layering](/openwiki/concepts/config-layering.md)
 - [Cost and sessions](/openwiki/operations/cost-and-sessions.md)
+- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
+- [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)

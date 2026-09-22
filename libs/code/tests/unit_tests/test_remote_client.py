@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -374,6 +374,54 @@ async def test_side_refresh_preserves_streamed_graph_cost(
         assert cost["breakdown"] is not None
         assert cost["breakdown"]["total_cost_usd"] == pytest.approx(expected)
         assert cost["breakdown"]["request_count"] == 3
+
+
+@pytest.mark.parametrize("streamed_side_total", [None, 0.25, 0.75])
+@pytest.mark.parametrize("graph_total", [2.0, 3.0])
+async def test_delayed_stream_preserves_refreshed_side_cost(
+    streamed_side_total: float | None, graph_total: float
+) -> None:
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=graph_total, request_count=2)
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    streamed_side = None
+    if streamed_side_total is not None:
+        streamed_side = side.copy()
+        streamed_side["total_cost_usd"] = streamed_side_total
+    initial = {"type": "session_cost", **combine_session_cost(2.0, None, None)}
+    delayed = {
+        "type": "session_cost",
+        "thread_id": _TEST_THREAD_ID,
+        **combine_session_cost(graph_total, main, streamed_side),
+    }
+    agent = _make_agent([((), "custom", initial), ((), "custom", delayed)])
+    stream = agent.astream({}, config=_config())
+    await anext(stream)
+    agent._graph.client.http.get.return_value = {
+        "cost": combine_session_cost(1.0, None, side)
+    }
+    refreshed = await agent.arefresh_side_cost(_config())
+    assert refreshed is not None
+    assert refreshed["total"] == pytest.approx(2.5)
+
+    _, _, event = await anext(stream)
+    assert isinstance(stream, AsyncGenerator)
+    await stream.aclose()  # No completion reconciliation after cancellation.
+    expected = graph_total + max(0.5, streamed_side_total or 0)
+    assert event["type"] == "session_cost"
+    assert event["thread_id"] == _TEST_THREAD_ID
+    assert event["total"] == pytest.approx(expected)
+    assert event["breakdown"]["total_cost_usd"] == pytest.approx(expected)
+    assert event["breakdown"]["request_count"] == 3
+    agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
+    cached = await agent.aget_session_cost(_config())
+    assert cached is not None
+    assert cached["total"] == pytest.approx(expected)
+    assert cached["breakdown"] == event["breakdown"]
 
 
 async def test_side_cost_survives_before_first_graph_checkpoint() -> None:

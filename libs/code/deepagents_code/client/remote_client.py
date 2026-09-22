@@ -719,16 +719,31 @@ class RemoteAgent:
                 and data.get("type") == "session_cost"
                 and isinstance(data.get("total"), int | float)
             ):
-                self._session_costs[thread_id] = {
+                cost_event = data
+                cost: SessionCost = {
                     "total": data["total"],
                     "breakdown": data.get("breakdown"),
                 }
                 if "graph_total" in data:
-                    self._session_costs[thread_id].update(
-                        graph_total=data["graph_total"],
-                        graph_breakdown=data.get("graph_breakdown"),
-                        side_breakdown=data.get("side_breakdown"),
+                    from deepagents_code.btw_cost import combine_session_cost
+
+                    side = data.get("side_breakdown")
+                    previous = self._session_costs.get(thread_id)
+                    known_side = previous.get("side_breakdown") if previous else None
+                    # A side refresh can settle spend before an older graph
+                    # event arrives. Its cumulative side subtotal must survive.
+                    if known_side is not None and (
+                        side is None
+                        or known_side["total_cost_usd"] > side["total_cost_usd"]
+                    ):
+                        side = known_side
+                    cost = combine_session_cost(
+                        data["graph_total"], data.get("graph_breakdown"), side
                     )
+                    cost_event = {**data, **cost}
+                self._session_costs[thread_id] = cost
+                yield (ns, mode, cost_event)
+                continue
             yield (ns, mode, data)
 
         if dropped_count:

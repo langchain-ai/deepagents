@@ -16,54 +16,18 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-ea49272aef6bfc33d634a15c
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
-  - id: openwiki-source-ba6aa10dca5a8aea05030887
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_operations.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-667fd72e0b93552f91d3888d
-    resource: repo://libs/partners/AGENTS.md
-  - id: openwiki-source-7c1cff57fb2b25a4a7848547
-    resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
-  - id: openwiki-source-da577cbe81ec29338f1388b2
-    resource: repo://libs/partners/daytona/pyproject.toml
-  - id: openwiki-source-a7a618389fa5cf95185c7070
-    resource: repo://libs/partners/daytona/tests/integration_tests/test_integration.py
-  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
-    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-936554ac5f0a201f8696be25
-    resource: repo://libs/partners/modal/pyproject.toml
-  - id: openwiki-source-47e7cf704d54342cf95c8125
-    resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
-  - id: openwiki-source-e93ea9e1f8eb3113683abb76
-    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-b38d20ec21c25c8c726dc1b6
     resource: repo://libs/partners/quickjs/pyproject.toml
-  - id: openwiki-source-432765ddd062caf048e7f51e
-    resource: repo://libs/partners/quickjs/README.md
-  - id: openwiki-source-cbe167006ecbe803d01c6520
-    resource: repo://libs/partners/runloop/langchain_runloop/provider.py
-  - id: openwiki-source-8d2c8381956c1c023bcdb565
-    resource: repo://libs/partners/runloop/pyproject.toml
-  - id: openwiki-source-c16a7598b4b3a3ef0cee3328
-    resource: repo://libs/partners/runloop/tests/integration_tests/test_integration.py
-  - id: openwiki-source-edb310aff3786a7a99593231
-    resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
-  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
-    resource: repo://libs/partners/vercel/pyproject.toml
-  - id: openwiki-source-1176ea0659c06327fcdf25b1
-    resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-21T08:06:25.442Z
+    at: 2026-09-22T08:05:41.799Z
 ---
 
 # Sandbox and Partner Backends
@@ -151,7 +115,7 @@ Partner packages under `libs/partners/` are independently versioned distribution
 
 ### QuickJS compatibility constraints
 
-`langchain-quickjs` 0.3.7 requires `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.2,<2.0.0`, `langchain-core>=1.6.3,<2.0.0`, `langgraph>=1.2.11,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`. The package itself supports Python 3.11+, but `deepagents-code` supports Python 3.12+ and pins `deepagents==0.7.15`; that pin is inside QuickJS's declared Deep Agents range. `deepagents` exposes QuickJS as an optional dependency at `langchain-quickjs>=0.3.7`, while dcode accepts `langchain-quickjs>=0.3.4,<0.4.0`. Consequently, a dcode installation on a supported interpreter can resolve the repository's 0.3.7 QuickJS package, whereas a standalone QuickJS integration may run on Python 3.11. Keep these constraints aligned when upgrading either side of the middleware boundary.
+`langchain-quickjs` 0.3.7 requires `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.2,<2.0.0`, `langchain-core>=1.6.4,<2.0.0`, `langgraph>=1.2.12,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`. The package itself supports Python 3.11+, but `deepagents-code` supports Python 3.12+ and pins `deepagents==0.7.17`; that pin is inside QuickJS's declared Deep Agents range. `deepagents` exposes QuickJS as an optional dependency at `langchain-quickjs>=0.3.7`, while dcode accepts `langchain-quickjs>=0.3.4,<0.4.0`. Consequently, a dcode installation on a supported interpreter can resolve the repository's 0.3.7 QuickJS package, whereas a standalone QuickJS integration may run on Python 3.11. Keep these constraints aligned when upgrading either side of the middleware boundary.
 
 | Package | Boundary | Key behavior |
 | --- | --- | --- |

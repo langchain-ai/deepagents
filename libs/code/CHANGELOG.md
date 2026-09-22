@@ -4,33 +4,26 @@
 
 ## [0.1.73](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.72...deepagents-code==0.1.73) (2026-09-22)
 
-
 ### Features
 
-* **code:** add durable Debug Console cost breakdown ([#6246](https://github.com/langchain-ai/deepagents/issues/6246)) ([c981748](https://github.com/langchain-ai/deepagents/commit/c9817483eeea620b1523dcfaed2802269c79d4fe))
-* **code:** copy highlighted thread ID with `ctrl+c` ([#6431](https://github.com/langchain-ai/deepagents/issues/6431)) ([0a6bd89](https://github.com/langchain-ai/deepagents/commit/0a6bd899a0760af76bca025ea6af39997b78e611))
-* **code:** show cache timing in the footer ([#6394](https://github.com/langchain-ai/deepagents/issues/6394)) ([f4c226b](https://github.com/langchain-ai/deepagents/commit/f4c226b21cc07ee6cee6472ed726f86e69b8af36))
-
+- Added cache bust timer to the footer. ([#6394](https://github.com/langchain-ai/deepagents/pull/6394))
+- Added a durable Debug Console cost breakdown. ([#6246](https://github.com/langchain-ai/deepagents/pull/6246))
+- Added support for copying the highlighted thread ID with `Ctrl+C`. ([#6431](https://github.com/langchain-ai/deepagents/pull/6431))
 
 ### Bug Fixes
 
-* **code:** anchor editable refresh to its checkout ([#6455](https://github.com/langchain-ai/deepagents/issues/6455)) ([a6d844d](https://github.com/langchain-ai/deepagents/commit/a6d844d47126bb905f30e76569110cd68294a0b3))
-* **code:** clarify compaction prompt ([#6429](https://github.com/langchain-ai/deepagents/issues/6429)) ([15cf630](https://github.com/langchain-ai/deepagents/commit/15cf6301e49e00963df876b6697fcc7c42d027d8))
-* **code:** clarify thread message count header ([#6428](https://github.com/langchain-ai/deepagents/issues/6428)) ([e775680](https://github.com/langchain-ai/deepagents/commit/e775680e1cb5a52ba816e6c4663a647a7025d566))
-* **code:** clean up new sandboxes when setup fails ([#6475](https://github.com/langchain-ai/deepagents/issues/6475)) ([1ec8996](https://github.com/langchain-ai/deepagents/commit/1ec8996c91fa6f68b3ec8145f279b8c1dea5dc20))
-* **code:** deduplicate mixed-ID model usage ([#6432](https://github.com/langchain-ai/deepagents/issues/6432)) ([bdca132](https://github.com/langchain-ai/deepagents/commit/bdca132ee7fbf84ab611392adb6846a1c545d26c))
-* **code:** diagnose workspace binding and runtime refusals ([#6384](https://github.com/langchain-ai/deepagents/issues/6384)) ([f9ffd51](https://github.com/langchain-ai/deepagents/commit/f9ffd51154296f81f832f5f184407bc0067acbaf))
-* **code:** keep installation locks outside the uv tool directory ([#6472](https://github.com/langchain-ai/deepagents/issues/6472)) ([ec128d1](https://github.com/langchain-ai/deepagents/commit/ec128d14bd59561e955115c39b8d2a1cdd4dc720))
-* **code:** keep thread picker resume failures recoverable ([#6476](https://github.com/langchain-ai/deepagents/issues/6476)) ([6a41c53](https://github.com/langchain-ai/deepagents/commit/6a41c537fb1d4af7a34ef2340fff0f1c088548f4))
-* **code:** preserve `ask_user` consent receipts across user turns ([#6307](https://github.com/langchain-ai/deepagents/issues/6307)) ([ca00490](https://github.com/langchain-ai/deepagents/commit/ca004904d1e48385d805d6e3b7f62f82739cfc11))
-* **code:** reconcile interrupted tool requests ([#6321](https://github.com/langchain-ai/deepagents/issues/6321)) ([376e988](https://github.com/langchain-ai/deepagents/commit/376e988f98fea5e501050efe250d683259e551f5))
-* **code:** remove contradictory and invalid system-prompt instructions ([#6072](https://github.com/langchain-ai/deepagents/issues/6072)) ([2776a66](https://github.com/langchain-ai/deepagents/commit/2776a66a955976e4fffbf4cd8612828012feaebc))
-* **code:** restrict auto classifier IDs to the review batch enum ([#6250](https://github.com/langchain-ai/deepagents/issues/6250)) ([6152733](https://github.com/langchain-ai/deepagents/commit/6152733cbd6b73709a704f3f41b93e2576c5cd52))
-* **code:** separate access-policy compatibility from runtime identity ([#6386](https://github.com/langchain-ai/deepagents/issues/6386)) ([95c7630](https://github.com/langchain-ai/deepagents/commit/95c763059fdec12991232fc63418755ba568af74))
-* **code:** show loading labels for thread details ([#6430](https://github.com/langchain-ai/deepagents/issues/6430)) ([5c09b92](https://github.com/langchain-ai/deepagents/commit/5c09b9291924df7f67fbc73fda2214a0a50005ea))
-* **code:** show session cost warnings in a modal ([#6393](https://github.com/langchain-ai/deepagents/issues/6393)) ([c1395da](https://github.com/langchain-ai/deepagents/commit/c1395dab009690a30d495bfcae33fb92f62d08c4))
-* **code:** suppress historical cost warnings on resume ([#6471](https://github.com/langchain-ai/deepagents/issues/6471)) ([13170ea](https://github.com/langchain-ai/deepagents/commit/13170ea5b07206c94d535141af7e311666f17b7b))
-* **code:** use UTF-8 for prompts and skill files ([#6474](https://github.com/langchain-ai/deepagents/issues/6474)) ([8feaa0f](https://github.com/langchain-ai/deepagents/commit/8feaa0fcce7ee967b1411c247d6f4eab202aa66d))
+- Improved cost-warning behavior by showing session cost warnings in a modal and suppressing historical cost warnings when resuming. ([#6393](https://github.com/langchain-ai/deepagents/pull/6393), [#6471](https://github.com/langchain-ai/deepagents/pull/6471))
+- Made thread browsing and resume flows more resilient with recoverable thread-picker resume failures, loading labels for thread details, and a clearer thread message count header. ([#6476](https://github.com/langchain-ai/deepagents/pull/6476), [#6430](https://github.com/langchain-ai/deepagents/pull/6430), [#6428](https://github.com/langchain-ai/deepagents/pull/6428))
+- Removed contradictory and invalid system-prompt instructions. ([#6072](https://github.com/langchain-ai/deepagents/pull/6072))
+- Preserved `ask_user` consent receipts across user turns and reconciled interrupted tool requests. ([#6307](https://github.com/langchain-ai/deepagents/pull/6307), [#6321](https://github.com/langchain-ai/deepagents/pull/6321))
+- Cleaned up newly created sandboxes when setup fails. ([#6475](https://github.com/langchain-ai/deepagents/pull/6475))
+- Fixed editable refreshes so they stay anchored to the correct checkout. ([#6455](https://github.com/langchain-ai/deepagents/pull/6455))
+- Kept installation locks outside the uv tool directory. ([#6472](https://github.com/langchain-ai/deepagents/pull/6472))
+- Improved workspace and runtime diagnostics, including separating access-policy compatibility from runtime identity. ([#6384](https://github.com/langchain-ai/deepagents/pull/6384), [#6386](https://github.com/langchain-ai/deepagents/pull/6386))
+- Deduplicated mixed-ID model usage. ([#6432](https://github.com/langchain-ai/deepagents/pull/6432))
+- Clarified the compaction prompt. ([#6429](https://github.com/langchain-ai/deepagents/pull/6429))
+- Restricted auto classifier IDs to the review batch enum. ([#6250](https://github.com/langchain-ai/deepagents/pull/6250))
+- Used UTF-8 for prompts and skill files. ([#6474](https://github.com/langchain-ai/deepagents/pull/6474))
 
 ## [0.1.72](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.71...deepagents-code==0.1.72) (2026-09-21)
 

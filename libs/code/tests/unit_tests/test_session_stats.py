@@ -46,6 +46,37 @@ class TestSessionStats:
 class TestRecordMessageUsage:
     """Client-side accounting for usage arriving on the message stream."""
 
+    @pytest.mark.parametrize("generation_index", [0, 12])
+    @pytest.mark.parametrize("completion_first", [False, True])
+    def test_generation_id_replay_keeps_one_request(
+        self, generation_index: int, completion_first: bool
+    ) -> None:
+        invocation_id = "00000000-0000-0000-0000-000000000123"
+        message = AIMessage(
+            content="done",
+            id=f"lc_run--{invocation_id}-{generation_index}",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+            },
+        )
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        identities = (
+            (invocation_id, None) if completion_first else (None, invocation_id)
+        )
+        for identity in identities:
+            record_message_usage(
+                stats, message, invocation_id=identity, recorded_requests=ledger
+            )
+        finalize_recorded_requests(ledger)
+
+        assert record_message_usage(stats, message, recorded_requests=ledger) is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 10
+
     @staticmethod
     def _chunk(
         input_tokens: int,

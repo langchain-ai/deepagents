@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sys
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
@@ -982,7 +983,14 @@ def record_message_usage(
         metadata_id if isinstance(metadata_id, str) and metadata_id else None
     )
     if not invocation_id and message_id and message_id.startswith("lc_run--"):
-        invocation_id = message_id.removeprefix("lc_run--")
+        # Non-streaming generations append an index to the model run UUID.
+        # Preserve the existing inference for IDs without a generation suffix.
+        match = re.fullmatch(
+            r"lc_run--([0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})"
+            r"(?:-\d+)?",
+            message_id,
+        )
+        invocation_id = match[1] if match else message_id.removeprefix("lc_run--")
     request_id, aliases = _usage_ledger_key(
         recorded_requests, message_id, attempt_scope, invocation_id
     )

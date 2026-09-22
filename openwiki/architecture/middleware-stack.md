@@ -1,11 +1,8 @@
 ---
 type: architecture pattern
-title: Middleware Stack and Customization Boundaries
+title: Middleware Stack Assembly
 description: How create_deep_agent assembles and filters the ordered middleware stacks for a main agent and its subagents. Covers profile exclusions, caller insertion and replacement, state boundaries, and the distinction between middleware and ordinary tools.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-08T08:05:55.853Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -27,10 +24,13 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-454da083c2cc29febd156c7e
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-08T08:05:55.853Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T16:46:37.183Z
 ---
 
-# Middleware Stack and Customization Boundaries
+# Middleware Stack Assembly
 
 `create_deep_agent()` is a harness assembler, not a separate agent runtime. It resolves the model and applicable `HarnessProfile`, constructs ordered `AgentMiddleware`, and passes the final main stack to LangChain's `create_agent()`, which owns the model/tool loop. The passed-through graph options include the system prompt, tools, response format, schemas, checkpointing, store, debugging, name, and cache. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md) for the runtime boundary.
 

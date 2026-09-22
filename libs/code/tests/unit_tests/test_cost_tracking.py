@@ -12,7 +12,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, create_autospec, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from deepagents.backends import StateBackend
@@ -25,8 +25,19 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+    LLMResult,
+)
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -35,8 +46,15 @@ from langgraph.types import Command, Overwrite
 
 from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
+from deepagents_code._session_stats import (
+    SessionStats,
+    finalize_recorded_requests,
+    record_message_usage,
+    record_model_usage_event,
+)
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
+    _MODEL_INVOCATION_METADATA_KEY,
     _RECORDER_VAR,
     MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
@@ -47,14 +65,18 @@ from deepagents_code.cost_tracking import (
     _set_configured_model_metadata,
     estimate_cost,
 )
+from deepagents_code.model_retry import CodeModelRetryMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from pathlib import Path
 
     from genai_prices import UpdatePrices
     from genai_prices.types import Provider
-    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.callbacks import (
+        AsyncCallbackManagerForLLMRun,
+        CallbackManagerForLLMRun,
+    )
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
@@ -1084,6 +1106,107 @@ class TestCostTrackingMiddleware:
 class TestSessionCostRecorder:
     """Tests for the callback handler that collects completed requests."""
 
+    async def test_langgraph_stream_carries_invocation_id_from_first_chunk(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Guard the private LangGraph metadata bridge using real callbacks.
+
+        No handler or metadata mocks: upstream changes to callback ordering or
+        per-run metadata must fail here, even before a usage chunk arrives.
+        """
+        agent = create_agent(model=_ResponsesStyleStreamingModel(), tools=[])
+        invocation_ids: list[str] = []
+        async for message, metadata in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, AIMessageChunk)
+            assert isinstance(metadata, dict)
+            if not invocation_ids:
+                assert message.id == "resp_child"
+                assert not message.usage_metadata
+            # Read immediately so later metadata mutation cannot hide a late ID.
+            invocation_id = metadata.get(_MODEL_INVOCATION_METADATA_KEY)
+            assert isinstance(invocation_id, str), (
+                "LangGraph must expose the model invocation ID on every chunk"
+            )
+            invocation_ids.append(invocation_id)
+
+        assert invocation_ids
+        records = recorder.drain(THREAD_ID)
+        assert len(records) == 1
+        assert set(invocation_ids) == {records[0].invocation_id}
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_batched_responses_keep_separate_usage(
+        self, recorder: _SessionCostRecorder, asynchronous: bool
+    ) -> None:
+        from dataclasses import dataclass
+
+        from langgraph.graph import END, START, StateGraph
+
+        @dataclass
+        class BatchState:
+            prompt: str = "hello"
+
+        model = _fake_model(
+            _message(_usage(), message_id="batch-1"),
+            _message(_usage(), message_id="batch-2"),
+        )
+        prompts: list[list[BaseMessage]] = [
+            [HumanMessage("first")],
+            [HumanMessage("second")],
+        ]
+
+        def batch(state: BatchState, config: RunnableConfig) -> BatchState:
+            model.generate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        async def abatch(state: BatchState, config: RunnableConfig) -> BatchState:
+            await model.agenerate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        builder = StateGraph(BatchState)
+        builder.add_node("batch", abatch if asynchronous else batch)
+        builder.add_edge(START, "batch")
+        builder.add_edge("batch", END)
+        graph = builder.compile()
+        deliveries: list[tuple[BaseMessage, dict[str, Any]]] = []
+        async for message, metadata in graph.astream(
+            BatchState(),
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, BaseMessage)
+            assert isinstance(metadata, dict)
+            deliveries.append((message, metadata))
+        stats = SessionStats()
+        ledger = {}
+        for message, metadata in deliveries:
+            record_message_usage(
+                stats, message, request_metadata=metadata, recorded_requests=ledger
+            )
+
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2 * _usage()["input_tokens"]
+        assert stats.output_tokens == 2 * _usage()["output_tokens"]
+        assert {
+            metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in deliveries
+        } == {record.invocation_id for record in recorder.drain(THREAD_ID)}
+        finalize_recorded_requests(ledger)
+        for message, metadata in deliveries:
+            assert (
+                record_message_usage(
+                    stats, message, request_metadata=metadata, recorded_requests=ledger
+                )
+                is None
+            )
+
     def test_nested_request_emits_provisional_usage(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1106,8 +1229,10 @@ class TestSessionCostRecorder:
                 "provider": KNOWN_PROVIDER,
                 "thread_id": THREAD_ID,
                 "scope": "tools:task",
+                "invocation_id": str(events[0]["invocation_id"]),
             }
         ]
+        UUID(events[0]["invocation_id"])
         assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
             "child-1"
         ]
@@ -1234,6 +1359,57 @@ class _QueuedFakeModel(_ToolBindingFakeModel):
 def _fake_model(*messages: AIMessage) -> _QueuedFakeModel:
     """Build a fake model that returns the given responses in order."""
     return _QueuedFakeModel(queue=iter(messages))
+
+
+class _ResponsesStyleStreamingModel(_QueuedFakeModel):
+    """Emit a provider ID first and usage on an ID-less final chunk."""
+
+    disable_streaming: bool = False
+    provider_usage_id: bool = False
+    fail_first: bool = False
+    calls: int = 0
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        self.calls += 1
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", id="resp_child"))
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="done",
+                id="resp_child" if self.provider_usage_id else None,
+                usage_metadata={
+                    "input_tokens": 1_000,
+                    "output_tokens": 100,
+                    "total_tokens": 1_100,
+                },
+            )
+        )
+        if self.fail_first and self.calls == 1:
+            msg = "Retry after partial usage"
+            raise TimeoutError(msg)
+
+
+class _TwiceMiddleware(AgentMiddleware):
+    """Exercise multiple model invocations within a single retry attempt."""
+
+    def __init__(self, *, concurrent: bool) -> None:
+        super().__init__()
+        self.concurrent = concurrent
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        if self.concurrent:
+            return (await asyncio.gather(handler(request), handler(request)))[-1]
+        await handler(request)
+        return await handler(request)
 
 
 def _repeating_fake_model(message_id_prefix: str) -> _QueuedFakeModel:
@@ -1413,6 +1589,121 @@ class TestGraphCostOwnership:
             middleware=stack,
             checkpointer=InMemorySaver(),
         )
+
+    @pytest.mark.parametrize(
+        ("scenario", "provider_usage_id"),
+        [
+            ("plain", False),
+            ("plain", True),
+            ("sequential", True),
+            ("concurrent", True),
+            ("retry", False),
+            ("retry", True),
+        ],
+    )
+    async def test_responses_style_stream_and_callback_share_invocation_id(
+        self, provider_usage_id: bool, scenario: str
+    ) -> None:
+        model = _ResponsesStyleStreamingModel(
+            provider_usage_id=provider_usage_id, fail_first=scenario == "retry"
+        )
+        middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            CostTrackingMiddleware(nested=True)
+        ]
+        if scenario != "plain":
+            middleware.append(CodeModelRetryMiddleware(max_retries=1))
+        if scenario in {"sequential", "concurrent"}:
+            middleware.append(_TwiceMiddleware(concurrent=scenario == "concurrent"))
+        child = create_agent(model=model, tools=[], middleware=middleware)
+
+        @tool
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run the child model."""
+            result = await child.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        parent_call = _message(_usage(), message_id="parent-1")
+        parent_call.tool_calls = [
+            {"name": "task", "args": {"query": "go"}, "id": "t1", "type": "tool_call"}
+        ]
+        agent = self._agent(
+            model=_fake_model(parent_call, _message(_usage(), message_id="parent-2")),
+            tools=[task],
+        )
+        deliveries: list[tuple[str, Any, tuple[tuple[str, ...], str, int] | None]] = []
+        active = {}
+        async for namespace, mode, data in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode=["messages", "custom"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            if not namespace:
+                continue
+            assert isinstance(namespace, tuple)
+            if (
+                mode == "custom"
+                and isinstance(data, dict)
+                and data.get("type") == "model_attempt"
+            ):
+                if data["phase"] == "start":
+                    active[namespace] = (namespace, data["call_id"], data["attempt"])
+                else:
+                    active.pop(namespace, None)
+            elif mode == "messages" or (
+                isinstance(data, dict) and data.get("type") == MODEL_USAGE_EVENT_TYPE
+            ):
+                deliveries.append((mode, data, active.get(namespace)))
+
+        chunks = [
+            (message, metadata)
+            for mode, data, _scope in deliveries
+            if mode == "messages"
+            for message, metadata in [data]
+            if isinstance(message, AIMessageChunk) and message.usage_metadata
+        ]
+        events = [data for mode, data, _scope in deliveries if mode == "custom"]
+        assert len(chunks) == model.calls
+        run_ids = {metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in chunks}
+        assert len(run_ids) == model.calls
+        assert {event["invocation_id"] for event in events} <= run_ids
+
+        stats = SessionStats()
+        ledger = {}
+        for mode, data, scope in deliveries:
+            if mode == "messages":
+                message, metadata = data
+                record_message_usage(
+                    stats,
+                    message,
+                    request_metadata=metadata,
+                    kind="subagent",
+                    recorded_requests=ledger,
+                    attempt_scope=scope,
+                )
+            else:
+                record_model_usage_event(
+                    stats,
+                    data,
+                    active_thread_id=THREAD_ID,
+                    recorded_requests=ledger,
+                    attempt_scope=scope,
+                )
+        assert model.calls == (1 if scenario == "plain" else 2)
+        assert stats.request_count == model.calls
+        assert stats.input_tokens == model.calls * _usage()["input_tokens"]
+        assert stats.output_tokens == model.calls * _usage()["output_tokens"]
+        assert stats.per_kind["subagent"].request_count == model.calls
+        finalize_recorded_requests(ledger)
+        for message, _metadata in chunks:
+            assert (
+                record_message_usage(stats, message, recorded_requests=ledger) is None
+            )
+        for event in events:
+            assert (
+                record_model_usage_event(stats, event, recorded_requests=ledger) is None
+            )
+        assert stats.request_count == model.calls
 
     async def test_streamed_total_matches_the_checkpoint(self) -> None:
         agent = self._agent(model=_fake_model(_message(_usage(), message_id="a")))

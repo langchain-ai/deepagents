@@ -1427,7 +1427,7 @@ def _ask_user_exchange_rows(
     return rows
 
 
-def _same_turn_user_answers(
+def _user_answer_evidence(
     request: ModelRequest,
     messages: Sequence[object],
     current_calls: Sequence[ToolCall],
@@ -1460,17 +1460,23 @@ def _same_turn_user_answers(
         return [], None
 
     call_id_counts: dict[str, int] = {}
-    exchanges: list[tuple[ToolCall, ToolMessage, str, int]] = []
+    exchanges: list[tuple[ToolCall, list[ToolMessage], str, int]] = []
+    pending: dict[str, list[ToolMessage]] = {}
     trusted_prompt_indices: list[int] = []
     exchange_turn_id: str | None = None
     exchange_prompt_index: int | None = None
     for index, message in enumerate(messages):
         if isinstance(message, HumanMessage):
+            pending.clear()
             prompt_rows, _index = _trusted_prompt_rows([message])
             if prompt_rows:
                 trusted_prompt_indices.append(index)
                 exchange_turn_id = prompt_rows[0]["turn_id"]
                 exchange_prompt_index = index
+            continue
+        if isinstance(message, ToolMessage):
+            if message.tool_call_id in pending:
+                pending[message.tool_call_id].append(message)
             continue
         if not isinstance(message, AIMessage):
             continue
@@ -1483,35 +1489,24 @@ def _same_turn_user_answers(
                 or exchange_prompt_index is None
             ):
                 continue
-            following = messages[index + 1 :]
-            next_prompt_index = next(
-                (
-                    offset
-                    for offset, later in enumerate(following)
-                    if isinstance(later, HumanMessage)
-                ),
-                len(following),
-            )
-            candidates = [
-                later
-                for later in following[:next_prompt_index]
-                if isinstance(later, ToolMessage) and later.tool_call_id == tool_call_id
-            ]
-            if len(candidates) != 1:
-                continue
-            exchanges.append(
-                (call, candidates[0], exchange_turn_id, exchange_prompt_index)
-            )
+            # Collect replies until the next human message, preserving call order.
+            replies: list[ToolMessage] = []
+            pending[tool_call_id] = replies
+            exchanges.append((call, replies, exchange_turn_id, exchange_prompt_index))
 
     current_call_ids = {_tool_call_id(call) for call in current_calls}
     validated: list[tuple[list[dict[str, str]], int]] = []
-    for call, message, turn_id_of_exchange, prompt_index in exchanges:
+    for call, replies, turn_id_of_exchange, prompt_index in exchanges:
         tool_call_id = _tool_call_id(call)
-        if call_id_counts.get(tool_call_id) != 1 or tool_call_id in current_call_ids:
+        if (
+            call_id_counts.get(tool_call_id) != 1
+            or tool_call_id in current_call_ids
+            or len(replies) != 1
+        ):
             continue
         exchange_rows = _ask_user_exchange_rows(
             call,
-            message,
+            replies[0],
             thread_id=execution_thread_id,
             turn_id=turn_id_of_exchange,
         )
@@ -1601,7 +1596,7 @@ def _classifier_context(
         request.messages,
     )
     state = cast("Mapping[str, object]", request.state)
-    receipt_rows, earliest_prompt_index = _same_turn_user_answers(
+    receipt_rows, earliest_prompt_index = _user_answer_evidence(
         request,
         authorization_messages,
         receipt_current_calls,

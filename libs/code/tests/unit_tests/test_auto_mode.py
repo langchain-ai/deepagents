@@ -5887,7 +5887,7 @@ class TestAskUserQuestionCount:
         """Guards the drift that would silently drop same-turn authorization.
 
         An unrecognized type makes this return `None`, which makes
-        `_same_turn_user_answers` yield no trusted directives — with no error.
+        `_user_answer_evidence` yield no trusted directives — with no error.
         """
         for question_type in sorted(QUESTION_TYPES):
             question: dict[str, Any] = {"question": "Q?", "type": question_type}

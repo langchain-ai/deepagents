@@ -1231,7 +1231,12 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
+    from deepagents_code.cold_cache import (
+        CacheActivity,
+        ColdCacheReason,
+        ColdCacheWarning,
+        PromptCachePolicy,
+    )
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
@@ -2729,8 +2734,10 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    Otherwise a generic "key does not match endpoint" message is shown.
+
+    A workspace refusal that carries server diagnostics gets the allowlisted
+    change summary appended; all other errors return `text` unchanged.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
@@ -2742,9 +2749,23 @@ def _build_agent_error_body(
         A `Content` with a clickable docs link for `PermissionDeniedError`;
             otherwise the plain `text`.
     """
-    from deepagents_code.client.remote_client import agent_error_type
+    from deepagents_code.client.remote_client import (
+        agent_error_type,
+        workspace_conflict_diagnostics,
+    )
 
     if agent_error_type(exc) != "PermissionDeniedError":
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None:
+            from deepagents_code.workspace_diagnostics import (
+                format_diagnostics_content,
+            )
+
+            return Content.assemble(
+                text,
+                "\n\n",
+                format_diagnostics_content(diagnostics),
+            )
         return text
     if key_env:
         detail = (
@@ -4517,6 +4538,9 @@ class DeepAgentsApp(App):
         Source of truth is `_context_tokens` in graph state; this is a sync
         copy for the status bar.
         """
+
+        self._last_cache_write: CacheActivity | None = None
+        self._last_cache_use: CacheActivity | None = None
 
         self._last_model_request_at: str | None = None
         """Latest successful main-model request start restored from graph state."""
@@ -8990,7 +9014,9 @@ class DeepAgentsApp(App):
         # repaints.
         with suppress(NoMatches):
             cache_display = self._status_bar.query_one("#cache-display")
-            cache_display.visible = self._thread_has_completed_turn and writes > 0
+            cache_display.visible = self._last_cache_use is not None or (
+                self._thread_has_completed_turn and (reads > 0 or writes > 0)
+            )
             self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
@@ -9078,16 +9104,20 @@ class DeepAgentsApp(App):
         """
         self._thread_stats = SessionStats()
         self._session_cost_breakdown = breakdown
-        self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._last_cache_write = None
+        self._last_cache_use = None
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
+        if self._status_bar is not None:
+            self._status_bar.set_cache_timing(None)
+        self._refresh_cache_display()
         self._session_cost_warning_shown = (
             0
             < self._session_cost_warning_threshold_usd
@@ -9429,6 +9459,11 @@ class DeepAgentsApp(App):
         channels hold the same value on every write since; the fallback exists
         for those older checkpoints, not for a case where they diverge.
         """
+        from deepagents_code.cold_cache import parse_cache_activity
+
+        for key in ("_last_cache_write", "_last_cache_use"):
+            if key in state_values:
+                setattr(self, key, parse_cache_activity(state_values[key]))
         if "_last_model_request_at" not in state_values:
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
@@ -9503,6 +9538,73 @@ class DeepAgentsApp(App):
                 "request records a fresh one",
                 type(raw_endpoint).__name__,
             )
+
+    def _cache_timing_policy(self, activity: CacheActivity) -> PromptCachePolicy | None:
+        """Resolve retention for the recorded endpoint; offload config reads.
+
+        Returns:
+            The endpoint's policy, or `None` if it cannot be established.
+        """
+        from deepagents_code.cold_cache import (
+            endpoint_cache_identity,
+            load_trusted_cache_endpoints,
+            resolve_prompt_cache_policy,
+        )
+        from deepagents_code.model_config import ModelConfig
+
+        endpoint = activity["endpoint"]
+        base_url = None
+        if endpoint != "default":
+            provider, _, model_name = activity["model_spec"].partition(":")
+            kwargs = ModelConfig.load().get_effective_kwargs(
+                provider.strip().lower(),
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            raw_base_url = kwargs.get("base_url")
+            base_url = raw_base_url if isinstance(raw_base_url, str) else None
+            # The checkpoint identity is opaque. Resolve the real URL, and
+            # don't apply a new endpoint's policy to an earlier request.
+            if endpoint_cache_identity(base_url) != endpoint:
+                return None
+        return resolve_prompt_cache_policy(
+            activity["model_spec"],
+            activity["params"],
+            base_url=base_url,
+            trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
+        )
+
+    async def _refresh_cache_timing(self) -> None:
+        """Render checkpointed main-model cache activity with its own policy."""
+        activity = self._last_cache_use
+        if self._status_bar is None or activity is None:
+            return
+        from deepagents_code.cold_cache import parse_cache_timestamp
+
+        thread_id = self._lc_thread_id
+        written = self._last_cache_write
+        try:
+            policy = await asyncio.to_thread(self._cache_timing_policy, activity)
+        except Exception:
+            logger.debug("Could not resolve footer cache retention", exc_info=True)
+            policy = None
+        if self._lc_thread_id != thread_id or self._last_cache_use != activity:
+            return
+        # A write from another model/endpoint/cache configuration cannot label
+        # the current cache's retention window.
+        same_cache = written is not None and all(
+            written[key] == activity[key]
+            for key in ("model_spec", "endpoint", "params")
+        )
+        self._status_bar.set_cache_timing(
+            parse_cache_timestamp(written["requested_at"])
+            if written is not None and same_cache
+            else None,
+            ttl_seconds=policy.window_seconds if policy is not None else None,
+            retention_at=parse_cache_timestamp(activity["requested_at"]),
+            retention_confidence=policy.confidence if policy is not None else "expired",
+        )
+        self._refresh_cache_display()
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -14437,6 +14539,8 @@ class DeepAgentsApp(App):
                     ),
                     "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
                     "_last_cache_params": state_values.get("_last_cache_params"),
+                    "_last_cache_write": state_values.get("_last_cache_write"),
+                    "_last_cache_use": state_values.get("_last_cache_use"),
                     "_model_spec": model_spec,
                     "_model_params": model_params,
                 }
@@ -19117,6 +19221,7 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+                await self._refresh_cache_timing()
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,
@@ -20031,6 +20136,7 @@ class DeepAgentsApp(App):
                 # discard warning here as it does on the live-sync path. Runs
                 # after `_reset_thread_usage`, which clears these fields.
                 self._sync_cache_state_from_state(payload.cache_state)
+                await self._refresh_cache_timing()
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 

@@ -5923,6 +5923,271 @@ class TestCopyCommand:
     """Tests for `/copy` command behavior."""
 
 
+class TestCacheTiming:
+    """Cache hits renew retention without pretending to be writes."""
+
+    @pytest.mark.parametrize("age_minutes", [2, 6])
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_resume_restores_countdown(
+        self, age_minutes: int, observed_write: bool
+    ) -> None:
+        """A fresh client counts from saved activity, including time spent closed."""
+        now = datetime(2026, 9, 21, 12, tzinfo=UTC)
+        used_at = now - timedelta(minutes=age_minutes)
+        written_at = used_at - timedelta(minutes=1)
+        activity = {
+            "requested_at": used_at.isoformat(),
+            "model_spec": "anthropic:claude-sonnet-4-6",
+            "endpoint": "default",
+            "params": None,
+        }
+        state = {
+            "_last_model_request_at": used_at.isoformat(),
+            "_last_cache_model_spec": activity["model_spec"],
+            "_last_cache_use": activity,
+            "_last_cache_write": (
+                {**activity, "requested_at": written_at.isoformat()}
+                if observed_write
+                else None
+            ),
+        }
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            app._lc_thread_id = "resumed-cache"
+            payload = app._goal_rubric_payload_from_state(
+                state, messages=[], context_tokens=0, model_spec="", model_params=None
+            )
+            with patch(
+                "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+            ) as clock:
+                clock.now.return_value = now
+                await app._load_thread_history(preloaded_payload=payload)
+                await pilot.pause()
+
+                bar = app._status_bar
+                assert bar is not None
+                assert bar.cache_written_at == (written_at if observed_write else None)
+                assert bar.cache_expires_at == used_at + timedelta(minutes=5)
+                display = app.query_one("#cache-display")
+                rendered = str(display.render())
+                assert display.visible
+                assert ("3:00" if age_minutes == 2 else "0:00") in rendered
+                assert ("wrote" in rendered) is observed_write
+                assert "0 read" not in rendered
+                assert "0 write" not in rendered
+
+                app._lc_thread_id = "fresh-thread"
+                await app._load_thread_history(
+                    preloaded_payload=_ThreadHistoryPayload([], 0, "")
+                )
+                await pilot.pause()
+                assert not display.visible
+                assert "Cache" not in str(display.render())
+                assert bar.cache_expires_at is None
+
+    @staticmethod
+    def _record_activity(
+        app: DeepAgentsApp, requested_at: datetime, *, write: bool = False
+    ) -> None:
+        activity = {
+            "requested_at": requested_at.isoformat(),
+            "model_spec": app._last_cache_model_spec,
+            "endpoint": app._last_cache_endpoint,
+            "params": app._last_cache_model_params,
+        }
+        app._sync_cache_state_from_state(
+            {
+                "_last_cache_use": activity,
+                **({"_last_cache_write": activity} if write else {}),
+            }
+        )
+
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_cache_hit_renews_countdown(self, observed_write: bool) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=6)
+            hit_at = datetime.now(UTC)
+            app._lc_thread_id = "cache-timing-test"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if observed_write:
+                app._last_model_request_at = written_at.isoformat()
+                self._record_activity(app, written_at, write=True)
+                await app._refresh_cache_timing()
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                app._last_model_request_at = hit_at.isoformat()
+                self._record_activity(app, hit_at)
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            await pilot.pause()
+
+            assert bar.cache_written_at == (written_at if observed_write else None)
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+            rendered = str(app.query_one("#cache-display").render())
+            assert " 4:" in rendered
+            assert ("wrote" in rendered) is observed_write
+
+            # A turn without cache activity must not renew the countdown.
+            app._last_model_request_at = (hit_at + timedelta(minutes=1)).isoformat()
+            await app._refresh_cache_timing()
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+
+    @pytest.mark.parametrize(
+        ("endpoint", "base_url", "trusted", "shows_retention"),
+        [
+            ("default", None, False, True),
+            ("https://api.openai.com/v1", "https://api.openai.com/v1", False, True),
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com:443/v1/",
+                False,
+                True,
+            ),
+            ("https://gateway.example.com", "https://gateway.example.com", True, True),
+            (
+                "https://gateway.example.com",
+                "https://gateway.example.com",
+                False,
+                False,
+            ),
+            ("https://gateway.example.com", "https://api.openai.com/v1", True, False),
+            (None, "https://api.openai.com/v1", False, False),
+        ],
+    )
+    async def test_configured_endpoint_retention(
+        self,
+        endpoint: str | None,
+        base_url: str | None,
+        trusted: bool,
+        shows_retention: bool,
+    ) -> None:
+        """Official and trusted endpoints show retention for observed cache hits."""
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            requested_at = datetime.now(UTC)
+            app._last_cache_model_spec = "openai:gpt-6-astra"
+            app._last_cache_endpoint = endpoint
+            app._last_model_request_at = requested_at.isoformat()
+            self._record_activity(app, requested_at)
+            bar.set_cache_tokens(2000, 0, input_tokens=2000)
+            app.query_one("#cache-display").visible = True
+            config = MagicMock()
+            config.get_effective_kwargs.return_value = {"base_url": base_url}
+            with (
+                patch(
+                    "deepagents_code.model_config.ModelConfig.load", return_value=config
+                ),
+                patch(
+                    "deepagents_code.cold_cache.load_trusted_cache_endpoints",
+                    return_value=frozenset({"gateway.example.com"})
+                    if trusted
+                    else frozenset(),
+                ),
+            ):
+                await app._refresh_cache_timing()
+            await pilot.pause()
+
+            rendered = str(app.query_one("#cache-display").render())
+            assert (" 29:" in rendered) is shows_retention
+            assert bar.cache_expires_at == (
+                requested_at + timedelta(minutes=30) if shows_retention else None
+            )
+
+    @pytest.mark.parametrize("activity", ["write_read", "subagent", "new_identity"])
+    async def test_multiple_requests_do_not_misattribute_timing(
+        self, activity: str
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=2)
+            read_at = written_at + timedelta(minutes=1)
+            app._lc_thread_id = "cache-attribution"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if activity != "subagent":
+                self._record_activity(app, written_at, write=True)
+                if activity == "new_identity":
+                    app._last_cache_model_spec = "openai:gpt-5.4"
+                    app._last_cache_model_params = {"prompt_cache_retention": "24h"}
+                self._record_activity(app, read_at)
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_write_tokens = 2000
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                # The final call is a different model with no cache activity.
+                app._sync_cache_state_from_state(
+                    {
+                        "_last_model_request_at": datetime.now(UTC).isoformat(),
+                        "_last_cache_model_spec": "openai:gpt-5.6",
+                        "_last_cache_endpoint": "default",
+                    }
+                )
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            assert bar.cache_written_at == (
+                written_at if activity == "write_read" else None
+            )
+            expected_expiry = (
+                None
+                if activity == "subagent"
+                else read_at
+                + (
+                    timedelta(hours=24)
+                    if activity == "new_identity"
+                    else timedelta(minutes=5)
+                )
+            )
+            assert bar.cache_expires_at == expected_expiry
+
+
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 

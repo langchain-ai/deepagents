@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from contextlib import closing
@@ -13,6 +14,12 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code.workspace_diagnostics import (
+    WorkspaceDiagnostics,
+    WorkspaceSnapshot,
+    diff_snapshots,
+    snapshot_for_payload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -28,6 +35,8 @@ as configuration drift.
 """
 _MAX_PATH_LENGTH = 4096
 _MAX_CONFIG_LENGTH = 64_000
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspacePayload(TypedDict):
@@ -69,15 +78,40 @@ class WorkspaceBinding:
 class WorkspaceConflictError(RuntimeError):
     """A workspace claim or runtime conflicts with server resource policy."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: WorkspaceDiagnostics | None = None,
+    ) -> None:
+        """Initialize with the refusal message and optional safe diagnostics.
+
+        Args:
+            message: The refusal text; unchanged whether or not diagnostics
+                are attached, so existing handlers stay compatible.
+            diagnostics: Structured, allowlisted detail about the conflict.
+        """
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
     @classmethod
-    def from_reason(cls, reason: str) -> WorkspaceConflictError:
+    def from_reason(
+        cls,
+        reason: str,
+        *,
+        diagnostics: WorkspaceDiagnostics | None = None,
+    ) -> WorkspaceConflictError:
         """Build a workspace-hosting refusal with a stated reason.
+
+        Args:
+            reason: The cause, phrased to follow "because".
+            diagnostics: Structured, allowlisted detail about the conflict.
 
         Returns:
             A conflict with the standard workspace-hosting message.
         """
         msg = f"Cannot host this workspace because {reason}."
-        return cls(msg)
+        return cls(msg, diagnostics=diagnostics)
 
 
 def _database_path() -> Path:
@@ -228,6 +262,16 @@ def _initialize(conn: sqlite3.Connection) -> None:
             "ALTER TABLE dcode_thread_workspaces "
             "ADD COLUMN workspace_config_json TEXT NOT NULL DEFAULT '{}'"
         )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dcode_workspace_snapshots (
+            thread_id TEXT PRIMARY KEY NOT NULL,
+            snapshot_version INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 
 
 def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
@@ -241,6 +285,88 @@ def _row_binding(row: sqlite3.Row) -> WorkspaceBinding:
         config_fingerprint=row["config_fingerprint"],
         workspace_config_json=row["workspace_config_json"],
     )
+
+
+def _write_snapshot(
+    conn: sqlite3.Connection, thread_id: str, snapshot: WorkspaceSnapshot
+) -> None:
+    """Persist a binding's comparison snapshot, or refuse to overwrite one.
+
+    A rejected binding must never replace the recorded snapshot — it is the
+    evidence for the next refusal — so this is `INSERT OR IGNORE` by design:
+    only a *new* thread row introduces a snapshot. Snapshots carry only
+    allowlisted policy values (see `workspace_diagnostics`).
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO dcode_workspace_snapshots (
+            thread_id, snapshot_version, snapshot_json
+        ) VALUES (?, ?, ?)
+        """,
+        (thread_id, snapshot.snapshot_version, snapshot.to_json()),
+    )
+
+
+def _read_snapshot(
+    conn: sqlite3.Connection, thread_id: str
+) -> WorkspaceSnapshot | None:
+    """Read a thread's persisted snapshot; a legacy row has none.
+
+    Returns:
+        The snapshot, or `None` when the binding predates snapshotting.
+    """
+    row = conn.execute(
+        "SELECT snapshot_json FROM dcode_workspace_snapshots WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return WorkspaceSnapshot.from_json(row[0])
+
+
+def _snapshot_for_binding(
+    conn: sqlite3.Connection, binding: WorkspaceBinding
+) -> WorkspaceSnapshot | None:
+    """Read the snapshot recorded for a binding's thread row.
+
+    Runtime validation holds only the binding, not the thread id, so the row
+    is located by workspace identity and policy fingerprint; a legacy row
+    (which predates snapshots) or an unresolvable match yields `None`, which
+    callers report as `snapshot_status="unavailable"`.
+
+    Returns:
+        The snapshot, or `None` when none was recorded for the binding.
+    """
+    row = conn.execute(
+        """
+        SELECT s.snapshot_json
+        FROM dcode_workspace_snapshots s
+        JOIN dcode_thread_workspaces w ON w.thread_id = s.thread_id
+        WHERE w.workspace_id = ? AND w.config_fingerprint = ?
+        """,
+        (binding.workspace_id, binding.config_fingerprint),
+    ).fetchone()
+    if row is None:
+        return None
+    return WorkspaceSnapshot.from_json(row[0])
+
+
+async def get_snapshot_for_binding(
+    binding: WorkspaceBinding,
+) -> WorkspaceSnapshot | None:
+    """Read the persisted comparison snapshot recorded for a binding.
+
+    Returns:
+        The snapshot, or `None` when the binding predates snapshotting.
+    """
+
+    def _snapshot() -> WorkspaceSnapshot | None:
+        with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _initialize(conn)
+            return _snapshot_for_binding(conn, binding)
+
+    return await asyncio.to_thread(_snapshot)
 
 
 def _is_migratable(existing: WorkspaceBinding) -> bool:
@@ -310,27 +436,83 @@ def _binding_conflict(
     thread_id: str,
     existing: WorkspaceBinding,
     proposed: WorkspaceBinding,
+    snapshot: WorkspaceSnapshot | None,
 ) -> WorkspaceConflictError:
+    """Build the binding refusal, attaching allowlisted drift diagnostics.
+
+    Args:
+        thread_id: The thread whose binding was refused.
+        existing: The persisted binding.
+        proposed: The rejected proposed binding; never persisted.
+        snapshot: The persisted comparison snapshot, or `None` for a legacy
+            binding that predates snapshotting.
+
+    Returns:
+        The conflict to raise; never raised here so the caller can log first.
+    """
     if existing.workspace_id != proposed.workspace_id:
         return WorkspaceConflictError(
-            f"thread {thread_id} is already bound to a different workspace"
+            f"thread {thread_id} is already bound to a different workspace",
+            diagnostics=WorkspaceDiagnostics(
+                category="bound_elsewhere",
+                reason="bound to a different workspace",
+            ),
         )
+    proposed_snapshot = snapshot_for_payload(proposed.workspace_config())
+    snapshot_status = "current" if snapshot is not None else "unavailable"
     if _is_migratable(existing):
-        return WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
-    drifted = drifted_project_fields(
-        existing.workspace_config(),
-        proposed.workspace_config(),
+        return WorkspaceConflictError.from_reason(
+            SERVER_CONFIG_DRIFT_REASON,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason=SERVER_CONFIG_DRIFT_REASON,
+                changes=diff_snapshots(snapshot, proposed_snapshot),
+                snapshot_status=snapshot_status,
+                binding_schema_version=existing.schema_version,
+                server_schema_version=proposed.schema_version,
+            ),
+        )
+    bound_policy = existing.workspace_config()
+    proposed_policy = proposed.workspace_config()
+    drifted = drifted_project_fields(bound_policy, proposed_policy)
+    if drifted:
+        changes = diff_snapshots(snapshot, proposed_snapshot, changed_names=drifted)
+        return WorkspaceConflictError.from_reason(
+            PROJECT_POLICY_DRIFT_REASON,
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=PROJECT_POLICY_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
+    session_drift = sorted(
+        key
+        for key in bound_policy.keys() | proposed_policy.keys()
+        if bound_policy.get(key) != proposed_policy.get(key)
     )
-    reason = PROJECT_POLICY_DRIFT_REASON if drifted else SERVER_CONFIG_DRIFT_REASON
-    return WorkspaceConflictError.from_reason(reason)
+    changes = diff_snapshots(snapshot, proposed_snapshot, changed_names=session_drift)
+    return WorkspaceConflictError.from_reason(
+        SERVER_CONFIG_DRIFT_REASON,
+        diagnostics=WorkspaceDiagnostics(
+            category="config_drift",
+            reason=SERVER_CONFIG_DRIFT_REASON,
+            changes=changes,
+            snapshot_status=snapshot_status,
+        ),
+    )
 
 
-def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
+def _bind(
+    thread_id: str,
+    proposed: WorkspaceBinding,
+    snapshot: WorkspaceSnapshot,
+) -> WorkspaceBinding:
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         _initialize(conn)
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT OR IGNORE INTO dcode_thread_workspaces (
                 thread_id, schema_version, workspace_id, cwd, project_root,
@@ -349,6 +531,11 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
                 proposed.workspace_config_json,
             ),
         )
+        if cursor.rowcount:
+            # Only a newly bound thread records a snapshot; a rebind of an
+            # existing thread — including one about to be refused — must never
+            # overwrite the evidence a later refusal diff reports from.
+            _write_snapshot(conn, thread_id, snapshot)
         row = conn.execute(
             "SELECT * FROM dcode_thread_workspaces WHERE thread_id = ?",
             (thread_id,),
@@ -358,7 +545,17 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
             raise RuntimeError(msg)
         existing = _row_binding(row)
         if _binding_differs(existing, proposed):
-            raise _binding_conflict(thread_id, existing, proposed)
+            conflict = _binding_conflict(
+                thread_id, existing, proposed, _read_snapshot(conn, thread_id)
+            )
+            logger.warning(
+                "Workspace binding refused for thread %s: %s",
+                thread_id,
+                conflict.diagnostics.log_summary()
+                if conflict.diagnostics is not None
+                else conflict,
+            )
+            raise conflict
         if _is_migratable(existing):
             # Guard on the fingerprint this transaction actually read, so a
             # concurrent migration cannot be overwritten after the fact.
@@ -418,7 +615,8 @@ async def bind_thread_workspace(
         workspace_config,
         config_fingerprint=config_fingerprint,
     )
-    return await asyncio.to_thread(_bind, thread_id, proposed)
+    snapshot = snapshot_for_payload(proposed.workspace_config())
+    return await asyncio.to_thread(_bind, thread_id, proposed, snapshot)
 
 
 async def get_thread_workspace(thread_id: str) -> WorkspaceBinding | None:
@@ -467,24 +665,62 @@ async def require_thread_workspace(
             ).fetchone()
             if row is None:
                 msg = f"thread {thread_id} has no workspace binding"
-                raise WorkspaceConflictError(msg)
+                raise WorkspaceConflictError(
+                    msg,
+                    diagnostics=WorkspaceDiagnostics(
+                        category="unbound_thread",
+                        reason="no workspace binding",
+                        snapshot_status="unavailable",
+                    ),
+                )
             existing = _row_binding(row)
             expected = existing.to_payload()
             if any(data.get(key) != value for key, value in expected.items()):
                 msg = f"workspace context does not match thread {thread_id}"
-                raise WorkspaceConflictError(msg)
+                raise WorkspaceConflictError(
+                    msg,
+                    diagnostics=WorkspaceDiagnostics(
+                        category="context_mismatch",
+                        reason="workspace context does not match the binding",
+                        snapshot_status=(
+                            "current"
+                            if _read_snapshot(conn, thread_id) is not None
+                            else "unavailable"
+                        ),
+                    ),
+                )
             if (
                 claimed_fingerprint is not None
                 and claimed_fingerprint != existing.config_fingerprint
             ):
                 msg = f"workspace configuration does not match thread {thread_id}"
-                raise WorkspaceConflictError(msg)
+                raise WorkspaceConflictError(
+                    msg,
+                    diagnostics=WorkspaceDiagnostics(
+                        category="fingerprint_mismatch",
+                        reason="workspace configuration does not match the binding",
+                        snapshot_status=(
+                            "current"
+                            if _read_snapshot(conn, thread_id) is not None
+                            else "unavailable"
+                        ),
+                    ),
+                )
             return existing
 
     existing = await asyncio.to_thread(_require)
     if existing.schema_version != _SCHEMA_VERSION:
         msg = f"workspace binding schema is unsupported for thread {thread_id}"
-        raise WorkspaceConflictError(msg)
+        raise WorkspaceConflictError(
+            msg,
+            diagnostics=WorkspaceDiagnostics(
+                category="unsupported_schema",
+                reason="workspace binding schema is unsupported",
+                snapshot_status="unavailable",
+                binding_schema_version=existing.schema_version,
+                server_schema_version=_SCHEMA_VERSION,
+            ),
+        )
     resolved = await asyncio.to_thread(
         resolve_workspace,
         existing.cwd,
@@ -493,5 +729,12 @@ async def require_thread_workspace(
     )
     if resolved.workspace_id != existing.workspace_id:
         msg = f"workspace identity changed for thread {thread_id}"
-        raise WorkspaceConflictError(msg)
+        raise WorkspaceConflictError(
+            msg,
+            diagnostics=WorkspaceDiagnostics(
+                category="identity_changed",
+                reason="workspace identity changed",
+                snapshot_status="unavailable",
+            ),
+        )
     return existing

@@ -9088,7 +9088,11 @@ class DeepAgentsApp(App):
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
-        self._session_cost_warning_shown = False
+        self._session_cost_warning_shown = (
+            0
+            < self._session_cost_warning_threshold_usd
+            < self._thread_restored_cost_usd
+        )
         self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 

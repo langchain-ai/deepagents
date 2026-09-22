@@ -135,6 +135,8 @@ When something isn't working:
 
 - If you introduce linter errors, fix them if the solution is clear
 - DO NOT loop more than 3 times fixing the same error with the same approach
+- On the third attempt, stop and ask the user what to do
+- If you notice yourself going in circles, stop and ask the user for help
 
 ## Formatting & Pre-Commit Hooks
 

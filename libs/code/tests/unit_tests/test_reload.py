@@ -530,7 +530,12 @@ class TestReloadFromEnvironment:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """OSError reading global `.env` should log a warning and continue."""
+        """OSError reading global `.env` warns and skips the project `.env`.
+
+        The global file carries the trusted `startup.read_project_dotenv`
+        opt-out. Loading the project file anyway would discard that decision
+        because the option defaults to true.
+        """
         credentials = Credentials.from_environment(start_path=tmp_path)
 
         broken = MagicMock()
@@ -538,17 +543,20 @@ class TestReloadFromEnvironment:
         broken.is_file.side_effect = OSError(msg)
         monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", broken)
 
-        # Should not raise — project .env still loads
         project_env = tmp_path / ".env"
         project_env.write_text("OPENAI_API_KEY=sk-fallback\n")
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)
 
-        assert any("Could not read global dotenv" in r.message for r in caplog.records)
-        assert os.environ["OPENAI_API_KEY"] == "sk-fallback"
+        assert any(
+            "Could not read the trusted global dotenv" in r.message
+            for r in caplog.records
+        )
+        assert "OPENAI_API_KEY" not in os.environ
 
     def test_global_dotenv_values_raises_oserror(
         self,
@@ -588,11 +596,14 @@ class TestReloadFromEnvironment:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)
 
-        # The global file is read once for the trusted `read_project_dotenv`
-        # pre-check and once for its remaining values; both hit the failure.
-        assert global_calls == 2
-        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
-        assert any("Could not read global dotenv" in r.message for r in caplog.records)
+        # The unreadable global file must be attempted before project loading.
+        assert global_calls >= 1
+        # The failed pre-check fails closed, so the project file is skipped.
+        assert "OPENAI_API_KEY" not in os.environ
+        assert any(
+            "Could not read the trusted global dotenv" in r.message
+            for r in caplog.records
+        )
 
     def test_project_dotenv_denies_environment_hijack_keys(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -626,6 +637,8 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT=C:\\repo\\windows\n"
             "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
+            'DEEPAGENTS_USER_LANGSMITH_ENV={"launch": {}, "user": {}}\n'
+            "deepagents_user_langsmith_env=lowercase-spelling\n"
             "DEEPAGENTS_HOME=/tmp/attacker-profile\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
@@ -653,6 +666,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT",
             "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "DEEPAGENTS_USER_LANGSMITH_ENV",
             "DEEPAGENTS_HOME",
             "OPENAI_API_KEY",
         ):
@@ -682,9 +696,14 @@ class TestReloadFromEnvironment:
         assert "SHELLOPTS" not in os.environ
         assert "SYSTEMROOT" not in os.environ
         assert "WINDIR" not in os.environ
-        # The carrier var must not be injectable from `.env`, or a project could
-        # smuggle a PYTHONPATH into agent `execute` commands through it.
+        # The carrier vars must not be injectable from `.env`, or a project
+        # could smuggle a PYTHONPATH into agent `execute` commands through the
+        # first, or choose the LangSmith endpoint and key they run under
+        # through the second. `_is_dotenv_denied_env_key` uppercases, so the
+        # lowercase spelling must be denied too.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert "DEEPAGENTS_USER_LANGSMITH_ENV" not in os.environ
+        assert "deepagents_user_langsmith_env" not in os.environ
         assert "DEEPAGENTS_HOME" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 

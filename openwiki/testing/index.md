@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-specific pytest topology and execution policy for Deep Agents, dcode, ACP, Talon, and evals. It explains the offline unit boundary, warnings-as-errors policy, asynchronous tests, benchmarks, and credentialed live evaluations.
+- [Testing Guide](testing-guide.md) - Route deterministic package-local tests for SDK filesystem mutation safety and Talon approval, runtime-isolation, and host-facing behavior. Use package Makefile targets and keep warnings fatal.

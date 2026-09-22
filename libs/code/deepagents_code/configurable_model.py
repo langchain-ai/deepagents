@@ -26,10 +26,11 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.cold_cache import cache_identity_params
+from deepagents_code.cold_cache import CacheActivity, cache_identity_params
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -723,7 +724,8 @@ def _effective_cache_params(
     """
     if not model_spec or ":" not in model_spec:
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
+    from deepagents_code.config import _compose_openai_reasoning_effort
     from deepagents_code.model_config import ModelConfig
 
     _, _, model_name = model_spec.partition(":")
@@ -744,13 +746,20 @@ def _effective_cache_params(
             exc_info=True,
         )
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
     if not isinstance(kwargs, dict):
         overrides = dict(runtime_overrides) if runtime_overrides else None
-        return cache_identity_params(overrides) or None
+        return cache_identity_params(overrides, model_spec=model_spec) or None
+    # Match constructor precedence when config uses native nested reasoning.
+    overrides = runtime_overrides or {}
+    kwargs = _compose_openai_reasoning_effort(
+        provider, kwargs, overrides.get("reasoning_effort"), overrides.get("reasoning")
+    )
     # `base_url` is tracked separately as the endpoint identity; keeping it out
     # of the params avoids a double-counted identity change.
-    result = cache_identity_params({k: v for k, v in kwargs.items() if k != "base_url"})
+    result = cache_identity_params(
+        {k: v for k, v in kwargs.items() if k != "base_url"}, model_spec=model_spec
+    )
     return result or None
 
 
@@ -759,6 +768,8 @@ def _checkpoint_command(
     request_started_at: str,
     cache_endpoint: str,
     cache_params: dict[str, Any] | None = None,
+    *,
+    response: ModelResponse | None = None,
 ) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
@@ -776,6 +787,7 @@ def _checkpoint_command(
             offloading reason as `cache_endpoint`. When `None` and
             `resolved.model_params_known` is true, falls back to the identity
             projection of the runtime overrides.
+        response: This request's response, used to attribute cache activity.
 
     Returns:
         Command carrying cache timing and effective model metadata.
@@ -819,9 +831,44 @@ def _checkpoint_command(
         update["_last_cache_params"] = (
             cache_params
             if cache_params is not None
-            else (cache_identity_params(resolved.model_params) or None)
+            else (
+                cache_identity_params(
+                    resolved.model_params, model_spec=resolved.model_spec
+                )
+                or None
+            )
         )
+    if resolved.model_spec and response is not None:
+        activity = CacheActivity(
+            requested_at=request_started_at,
+            model_spec=resolved.model_spec,
+            endpoint=cache_endpoint,
+            params=cache_params,
+        )
+        update.update(_cache_activity_update(response, activity))
     return Command(update=update)
+
+
+def _cache_activity_update(
+    response: ModelResponse, activity: CacheActivity
+) -> dict[str, CacheActivity]:
+    """Record only cache activity reported by this specific model call.
+
+    Returns:
+        Updates for the last cache write and/or use, when reported.
+    """
+    from deepagents_code.cost_tracking import cache_token_counts
+
+    update: dict[str, CacheActivity] = {}
+    for message in response.result:
+        if not isinstance(message, AIMessage) or not message.usage_metadata:
+            continue
+        reads, writes = cache_token_counts(message.usage_metadata)
+        if any(writes):
+            update["_last_cache_write"] = activity
+        if reads or any(writes):
+            update["_last_cache_use"] = activity
+    return update
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
@@ -927,6 +974,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             request_started_at,
             cache_endpoint,
             cache_params,
+            response=response,
         )
         return ExtendedModelResponse(model_response=response, command=command)
 
@@ -975,6 +1023,10 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 resolved.model_params,
             )
         command = _checkpoint_command(
-            resolved, request_started_at, cache_endpoint, cache_params
+            resolved,
+            request_started_at,
+            cache_endpoint,
+            cache_params,
+            response=response,
         )
         return ExtendedModelResponse(model_response=response, command=command)

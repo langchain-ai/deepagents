@@ -1,7 +1,7 @@
 # Loud advisory when a maintainer acknowledges a release-related fan-out gate
-# by applying `allow-lockfile-release` or `allow-scope-mismatch`.
+# by applying `ci:allow-lockfile-release` or `ci:allow-scope-mismatch`.
 #
-# Mirrors the `warn-on-bypass` job in `pr_lint.yml` (for `ignore-lint-pr-title`):
+# Mirrors the `warn-on-bypass` job in `pr_lint.yml` (for `ci:skip-title-lint`):
 # post a sticky that spells out the release-please consequence and lists every
 # managed component the PR's changed files touch. Cleanup when the label is
 # removed.
@@ -34,13 +34,13 @@ jobs:
     # the comment in sync).
     if: >-
       (github.event.action == 'labeled' &&
-        (github.event.label.name == 'allow-lockfile-release' ||
-         github.event.label.name == 'allow-scope-mismatch')) ||
+        (github.event.label.name == 'ci:allow-lockfile-release' ||
+         github.event.label.name == 'ci:allow-scope-mismatch')) ||
       (github.event.action == 'unlabeled' &&
-        (github.event.label.name == 'allow-lockfile-release' ||
-         github.event.label.name == 'allow-scope-mismatch')) ||
-      contains(github.event.pull_request.labels.*.name, 'allow-lockfile-release') ||
-      contains(github.event.pull_request.labels.*.name, 'allow-scope-mismatch')
+        (github.event.label.name == 'ci:allow-lockfile-release' ||
+         github.event.label.name == 'ci:allow-scope-mismatch')) ||
+      contains(github.event.pull_request.labels.*.name, 'ci:allow-lockfile-release') ||
+      contains(github.event.pull_request.labels.*.name, 'ci:allow-scope-mismatch')
     steps:
       - name: "📋 Checkout base revision"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,7 +118,7 @@ jobs:
               return;
             }
             const STICKY_MARKER = '<!-- release-fanout-bypass-warn -->';
-            const LABELS = ['allow-lockfile-release', 'allow-scope-mismatch'];
+            const LABELS = ['ci:allow-lockfile-release', 'ci:allow-scope-mismatch'];
 
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {

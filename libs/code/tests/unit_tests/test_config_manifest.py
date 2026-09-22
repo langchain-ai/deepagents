@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import tomllib
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -113,6 +114,84 @@ _SILENT_RESOLVER_READERS = frozenset(
 # `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
 # so it is deliberately not counted. Exact, not a floor — see the test.
 _EXPECTED_LITERAL_CALL_SITES = 7
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("7d", "7d"), ("2w", "2w"), (" 12H ", "12h")],
+)
+def test_max_resume_age_parses_duration(value, expected) -> None:
+    """A rolling resume age is normalized during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={"threads": {"max_resume_age": value}},
+    ) == (expected, "config.toml")
+
+
+@pytest.mark.parametrize(
+    "value", ["0d", "7", "1.5d", "-1d", "forever", f"{'9' * 5000}d"]
+)
+def test_max_resume_age_rejects_invalid_duration(value, caplog) -> None:
+    """An invalid rolling resume age is rejected during config resolution."""
+    option = get_option("threads.max_resume_age")
+    assert option is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert _resolve_manifest_option(
+            option,
+            toml_data={"threads": {"max_resume_age": value}},
+        ) == (None, "default")
+    assert "max_resume_age" in caplog.text
+
+
+def test_resume_after_normalizes_managed_cutoff() -> None:
+    """Managed resume policy wins and normalizes its cutoff to UTC."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={"threads": {"resume_after": "2030-01-01"}},
+        managed_toml_data={"threads": {"resume_after": "2026-06-01T08:00:00-04:00"}},
+    ) == ("2026-06-01T12:00:00+00:00", "managed config")
+
+
+def test_resume_after_rejects_naive_datetime(caplog) -> None:
+    """A timezone-less cutoff cannot silently become managed policy."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert _resolve_manifest_option(
+            option,
+            toml_data={"threads": {"resume_after": "2026-06-01T08:00:00"}},
+        ) == (None, "default")
+    assert "resume_after" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (date(2030, 1, 1), "2030-01-01T00:00:00+00:00"),
+        (
+            datetime(2026, 6, 1, 8, tzinfo=timezone(timedelta(hours=-4))),
+            "2026-06-01T12:00:00+00:00",
+        ),
+    ],
+)
+def test_resume_after_accepts_toml_temporal_values(value, expected) -> None:
+    """Native TOML dates and aware datetimes normalize consistently."""
+    option = get_option("threads.resume_after")
+    assert option is not None
+
+    assert _resolve_manifest_option(
+        option,
+        toml_data={},
+        managed_toml_data={"threads": {"resume_after": value}},
+    ) == (expected, "managed config")
 
 
 def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:
@@ -661,6 +740,121 @@ def test_resolve_non_credential_ignores_store():
     assert option is not None
     _, source, _ = _resolve(option, {}, managed_toml_data={})
     assert source != "stored"
+
+
+@pytest.fixture
+def clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every LangSmith key name so each test declares its own state.
+
+    Not autouse: these are module-level functions, so it would leak into
+    unrelated tests. Sharing it keeps the four names from drifting apart
+    test-by-test.
+    """
+    for var in (
+        "LANGSMITH_API_KEY",
+        "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.mark.usefixtures("stored_auth_dir", "clear_langsmith_env")
+def test_resolve_langsmith_service_prefers_stored():
+    """A stored LangSmith key resolves with a stored source."""
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("langsmith", "from-store")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    assert option.redacted is True
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "stored"
+    assert value == "from-store"
+
+
+@pytest.mark.usefixtures("stored_auth_dir", "clear_langsmith_env")
+def test_resolve_langsmith_falls_back_to_prefixed_langchain_api_key(monkeypatch):
+    """LangSmith credential display honors the prefixed runtime fallback."""
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (DEEPAGENTS_CODE_LANGCHAIN_API_KEY)"
+    assert value == "from-prefix"
+
+
+@pytest.mark.usefixtures("stored_auth_dir", "clear_langsmith_env")
+def test_resolve_langsmith_empty_prefixed_fallback_shadows_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty fallback override keeps config display aligned with runtime."""
+    from deepagents_code.model_config import (
+        ProviderAuthState,
+        get_service_auth_status,
+    )
+
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+    assert get_service_auth_status("langsmith").state is ProviderAuthState.MISSING
+    is_set, _, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is False
+    assert value is None
+
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY")
+    assert _resolve(option, {}, managed_toml_data={}) == (
+        True,
+        "env (LANGCHAIN_API_KEY)",
+        "from-fallback",
+    )
+
+
+@pytest.mark.usefixtures("stored_auth_dir", "clear_langsmith_env")
+def test_stored_key_with_empty_prefixed_primary_agrees_across_surfaces(monkeypatch):
+    """`config` and `auth status` agree once a fallback can outrank the store."""
+    from deepagents_code import auth_store
+    from deepagents_code.model_config import (
+        ProviderAuthSource,
+        ProviderAuthState,
+        get_service_auth_status,
+    )
+
+    auth_store.set_stored_key("langsmith", "from-store")
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    assert _resolve(option, {}, managed_toml_data={}) == (
+        True,
+        "env (LANGCHAIN_API_KEY)",
+        "from-fallback",
+    )
+
+    status = get_service_auth_status("langsmith")
+    assert status.state is ProviderAuthState.CONFIGURED
+    assert status.source is ProviderAuthSource.ENV
+    assert status.env_var == "LANGCHAIN_API_KEY"
+
+
+@pytest.mark.usefixtures("stored_auth_dir", "clear_langsmith_env")
+def test_resolve_langsmith_primary_env_wins_over_fallback(monkeypatch):
+    """The primary LangSmith env var retains precedence over its fallback."""
+    monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (LANGSMITH_API_KEY)"
+    assert value == "from-primary"
 
 
 @pytest.mark.usefixtures("stored_auth_dir")

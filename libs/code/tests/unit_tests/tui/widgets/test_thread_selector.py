@@ -25,6 +25,7 @@ from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelectOverlay,
     DeleteThreadConfirmScreen,
     ThreadSelectorScreen,
+    _format_column_value,
 )
 
 MOCK_THREADS: list[ThreadInfo] = [
@@ -59,6 +60,23 @@ MOCK_THREADS: list[ThreadInfo] = [
         "initial_prompt": None,
     },
 ]
+
+
+@pytest.mark.parametrize("prompt", [None, "", "Hello world"])
+def test_checkpoint_cells_distinguish_loading_from_loaded(prompt: str | None) -> None:
+    thread: ThreadInfo = {
+        "thread_id": "loading-thread",
+        "agent_name": "my-agent",
+        "updated_at": None,
+    }
+
+    assert _format_column_value(thread, "messages") == "Loading"
+    assert _format_column_value(thread, "initial_prompt") == "Loading"
+
+    thread.update(message_count=0, initial_prompt=prompt)
+
+    assert _format_column_value(thread, "messages") == "0"
+    assert _format_column_value(thread, "initial_prompt") == (prompt or "")
 
 
 def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa: ANN401
@@ -1207,6 +1225,28 @@ class TestResumeThread:
 
         assert len(mounted) == 1
         assert "no active session" in _get_widget_text(mounted[0])
+
+    async def test_managed_cutoff_blocks_switch_without_mutation(self) -> None:
+        """A blocked target leaves the current thread and transcript untouched."""
+        app = DeepAgentsApp(thread_id="current-thread")
+        app._agent = MagicMock()
+        app._session_state = _mock_session_state("current-thread")
+        mounted: list[Static] = []
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda widget: mounted.append(widget)
+        )
+        _app_test_double(app)._thread_resume_block = AsyncMock(
+            return_value="Thread stale-thread cannot be resumed."
+        )
+        clear_messages = AsyncMock()
+        _app_test_double(app)._clear_messages = clear_messages
+
+        await app._resume_thread("stale-thread")
+
+        assert app._session_state.thread_id == "current-thread"
+        assert app._lc_thread_id == "current-thread"
+        clear_messages.assert_not_awaited()
+        assert "cannot be resumed" in _get_widget_text(mounted[0])
 
     async def test_already_switching_shows_message(self) -> None:
         """_resume_thread should reject concurrent thread switches."""

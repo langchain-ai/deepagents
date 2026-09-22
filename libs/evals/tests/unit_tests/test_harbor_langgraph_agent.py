@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents_code.config import runtime_state
+from fastmcp import FastMCP
+from langchain.mcp import MCPAdapter
+from langchain_core.tools import BaseTool
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -749,11 +752,11 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
     captured_create: list[dict[str, object]] = []
 
-    class FakeMCPClient:
+    class FakeMCPAdapter:
         def __init__(self, connections: object) -> None:
             self._connections = connections
 
-        async def get_tools(self) -> list[str]:
+        async def list_tools(self) -> list[str]:
             return ["start_conversation", "send_message_to_user", "end_conversation"]
 
     def fake_init_chat_model(_model: str, **_kwargs: object) -> object:
@@ -764,7 +767,7 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
         return "graph"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "MultiServerMCPClient", FakeMCPClient)
+    monkeypatch.setattr(langgraph_agent, "MCPAdapter", FakeMCPAdapter)
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
 
     result = asyncio.run(
@@ -799,6 +802,38 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
     ]
 
 
+async def test_tau3_tools_remain_callable_after_discovery(monkeypatch):
+    server = FastMCP("tau3-runtime")
+
+    @server.tool()
+    def send_message_to_user(message: str) -> str:
+        return message
+
+    def adapter(target):
+        assert target == {
+            "mcpServers": {"tau3-runtime": {"transport": "http", "url": "http://runtime/mcp"}}
+        }
+        return MCPAdapter(server)
+
+    monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
+    tools = await langgraph_agent.make_tau3_graph(
+        {
+            "configurable": {
+                "mcp_servers": [
+                    {"name": "tau3-runtime", "transport": "http", "url": "http://runtime/mcp"}
+                ]
+            }
+        }
+    )
+    assert isinstance(tools, list)
+    assert isinstance(tools[0], BaseTool)
+    assert tools[0].name == "send_message_to_user"
+    result = await tools[0].ainvoke({"message": "hello"})
+    assert "hello" in str(result)
+
+
 def test_mcp_connections_maps_streamable_http_server() -> None:
     connections = langgraph_agent._mcp_connections(
         {
@@ -816,7 +851,7 @@ def test_mcp_connections_maps_streamable_http_server() -> None:
 
     assert connections == {
         "tau3-runtime": {
-            "transport": "streamable_http",
+            "transport": "http",
             "url": "http://tau3-runtime:8000/mcp",
         }
     }

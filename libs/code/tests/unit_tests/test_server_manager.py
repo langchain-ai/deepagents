@@ -173,6 +173,58 @@ class TestStartServerAndGetAgent:
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
 
+    async def test_managed_client_claims_only_session_policy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+        mcp_config = project_root / "mcp.json"
+        mcp_config.write_text('{"mcpServers": {"test": {"command": "echo"}}}')
+        server = MagicMock(
+            start=AsyncMock(),
+            wait_for_graph_ready=AsyncMock(),
+            url="http://127.0.0.1:2024",
+        )
+        agent = MagicMock()
+        captured: list[ServerConfig] = []
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._scaffold_workspace"),
+            patch(
+                "deepagents_code.client.launch.server_manager._apply_server_config",
+                side_effect=captured.append,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=server,
+            ),
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent", return_value=agent
+            ),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=str(mcp_config),
+                trust_project_mcp=True,
+                allow_fs_tools=["read_file"],
+            )
+
+        claim = agent.set_workspace.call_args.args[1]
+        assert "mcp_config_path" not in claim
+        assert "trust_project_mcp" not in claim
+        assert claim["allow_fs_tools"] == ["read_file"]
+        assert agent.set_workspace.call_args.kwargs["config_fingerprint"] == (
+            captured[0].session_workspace_fingerprint()
+        )
+
     def test_builtin_server_registers_only_the_agent_graph(
         self, tmp_path: Path
     ) -> None:

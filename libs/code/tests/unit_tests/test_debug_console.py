@@ -8,19 +8,23 @@ from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Select, Static
 
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.cost_tracking import _empty_cost_breakdown
+from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
     _DebugLogView,
+    _record_to_content,
 )
 
 if TYPE_CHECKING:
     import pytest
+    from textual.strip import Strip
 
 
 logger = logging.getLogger("deepagents_code._test_console")
@@ -200,6 +204,54 @@ class TestDebugConsoleScreen:
             "debug3",
         ]
 
+    async def test_log_wraps_at_scrollbar_edge_without_truncating(self) -> None:
+        app = _Harness()
+        async with app.run_test(size=(50, 30)) as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            prefix_width = _record_to_content(_log_record("")).cell_length
+            message = "x" * (log.scrollable_content_region.width - prefix_width) + "Z"
+
+            log.set_records([_log_record(message)], scroll_end=False)
+            await pilot.pause()
+
+            assert log.line_count == 2
+            assert "Z" in log.render_line(1).text
+
+    async def test_first_populated_frame_starts_at_bottom(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first frame containing logs renders at the newest records."""
+        states: list[tuple[int, int]] = []
+        records = [_log_record(f"marker-{index} {'x' * 100}") for index in range(100)]
+
+        class Buffer:
+            total_emitted = len(records)
+
+            @staticmethod
+            def snapshot_records_since(
+                _cursor: int,
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                return records, len(records)
+
+        class CapturingLogView(_DebugLogView):
+            def render_line(self, y: int) -> Strip:
+                if self.virtual_size.height > self.size.height:
+                    states.append((self.scroll_offset.y, self.max_scroll_y))
+                return super().render_line(y)
+
+        monkeypatch.setattr(debug_console_mod, "_DebugLogView", CapturingLogView)
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", Buffer)
+        app = _Harness()
+        async with app.run_test(size=(80, 30)) as pilot:
+            app.push_screen(DebugConsoleScreen(_snapshot()))
+            await pilot.pause()
+
+        assert states
+        assert all(offset == maximum for offset, maximum in states)
+
     async def test_notice_replaced_by_incoming_records(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -302,6 +354,27 @@ class TestDebugConsoleScreen:
         assert len(opened) == 1
         assert copied == []
 
+    async def test_cost_breakdown_button_opens_dedicated_modal(self) -> None:
+        breakdown = "Entire-thread estimated breakdown\nInput  12  0.01"
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+
+            assert isinstance(app.screen, CostBreakdownScreen)
+            assert breakdown in _widget_text(
+                app.screen.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is console
+
     async def test_escape_dismisses(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -314,6 +387,35 @@ class TestDebugConsoleScreen:
 
 
 class TestDebugConsoleToggle:
+    async def test_missing_history_hides_breakdown_but_keeps_total(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test(size=(140, 65)) as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.25)
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            screen = cast("DebugConsoleScreen", app.screen)
+            button = screen.query_one("#debug-cost-breakdown", Button)
+
+            for breakdown in (
+                None,
+                {},
+                {"version": 999},
+                _empty_cost_breakdown(historical_complete=False),
+            ):
+                app._session_cost_breakdown = breakdown
+                screen._on_refresh_tick()
+                assert not button.display
+                assert "$1.25" in app._format_cost_summary()
+
+            app._session_cost_breakdown = _empty_cost_breakdown()
+            screen._on_refresh_tick()
+            await pilot.pause()
+            assert button.display
+            await pilot.click(button)
+            await pilot.pause()
+            assert isinstance(app.screen, CostBreakdownScreen)
+
     async def test_shift_tab_reverses_focus_despite_app_toggle_binding(
         self,
     ) -> None:
@@ -328,25 +430,26 @@ class TestDebugConsoleToggle:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._set_session_cost(1.25, breakdown=_empty_cost_breakdown())
             await pilot.press("ctrl+backslash")
             await pilot.pause()
             screen = cast("DebugConsoleScreen", app.screen)
             log = screen.query_one("#debug-log", _DebugLogView)
-            select = screen.query_one("#debug-level-filter", Select)
             assert screen.focused is log
             assert app._auto_approve is False
 
             await pilot.press("tab")
             await pilot.pause()
-            assert screen.focused is select
+            breakdown = screen.query_one("#debug-cost-breakdown", Button)
+            assert screen.focused is breakdown
 
             await pilot.press("shift+tab")
             await pilot.pause()
             # This focus move is the discriminating assertion: without the
             # `check_action` step-aside, shift+tab is swallowed and focus stays
-            # on `select`. The `_auto_approve` check below is defense-in-depth
-            # only -- the toggle already no-ops under any modal, so it reads
-            # `False` in both the fixed and broken cases.
+            # on the breakdown button. The `_auto_approve` check below is
+            # defense-in-depth only -- the toggle already no-ops under any modal,
+            # so it reads `False` in both the fixed and broken cases.
             assert screen.focused is log
             assert app._auto_approve is False
 
@@ -421,6 +524,18 @@ class TestDebugConsoleToggle:
             assert "Version" in snapshot
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
+
+    async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
+        import time
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "not started"
+
+            app._first_invocation_at = time.monotonic() - 72.3
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Session length"] == "1m 12s"
 
     async def test_build_snapshot_experimental_off_when_env_falsy(
         self, monkeypatch: pytest.MonkeyPatch

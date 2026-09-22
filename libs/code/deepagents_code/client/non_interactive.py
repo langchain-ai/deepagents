@@ -531,14 +531,14 @@ class StreamState:
     )
     """Requests already counted in this headless run.
 
-    Keyed by message ID, or by `(attempt_scope, message_id)` while a model
-    attempt lifecycle scope is open (see `UsageLedgerKey`). Monotonic across
+    Keyed by `ModelInvocationKey` when known, with `MessageUsageKey` aliases or
+    fallbacks scoped to the model attempt (see `UsageLedgerKey`). Monotonic across
     HITL resume passes so a replayed message does not add its request, tokens,
     or cost to `stats` again. Each pass closes its entries via
     `finalize_recorded_requests`, which is what extends that guarantee to
     replayed *chunks* -- an open chunked request accepts revisions, so without
     the round boundary a replayed chunk would merge into it a second time -- and
-    which also projects each scoped key down to its bare message ID, since a
+    which also exposes unscoped message aliases, since a
     resume pass replays with no attempt scope open.
     """
 
@@ -2510,16 +2510,23 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
+    import os
     import sys
+    from pathlib import Path
+
+    from deepagents_code.config import restore_user_langsmith_env
 
     if not quiet:
         console.print(Text(f"Running startup command: {command}", style="dim"))
 
     try:
+        shell_env = os.environ.copy()
+        restore_user_langsmith_env(shell_env, start_path=Path.cwd())
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=shell_env,
             start_new_session=(sys.platform != "win32"),
         )
     except OSError as e:

@@ -10,8 +10,8 @@ import mimetypes
 import threading
 import uuid
 from binascii import Error as BinasciiError
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
@@ -65,14 +65,15 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
+    _OPENAI_FILE_MIME_TYPES,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
+    _format_source_block,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
     check_empty_content,
-    format_content_with_line_numbers,
     format_grep_matches,
     regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
@@ -93,23 +94,12 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
-# support today, so these providers get a hard-coded pass until profiles can
-# describe support for other office and document formats.
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
 except ImportError:
     _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
 else:
     _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
-except ImportError:
-    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
 
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
@@ -134,6 +124,8 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 }
 """Default mapping from filesystem tool name to its operation category."""
 
+_FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
+
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
@@ -153,6 +145,35 @@ _PDF_MIME_TYPE: Final = "application/pdf"
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
+    """Reject later same-path file mutations in one model response."""
+    tool_call = request.tool_call
+    if tool_call["name"] not in _FILE_MUTATION_TOOLS:
+        return None
+    path = tool_call["args"].get("file_path")
+    if not isinstance(path, str):
+        return None
+    try:
+        file_path = validate_path(path)
+    except ValueError:
+        return None
+    messages = request.state.get("messages") if isinstance(request.state, Mapping) else None
+    ai_message = next((message for message in reversed(messages or []) if isinstance(message, AIMessage)), None)
+    for call in ai_message.tool_calls if ai_message else []:
+        if call["id"] == tool_call["id"]:
+            return None
+        path = call["args"].get("file_path")
+        if call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
+            continue
+        try:
+            duplicate = validate_path(path) == file_path
+        except ValueError:
+            continue
+        if duplicate:
+            return _tool_error(tool_call["name"], tool_call["id"], "Error: parallel file mutations to the same path are not allowed.")
+    return None
 
 
 def _is_read_file_media_result(message: AnyMessage) -> bool:
@@ -191,41 +212,50 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
     return reordered
 
 
-_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
-"""`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via provider class checks."""
+_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs"}
+"""`ModelProfile` field gating each media block type."""
 
-_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
+_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
-def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
-    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
+def _file_block_supported(
+    block: ContentBlock,
+    *,
+    model: "BaseChatModel | None",
+    profile: Mapping[str, Any],
+    in_tool_message: bool,
+) -> bool:
+    """Check whether a file block is supported by the model and endpoint."""
+    if "base64" not in block:
+        return True
+    if block.get("mime_type") == _PDF_MIME_TYPE:
+        if in_tool_message and profile.get("pdf_tool_message") is False:
+            return False
+        return profile.get("pdf_inputs") is not False
+    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
 
 
 def _multimodal_block_supported(
     block: ContentBlock,
     *,
+    model: "BaseChatModel | None",
     profile: Mapping[str, Any],
-    tolerates_non_pdf_files: bool,
     in_tool_message: bool,
 ) -> bool:
-    """Check whether `profile` (plus the hard-coded provider exception) accepts `block`.
+    """Check whether the profile and provider accept the block.
 
     Missing `ModelProfile` fields default to supported, since profile coverage is
     incomplete. Only an explicit `False` rejects a block type.
     """
     block_type = block["type"]
-    if block_type == "file" and "base64" not in block:
-        # URL-/file-ID-backed file references are provider-managed and often don't
-        # include a `mime_type`, so leave them untouched.
-        return True
-    if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
-        # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
-        # by any `ModelProfile` field yet; only the hard-coded tolerant
-        # providers pass.
-        return tolerates_non_pdf_files
+    if block_type == "file":
+        return _file_block_supported(
+            block,
+            model=model,
+            profile=profile,
+            in_tool_message=in_tool_message,
+        )
 
     field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
     if field is None:
@@ -250,7 +280,12 @@ def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage
     )
 
 
-def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], tolerates_non_pdf_files: bool) -> AnyMessage:
+def _scrub_message_multimodal_content(
+    message: AnyMessage,
+    *,
+    model: "BaseChatModel | None",
+    profile: Mapping[str, Any],
+) -> AnyMessage:
     """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
     if not isinstance(message, (ToolMessage, HumanMessage)):
         return message
@@ -260,7 +295,12 @@ def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[s
     new_blocks = [
         block
         if block["type"] not in _MULTIMODAL_BLOCK_TYPES
-        or _multimodal_block_supported(block, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files, in_tool_message=in_tool_message)
+        or _multimodal_block_supported(
+            block,
+            model=model,
+            profile=profile,
+            in_tool_message=in_tool_message,
+        )
         else _unsupported_multimodal_placeholder(block, message)
         for block in blocks
     ]
@@ -282,7 +322,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     treated as an empty profile rather than skipped: `ModelProfile` is often
     absent for models `langchain_anthropic` doesn't have a static entry for
     (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
-    provider-based non-PDF `file` gate doesn't depend on profile data at all —
+    provider-based binary document gate doesn't depend on profile data at all —
     skipping the whole scrub in that case would silently leave the exact
     `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
     profile still defaults every per-field check to "supported."
@@ -290,8 +330,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     profile = model.profile if model is not None else None
     if not isinstance(profile, dict):
         profile = {}
-    tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)
-    return [_scrub_message_multimodal_content(message, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files) for message in messages]
+    return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
 
 
 def _handle_video_read(
@@ -800,39 +839,95 @@ def _format_glob_tool_result(
     return content
 
 
-def _remaining_lines_notice(read_result: ReadResult) -> str:
-    """Render the read pagination notice when the backend returned a partial window.
+def _window_fields(read_result: ReadResult) -> list[str]:
+    """Describe the window a read returned, as status header fields.
+
+    Carries the facts the pagination notice used to spell out in prose: which
+    source lines came back, how many the file has, and where to resume.
 
     Args:
         read_result: Backend read result carrying the pagination metadata
             (`start_line`, `end_line`, `next_offset`, `total_lines`).
 
     Returns:
-        A model-facing notice describing the window that was read and where to
-            resume, or an empty string when no window metadata is present or the
-            window already reached the end of the file (nothing more to read).
+        The `lines A-B[ of T]` field, followed by `next offset N` when the
+            window stopped short of the end of the file.
     """
     start_line = read_result.start_line
     end_line = read_result.end_line
-    next_offset = read_result.next_offset
-    if start_line is None or end_line is None or next_offset is None:
-        return ""
+    if start_line is None or end_line is None:
+        return []
 
     total_lines = read_result.total_lines
-    read_count = end_line - start_line + 1
-    read_unit = "line" if read_count == 1 else "lines"
-    if total_lines is None:
-        return f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}). More lines remain from offset {next_offset}.]"
-    if end_line >= total_lines:
-        return ""
+    span = f"lines {start_line}-{end_line}"
+    if total_lines is not None:
+        span += f" of {total_lines}"
+    fields = [span]
+    next_offset = read_result.next_offset
+    if next_offset is not None and (total_lines is None or end_line < total_lines):
+        fields.append(f"next offset {next_offset}")
+    return fields
 
-    remaining = total_lines - end_line
-    remaining_unit = "line" if remaining == 1 else "lines"
-    return (
-        f"\n\n[Read {read_count} {read_unit} "
-        f"(lines {start_line}-{end_line} of {total_lines} total). "
-        f"{remaining} {remaining_unit} remaining from offset {next_offset}.]"
-    )
+
+def _prepare_read_window(read_result: ReadResult, content: str, offset: int) -> tuple[ReadResult, str]:
+    """Normalize a read window into a header range and a verbatim source body.
+
+    `ReadResult` permits `start_line`/`end_line` to be unset, and a custom
+    backend can return numberable text that way. The status header always
+    states a range, so one is derived from the requested offset and the rows on
+    hand rather than emitting a header with no fields.
+
+    Args:
+        read_result: Backend read result, possibly without window metadata.
+        content: Serialized content for the read window.
+        offset: Offset as requested by the caller, before clamping.
+
+    Returns:
+        The read result (carrying a derived range when the backend gave none)
+            and the verbatim source body.
+    """
+    rows: str | list[str] = content
+    if read_result.start_line is not None and read_result.end_line is not None:
+        rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
+    body = _format_source_block(rows)
+    if read_result.start_line is not None and read_result.end_line is not None:
+        return read_result, body
+
+    # `max(offset, 0)` keeps the fallback range 1-indexed: a backend that
+    # returns numberable text without `start_line` would otherwise report a
+    # zero or negative first line, which the parsers downstream assume never
+    # happens.
+    start_line = max(offset, 0) + 1
+    return replace(read_result, start_line=start_line, end_line=start_line + body.count("\n")), body
+
+
+def _read_header(fields: Sequence[str]) -> str:
+    """Render the status header that sits above a text `read_file` result.
+
+    Args:
+        fields: Header fields, already formatted, in display order.
+
+    Returns:
+        The header line, without a trailing newline.
+    """
+    return f"@@ {' | '.join(fields)} @@"
+
+
+def _assemble_read(body: str, fields: Sequence[str], notices: Sequence[str]) -> str:
+    """Compose a read result from its notices, status header, and source body.
+
+    Notices sit above the header, so every line below it is verbatim file
+    content and consumers can tell the two apart by position.
+
+    Args:
+        body: Verbatim source lines for the window, newline-joined.
+        fields: Status header fields.
+        notices: Bracketed explanations to place above the header.
+
+    Returns:
+        The assembled tool result.
+    """
+    return "\n".join([*notices, _read_header(fields), body])
 
 
 def _clamped_offset_notice(offset: int) -> str:
@@ -891,6 +986,11 @@ GLOB_UNREADABLE_NOTE = (
     "Narrowing the search will NOT reveal the missing files -- they are inaccessible. Continue "
     "with what is listed, or report the access problem rather than retrying."
 )
+GLOB_PATHLESS_DENIED_HINT = (
+    ". A glob without 'path' is authorized against the backend's default root, not the "
+    "directories named in 'pattern'. Retry with an explicit 'path' inside an allowed "
+    "directory and a 'pattern' relative to it."
+)
 
 
 def _glob_timeout_message() -> str:
@@ -926,90 +1026,108 @@ READ_FILE_TRUNCATION_MSG = (
 NUM_CHARS_PER_TOKEN = 4
 
 
+def _midline_truncated_read(
+    body: str,
+    read_result: ReadResult,
+    threshold: int,
+    notices: Sequence[str],
+) -> str:
+    """Assemble a read cut inside a single source line too long to fit.
+
+    No offset reaches the remainder of such a line, so the header reports how
+    much of it is shown in place of a resume point.
+
+    Args:
+        body: Verbatim source lines for the window, newline-joined.
+        read_result: Backend read result carrying the window metadata.
+        threshold: Char budget the assembled result must fit under.
+        notices: Bracketed explanations to place above the header.
+
+    Returns:
+        The assembled tool result, cut to the budget.
+    """
+    oversized = len(body.split("\n", 1)[0])
+    clipped = ReadResult(
+        total_lines=read_result.total_lines,
+        start_line=read_result.start_line,
+        end_line=read_result.start_line,
+        next_offset=None,
+    )
+
+    def fields(shown: int) -> list[str]:
+        return [*_window_fields(clipped), "truncated mid-line", f"{shown} of {oversized} chars"]
+
+    # Budget for the widest count it could print; costs 0-2 shown chars, never overshoots.
+    reserved = len(_assemble_read("", fields(oversized), notices))
+    shown = max(0, min(oversized, threshold - reserved))
+    return _assemble_read(body[:shown], fields(shown), notices)
+
+
 def _truncate_paginated_read(
-    content: str,
+    body: str,
     file_path: str,
     read_result: ReadResult,
     token_limit: int | None,
+    *,
+    notices: Sequence[str] = (),
 ) -> str:
     """Truncate a paginated read without skipping undisplayed source lines.
 
-    The backend computes the pagination notice from the full window it
-    returned, but the char budget may drop trailing rows from what the model
-    actually sees. Appending the backend's notice verbatim would then advertise
-    a `next_offset` past those dropped lines, so a re-read would silently skip
-    them. This recomputes the notice from the last *complete* rendered row that
-    still fits, and falls back to the size warning alone (no stale offset) when
-    not even one full source line fits.
+    The backend reports the window it returned, but the char budget may drop
+    trailing lines from what the model actually sees. Reporting the backend's
+    `next_offset` verbatim would then advertise an offset past those dropped
+    lines, so a re-read would silently skip them. This rebuilds the header from
+    the last *complete* source line that still fits, and reports
+    `truncated mid-line` with no resume offset when not even one line fits.
 
     Args:
-        content: Line-numbered content produced by
-            `format_content_with_line_numbers` (a marker followed by two spaces
-            and the source content).
+        body: Verbatim source lines for the window, newline-joined.
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
-            adjusted `next_offset` is derived from its 1-indexed line range.
+            adjusted resume offset is derived from its 1-indexed line range.
         token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
-            falsy, content is returned with its notice untouched.
+            falsy, the untruncated result is returned.
+        notices: Bracketed explanations to place above the header, such as an
+            offset-clamp disclosure that truncation must not drop.
 
     Returns:
-        The (possibly truncated) content with a notice that never overstates
-            which source lines were shown.
+        The (possibly truncated) result, whose header never overstates which
+            source lines were shown.
 
     Examples:
         If the backend returns source lines 11-20 with `next_offset=20`, but
-        the budget fits only through line 14, the returned notice reports lines
-        11-14 and tells the caller to resume from offset 14 rather than 20.
-
-        A long source line may be rendered as rows `14` and `14.1`. If the
-        budget fits row `14` but not `14.1`, neither row is retained: the notice
-        reports line 13 as the last displayed line and resumes from offset 13.
+        the budget fits only through line 14, the header reports lines 11-14
+        and a resume offset of 14 rather than 20.
     """
-    notice = _remaining_lines_notice(read_result)
-    if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
-        return content + notice
+    result = _assemble_read(body, _window_fields(read_result), notices)
+    if not token_limit or len(result) < NUM_CHARS_PER_TOKEN * token_limit:
+        return result
 
-    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path).strip()
     threshold = NUM_CHARS_PER_TOKEN * token_limit
     if read_result.start_line is not None and read_result.end_line is not None:
-        # Build the safe places where the content can be truncated. A long source
-        # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
-        # at every newline could keep only part of that source line. `position`
-        # tracks each rendered row's end in `content`; comparing the integer part
-        # of adjacent row markers records a boundary only after the final row for
-        # a source line. The loop below uses these boundaries to find the latest
-        # complete source line that fits alongside the truncation message and the
-        # pagination notice.
-        rows = content.split("\n")
+        # Build the safe places where the body can be truncated: one per source
+        # line, so a cut never lands inside a line the header then claims to
+        # have shown. `position` tracks each line's end in `body`.
+        rows = body.split("\n")
         position = 0
         boundaries: list[tuple[int, int]] = []
-        for index, row in enumerate(rows):
-            position += len(row)
-            marker = row.lstrip().partition("  ")[0].partition(".")[0]
-            source_line = int(marker)
-            # Rows numbered past the window's last source line are not file
-            # content: a byte-capped backend page appends its own truncation
-            # banner (preceded by a blank line), which `format_content_with_line_numbers`
-            # then numbers as `end_line + 1`, `end_line + 2`, .... Stop before
-            # them so a banner row is never chosen as a boundary — resuming from
-            # its inflated number would overshoot `total_lines` and skip real
-            # lines. Rows are numbered monotonically, so the first out-of-range
-            # row means the rest are banner too.
+        for source_line, row in enumerate(rows, start=read_result.start_line):
+            # Rows past the window's last source line are not file content: a
+            # byte-capped backend page appends its own truncation banner
+            # (preceded by a blank line). Stop before them so a banner row is
+            # never chosen as a boundary — resuming from its inflated number
+            # would overshoot `total_lines` and skip real lines.
             if source_line > read_result.end_line:
                 break
-            next_source_line = None
-            if index + 1 < len(rows):
-                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
-                next_source_line = int(next_marker)
-            if next_source_line != source_line:
-                boundaries.append((position, source_line))
+            position += len(row)
+            boundaries.append((position, source_line))
             position += 1
 
-        # Only advertise source lines whose complete rendered rows fit. If the
-        # byte cut landed partway through a row, resuming after that row would
-        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
-        # after the last one shown, which for a 1-indexed `end_line` is exactly
-        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
+        # Only advertise source lines that fit whole. `next_offset` is the
+        # 0-indexed line after the last one shown, which for a 1-indexed
+        # `end_line` is exactly `end_line` (no reliance on how the request
+        # `offset` maps to `start_line`).
         for boundary, end_line in reversed(boundaries):
             adjusted_result = ReadResult(
                 total_lines=read_result.total_lines,
@@ -1017,14 +1135,16 @@ def _truncate_paginated_read(
                 end_line=end_line,
                 next_offset=end_line,
             )
-            adjusted_notice = _remaining_lines_notice(adjusted_result)
-            if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
-                return content[:boundary] + truncation_msg + adjusted_notice
+            candidate = _assemble_read(
+                body[:boundary],
+                [*_window_fields(adjusted_result), "truncated due to size"],
+                [*notices, truncation_msg],
+            )
+            if len(candidate) <= threshold:
+                return candidate
 
-    # No complete source line fits. Keep the size warning but omit the
-    # backend's stale pagination offset.
-    max_content_length = max(0, threshold - len(truncation_msg))
-    return content[:max_content_length] + truncation_msg
+    # No complete source line fits, so no offset reaches the remainder.
+    return _midline_truncated_read(body, read_result, threshold, [*notices, truncation_msg])
 
 
 def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
@@ -1032,7 +1152,7 @@ def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[
 
     Backends that join a page's lines with `"\n"` as a separator leave a blank
     final row indistinguishable from a trailing terminator, which
-    `format_content_with_line_numbers` drops. Pads to the window the backend
+    `_format_source_block` drops. Pads to the window the backend
     reported and never truncates, since a backend may append a truncation
     banner numbered past `end_line`.
 
@@ -1273,8 +1393,7 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
-- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
-- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
+- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.
 - Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
@@ -1308,7 +1427,7 @@ EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
 - You must read the file before editing; this tool errors otherwise.
-- Preserve the exact indentation from the read output, and never include line-number prefixes in old_string or new_string.
+- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.
 - Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
 
@@ -1978,23 +2097,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            rows: str | list[str] = content
-            if read_result.start_line is not None and read_result.end_line is not None:
-                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
-            content = format_content_with_line_numbers(
-                rows,
-                # `max(offset, 0)` so the fallback gutter stays 1-indexed: a
-                # backend that returns numberable text without `start_line`
-                # would otherwise render a zero or negative line marker, which
-                # the row-marker parsers downstream assume never happens.
-                start_line=read_result.start_line or max(offset, 0) + 1,
-            )
+            read_result, body = _prepare_read_window(read_result, content, offset)
             # `limit` already bounded raw source lines at the backend; do not
-            # re-truncate by row count here, or wrapped continuation rows would
-            # push real source lines off the end of the page (#2453).
-            # The clamp notice is appended after truncation so it cannot be cut.
+            # re-truncate by row count here, or real source lines would be
+            # pushed off the end of the page (#2453).
+            # The clamp notice sits above the header so truncation cannot cut it.
+            clamp_notice = _clamped_offset_notice(offset).strip()
             return ToolMessage(
-                content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),
+                content=_truncate_paginated_read(
+                    body,
+                    validated_path,
+                    read_result,
+                    token_limit,
+                    notices=[clamp_notice] if clamp_notice else [],
+                ),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",
@@ -2368,7 +2484,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}",
+                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -2468,7 +2584,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}",
+                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -3544,6 +3660,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
@@ -3569,6 +3687,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = await handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:

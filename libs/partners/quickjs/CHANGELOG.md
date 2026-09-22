@@ -2,6 +2,16 @@
 
 # Changelog
 
+## [0.3.7](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.6...langchain-quickjs==0.3.7) (2026-09-06)
+
+### Features
+
+- Stream PTC tool calls natively. ([#5735](https://github.com/langchain-ai/deepagents/issues/5735))
+
+### Bug Fixes
+
+- Keep private state out of subagent propagation. ([#3543](https://github.com/langchain-ai/deepagents/issues/3543))
+
 ## [0.3.6](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.5...langchain-quickjs==0.3.6) (2026-09-03)
 
 ### Features

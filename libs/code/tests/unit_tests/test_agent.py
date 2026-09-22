@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
@@ -41,7 +42,6 @@ from deepagents_code.agent import (
     _format_delete_description,
     _format_execute_description,
     _interrupt_predicate,
-    _render_interactive_only_sections,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
@@ -1381,92 +1381,6 @@ class TestGetSystemPromptWebSearch:
         )
 
 
-class TestRenderInteractiveOnlySections:
-    """Direct tests for conditional system-prompt sections."""
-
-    _TEMPLATE = (
-        "before\n\n"
-        "<!-- interactive-only:start -->\n"
-        "interactive content\n"
-        "<!-- interactive-only:end -->\n\n"
-        "after"
-    )
-
-    def test_keeps_content_in_interactive_mode(self) -> None:
-        rendered = _render_interactive_only_sections(self._TEMPLATE, interactive=True)
-
-        assert rendered == "before\n\ninteractive content\n\nafter"
-
-    def test_removes_content_and_extra_whitespace_in_headless_mode(self) -> None:
-        rendered = _render_interactive_only_sections(self._TEMPLATE, interactive=False)
-
-        assert rendered == "before\n\nafter"
-        assert "\n\n\n" not in rendered
-
-    def test_renders_section_at_start_of_template(self) -> None:
-        template = (
-            "<!-- interactive-only:start -->\n"
-            "interactive content\n"
-            "<!-- interactive-only:end -->\n"
-            "after"
-        )
-
-        interactive = _render_interactive_only_sections(template, interactive=True)
-        headless = _render_interactive_only_sections(template, interactive=False)
-
-        assert interactive == "interactive content\nafter"
-        assert headless == "after"
-
-    @pytest.mark.parametrize("interactive", [True, False])
-    def test_renders_adjacent_sections(self, *, interactive: bool) -> None:
-        template = (
-            "a\n"
-            "<!-- interactive-only:start -->\n"
-            "X\n"
-            "<!-- interactive-only:end -->\n"
-            "<!-- interactive-only:start -->\n"
-            "Y\n"
-            "<!-- interactive-only:end -->\n"
-            "b"
-        )
-
-        rendered = _render_interactive_only_sections(template, interactive=interactive)
-
-        assert "interactive-only" not in rendered
-        if interactive:
-            assert "X" in rendered
-            assert "Y" in rendered
-        else:
-            assert "X" not in rendered
-            assert "Y" not in rendered
-
-    @pytest.mark.parametrize("interactive", [True, False])
-    def test_accepts_end_marker_at_eof(self, *, interactive: bool) -> None:
-        template = (
-            "before\n"
-            "<!-- interactive-only:start -->\n"
-            "interactive content\n"
-            "<!-- interactive-only:end -->"
-        )
-
-        rendered = _render_interactive_only_sections(template, interactive=interactive)
-
-        expected = "before\ninteractive content\n" if interactive else "before"
-        assert rendered == expected
-
-    @pytest.mark.parametrize(
-        "template",
-        [
-            "before\n<!-- interactive-only:start -->\ncontent",
-            "before\n<!-- interactive-only:end -->",
-            "before\n<!-- interactive-only:finish -->",
-        ],
-    )
-    def test_rejects_unrendered_markers(self, template: str) -> None:
-        with pytest.raises(ValueError, match="unrendered interactive-only markers"):
-            _render_interactive_only_sections(template, interactive=False)
-
-
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 
@@ -1480,6 +1394,11 @@ class TestGetSystemPromptNonInteractive:
         assert "interactive TUI" in prompt
         assert "ask questions before acting" in prompt
         assert "## Clarifying Requests" in prompt
+        assert "Only ask when genuinely blocked" in prompt
+        assert "Don't substitute without asking" in prompt
+        assert "ask the user what to do" in prompt
+        assert "ask the user for help" in prompt
+        assert "rejected by the user" in prompt
 
     def test_non_interactive_prompt_mentions_headless(self) -> None:
         mock_settings = Mock()
@@ -1503,7 +1422,36 @@ class TestGetSystemPromptNonInteractive:
         assert "Ask domain-defining questions" not in prompt
         assert "ask the user what to do" not in prompt
         assert "ask the user for help" not in prompt
+        assert "Only ask when genuinely blocked" not in prompt
+        assert "Don't substitute without asking" not in prompt
+        assert "report the blocker and any completed work" in prompt
+        assert "Do not invent required identifiers or permissions" in prompt
         assert "DO NOT loop more than 3 times" in prompt
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    @pytest.mark.parametrize("sandbox_type", [None, "modal"])
+    @pytest.mark.parametrize("has_tavily", [True, False])
+    def test_mode_sections_preserve_prompt_structure(
+        self, *, interactive: bool, sandbox_type: str | None, has_tavily: bool
+    ) -> None:
+        prompt = get_system_prompt(
+            "test-agent",
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            has_tavily=has_tavily,
+        )
+
+        assert "\n\n## Tool Usage\n\n" in prompt
+        assert "\n\n## Formatting & Pre-Commit Hooks\n\n" in prompt
+        assert "\n\n\n" not in prompt
+        assert "interactive-only" not in prompt
+        assert "{clarification_guidance}" not in prompt
+        assert "bash python" not in prompt
+        assert "The user only sees your text responses" not in prompt
+        assert ("### Web Search Tool Usage" in prompt) is has_tavily
+        assert ("and ask clarifying questions" in prompt) is (
+            interactive and has_tavily
+        )
 
     def test_non_interactive_prompt_describes_policy_rejections(self) -> None:
         mock_settings = Mock()
@@ -2732,16 +2680,16 @@ class TestCreateCliAgentProjectContext:
         tmp_path: Path,
         *,
         user_langchain_project: str | None,
-    ) -> tuple[Mock, Path]:
-        """Build a shell-enabled CLI agent and return the `LocalShellBackend` mock.
+    ) -> tuple[Mock, Path, Mock]:
+        """Build a shell-enabled CLI agent and return its shell/context mocks.
 
         The agent's `deepagents-code` override is placed in `os.environ` so the
         returned `call_args` reflect how the user's original `LANGSMITH_PROJECT`
         is restored or dropped for shell commands.
 
         Returns:
-            The `LocalShellBackend` mock (for `call_args` assertions) and the
-            resolved user working directory.
+            The `LocalShellBackend` mock, resolved user working directory, and
+            `LocalContextMiddleware` mock for `call_args` assertions.
         """
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -2774,13 +2722,26 @@ class TestCreateCliAgentProjectContext:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         mock_backend = Mock()
+        mock_backend.execute = Mock()
         monkeypatch.setenv("LANGSMITH_PROJECT", "deepagents-code")
+        if "DEEPAGENTS_USER_LANGSMITH_ENV" not in os.environ:
+            import json
+
+            import deepagents_code.config as config_mod
+
+            values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+            values["LANGSMITH_PROJECT"] = user_langchain_project
+            monkeypatch.setenv(
+                "DEEPAGENTS_USER_LANGSMITH_ENV",
+                json.dumps({"launch": dict(values), "user": values}),
+            )
 
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.credentials", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.LocalContextMiddleware") as mock_context,
             patch(
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
@@ -2796,13 +2757,13 @@ class TestCreateCliAgentProjectContext:
                 project_context=project_context,
             )
 
-        return mock_shell, user_cwd
+        return mock_shell, user_cwd, mock_context
 
     def test_workspace_environment_is_frozen_for_local_shell(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """The shell backend receives the workspace snapshot, not process state."""
-        mock_shell, _ = self._build_shell_agent(
+        mock_shell, _, _ = self._build_shell_agent(
             monkeypatch, tmp_path, user_langchain_project=None
         )
         first = dict(mock_shell.call_args.kwargs["env"])
@@ -2845,7 +2806,7 @@ class TestCreateCliAgentProjectContext:
         env — it is popped so the user's code does not trace into the agent's
         project.
         """
-        mock_shell, user_cwd = self._build_shell_agent(
+        mock_shell, user_cwd, _ = self._build_shell_agent(
             monkeypatch, tmp_path, user_langchain_project=None
         )
 
@@ -2865,7 +2826,7 @@ class TestCreateCliAgentProjectContext:
         else:
             monkeypatch.setenv("GIT_TERMINAL_PROMPT", user_value)
 
-        mock_shell, _ = self._build_shell_agent(
+        mock_shell, _, _ = self._build_shell_agent(
             monkeypatch, tmp_path, user_langchain_project=None
         )
 
@@ -2881,50 +2842,78 @@ class TestCreateCliAgentProjectContext:
         `""` (not popped) — the user explicitly cleared their project and that
         intent is preserved for shell commands.
         """
-        mock_shell, _ = self._build_shell_agent(
+        mock_shell, _, _ = self._build_shell_agent(
             monkeypatch, tmp_path, user_langchain_project=user_project
         )
 
         assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == user_project
 
-    def test_project_context_restores_user_shell_langsmith_api_key(
+    def test_local_context_uses_restored_shell_tracing_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The shell env is routed through `restore_user_tracing_api_keys`.
+        """Prompt context follows the carrier instead of the agent snapshot."""
+        import json
 
-        Guards the wiring in `create_cli_agent`'s local-shell branch: the env
-        handed to `LocalShellBackend` must carry the caller's original
-        `LANGSMITH_API_KEY` (the agent's in-process override reverted) and must
-        drop a key the caller never set. Removing the restore call regresses
-        both assertions, catching the exact key leak the restore prevents.
-        """
+        import deepagents_code.config as config_mod
+
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_PROJECT"] = "user-project"
+        monkeypatch.setenv(
+            config_mod._USER_LANGSMITH_ENV_CARRIER,
+            json.dumps({"launch": launch, "user": dict(launch)}),
+        )
+
+        mock_shell, _, mock_context = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project="agent-project"
+        )
+
+        assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == "user-project"
+        assert mock_context.call_args.kwargs["user_tracing_project"] == "user-project"
+
+    def test_project_context_restores_user_shell_langsmith_environment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The local shell gets user selectors without agent-only credentials."""
+        import json
+
         import deepagents_code.config as config_mod
 
         original_done = config_mod._bootstrap_state.done
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
-        # Simulate a completed bootstrap: the caller had their own LANGSMITH key
-        # (since overridden in-process) and never set a LANGCHAIN key.
         monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
-        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc_agent_override")
-        config_mod._bootstrap_state.original_tracing_api_keys = {
-            "LANGSMITH_API_KEY": "lsv2_user_original",
-            "LANGCHAIN_API_KEY": None,
-        }
-        # Guard the seeded snapshot against an incidental bootstrap run.
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://agent.example.com")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        # Give the two mechanisms different values, so neither one alone can
+        # satisfy the assertions below. `LANGSMITH_PROFILE` comes from the
+        # launch shell and must win over the project `.env`;
+        # `LANGSMITH_CONFIG_FILE` is set only in the project `.env`.
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_PROFILE"] = "oauth"
+        (tmp_path / ".env").write_text(
+            "LANGSMITH_PROFILE=from-dotenv\nLANGSMITH_CONFIG_FILE=/tmp/langsmith.json\n"
+        )
+        monkeypatch.setenv(
+            config_mod._USER_LANGSMITH_ENV_CARRIER,
+            json.dumps({"launch": launch, "user": dict(launch)}),
+        )
         config_mod._bootstrap_state.done = True
 
         try:
-            mock_shell, _ = self._build_shell_agent(
+            mock_shell, _, _ = self._build_shell_agent(
                 monkeypatch, tmp_path, user_langchain_project=None
             )
             env = mock_shell.call_args.kwargs["env"]
-            # The caller's own key is restored, not the agent's override.
-            assert env["LANGSMITH_API_KEY"] == "lsv2_user_original"
-            # A key the caller never set is dropped, not leaked.
-            assert "LANGCHAIN_API_KEY" not in env
         finally:
             config_mod._bootstrap_state.done = original_done
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+        assert "LANGSMITH_API_KEY" not in env
+        assert "LANGSMITH_ENDPOINT" not in env
+        assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" not in env
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
+        assert env["LANGSMITH_PROFILE"] == "oauth"
+        assert env["LANGSMITH_CONFIG_FILE"] == "/tmp/langsmith.json"
 
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path

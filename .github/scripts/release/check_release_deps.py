@@ -41,7 +41,7 @@ from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
-BYPASS_LABEL = "release-deps: acknowledged"
+BYPASS_LABEL = "ci:ack-release-deps"
 COMMENT_MARKER = "<!-- release-deps-check -->"
 ACKED_ENV = "RELEASE_DEPS_ACKED"
 FOLLOWUP_LIMIT = 10
@@ -282,12 +282,19 @@ def fetch_pypi_json(
         raise ValueError(msg)
 
     canonical_name = canonicalize_name(name)
+    # PyPI's JSON API is served through Fastly with `cache-control: max-age=900`,
+    # so a release published minutes ago can be missing from a cached response
+    # and a freshness check reads "release pending" as "up to date". `no-cache`
+    # makes the CDN revalidate with origin on every hop, which is the cheapest
+    # way to see fresh data without purging or cache-busting query params.
     url = f"https://pypi.org/pypi/{quote(canonical_name, safe='')}/json"
     request = Request(  # noqa: S310  # URL is fixed to the HTTPS PyPI origin.
         url,
         headers={
             "Accept": "application/json",
             "User-Agent": "langchain-ai/deepagents-release-deps-check",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
     open_url = opener or urlopen
@@ -1343,7 +1350,7 @@ def run_check(
     Args:
         base_sha: Pull request base commit.
         head_sha: Pull request head commit.
-        acked: Whether the `release-deps: acknowledged` bypass label is set.
+        acked: Whether the `ci:ack-release-deps` bypass label is set.
         fetcher: Injectable PyPI JSON fetcher for tests.
 
     Returns:

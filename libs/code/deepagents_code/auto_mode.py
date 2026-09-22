@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+import pydantic
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
     Decision,
@@ -292,6 +293,49 @@ class AutoDecisionBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decisions: list[AutoDecision]
+
+
+def _batch_decision_model(
+    allowed_ids: Sequence[str],
+) -> type[AutoDecision]:
+    """Build the per-batch decision model with an exact `tool_call_id` enum.
+
+    Returns:
+        A fresh `AutoDecision` subclass whose IDs enumerate `allowed_ids`.
+    """
+    # A runtime-constructed `Literal` subscript is not a valid static type
+    # expression, so build it through the dunder to keep `ty` quiet; the
+    # dunder avoids the ruff `Literal[...]`-subscript rewrite.
+    tool_call_id_type: Any = Literal.__getitem__(tuple(allowed_ids))  # noqa: PLC2801
+    return pydantic.create_model(  # type: ignore[return-value]
+        "_BatchDecision",
+        __base__=AutoDecision,
+        tool_call_id=tool_call_id_type,
+    )
+
+
+def _classifier_response_model(allowed_ids: Sequence[str]) -> type[AutoDecisionBatch]:
+    """Build a per-batch response model whose `tool_call_id` is an enum.
+
+    Each batch gets a fresh model restricting `tool_call_id` to the exact
+    original IDs requiring review, so the provider — not just downstream
+    validation — rejects mistyped IDs. Never mutate the shared
+    `AutoDecisionBatch` classes: successive and concurrent batches must stay
+    isolated from each other.
+
+    Args:
+        allowed_ids: Original tool-call IDs requiring classifier review.
+
+    Returns:
+        A fresh `AutoDecisionBatch` subclass with the batch's ID enum.
+    """
+    decision_model: Any = _batch_decision_model(allowed_ids)
+    decisions_type: Any = (list[decision_model], ...)  # type: ignore[invalid-type-form]
+    return pydantic.create_model(
+        AutoDecisionBatch.__name__,
+        __base__=AutoDecisionBatch,
+        decisions=decisions_type,
+    )
 
 
 class AutoModeCounters(TypedDict):
@@ -616,10 +660,24 @@ def _redact_remote(value: str) -> str:
 def _known_credential_values(
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
+    from deepagents_code.config import (
+        active_environment,
+        relayed_user_tracing_secrets,
+    )
+
+    source = active_environment() if environ is None else environ
     values: set[str] = set()
-    for name, value in (os.environ if environ is None else environ).items():
+    for name, value in source.items():
         if _SECRET_KEY_RE.search(name) and len(value) >= _MIN_SECRET_LENGTH:
             values.add(value)
+    # The caller's relayed tracing key is what `execute` commands actually run
+    # under, but it reaches this process inside a carrier whose name does not
+    # match `_SECRET_KEY_RE`, so the name scan above cannot see it.
+    values.update(
+        value
+        for value in relayed_user_tracing_secrets(source)
+        if len(value) >= _MIN_SECRET_LENGTH
+    )
     try:
         from deepagents_code.auth_store import load_credentials
 
@@ -2604,6 +2662,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     result = await asyncio.to_thread(
                         create_model,
                         selected,
+                        # One-shot classification never replays thinking blocks,
+                        # so the Anthropic preserved-thinking binding would only
+                        # cost it the forced tool call `with_structured_output`
+                        # relies on.
+                        bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
             except asyncio.CancelledError:
@@ -2771,7 +2834,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                structured = model.with_structured_output(AutoDecisionBatch)
+                response_model = _classifier_response_model(
+                    [_tool_call_id(call) for call in calls]
+                )
+                thinking = getattr(model, "thinking", None)
+                if (
+                    spec is None
+                    and getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(thinking, dict)
+                    and thinking.get("type") in {"adaptive", "enabled"}
+                ):
+                    structured = model.with_structured_output(
+                        response_model, method="json_schema"
+                    )
+                else:
+                    structured = model.with_structured_output(response_model)
                 messages = [
                     SystemMessage(content=_CLASSIFIER_POLICY),
                     HumanMessage(

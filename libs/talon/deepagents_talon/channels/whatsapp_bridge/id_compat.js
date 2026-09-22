@@ -47,6 +47,39 @@ function serializedId(value) {
   return typeof value.id === "string" && value.id ? value.id : null;
 }
 
+function messageSenderId(message, fromSelf, botId, messageFrom) {
+  return fromSelf === true && botId ? botId : widString(message.author) || messageFrom;
+}
+
+function reactionEntry(reaction, botId, botIds) {
+  const messageId = serializedId(reaction.msgId);
+  const chatId = widString(reaction.msgId && reaction.msgId.remote);
+  const fromSelf = Boolean(reaction.id && reaction.id.fromMe === true);
+  const selfChat = isSelfChat(fromSelf, chatId, botIds);
+  const senderId = fromSelf ? botId : widString(reaction.senderId);
+  const reason = !messageId ? "missing_message_id"
+    : !chatId ? "missing_chat_id"
+    : !senderId ? "missing_sender_id"
+    : !reaction.reaction ? "missing_emoji"
+    : chatId === "status@broadcast" ? "status_broadcast"
+    : fromSelf && !selfChat ? "self_outside_self_chat" : null;
+  console.log(`[bridge] talon_event ${JSON.stringify({
+    event: reason ? "whatsapp.bridge.reaction.rejected" : "whatsapp.bridge.reaction.converted",
+    reason, from_self: fromSelf, self_chat: selfChat,
+    message_id_present: Boolean(messageId), chat_id_present: Boolean(chatId),
+    sender_id_present: Boolean(senderId), emoji_present: Boolean(reaction.reaction),
+    bot_id_present: Boolean(botId), bot_alias_count: botIds.length,
+  })}`);
+  if (reason) {
+    return null;
+  }
+  return {
+    event_type: "reaction", chat_id: chatId, user_id: senderId,
+    message_id: messageId, text: reaction.reaction,
+    from_self: fromSelf, self_chat: selfChat,
+  };
+}
+
 async function quotedMessageContext(message) {
   if (!message.hasQuotedMsg) {
     return { participant: null, messageId: null, status: "not_reply" };
@@ -271,9 +304,11 @@ module.exports = {
   installMessageKeyCompatibility,
   installPageCompatibility,
   isSelfChat,
+  messageSenderId,
   normalizeId,
   normalizeMessage,
   quotedMessageContext,
+  reactionEntry,
   serializedId,
   widString,
 };

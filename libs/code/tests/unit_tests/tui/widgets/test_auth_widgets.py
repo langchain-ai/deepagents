@@ -1579,7 +1579,7 @@ api_key_url = "javascript:alert(1)"
             assert isinstance(app.screen, AuthPromptScreen)
 
     async def test_ctrl_r_reload_refreshes_langsmith_endpoint_notice(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """A LangSmith endpoint set via reload surfaces its precedence notice.
 
@@ -1599,9 +1599,10 @@ api_key_url = "javascript:alert(1)"
             app.show_prompt("langsmith", "LANGSMITH_API_KEY")
             await pilot.pause()
             assert not app.screen.query("#auth-prompt-endpoint-env-notice")
-            monkeypatch.setenv(
-                "LANGSMITH_ENDPOINT", "https://eu.api.smith.langchain.com"
+            (tmp_path / ".env").write_text(
+                "LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com\n"
             )
+            monkeypatch.chdir(tmp_path)
             await pilot.press("ctrl+r")
             await pilot.pause()
             # Still blocking (no key), so the modal recomposed in place — and the

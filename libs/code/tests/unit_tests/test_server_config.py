@@ -199,6 +199,68 @@ class TestServerConfigEdgeCases:
             enable_interpreter=None, sandbox_type="daytona", local_default=True
         )
 
+    def test_workspace_claim_partitions_every_policy_field(self) -> None:
+        config = ServerConfig()
+
+        assert set(config.to_workspace_payload()) == set(
+            config.to_session_workspace_claim()
+        ) | set(config.to_project_workspace_policy())
+        assert not (
+            set(config.to_session_workspace_claim())
+            & set(config.to_project_workspace_policy())
+        )
+        assert {"no_mcp", "allow_fs_tools"} <= set(config.to_session_workspace_claim())
+
+    def test_session_fingerprint_excludes_every_project_field(self) -> None:
+        baseline = ServerConfig()
+        project_changed = ServerConfig(
+            extension_paths=("/tmp/extension.py",),
+            mcp_config_path="/tmp/mcp.json",
+            sandbox_setup="/tmp/setup.sh",
+            trust_project_extensions=True,
+            trust_project_mcp=True,
+        )
+
+        assert (
+            baseline.session_workspace_fingerprint()
+            == project_changed.session_workspace_fingerprint()
+        )
+        assert (
+            baseline.workspace_fingerprint() != project_changed.workspace_fingerprint()
+        )
+        assert (
+            baseline.session_workspace_fingerprint()
+            != ServerConfig(no_mcp=True).session_workspace_fingerprint()
+        )
+        assert (
+            baseline.session_workspace_fingerprint()
+            != ServerConfig(
+                allow_fs_tools=["read_file"]
+            ).session_workspace_fingerprint()
+        )
+
+    def test_second_project_resolves_its_persisted_extension_trust(
+        self, tmp_path: Path
+    ) -> None:
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        config = ServerConfig(
+            cwd=str(launch),
+            project_root=str(launch),
+            trust_project_extensions=False,
+        )
+
+        with patch(
+            "deepagents_code.extensions.trust.is_project_extensions_trusted",
+            return_value=True,
+        ) as trusted:
+            resolved = config.resolve_workspace(str(other), str(other))
+
+        assert resolved.trust_project_extensions is True
+        trusted.assert_called_once_with(str(other))
+
     def test_trust_project_mcp_false_round_trips(self) -> None:
         """False must survive round-trip (not collapse to None)."""
         original = ServerConfig(trust_project_mcp=False)

@@ -289,7 +289,7 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 """Override the default Unix-socket path for the external event listener."""
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
-"""Colon-separated paths added to the skill containment allowlist."""
+"""Paths added to the skill containment allowlist, split with `os.pathsep`."""
 
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.
@@ -505,6 +505,9 @@ hostile values the dotenv denylist does not yet enumerate. The global
 `~/.deepagents/.env` is unaffected. This is user-controlled process env, not a
 repo file, so a project `.env` cannot disable itself.
 """
+
+RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
+"""Maximum number of recent threads loaded and displayed (default: 20)."""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).

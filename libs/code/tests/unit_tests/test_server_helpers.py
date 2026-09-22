@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from deepagents_code._paths import PATHS
 from deepagents_code.agent import _apply_inherited_pythonpath
 from deepagents_code.client.launch.server import (
@@ -16,8 +18,7 @@ from deepagents_code.client.launch.server import (
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
-    _INHERITED_USER_TRACING_ENV,
-    apply_inherited_user_tracing,
+    _USER_LANGSMITH_ENV_CARRIER,
 )
 
 
@@ -112,6 +113,72 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert env[_INHERITED_PYTHONPATH_ENV] == ""
 
+    def test_requires_captured_langsmith_environment(self) -> None:
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="were not captured at startup",
+            ):
+                _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+    def test_names_the_swallowed_bootstrap_failure(self) -> None:
+        """Bootstrap tolerates its own errors, so this must name the cause."""
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        original_error = config_mod._bootstrap_state.error
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        config_mod._bootstrap_state.error = OSError("profile config unreadable")
+        try:
+            with pytest.raises(RuntimeError, match="profile config unreadable") as exc:
+                _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._bootstrap_state.error = original_error
+
+        assert isinstance(exc.value.__cause__, OSError)
+
+    def test_overwrites_untrusted_langsmith_carrier(self) -> None:
+        import json
+
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env["LANGSMITH_PROFILE"] = "oauth"
+        try:
+            with patch.dict(
+                os.environ,
+                {_USER_LANGSMITH_ENV_CARRIER: '{"LANGSMITH_API_KEY":"evil"}'},
+            ):
+                env = _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        assert json.loads(env[_USER_LANGSMITH_ENV_CARRIER])["user"] == {
+            **dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+            "LANGSMITH_PROFILE": "oauth",
+        }
+
 
 class TestPythonpathRelayRoundTrip:
     def test_launch_pythonpath_round_trips_to_execute_env(self) -> None:
@@ -132,6 +199,46 @@ class TestPythonpathRelayRoundTrip:
         assert _INHERITED_PYTHONPATH_ENV not in shell_env
 
 
+class TestLangSmithCarrierRoundTrip:
+    @pytest.mark.parametrize("user_key", ["user-launch-key", None])
+    def test_launch_langsmith_env_round_trips_to_execute_env(
+        self, monkeypatch: pytest.MonkeyPatch, user_key: str | None
+    ) -> None:
+        """The real server handoff restores user settings and removes agent ones."""
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import restore_user_langsmith_env
+
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = user_key
+        launch["LANGSMITH_PROJECT"] = "user-launch-project"
+        user = dict(
+            launch, LANGSMITH_PROFILE="oauth", LANGSMITH_CONFIG_FILE="/tmp/ls.json"
+        )
+        monkeypatch.setattr(config_mod._bootstrap_state, "launch_langsmith_env", launch)
+        monkeypatch.setattr(config_mod._bootstrap_state, "user_langsmith_env", user)
+        server_env = _build_server_env()
+
+        # The server hands the agent an environment holding its own key.
+        shell_env = dict(server_env)
+        shell_env.update(
+            LANGSMITH_API_KEY="agent-session-key",
+            LANGSMITH_TRACING="true",
+            DEEPAGENTS_CODE_LANGSMITH_TRACING="true",
+        )
+        restore_user_langsmith_env(shell_env)
+
+        if user_key is None:
+            assert "LANGSMITH_API_KEY" not in shell_env
+        else:
+            assert shell_env["LANGSMITH_API_KEY"] == user_key
+        assert shell_env["LANGSMITH_PROJECT"] == "user-launch-project"
+        assert shell_env["LANGSMITH_PROFILE"] == "oauth"
+        assert shell_env["LANGSMITH_CONFIG_FILE"] == "/tmp/ls.json"
+        assert "LANGSMITH_TRACING" not in shell_env
+        assert "DEEPAGENTS_CODE_LANGSMITH_TRACING" not in shell_env
+        assert _USER_LANGSMITH_ENV_CARRIER not in shell_env
+
+
 class TestServerEnvProfilePinning:
     """The server must always inherit the client's profile selection.
 
@@ -144,79 +251,29 @@ class TestServerEnvProfilePinning:
         env = _server_env_with_overrides({"DEEPAGENTS_HOME": "/tmp/evil"}, {})
         assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
 
+    def test_scoped_override_cannot_replace_langsmith_carrier(self) -> None:
+        import json
 
-class TestUserTracingRelay:
-    """The caller's tracing identity must survive the client/server boundary.
-
-    The server inherits an environment where bootstrap has already replaced the
-    canonical LangSmith flags and key, so its own `_bootstrap_state` capture
-    holds the *agent's* values. Restoring from it would be a no-op that leaks
-    the agent session key into user `execute` commands.
-    """
-
-    def test_relays_caller_tracing_values_for_execute(self) -> None:
-        """`execute` receives the caller's key, not the agent's override."""
         import deepagents_code.config as config_mod
 
-        state = config_mod._bootstrap_state
-        with (
-            patch.object(state, "done", True),
-            patch.object(state, "original_tracing_env", {"LANGSMITH_TRACING": None}),
-            patch.object(
-                state,
-                "original_tracing_api_keys",
-                {"LANGSMITH_API_KEY": "caller-key"},
-            ),
-            patch.dict(
-                os.environ,
-                {
-                    "LANGSMITH_API_KEY": "agent-session-key",
-                    "LANGSMITH_TRACING": "true",
-                },
-                clear=False,
-            ),
-        ):
-            server_env = _build_server_env()
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env["LANGSMITH_PROFILE"] = "oauth"
+        try:
+            env = _server_env_with_overrides(
+                {},
+                {_USER_LANGSMITH_ENV_CARRIER: '{"LANGSMITH_API_KEY":"evil"}'},
+            )
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
 
-        # The agent's own values still reach the server process itself.
-        assert server_env["LANGSMITH_API_KEY"] == "agent-session-key"
-
-        shell_env = dict(server_env)
-        assert apply_inherited_user_tracing(shell_env) is True
-        assert shell_env["LANGSMITH_API_KEY"] == "caller-key"
-        # The caller had no tracing flag, so the agent's must not survive.
-        assert "LANGSMITH_TRACING" not in shell_env
-        assert _INHERITED_USER_TRACING_ENV not in shell_env
-
-    def test_no_relay_reports_absence_so_local_capture_wins(self) -> None:
-        """Without a carrier the local `_bootstrap_state` stays authoritative."""
-        shell_env = {"LANGSMITH_API_KEY": "agent-session-key"}
-        assert apply_inherited_user_tracing(shell_env) is False
-        assert shell_env["LANGSMITH_API_KEY"] == "agent-session-key"
-
-    def test_unparsable_relay_fails_closed(self) -> None:
-        """A corrupt carrier drops the agent's key rather than passing it on."""
-        shell_env = {
-            _INHERITED_USER_TRACING_ENV: "not json",
-            "LANGSMITH_API_KEY": "agent-session-key",
-            "LANGSMITH_TRACING": "true",
-        }
-        assert apply_inherited_user_tracing(shell_env) is True
-        assert "LANGSMITH_API_KEY" not in shell_env
-        assert "LANGSMITH_TRACING" not in shell_env
-
-    def test_inherited_carrier_var_is_never_trusted(self) -> None:
-        """A smuggled carrier cannot choose the tracing identity."""
-        import deepagents_code.config as config_mod
-
-        state = config_mod._bootstrap_state
-        with (
-            patch.object(state, "done", False),
-            patch.dict(
-                os.environ,
-                {_INHERITED_USER_TRACING_ENV: '{"LANGSMITH_API_KEY": "smuggled"}'},
-                clear=False,
-            ),
-        ):
-            server_env = _build_server_env()
-        assert _INHERITED_USER_TRACING_ENV not in server_env
+        user = json.loads(env[_USER_LANGSMITH_ENV_CARRIER])["user"]
+        assert user["LANGSMITH_PROFILE"] == "oauth"
+        assert user["LANGSMITH_API_KEY"] is None

@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:2e129c3a1770f21ce37f1250efee2a0b5412a6109823418d60c8ad927d9fff1e",
+  "claims": [
+    {
+      "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
+      "statement": "Normal dcode startup captures a workspace and resolved ServerConfig, scaffolds and starts a loopback LangGraph server on an ephemeral-port default, waits for the agent graph, configures the RemoteAgent workspace policy, and stops the owned server in a finally block if handoff does not complete, including cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
+          "version": "repo-file-v1:sha256:018c6b8b6df71514c17b534374fb36253c9946de043bad744f5d95f7eb18b806"
+        }
+      ]
+    },
+    {
+      "id": "claim_77c1d1acf1554106a19e98b8692b14aa",
+      "statement": "For context-bearing server execution, make_graph requires a nonempty thread ID and workspace context, validates the durable thread workspace binding, and selects a binding-specific runtime; without execution context it returns the configured server runtime.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_40b27e72b5c8466491476f2b545b4c2e",
+      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries that reject configuration-policy drift and prevent a process-wide sandbox from being shared by different workspaces.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_ddfd890f8cf7462782ee70c8f6dbbd6f",
+      "statement": "RemoteAgent delegates SSE parsing, stream negotiation, namespace extraction, and interrupt detection to RemoteGraph, requires a thread ID, forwards workspace context, converts streamed message dictionaries and interrupt updates for the UI, and leaves state snapshots serialized.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
+    },
+    {
+      "id": "claim_1a4fd8f55e2346cb914824c0001a3e39",
+      "statement": "RemoteAgent treats a missing remote thread or a no-checkpoint SDK state-shape failure as empty state, but re-raises other state-read failures; it idempotently registers a live HTTP thread so checkpointed state can be mutated after server restart.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
+    },
+    {
+      "id": "claim_b8e21cdfd88b41d1b693c7badfaae27d",
+      "statement": "On a remote state-update conflict, RemoteAgent cancels pending and running runs with bounded concurrent waits and retries the update once.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
+    },
+    {
+      "id": "claim_f27fe0186de84bcea2e42ad6be1693cb",
+      "statement": "CodeModelRetryMiddleware wraps model-node calls rather than an entire agent turn and reads retry budget from the request model when present; it is installed inside compaction so failed provider attempts do not replay completed tools, summary generation, or archive append.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d958aac6d7946c48b563f23388298ca",
+      "statement": "Model retries re-raise GraphBubbleUp, retry only classified transient failures while budget remains, honor usable Retry-After hints or jittered exponential backoff, and re-raise terminal errors rather than fabricating an AI response; interactive retries have a cumulative delay guard.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca478b16158c4efd8000bd34d19ade28",
+      "statement": "Retry middleware emits correlated model attempt and retry stream events, tracks whether a failed attempt may have streamed visible output, and reports event-emission failures without failing the run so consumers can mark superseded partial output as incomplete.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_282ade9d9271454793f5c9bb49b032c0",
+      "statement": "Recovery abandons stale pending graph work by cancelling active runs, adding error results only for unanswered calls in the trailing AI-message turn, writing __end__, and verifying that no queued node, task, or interrupt remains.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
+    },
+    {
+      "id": "claim_f439848b72be4f6f84604a43eecd7571",
+      "statement": "Server graph construction snapshots the selected workspace environment and credentials before building its runtime, offloads blocking setup from the event loop, builds conditional web/MCP tooling, and emits a DEEPAGENTS_STARTUP_ERROR marker before exit on construction failure; parent health checking extracts that marker on early child exit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_7cecde199c494061b0d52a08bca7ee38",
+      "statement": "Focused tests verify cache and startup-marker contracts with injected builders, retry and stream behavior with fake models and transport errors, remote conversion/recovery behavior with doubles, and an in-memory queued-tools graph where abandonment clears pending work without executing the tool.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_pending_work_recovery.py",
+          "version": "repo-file-v1:sha256:70ee64383ee95e04c4ebdb99a324c66c11a071d642ac22d613aa4121fdc65a8e"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py",
+          "version": "repo-file-v1:sha256:4fd29d5fdf713b4555b6414491c26b11be411e51610d8df29cd8446c41cd2f56"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py",
+          "version": "repo-file-v1:sha256:42b784f6ef15656744dd10f8f057c87b4cf196db1ed723f311f5b9674295c27e"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
+          "version": "repo-file-v1:sha256:3e5eca2384a16e9ce3c483f97a42a5b24221b671bc95263e0d378ee69bb01649"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_server_manager.py",
+          "version": "repo-file-v1:sha256:f77e5754f2ba1d6ba97b27fab3a04fdded54898441ce033f8b95e96989965b76"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec25c3ebdde9484ba001ffe45e69ed6e",
+      "statement": "RemoteAgent keeps workspace policy configuration separate from per-thread durable binding: policy and fingerprint must be supplied together, first use posts the workspace payload to the thread workspace route, and the returned descriptor is cached by thread.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
+          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d9126204c2740c0a4c5a1e7acdda194",
+      "statement": "The server child environment strips PYTHONPATH from server startup while relaying it only through a dedicated inherited carrier for downstream execute commands; local launch uses noop auth and generated dcode operation routes opt into custom-route auth when a deployment configures it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        }
+      ]
+    },
+    {
+      "id": "claim_36430fbcfca64fe1b0740593b4480e5a",
+      "statement": "ServerProcess uses a dedicated POSIX process group for graceful group shutdown and SIGKILL escalation, while Windows uses Ctrl+Break then root-process termination and may leave a surviving descendant orphaned.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py",
+          "version": "repo-file-v1:sha256:7d3681a538c3c531ec4d0dd75121f5e6f81593101dc7f7d30d3c087512f5418c"
+        }
+      ]
+    },
+    {
+      "id": "claim_5e436f585de3408d9755d04b1b82ca23",
+      "statement": "ServerConfig partitions a workspace payload into a client-claimable session policy and server-resolved project policy, so project settings that can enable checkout-scoped execution are never accepted merely from the client claim.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_server_config.py",
+          "version": "repo-file-v1:sha256:50b93c4306c0a4162ad9112ba68dd87a1da4ddf86b713be8abf33585fcf6be0c"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
+          "version": "repo-file-v1:sha256:018c6b8b6df71514c17b534374fb36253c9946de043bad744f5d95f7eb18b806"
+        }
+      ]
+    },
+    {
+      "id": "claim_b3af139dfdd04320b4b017d21cfb9f11",
+      "statement": "Experimental server extensions are loaded with workspace, mode, project-trust, and explicit-path inputs; extension load errors are warned, and active server extensions are shut down if later graph construction fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+        }
+      ]
+    },
+    {
+      "id": "claim_994f1d38d6084e8bad9ccc4f48b1d3af",
+      "statement": "The server-owned offload route serializes operations per thread, refuses active or pending-work threads and stale checkpoints, requires the thread's durable workspace binding, and allowlists checkpoint channels so offload cannot write conversation messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L60-L76",
+          "version": "repo-lines-v1:sha256:0395d0938da1d73d8177ce0cdd8eedef0cd8e11c6acf2b0ba82e6667662ed49d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZTNlZGYxMTRjMGJjNzNkMDc1OTM2YzQ0ZTc5NDRhMTIxZGI1OGJhYTlhNTFlNzAzMWE5ZGZjMmRhNjUzZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZTM2NDI2OTU1MDY4ODI5N2Y0YTAxZmQ3NGRkMGJhOTE5OWJhMjg5OGNmMTBmMTM1ZDBlNzYwMmFkOTExN2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0ZDgyZTI1NzVjM2IzZjQ2NWFkYWVmODhiYzU0OTcwYjUzYzQ4NmM3NzJmYTkwZjZjMTgzZmNmODAzZDEzYmQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L959-L1122",
+          "version": "repo-lines-v1:sha256:ffcfd0b0daa0f3b754cbee2348f8f904da31d0aff62dc2dabe337e64b850f89c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NDQzODM3MjgzMTU3ZTIyNmVkYWI0MjkwZjYyMDE2ZjA4MTVlYmY5ZDg5MmRmMTY0NzVkZmMyYWJiMTYzNGE2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NTIyMDI4Y2ExZWY1M2VkMDkyYTliZGZkYmFkNjljN2YwZmM0MjhjMDQ0N2IzZmY3ZjMwNGU3ZmEzYTNkN2MzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNDZkZjRiZGRlMmE3MGQ4MDc4M2MxMDhjNTU4M2ZhMmE0ZWYyZTlmZGI0ZWZiZGUxZmI2NzEwMWQ2NGFmMWQ2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_de15dfc51ffb4704a09ba1f3451d4bf6",
+      "statement": "At the offload HTTP boundary, client-selected endpoint and transport parameters are stripped, and model selection is replaced with checkpointed model settings so a client cannot redirect credentialed provider calls or choose a model for server-owned compaction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1007-L1035",
+          "version": "repo-lines-v1:sha256:70f60a0c6f9768c24cee804909bd3bff89e21ad052c68f8db80ce5bb00a9f27b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlMWM5ZjUwNDU3OGRhYjAxNmNiZTU4ODgxYzUwOWQzNjI4YmJmYzJkOTY3YjE3OTYxZDFhYzE5NzQ4NDI5YTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1ZWI1MjFkZTc1MWYzY2Y0YjZhMzViZGE1ZTMzYWEzYjk0Nzc2NmM2NjdjZjY2OWM3NDYyOTM0OWYwNDdiZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1YjVlNjM5MjFhODZmNmE2NzBjNTE5YTA1OTFjYWNkNmM4ZmE5MGRiZTY1OTQxMGE3Y2U3M2ZhMTYxM2UwMWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViNTNiNDAwYjQ4NGM2NzJjOTJhYjA3MTA1MjIxNTU2YTZiMzU0NThjNjg3NjJlNzM0YmZkN2I4MjMxMzZmYmYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L473-L550",
+          "version": "repo-lines-v1:sha256:0ea454049dd2e3ffd06a99051957d9f8aed85444c334d35c1d1d66263aecb063:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTg1YTQ1ZWQyYmJkMTk0ZDI1NWM1ZDg2N2VhMjAwNjJjNjM5NzU3YmIxNDYwN2RiMjMwNTRkMDQzMGJjOWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OWRjM2I5Yzk5ZTA4OTc3YmI2YjRkOTIwY2ExZGQ3NmI1YTMxNGM4ZTE4MzU3ZDFiMjNkNGY1MmFmMDYxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZWI3YjlmOGMwOWY4MTE1MWRiZWVjYjlkYzRiNDJhMTZiZjU1NzhmOTkxYTM4NWUyZjE3ZDg0MjAwNmNlYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OTQ4MWQ0ZTU0NTZjOGU2NzlhMjY2ZDIyMjI5YThjOTBmYzE2YTAwMWRlZjJiNzU3Zjc2NDgxZTBkZGE5YzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L682-L721",
+          "version": "repo-lines-v1:sha256:6c474335022ba63de918799d0a62ef7f5871d054d0d13b8f9ab1962894ad638d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYzg3ZDA4NjFkYzc5OTU3MjkzNGNmM2Q3MGQxNmY0YjkwNjRlY2Q3ZGIyNjZlZDQ1M2FkMWFhZWE3YWM1ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMmNhYWEyMmU0ZDFmYmJjMGY1MDYzMDVkZTdlMzhlMzg2NGUwNTkxZGFlN2ViYjNkMzJiZDZjYjVhZjMxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_08139d4670de472ab4b584fcfd0a2c65",
+      "statement": "Offload settles its drained cost reservation conservatively: it rolls back when a failed state write is confirmed unchanged, commits when the checkpoint advanced or cannot be reread to avoid double charging, and rolls back a deferred archive append when its checkpoint link is confirmed absent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L755-L860",
+          "version": "repo-lines-v1:sha256:a922e1933f9c89ad27d6f6d59154285a3a7c0a86413fa13225e741b7c2363ff0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNjY0OTBmNmNiNDNiY2RmOTEyZjI0ZWVjNTAxMzY5Mjg5ZWE2MGMyZTdlYTZiYWFlYmJiNjY5NDg4YTM3MGQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNGI1OTkyMDZjZWEzOTIxNDU5ZmM4ZTY2YzA4MjUxZjZlOTA4ZDI0ODFiODk3NGQ0YmNhOTAzNjZkNTc5NDNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZDgyY2M0M2Y1MjVhNGRjNzQ0OTA2MTZmNTZiNTdmMDY4MTk3MGU1NWE1YTMxOTJlNDgxYTZmZDc3Y2I3YTQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMTYxNGY5NzAyMzc1NDdkOGEwOTk3ZDg3MWVkNzE3YmI3MjI3MzMyYTU1MGM4ZTU5MWVlZDcwZTQ1MmUyODUwIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L886-L939",
+          "version": "repo-lines-v1:sha256:2c62e957b142ee3d3ab33aa6cb1d548fcc512bc2a19409db7d346cfb4902590a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYTVlNzEyNzliOGY2MDRjYTA4YTJkZThiMDIwN2IxNWE1ZjAwMDIxZjI5MTIyNTNlNzg1YTdkY2Y4Y2NlY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzY2FkOTY0OGVhNjViNTY4MWE3NjAwZmUzYjU2MjBmNmRlZDk2ZmVmZjZkYzljMDgzZWYzM2JiNDQzYmZjMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzYThmYWJhMTNiNGVhOWQxN2UwMTlkZjhjNDlhZDI3ODFmMzczNGQzMTIyMmUyMGE4OWU4YjgyMjJhOTczNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYTVmNWVhZjYxYzVhN2JkYWQ3ZTA4NjhlZmI5ZDMyNzkxOTBlMWY4NTc3Y2U2MGI1ZTZhNTQzMzk5YTVhMjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_749a9da45e824dadadc3ad28a9da2a3b",
+      "statement": "The offload protocol uses a stable operation ID across hook-resume POST rounds, retains bounded terminal outcomes for cancellation races, and defers caller cancellation until checkpoint and archive settlement completes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L356-L480",
+          "version": "repo-lines-v1:sha256:12ed34671981a43c2563b53cee12b8f600249d3e38dba49d1ceed598a1861ee5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNTViMTA1ZmYxYmZmZTI5YjQ4ZWE1ZTk1YzVjMjBiZDc2MDVmYzVjMmEwODhkMTk0ZDU4YzVkMTY2NzA2MzA0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1108-L1122",
+          "version": "repo-lines-v1:sha256:cc17ce40aff9ae9b3f276057e2c583a42b934c58d034952098f9f9058e79cc4c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZGU4YTBjZjE4Nzc1NWMyNmMxMzMyMjFiOTdlZDJhMzFlOGVmZjI0MTI0YzIyZjVlZDMwYzk3YjBkMzM5MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0NDM4MzcyODMxNTdlMjI2ZWRhYjQyOTBmNjIwMTZmMDgxNWViZjlkODkyZGYxNjQ3NWRmYzJhYmIxNjM0YTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3MDg5NzBjOGI3OWNhZWIzM2RhN2Y3MWQzZWNjODY1MWE5ODlmMjFhZjc0ZmQ2NWJkZGFiMTljMWM1MTdiYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NmRmNGJkZGUyYTcwZDgwNzgzYzEwOGM1NTgzZmEyYTRlZjJlOWZkYjRlZmJkZTFmYjY3MTAxZDY0YWYxZDYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1213-L1233",
+          "version": "repo-lines-v1:sha256:5cafda8183260b518a5ee0298deb3cb1e8a9be1ad62eccbe4860da1647a7e1bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMWU0OTEzODBlMDc2MWM3NTNhYjEzMDg1OWJhNDc3ZTgyYTA1YWJhZmJlMmMzNmQ5MTcxOTdkNjE4M2VlYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkN2FhNGNlMTkwNWRjMWUyNDcxNzI0NWZkM2Y2OGRmMDY0YzZlY2M0NTYyNWI1MjdlMDdlODExZGM2YzBjYTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNTZmN2RiYmIyNzg5NjE1Mjc5MTIxMDY0MTljYWRjMDUzMWYwNjIwY2EyZDkwNmE4MWUzNjJlOGZjMWRhMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4NTQ2NTRkOTM5Yzk2ZjU1NTNhMTFiZGQ0YzM5NTYzMzRmZjEyZGMxNDI0MWU4ZGUzMTc5MDQzZTQ4MDg5NWUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L78-L84",
+          "version": "repo-lines-v1:sha256:2e66a4f0aa6440304ce52985a57143c90f7773b24939d8952946f0b0cc26eec4:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTViMGUxZmM2MjYwMTY2ZGEzMDNjZTRiOTZlNGQ5ZjMyMmYxODA2M2YzZjdkYzBkYzJjZTMyMzMzMWU3NjA0NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjdiZDVjZTNjM2MxODFkNGZlMDE4OWFmMjNiYzRiODkwNjdhOTdmNjEyZTcxMzU2OWYxMWM1ZTk2NDVlOWEyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjIwNzZmNTI1NDMxOGRlNWRlOTZjMzM5NGQyNDQ2NzkwMmRkZTk4MWE5ZGEyNTdmMjM3YjA2YjJjYWFkNzQ4NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzI3NTM2NTRjNDAxNGQ1YWM1NDRiYjJmMmU5OWFmMTFjYThkMjgyN2UzNjJkZjUzODYwNjI3NTFhZmEzMmFhNSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L942-L956",
+          "version": "repo-lines-v1:sha256:16a9ad07a8c0edfcaf442e36b79680120b77bafdf978a43a812fbe756cb64232:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3NDg0NTZmMjUwNzQ3MGYzOTVhNWExYzJlMDYyZGQ0ZmJlZGM3Mzc0ZTI0OTQxZjZlOTU2YzMwN2U0MWU1NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2ZDY3NDBiNzM4ZDY0ZWE0NmFhOTViYTFkMzI0YzgyZTMxMzk2NDM5MmI2ZTZiMzRmNDJhZTE0ZTY5NTZlMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ1YmIxMGE4YTZiMzc2NDMxZDk0NzFhMDI5YThhM2YwYmQ0NTgyZWU0ZmQ5ODE2NTc4NjZjZjdjMThiMmNmYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwMDhiMWYwOWY2ZWVhMGIzYzQ2OTY1NzFmNzQyMzE5NjE2ZmEwNDU3ZTNiODIyOGUzOWI0Mzk0NTU3ZmQ0YTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e864e4d2cd094f1099373b47c2a73ba5",
+      "statement": "Focused offload API tests cover workspace preflight and runtime failures, client policy rejection, checkpoint-model trust, archive-link rollback, and cancellation settlement; non-interactive tests verify forwarding server options and buffered versus incremental stream output.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_non_interactive.py",
+          "version": "repo-file-v1:sha256:51dd86d8e7c882165406a0976504a5a6209ee7acfcd86cee006325d4a1548b80"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py",
+          "version": "repo-file-v1:sha256:853b9a4fa988c59d13ccb896b845ffb0b12ea7ba156ca04f4974ba3b47499527"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-18T16:46:37.183Z"
+  }
+}

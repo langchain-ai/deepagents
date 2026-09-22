@@ -490,15 +490,19 @@ class TestStoredCredentials:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         assert resolve_provider_credential("totally-unknown") is None
 
+    @pytest.mark.parametrize("override", [None, "", "from-prefix"])
     def test_status_reports_stored_credential(
         self,
         fake_state_dir: Path,  # noqa: ARG002
         monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
     ) -> None:
         """A stored key flips status to CONFIGURED with a stored detail."""
         from deepagents_code import auth_store
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        if override is not None:
+            monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", override)
         auth_store.set_stored_key("anthropic", "from-store")
 
         status = get_provider_auth_status("anthropic")
@@ -841,9 +845,16 @@ class TestServiceCredentials:
     """Non-model services (e.g. Tavily) resolve and apply stored keys."""
 
     @pytest.fixture(autouse=True)
-    def _clear_tavily_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Strip Tavily env vars so each test controls its own state."""
-        for var in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+    def _clear_service_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip service env vars so each test controls its own state."""
+        for var in (
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "LANGCHAIN_API_KEY",
+            "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
 
     def test_apply_exports_stored_langsmith_key(
@@ -872,6 +883,7 @@ class TestServiceCredentials:
         status = get_service_auth_status("tavily")
         assert status.state is ProviderAuthState.MISSING
         assert status.env_var == "TAVILY_API_KEY"
+        assert status.detail == "TAVILY_API_KEY is not set or is empty"
 
     def test_status_configured_from_env(
         self,
@@ -885,6 +897,86 @@ class TestServiceCredentials:
         status = get_service_auth_status("tavily")
         assert status.state is ProviderAuthState.CONFIGURED
         assert status.source is ProviderAuthSource.ENV
+
+    def test_langsmith_status_primary_wins_over_fallback(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LangSmith status reports its primary env var when both are set."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_API_KEY"
+
+    def test_prefixed_override_outranks_stored_service_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefixed override reports ENV, because the store never applies."""
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("langsmith", "from-store")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "from-prefix")
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_API_KEY"
+
+    def test_empty_prefixed_override_hides_stored_service_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override suppresses the store, matching the runtime.
+
+        `apply_stored_service_credentials` skips the copy whenever the prefixed
+        name is present, so the stored key never reaches the SDK. Reporting it
+        as configured would be a promise the app cannot keep.
+        """
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("langsmith", "from-store")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        assert get_service_auth_status("langsmith").state is ProviderAuthState.MISSING
+
+    def test_missing_langsmith_detail_names_the_fallback(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """The MISSING message names every env var that would have worked."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.MISSING
+        assert status.detail == (
+            "LANGSMITH_API_KEY or LANGCHAIN_API_KEY is not set or is empty"
+        )
+
+    def test_service_fallback_status_env_var_stays_canonical(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefixed fallback also records its canonical spelling."""
+        from deepagents_code.model_config import (
+            get_service_auth_status,
+            resolved_env_var_name,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
+        status = get_service_auth_status("langsmith")
+        assert status.env_var == "LANGCHAIN_API_KEY"
+        assert (
+            resolved_env_var_name(status.env_var) == "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
 
     def test_status_configured_from_store(
         self,

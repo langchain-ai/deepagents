@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
 
 from deepagents_code import theme
+from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -65,7 +66,7 @@ when the inputs (thread data + config) haven't changed."""
 
 _COL_TID = 10
 _COL_AGENT = 12
-_COL_MSGS = 4
+_COL_MSGS = 8
 _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
@@ -94,7 +95,7 @@ _COLUMN_WIDTHS: dict[str, int | None] = {
 _COLUMN_LABELS = {
     "thread_id": "Thread ID",
     "agent_name": "Agent",
-    "messages": "Msgs",
+    "messages": "# msg",
     "created_at": "Created",
     "updated_at": "Updated",
     "git_branch": "Branch",
@@ -299,7 +300,7 @@ def _format_column_value(
         value = thread.get("agent_name") or _UNKNOWN_AGENT_LABEL
     elif key == "messages":
         raw_count = thread.get("message_count")
-        value = str(raw_count) if raw_count is not None else "..."
+        value = str(raw_count) if raw_count is not None else "Loading"
     elif key == "created_at":
         value = fmt(thread.get("created_at"))
     elif key == "updated_at":
@@ -309,7 +310,11 @@ def _format_column_value(
     elif key == "cwd":
         value = format_path(thread.get("cwd"))
     elif key == "initial_prompt":
-        value = _collapse_whitespace(thread.get("initial_prompt") or "")
+        value = (
+            _collapse_whitespace(thread["initial_prompt"] or "")
+            if "initial_prompt" in thread
+            else "Loading"
+        )
     else:
         value = ""
 
@@ -695,6 +700,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
+        Binding("ctrl+c", "copy_thread_id", "Copy ID", show=False, priority=True),
         Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
         Binding(
             "shift+tab",
@@ -1055,14 +1061,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
+            f" {glyphs.bullet} Ctrl+C copy ID"
             f" {glyphs.bullet} Ctrl+D delete"
             f" {glyphs.bullet} Esc cancel"
         )
         limit = self._effective_thread_limit()
         if len(self._threads) >= limit:
             lines += (
-                f"\nShowing last {limit} threads. "
-                "Set DA_CLI_RECENT_THREADS to override."
+                f"\nShowing last {limit} threads. Set {RECENT_THREADS} to override."
             )
         return lines
 
@@ -2352,6 +2358,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
+
+    def action_copy_thread_id(self) -> None:
+        """Copy the highlighted thread ID without dismissing the selector."""
+        if self._confirming_delete or not self._filtered_threads:
+            return
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        copy_text_with_feedback(
+            self.app,
+            self._filtered_threads[self._selected_index]["thread_id"],
+            failure_noun="selection",
+            success_message="Thread ID copied to clipboard",
+        )
 
     def action_focus_next_filter(self) -> None:
         """Move focus through the filter and column-toggle controls."""

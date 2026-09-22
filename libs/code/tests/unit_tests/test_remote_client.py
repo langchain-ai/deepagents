@@ -355,6 +355,33 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         agent._graph = mock_graph
         return agent, mock_graph
 
+    async def test_recovery_write_is_distinguished_for_server_tracing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []}, recovery=True)
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(),
+            {"messages": []},
+            as_node=None,
+            headers={"x-deepagents-recovery": "interrupt"},
+        )
+
+    async def test_normal_write_has_no_recovery_header(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(), {"messages": []}, as_node=None
+        )
+
     async def test_cancels_all_active_runs_then_retries(self) -> None:
         runs_list = AsyncMock(
             side_effect=[
@@ -879,6 +906,66 @@ class TestRemoteAgentWorkspace:
             "/dcode/threads/thread-1/workspace",
             json={"cwd": "/workspace/project"},
         )
+
+    async def test_switch_preserves_destination_binding_and_returns_metadata(
+        self,
+    ) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        agent.set_workspace("/workspace/old")
+        agent._workspaces["old"] = {"workspace_id": "old"}
+        post = AsyncMock(
+            return_value={
+                "workspace": {"workspace_id": "new"},
+                "mcp_server_info": [
+                    {
+                        "name": "docs",
+                        "transport": "http",
+                        "tools": [{"name": "search", "description": "Search docs"}],
+                        "status": "ok",
+                        "error": None,
+                        "pending_reconnect": False,
+                        "uses_oauth": False,
+                    }
+                ],
+            }
+        )
+        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            info = await agent.aswitch_workspace(
+                {"configurable": {"thread_id": "destination"}}, "/workspace/new"
+            )
+            binding = await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "destination"}}
+            )
+
+        assert agent._workspace_cwd == "/workspace/new"
+        assert binding == {"workspace_id": "new"}
+        assert post.await_count == 1
+        assert info is not None
+        assert info[0].name == "docs"
+        assert info[0].tools[0].name == "search"
+
+    async def test_switch_failure_preserves_workspace_state(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        agent.set_workspace("/workspace/old")
+        agent._workspaces["old"] = {"workspace_id": "old"}
+        graph = SimpleNamespace(
+            client=SimpleNamespace(
+                http=SimpleNamespace(post=AsyncMock(side_effect=RuntimeError("no")))
+            )
+        )
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            pytest.raises(RuntimeError, match="no"),
+        ):
+            await agent.aswitch_workspace(
+                {"configurable": {"thread_id": "destination"}}, "/workspace/new"
+            )
+
+        assert agent._workspace_cwd == "/workspace/old"
+        assert agent._workspaces == {"old": {"workspace_id": "old"}}
 
     def test_policy_and_fingerprint_must_be_configured_together(self) -> None:
         agent = RemoteAgent("http://localhost:1234")

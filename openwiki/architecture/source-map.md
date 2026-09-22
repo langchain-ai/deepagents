@@ -1,115 +1,142 @@
 ---
-type: architecture-navigation
-title: Source Map
-description: Practical ownership and public-entrypoint map for the Deep Agents SDK, dcode, ACP, evaluations, Talon, and partner packages. Use it to find the implementation boundary and focused tests for a change.
-tags: [source-map, navigation, monorepo, deepagents, dcode, architecture]
+type: repository source map
+title: Repository Source Map
+description: Navigate Deep Agents changes from a public surface to the package that owns the behavior, its focused tests, and its independent release unit. Includes SDK assembly, Code, ACP, Talon, evaluations, partner integrations, and release wiring.
+tags: [source-map, architecture, monorepo, deepagents, releases, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
+    at: 2026-09-21T08:06:25.442Z
 sources:
-  - id: openwiki-source-10a1d084c1eedc02cd086462
-    resource: repo://libs/acp/deepagents_acp/__main__.py
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-8134f31fb22085cb0e6b4054
-    resource: repo://libs/acp/README.md
+  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
+    resource: repo://.release-please-manifest.json
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-6f5b1b7a043ee1d414708793
-    resource: repo://libs/code/ARCHITECTURE.md
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
+  - id: openwiki-source-b64c485d8d3cdc25e7b4db1a
+    resource: repo://libs/code/deepagents_code/_debug.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-e930bbb03b92760cf9d657ce
+    resource: repo://libs/code/tests/unit_tests/test_debug.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-b27554b5c0e5b26fae2efb38
-    resource: repo://libs/deepagents/deepagents/profiles/__init__.py
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-667fd72e0b93552f91d3888d
-    resource: repo://libs/partners/AGENTS.md
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-7da6afe7fe64c6589cf1fed0
+    resource: repo://libs/README.md
+  - id: openwiki-source-ef66a16bd57d322614dc349d
+    resource: repo://libs/talon/deepagents_talon/async_subagents.py
+  - id: openwiki-source-d98b6d615a63b95a7c893810
+    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
+  - id: openwiki-source-82cac27adeecff8a900a40fa
+    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-8ca4576d19f02a613c296c83
+    resource: repo://libs/talon/tests/test_async_subagents.py
+  - id: openwiki-source-4c1a7e831a8cd578116d1f18
+    resource: repo://libs/talon/tests/test_mcp_middleware.py
+  - id: openwiki-source-482fa4ca84f42b04ba025fc1
+    resource: repo://release-please-config.json
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
 ---
 
-# Source Map
+# Repository Source Map
 
-This is an ownership navigator, not a source-tree inventory. Start with [Architecture Overview](/openwiki/architecture/overview.md), [Code Agent](/openwiki/architecture/code-agent.md), and the package-local architecture documents for behavior; use this page to select the code owner and test boundary.
+Use this page to choose the owning boundary before changing behavior. The repository is a monorepo of independently versioned packages: the SDK owns reusable agent-harness composition, while Code, ACP, Talon, evaluations, and partners own their product or integration concerns. For the architectural rationale, see the [overview](./overview.md); for package-local commands and release operations, see [Development, CI, and Releases](../operations/development.md).
 
-`libs/ARCHITECTURE.md`, `libs/code/ARCHITECTURE.md`, and `libs/DEVELOPMENT.md` are the in-repository maps for SDK behavior, dcode, and development workflow. Package READMEs define supported integration boundaries.
-
-## Choose the owning layer first
-
-Packages under `libs/` are independently versioned and each owns its `pyproject.toml`, `Makefile`, README, and tests. There is no root `pyproject.toml`; work from the package being changed and use its Make targets.
+## Package and dependency boundaries
 
 ```mermaid
 flowchart TD
-    Code["dcode coding agent"] --> SDK["Deep Agents SDK"]
-    ACP["ACP adapter"] --> SDK
-    Talon["Talon runtime host"] --> SDK
-    Evals["evaluation suite"] --> SDK
-    Partners["partner packages"] --> SDK
-    SDK --> LangChain["LangChain create_agent"]
-    LangChain --> LangGraph["LangGraph runtime"]
+  App["Application"] --> SDK["deepagents SDK"]
+  CodeClient["dcode client"] --> CodeServer["Code agent server"]
+  CodeServer --> SDK
+  Editor["ACP editor"] --> ACP["deepagents-acp"]
+  ACP --> SDK
+  Channels["Talon channels and cron"] --> Talon["Talon host"]
+  Talon --> SDK
+  Evals["Evaluation suite"] --> SDK
+  Partners["Sandbox and provider packages"] --> CodeServer
+  SDK --> LangChain["LangChain create_agent"]
+  LangChain --> LangGraph["LangGraph runtime"]
 ```
+This shows dependency direction and the boundary at which a behavior should normally be changed.
 
-The package relationships and runtime layers that determine ownership.
+`deepagents` is an opinionated harness over LangChain's `create_agent()` and LangGraph; it does not replace the LangGraph runtime. Start reusable graph-construction work in `libs/deepagents/deepagents/graph.py` at `create_deep_agent()`: it accepts the model, tools, middleware, subagents, backend, permissions, persistence, and response configuration, then assembles the agent. Built-in filesystem, shell, and delegation tools are part of that surface; the `execute` tool only succeeds when the chosen backend is sandbox-capable.
 
-Deep Agents is the harness over LangChain `create_agent()`, which uses the LangGraph runtime. SDK defaults, profiles, middleware, and backends belong to `libs/deepagents`; LangGraph owns graph state, checkpoints, streaming, and interrupts. Trace a `create_deep_agent()` argument to the middleware or backend it installs, then follow its execution hook. A missing tool generally indicates assembly or a profile exclusion; a visible tool that fails indicates backend capability or permission enforcement.
+The consuming packages deliberately retain their distinct responsibilities:
 
-## SDK public surface and harness: `libs/deepagents/`
+| Surface or change | Owner and first seam | Focused validation |
+| --- | --- | --- |
+| Reusable model/profile behavior, prompts, middleware ordering, backends, SDK subagents, permissions, or graph/checkpointer options | **SDK** — `libs/deepagents/deepagents/graph.py` and the appropriate `middleware/`, `backends/`, or `profiles/` module. | `libs/deepagents/tests/`, beginning with graph and feature-specific tests. |
+| Terminal commands, TUI rendering, headless interaction, Code-only approval/configuration, client/server execution, sandbox selection, extensions, or skills | **Deep Agents Code** — `libs/code/deepagents_code/`; console scripts enter through `deepagents_code:cli_main`. Follow from `main.py` into `agent.py`, `server_graph.py`, `tui/`, or the relevant product subsystem. | `libs/code/tests/unit_tests/`, including the focused CLI, server, TUI, MCP, or sandbox test. |
+| Editor protocol conversion, ACP sessions/options, graph-event streaming, session loading, or replay | **ACP** — `libs/acp/deepagents_acp/server.py`, centered on `AgentServerACP`. | `libs/acp/tests/`, especially agent/session, model-switching, and command-policy coverage. |
+| Long-running local channels, cron, host lifecycle, conversation persistence, approval UX, Talon MCP lifecycle, or Talon delegation | **Talon** — `libs/talon/deepagents_talon/__main__.py`, `host.py`, `runtime.py`, and the focused `mcp*.py`, `subagents.py`, `background.py`, or `cron/` module. | `libs/talon/tests/`, selecting host, runtime, MCP, authorization, background, cron, or subagent tests. |
+| Benchmark trajectories, reports, catalog/model groups, or Harbor evaluation integration | **Evals** — `libs/evals/`; product behavior still needs an owning-package regression test. | `libs/evals/tests/` plus the affected package test. |
+| Provider-specific sandbox or JavaScript REPL mechanics | **Partner package** — `libs/partners/<provider>/`. QuickJS, for example, ships `langchain-quickjs`, a JavaScript REPL middleware for Deep Agents. | That partner's tests and required integration workflow. |
+| Headless GitHub Action inputs, cache, outputs, and orchestration | **Repository Action** — `action.yml`, consuming dcode rather than becoming SDK policy. | Action/workflow scenario plus compatible Code behavior. |
 
-**Start at the supported import boundary.** `deepagents/__init__.py` re-exports `create_deep_agent`, `DeepAgentState`, selected filesystem, memory, rubric, and subagent middleware types, plus provider and harness profile registration helpers. Use these imports for supported consumer-facing API; change an internal module only when deliberately changing implementation rather than public API.
+## Release-unit navigation
 
-**Assembly owner.** `deepagents/graph.py:create_deep_agent()` is the SDK construction seam. It accepts model, tools, prompt, middleware, subagents, skills, memory, permissions, backend, interruption, schemas, checkpointing, store, and runtime options; it resolves model/profile/backend choices, composes prompts, assembles middleware and subagents, then delegates to LangChain `create_agent()`. Caller tools are additive. Required middleware cannot be removed through harness-profile exclusions: attempting that raises `ValueError` instead of silently constructing a degraded agent.
+The release manifest records nine managed release baselines. These are release units—not merely directories—and their distribution/component names determine release PR and tag navigation.
 
-**Execution and access control.** `middleware/` owns behavior that must alter a model request or survive in graph state: tool filtering, prompt context, message transformation, and typed cross-turn state. A `tools=` callable runs only after a model selects it and therefore cannot alter the tool list or prompt seen by that model call. `filesystem.py` owns built-in filesystem tools and `FilesystemPermission`; shell-capable behavior requires a `SandboxBackendProtocol` backend, while the filesystem permission policy controls calls rather than merely hiding tools. `permissions.py` is a compatibility re-export. Delegation belongs in `subagents.py` for declarative/compiled nested agents and `async_subagents.py` for async or remote work.
+| Path | Distribution and component | Manifest baseline |
+| --- | --- | --- |
+| `libs/deepagents` | `deepagents` / `deepagents` | `0.7.15` |
+| `libs/acp` | `deepagents-acp` / `deepagents-acp` | `0.0.12` |
+| `libs/code` | `deepagents-code` / `deepagents-code` | `0.1.72` |
+| `libs/talon` | `deepagents-talon` / `deepagents-talon` | `0.0.8` |
+| `libs/partners/daytona` | `langchain-daytona` / `langchain-daytona` | `0.0.8` |
+| `libs/partners/modal` | `langchain-modal` / `langchain-modal` | `0.0.6` |
+| `libs/partners/runloop` | `langchain-runloop` / `langchain-runloop` | `0.0.7` |
+| `libs/partners/vercel` | `langchain-vercel-sandbox` / `langchain-vercel-sandbox` | `0.0.2` |
+| `libs/partners/quickjs` | `langchain-quickjs` / `langchain-quickjs` | `0.3.7` |
 
-**Storage and profiles.** `backends/protocol.py` is the uniform file/backend contract, including standardized recoverable file-operation errors; concrete backends make state-, store-, filesystem-, composite-route-, local-shell-, LangSmith-sandbox-, or Context-Hub-backed behavior interchangeable behind that contract. `profiles/` is the provider/model extension seam: provider profiles control model construction and pre-initialization effects, while harness profiles control prompt assembly, tool visibility, middleware, and default subagents. Built-ins and third-party entry-point profiles load lazily when the registry is first accessed; keys are `provider` or `provider:model`.
+Release Please creates separate draft Python-package release PRs. Each configured unit supplies its changelog and version-bearing files, and package test paths are excluded from release analysis; tags include the component, use `==` as the separator, and have no `v` prefix. `libs/evals` is a package in the monorepo but is not a manifest release unit.
 
-**Tests.** Start with `libs/deepagents/tests/unit_tests/` for graph assembly, middleware, backends, and profiles; use `integration_tests/` only where model-backed behavior is material. See [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md) for the consumer workflow.
+Do not infer compatibility from the manifest alone. The source package metadata is the install contract: Code currently declares `deepagents==0.7.15`, while Talon accepts `deepagents>=0.7.0` and uses `deepagents-code>=0.1.71,<1.0.0`; QuickJS accepts `deepagents>=0.7.0,<0.8.0`. When Code needs an SDK capability, update and validate its exact SDK pin with the consuming release change.
 
-## dcode entrypoints and server graph: `libs/code/`
+## Entrypoints and lifecycle seams
 
-`deepagents-code` is the prebuilt terminal coding agent built over the SDK. Its terminal client owns presentation and input while the server owns graph execution, tools, model setup, memory, and checkpoints; they communicate through streaming. Diagnose and test the side that authors the state or behavior rather than creating competing implementations.
+**Code.** `deepagents-code` and `dcode` both resolve to `deepagents_code:cli_main`, so command parsing and terminal behavior belong to Code. Its package has a client/server architecture and depends on the SDK, ACP, and partner integrations; avoid moving terminal interaction or product-specific runtime policy into the generic SDK.
 
-**Public and operational entrypoints.** `deepagents_code/__init__.py` exposes `cli_main` lazily from `main.py`; imports of configuration or other submodules avoid main-loop startup machinery. `agent.py` builds the coding agent with `create_deep_agent()`. `server_graph.py:make_graph()` is the LangGraph-server factory named by generated `langgraph.json`. It reads `ServerConfig.from_env()`, the inverse of the CLI's `ServerConfig.to_env()`, so both processes use one configuration schema.
+**ACP.** `deepagents-acp` is the editor-facing adapter. Keep ACP session identity, working-directory/options policy, event translation, and replay in ACP, using a graph factory rather than SDK-global state when session context changes graph construction.
 
-**Server lifecycle.** The factory asynchronously builds built-in and configured MCP tools, using a process-wide MCP session manager so real sessions are bound lazily to the server event loop. It resolves project/settings and model creation off the event loop where blocking work may occur, applies runtime model state, and creates the CLI agent plus its composite backend and server-owned offload operation. If configured sandbox construction fails, it emits a machine-readable startup error and exits; a successfully constructed sandbox is held for the server process lifetime and cleaned up at exit. Read `server_graph.py` when a dcode change affects remote serving, MCP loading, sandbox startup, or server-owned resources.
+**Talon.** `deepagents-talon` enters at `deepagents_talon.__main__:main` and is explicitly an experimental local runtime host. Keep channel, scheduler, local persistence, operator-mediated authorization, MCP configuration, and local/background delegation there. Consult the [Talon integration guide](../integrations/talon.md) before changing host lifecycle or security-sensitive behavior, and the [sandbox partners guide](../integrations/sandbox-partners.md) for vendor execution boundaries.
 
-**Durable and extension state.** `sessions.py` uses LangGraph checkpoint persistence for threads. `resume_state.py` declares checkpoint channels, including effective model information, allowing `dcode -r` to restore the model associated with a resumed thread. Cost tracking writes the per-thread total into graph/checkpoint state; clients render its streamed result. Configuration resolves user, project, session, and runtime scopes into one first-read, process-wide generation. MCP discovery/loading is in `mcp_tools.py`; `tool_catalog.py` derives `/tools` and `dcode tools list` from actual bound tools, not a duplicate list. `offload.py` and `offload_middleware.py` own history storage and dcode-specific compaction; `approval_mode.py` shares per-thread approval state across client and server, and `auto_mode.py` provides its classifier-backed Auto policy.
+### dcode debug logging
 
-**Tests.** Use `libs/code/tests/unit_tests/` for the smallest owning module and `integration_tests/` for external services. Add a client/server regression only when state crosses that boundary. See [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
+dcode debug logging is opt-in and per-thread: configured loggers attach a tagged file handler only after the debug directory and file are secured, and rebinding a thread replaces stale tagged handlers rather than stacking them.
 
-## ACP: `libs/acp/`
+dcode refuses unsafe debug-log destinations: POSIX debug directories must be current-user-owned real directories and files are opened without following symlinks and tightened to owner-only access; on hardening failure it removes debug handlers and warns rather than continuing to log.
 
-`AgentServerACP` in `deepagents_acp.server` adapts a compiled Deep Agent to the Agent Client Protocol: it is the owner for editor-facing messages, content and tool updates, session modes, and editor MCP configuration. It can advertise `session/load` only when the agent has a durable checkpointer. On load, it restores the LangGraph thread, verifies the original working directory, and replays conversation updates before responding. The package module entrypoint (`python -m deepagents_acp`) runs the test ACP server via `_serve_test_agent`; a production adapter normally constructs an agent and calls `run_agent` as shown in the README.
+### Talon MCP and subagent seams
 
-`dcode --acp` instead serves the prebuilt coding agent. Do not assign a general ACP adapter change to dcode merely because both can speak ACP. Use ACP protocol tests for adapter behavior and command-policy tests for execution safety. See [ACP integration](/openwiki/integrations/acp.md).
+Talon's MCP provider loads each available server independently, prefixes and metadata-marks its tools, adds management capabilities, rejects tool-name conflicts, and serializes revision-gated refreshes so a configuration change is applied before a later agent turn.
 
-## Evaluations: `libs/evals/`
+```mermaid
+sequenceDiagram
+  participant Runtime as Talon runtime
+  participant Provider as MCP tool provider
+  participant Middleware as MCP middleware
+  Runtime->>Provider: Load or refresh tools
+  Provider-->>Runtime: Marked tools and status
+  Runtime->>Middleware: Invoke marked MCP tool
+  Middleware->>Middleware: Normalize arguments and bind call ID
+  Middleware-->>Runtime: Result or safe protocol error
+```
+This is the Talon-owned call path; ordinary tools bypass the MCP middleware.
 
-`deepagents-evals` is end-to-end behavioral validation against real LLMs. Each eval captures the trajectory—including tool calls, file mutations, and final response—and scores correctness and efficiency. Correctness assertions fail cases; efficiency expectations are non-failing observations. The CLI owns runs, trials, aggregation, and catalog/model-group management. `EVAL_CATALOG.md` locates existing categories, while Harbor integration covers sandboxed benchmark workflows. These evaluations need the credentials and tracing setup documented by the package, unlike ordinary unit tests. See [Run evals](/openwiki/workflows/run-evals.md).
+Talon's MCP middleware only wraps metadata-marked MCP tools, normalizes empty optional string arguments, scopes authorization to the exact tool-call ID, and converts MCP protocol errors to a safe ToolMessage while allowing other exceptions to propagate.
 
-## Talon: `libs/talon/`
+Talon local subagents run as fresh graphs with selected tools, Talon MCP middleware, applicable approval middleware, and no checkpointer; unsupported fork mode is rejected, while malformed async-subagent configuration fails closed rather than silently omitting definitions.
 
-Talon is an experimental local host for long-running agents. `deepagents_talon.__main__:main` is its composition root: it loads `TalonConfig`, prepares state and persistent cron storage, cleans sensitive state, selects channel adapters and an agent runtime, creates `TalonHost`, and attaches a persistent scheduler when channels are present. It then performs a one-shot bootstrap or runs the host until stopped. `AGENT_MODEL` unset selects the echo runtime, useful for lifecycle/channel wiring without provider credentials.
+## Safe change sequence
 
-The host owns lifecycle, cancellation, scheduler coordination, and per-conversation behavior; channel, cron, MCP, and runtime modules own their respective boundaries. Talon is alpha and lacks production-grade isolation, complete HITL policy, administrator controls, and multi-tenant boundaries. Channel access must be treated as access to the operator's model credentials, MCP tools, and local resources. Test security or lifecycle changes at the host/runtime/channel boundary. See [Talon integration](/openwiki/integrations/talon.md).
-
-## Partner sandbox packages: `libs/partners/`
-
-Partner integrations are independently versioned packages that own their own dependency declarations, README, tests, and vendor behavior. Keep vendor-specific sandbox behavior in the relevant package rather than embedding it in the core SDK. Adding a partner also requires repository wiring: release configuration, CI and change detection, labels and scopes, relevant secrets, and sandbox/integration workflows described in `libs/partners/AGENTS.md`.
-
-## Focused change checklist
-
-1. Find the public argument or operational command, then its assembly owner.
-2. Preserve boundaries: SDK policy belongs in middleware/backends/profiles; dcode behavior follows its server/client ownership; ACP translates protocol; Talon owns host/channel lifecycle; evals measure behavior.
-3. Test at the lowest sufficient layer and cross a streaming or protocol boundary only when the behavior crosses it.
-4. Use the local package README and Makefile for supported commands and environment requirements.
+1. Identify the user-visible contract in the table and enter its package rather than treating `libs/` as one Python project.
+2. Trace to the component that assembles or owns the lifecycle; preserve the SDK-versus-consumer responsibility boundary.
+3. Check the release table and the package's `pyproject.toml` before altering dependency pins or release-facing files.
+4. Add the smallest observable test at the owning package, escalating to integration, UI, workflow, or evaluation coverage only when the contract crosses that boundary.
+5. Run the package-local target documented by `make help`; use the development guide for aggregate lock or release validation.

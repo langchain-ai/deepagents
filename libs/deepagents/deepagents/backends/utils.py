@@ -23,6 +23,143 @@ logger = logging.getLogger(__name__)
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
+# Upstream issue for model profiles: https://github.com/anomalyco/models.dev/issues/3037
+_OPENAI_FILE_MIME_TYPES: Final = frozenset(
+    {
+        "application/msword",
+        "application/vnd.apple.iwork",
+        "application/vnd.apple.keynote",
+        "application/vnd.apple.pages",
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.presentation",
+        "application/vnd.google-apps.spreadsheet",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        # Allows non-UTF-8 text files to be mapped to OpenAI as `"type": "file"` binaries.
+        "application/csv",
+        "application/graphql",
+        "application/javascript",
+        "application/json",
+        "application/json5",
+        "application/rtf",
+        "application/toml",
+        "application/typescript",
+        "application/x-awk",
+        "application/x-bash",
+        "application/x-graphql",
+        "application/x-httpd-php",
+        "application/x-httpd-php-source",
+        "application/x-iif",
+        "application/x-json5",
+        "application/x-ndjson",
+        "application/x-patch",
+        "application/x-php",
+        "application/x-powershell",
+        "application/x-protobuf",
+        "application/x-rust",
+        "application/x-scala",
+        "application/x-sql",
+        "application/x-subrip",
+        "application/x-terraform",
+        "application/x-toml",
+        "application/x-yaml",
+        "application/yaml",
+        "message/rfc822",
+        "text/calendar",
+        "text/css",
+        "text/csv",
+        "text/html",
+        "text/javascript",
+        "text/jsx",
+        "text/markdown",
+        "text/plain",
+        "text/rtf",
+        "text/srt",
+        "text/tsv",
+        "text/tsx",
+        "text/vbscript",
+        "text/vtt",
+        "text/x-R",
+        "text/x-asm",
+        "text/x-astro",
+        "text/x-awk",
+        "text/x-bash",
+        "text/x-c",
+        "text/x-c++",
+        "text/x-clojure",
+        "text/x-cmake",
+        "text/x-csharp",
+        "text/x-dart",
+        "text/x-diff",
+        "text/x-dockerfile",
+        "text/x-ejs",
+        "text/x-elixir",
+        "text/x-erb",
+        "text/x-erlang",
+        "text/x-go",
+        "text/x-golang",
+        "text/x-gradle",
+        "text/x-graphql",
+        "text/x-groovy",
+        "text/x-handlebars",
+        "text/x-haskell",
+        "text/x-hcl",
+        "text/x-iif",
+        "text/x-ini",
+        "text/x-jade",
+        "text/x-java",
+        "text/x-jinja2",
+        "text/x-julia",
+        "text/x-kotlin",
+        "text/x-less",
+        "text/x-liquid",
+        "text/x-lisp",
+        "text/x-lua",
+        "text/x-makefile",
+        "text/x-mustache",
+        "text/x-objectivec",
+        "text/x-objectivec++",
+        "text/x-patch",
+        "text/x-perl",
+        "text/x-php",
+        "text/x-properties",
+        "text/x-protobuf",
+        "text/x-pug",
+        "text/x-python",
+        "text/x-r",
+        "text/x-rst",
+        "text/x-ruby",
+        "text/x-rust",
+        "text/x-sass",
+        "text/x-scala",
+        "text/x-script.python",
+        "text/x-scss",
+        "text/x-sh",
+        "text/x-shellscript",
+        "text/x-sql",
+        "text/x-subrip",
+        "text/x-swift",
+        "text/x-terraform",
+        "text/x-tex",
+        "text/x-tmpl",
+        "text/x-toml",
+        "text/x-twig",
+        "text/x-typescript",
+        "text/x-vcard",
+        "text/x-yaml",
+        "text/x-zsh",
+        "text/xml",
+    }
+)
+"""Document and text inputs accepted by the OpenAI Responses API.
+
+Source: https://developers.openai.com/api/docs/guides/file-inputs
+"""
+
 
 class InvalidGlobPatternError(ValueError):
     """A glob pattern the shared matcher refuses to compile.
@@ -257,6 +394,28 @@ def format_content_with_line_numbers(
     # two spaces (or otherwise diverging) would silently break them; the
     # producer->consumer round-trip tests in both packages guard against that.
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
+
+
+def _format_source_block(content: str | list[str]) -> str:
+    """Join file content into the verbatim source body of a `read_file` result.
+
+    Source lines are emitted unchanged. The status header the middleware puts
+    above them is the only structural element, so nothing here needs escaping.
+
+    Args:
+        content: File content as a string or list of lines.
+
+    Returns:
+        The source lines joined by newlines, without a trailing terminator.
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    return "\n".join(lines)
 
 
 def check_empty_content(content: str) -> str | None:
@@ -588,14 +747,19 @@ def truncate_if_too_long(result: str) -> str: ...
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     """Truncate list or string result if it exceeds token limit (rough estimate: 4 chars/token)."""
+    limit = TOOL_RESULT_TOKEN_LIMIT * 4
     if isinstance(result, list):
-        total_chars = sum(len(item) for item in result)
-        if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
+        # Callers render the list with `str()`, so each item costs its repr plus ", ".
+        budget = limit - len(repr(TRUNCATION_GUIDANCE)) - 2
+        used = 0
+        for kept, item in enumerate(result):
+            used += len(repr(item)) + 2
+            if used > budget:
+                return result[:kept] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
-    if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
-        return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
+    if len(result) > limit:
+        return result[: limit - len(TRUNCATION_GUIDANCE) - 1] + "\n" + TRUNCATION_GUIDANCE
     return result
 
 

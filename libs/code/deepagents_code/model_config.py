@@ -26,6 +26,10 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._constants import (
+    LANGSMITH_API_KEY_ENV,
+    LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+)
 from deepagents_code._git import find_git_common_dir
 from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
@@ -50,6 +54,25 @@ def reset_env_resolution_log() -> None:
     """Allow successful prefixed environment resolutions to be logged again."""
     with _resolved_env_var_log_lock:
         _resolved_env_var_log_names.clear()
+
+
+def stored_key_reaches_runtime(env_var: str) -> bool:
+    """Whether a stored credential copied onto `env_var` would be read.
+
+    A present `DEEPAGENTS_CODE_` override outranks the store: the apply pass
+    skips the copy outright, and the canonical name it would have written is
+    then ignored by `resolve_env_var`. That holds even when the override is
+    empty, which suppresses the canonical name entirely.
+
+    Args:
+        env_var: Canonical env var name the store would be copied onto.
+
+    Returns:
+        `True` when no prefixed override stands in the way.
+    """
+    if env_var.startswith(_ENV_PREFIX):
+        return True
+    return f"{_ENV_PREFIX}{env_var}" not in os.environ
 
 
 def resolved_env_var_name(canonical: str) -> str:
@@ -413,11 +436,16 @@ class ProviderAuthStatus:
         return True
 
     def missing_detail(self) -> str:
-        """Return a user-facing reason for a missing-credential status."""
-        if self.env_var:
-            return f"{self.env_var} is not set or is empty"
+        """Return a user-facing reason for a missing-credential status.
+
+        `detail` wins over the `env_var` template because a status that names
+        several accepted variables (a service with fallbacks) has already
+        spelled the fuller sentence there.
+        """
         if self.detail:
             return self.detail
+        if self.env_var:
+            return f"{self.env_var} is not set or is empty"
         return (
             f"provider '{self.provider}' is not recognized. "
             f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
@@ -967,7 +995,7 @@ constant is the single name its `/auth` handling compares against.
 """
 
 SERVICE_API_KEY_ENV: dict[str, str] = {
-    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV,
     TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
@@ -977,6 +1005,14 @@ agent tracing (LangSmith) — but their credentials follow the same store-on-dis
 model as model providers, so they appear in the `/auth` manager and can be
 entered directly in the TUI instead of being exported as environment variables
 before launch.
+"""
+
+SERVICE_API_KEY_FALLBACK_ENV_VARS: dict[str, tuple[str, ...]] = {
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_FALLBACK_ENV_VARS,
+}
+"""Fallback env vars per non-model service, tried after its primary env var.
+
+A service absent from this map has no fallbacks.
 """
 
 CODEX_PROVIDER = "openai_codex"
@@ -1606,11 +1642,13 @@ def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]
             available["ollama"] = list(
                 dict.fromkeys([*available.get("ollama", []), *discovered])
             )
-        else:
+        elif _ollama_endpoint_key(endpoint) not in _ollama_unreachable_endpoints:
+            # An absent daemon already logged "not detected"; this line would
+            # only restate it. Keep it for a daemon that answered with nothing.
             logger.debug(
                 "Ollama discovery returned no models for %s; "
                 "daemon may be down or have no pulls",
-                endpoint or OLLAMA_DEFAULT_BASE_URL,
+                _ollama_endpoint_key(endpoint),
             )
 
     # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
@@ -1739,7 +1777,7 @@ def get_model_profiles(
     result: dict[str, ModelProfileEntry] = {}
     config = ModelConfig.load()
 
-    # Collect upstream profiles from provider packages.
+    # Assume providers have upstream profiles; skip those whose profiles are missing.
     seen_specs: set[str] = set()
     provider_modules = _get_provider_profile_modules()
     registry_providers: set[str] = set()
@@ -1756,7 +1794,7 @@ def get_model_profiles(
             profiles = _load_provider_profiles(module_path)
         except ImportError:
             logger.debug(
-                "Could not import profiles from %s for provider '%s'",
+                "Model profiles not found in %s for provider '%s'",
                 module_path,
                 provider,
             )
@@ -1965,6 +2003,22 @@ def _ollama_discovery_enabled() -> bool:
     return True
 
 
+def _ollama_endpoint_key(endpoint: str | None) -> str:
+    """Normalize an Ollama endpoint into its cache and log-dedup key.
+
+    Single-sources the normalization so the negative-cache add-site, its
+    lookup, and the "no models" log suppression all agree on one key.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+
+    Returns:
+        The endpoint with any trailing `/` stripped.
+    """
+    return (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+
+
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
@@ -1983,7 +2037,7 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     Returns:
         Sorted list of model names reported by `/api/tags`.
     """
-    key = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    key = _ollama_endpoint_key(endpoint)
     cached = _ollama_installed_models_cache.get(key)
     if cached is not None:
         return list(cached)
@@ -2091,7 +2145,7 @@ def _fetch_ollama_installed_models(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama discovery: %r has no http:// or https:// scheme. "
@@ -2269,7 +2323,7 @@ def _fetch_ollama_installed_model_profiles(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama profile discovery: %r has no http:// or https:// scheme. "
@@ -2440,20 +2494,31 @@ def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
     )
 
 
-def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
+def _resolve_configured(
+    provider: str,
+    env_var: str,
+    fallback_env_vars: tuple[str, ...] = (),
+    *,
+    allow_stored: bool = True,
+) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
-    Stored credentials beat env vars (matches `resolve_provider_credential`).
+    Stored credentials beat env vars (matches `resolve_provider_credential`),
+    unless the service caller disables stored credentials because a prefixed
+    override prevents them from reaching the runtime.
 
     Args:
         provider: Provider name (e.g., `"anthropic"`).
         env_var: Canonical env var name to check when no stored credential
             exists. Recorded on the returned status either way.
+        fallback_env_vars: Canonical env vars read, in order, when `env_var`
+            is unset. The one that resolves is recorded on the status.
+        allow_stored: Whether a stored credential can reach the runtime.
 
     Returns:
-        A `CONFIGURED` status, or `None` when neither source is set.
+        A `CONFIGURED` status, or `None` when no source is set.
     """
-    if _has_stored_credential(provider):
+    if allow_stored and _has_stored_credential(provider):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
             provider=provider,
@@ -2461,14 +2526,15 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
             source=ProviderAuthSource.STORED,
             detail="stored credential",
         )
-    if resolve_env_var(env_var):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=provider,
-            env_var=env_var,
-            source=ProviderAuthSource.ENV,
-            detail="credentials set",
-        )
+    for candidate in (env_var, *fallback_env_vars):
+        if resolve_env_var(candidate):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                env_var=candidate,
+                source=ProviderAuthSource.ENV,
+                detail="credentials set",
+            )
     return None
 
 
@@ -2794,25 +2860,34 @@ def is_langsmith(name: str) -> bool:
 def get_service_auth_status(service: str) -> ProviderAuthStatus:
     """Return credential readiness for a non-model service (e.g. `"tavily"`).
 
-    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
-    so a stored key beats the env var and the `/auth` manager can render the
-    same `[stored]` / `[env: ...]` / `[missing]` badges.
+    Checks a stored key, then `SERVICE_API_KEY_ENV[service]`, then each entry in
+    `SERVICE_API_KEY_FALLBACK_ENV_VARS[service]` in order. Mirrors
+    `get_provider_auth_status`, except a prefixed override suppresses the stored
+    service key. Otherwise a stored key beats the env vars, and the
+    `/auth` manager can render the same `[stored]` / `[env: ...]` / `[missing]`
+    badges. Recorded env var names stay canonical; callers resolve the
+    `DEEPAGENTS_CODE_` spelling at display time.
 
     Args:
         service: Service name (e.g. `"tavily"`).
 
     Returns:
-        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+        `CONFIGURED` when a stored, env, or fallback env credential is set,
+            else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
-    configured = _resolve_configured(service, env_var)
+    fallbacks = SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ())
+    configured = _resolve_configured(
+        service, env_var, fallbacks, allow_stored=stored_key_reaches_runtime(env_var)
+    )
     if configured:
         return configured
+    accepted = " or ".join((env_var, *fallbacks))
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,
         env_var=env_var,
-        detail=f"{env_var} is not set or is empty",
+        detail=f"{accepted} is not set or is empty",
     )
 
 
@@ -2838,8 +2913,7 @@ def apply_stored_service_credentials() -> None:
             continue
         if not stored:
             continue
-        prefixed = f"{_ENV_PREFIX}{env_var}"
-        if prefixed in os.environ:
+        if not stored_key_reaches_runtime(env_var):
             continue
         if os.environ.get(env_var) != stored:
             os.environ[env_var] = stored

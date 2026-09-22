@@ -16,11 +16,13 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
 
 logger = logging.getLogger(__name__)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
+_RECOVERY_TRACE_HEADERS = {"x-deepagents-recovery": "interrupt"}
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
 Esc for more than ~10s, while leaving room for an actually-cancelling run to
 finish its in-flight tool call.
@@ -659,6 +661,7 @@ class RemoteAgent:
         values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
+        recovery: bool = False,
     ) -> None:
         """Update the state of a thread.
 
@@ -679,6 +682,7 @@ class RemoteAgent:
             config: Config with `configurable.thread_id`.
             values: State values to update.
             as_node: Optional graph node to attribute the state update to.
+            recovery: Mark an internal recovery write for server-side tracing policy.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
@@ -688,9 +692,12 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         prepared = _prepare_config(config)
         graph = self._get_graph()
+        update_kwargs = {"headers": _RECOVERY_TRACE_HEADERS} if recovery else {}
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except ConflictError:
             logger.debug(
                 "update_state conflict for thread %s; cancelling active runs "
@@ -708,7 +715,9 @@ class RemoteAgent:
         await _cancel_active_runs(graph, thread_id)
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except Exception:
             logger.debug(
                 "Retry of update_state still failed for thread %s",
@@ -801,24 +810,21 @@ class RemoteAgent:
             raise RuntimeError(msg)
         return await self.abind_workspace(config, self._workspace_cwd)
 
-    async def abind_workspace(
-        self, config: Mapping[str, Any], cwd: str
-    ) -> dict[str, Any]:
-        """Create or verify the remote thread's durable workspace binding.
-
-        Returns:
-            The server-validated workspace descriptor.
-
-        Raises:
-            TypeError: If the server returns a malformed descriptor.
-        """
+    async def _request_workspace(
+        self,
+        config: Mapping[str, Any],
+        cwd: str,
+        *,
+        validate_only: bool = False,
+    ) -> tuple[dict[str, Any], list[MCPServerInfo] | None]:
         thread_id = _require_thread_id(config)
-        graph = self._get_graph()
         payload: dict[str, Any] = {"cwd": cwd}
+        if validate_only:
+            payload["validate_only"] = True
         if self._workspace_config is not None:
             payload["workspace_config"] = self._workspace_config
             payload["config_fingerprint"] = self._workspace_config_fingerprint
-        response = await graph.client.http.post(
+        response = await self._get_graph().client.http.post(
             f"/dcode/threads/{thread_id}/workspace",
             json=payload,
         )
@@ -827,9 +833,81 @@ class RemoteAgent:
         ):
             msg = "Workspace server returned an invalid binding response."
             raise TypeError(msg)
-        workspace = cast("dict[str, Any]", response["workspace"])
+        raw_mcp = response.get("mcp_server_info")
+        if raw_mcp is None:
+            mcp_server_info = None
+        elif isinstance(raw_mcp, list) and all(
+            isinstance(item, dict) for item in raw_mcp
+        ):
+            from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+            try:
+                mcp_server_info = [
+                    MCPServerInfo(
+                        name=item["name"],
+                        transport=item["transport"],
+                        tools=tuple(
+                            MCPToolInfo(**tool) for tool in item.get("tools", [])
+                        ),
+                        status=item.get("status", "ok"),
+                        error=item.get("error"),
+                        pending_reconnect=item.get("pending_reconnect", False),
+                        uses_oauth=item.get("uses_oauth", False),
+                    )
+                    for item in raw_mcp
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                msg = "Workspace server returned invalid MCP metadata."
+                raise TypeError(msg) from exc
+        else:
+            msg = "Workspace server returned invalid MCP metadata."
+            raise TypeError(msg)
+        return cast("dict[str, Any]", response["workspace"]), mcp_server_info
+
+    async def abind_workspace(
+        self, config: Mapping[str, Any], cwd: str
+    ) -> dict[str, Any]:
+        """Create or verify the remote thread's durable workspace binding.
+
+        Returns:
+            The server-validated workspace descriptor.
+        """
+        thread_id = _require_thread_id(config)
+        workspace, _ = await self._request_workspace(config, cwd)
         self._workspaces[thread_id] = workspace
         return workspace
+
+    def _snapshot_workspace(self) -> tuple[str | None, dict[str, dict[str, Any]]]:
+        return self._workspace_cwd, dict(self._workspaces)
+
+    def _restore_workspace(
+        self, snapshot: tuple[str | None, dict[str, dict[str, Any]]]
+    ) -> None:
+        self._workspace_cwd, workspaces = snapshot
+        self._workspaces.clear()
+        self._workspaces.update(workspaces)
+
+    async def aswitch_workspace(
+        self,
+        config: Mapping[str, Any],
+        cwd: str,
+        *,
+        validate_only: bool = False,
+    ) -> list[MCPServerInfo] | None:
+        """Bind or validate one thread's workspace and return MCP metadata.
+
+        Returns:
+            MCP metadata for the server runtime selected by the binding.
+        """
+        thread_id = _require_thread_id(config)
+        workspace, mcp_server_info = await self._request_workspace(
+            config, cwd, validate_only=validate_only
+        )
+        if not validate_only:
+            self._workspace_cwd = cwd
+            self._workspaces.clear()
+            self._workspaces[thread_id] = workspace
+        return mcp_server_info
 
     def set_workspace(
         self,

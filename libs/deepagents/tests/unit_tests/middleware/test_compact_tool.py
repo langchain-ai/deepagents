@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from inspect import Parameter, signature
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ from deepagents.middleware.summarization import (
     create_summarization_tool_middleware,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
+from tests.unit_tests.middleware.test_summarization_middleware import MockBackend, make_mock_model
 
 
 def _make_mock_backend() -> MagicMock:
@@ -350,6 +352,56 @@ class TestOffloadFailure:
         event = result.update["_summarization_event"]
         assert event["file_path"] is None
         assert "Summarized 4 messages" in result.update["messages"][0].content
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("trim_limit", [1, 4000])
+@pytest.mark.parametrize("prior_event", [False, True])
+async def test_compact_trim_exhaustion_preserves_context(*, asynchronous: bool, trim_limit: int, prior_event: bool) -> None:
+    model = make_mock_model()
+    summarization = SummarizationMiddleware(
+        model=model,
+        backend=MockBackend(),
+        trigger=("messages", 2),
+        keep=("messages", 1),
+        trim_tokens_to_summarize=trim_limit,
+    )
+    middleware = SummarizationToolMiddleware(summarization)
+    messages = [
+        HumanMessage(content="Earlier request"),
+        AIMessage(content="Earlier answer"),
+        HumanMessage(content="important context " * 2000),
+        AIMessage(content="Old answer"),
+        HumanMessage(content="Continue the task"),
+    ]
+    event = (
+        {
+            "cutoff_index": 2,
+            "summary_message": HumanMessage(content="Previous summary", additional_kwargs={"lc_source": "summarization"}),
+            "file_path": "/conversation_history/session_existing.md",
+        }
+        if prior_event
+        else None
+    )
+    runtime = _make_runtime(messages, event=event)
+    if prior_event:
+        runtime.state["_summarization_session_id"] = "session_existing"
+    original = deepcopy(runtime.state)
+
+    result = await middleware._arun_compact(runtime) if asynchronous else middleware._run_compact(runtime)
+
+    assert isinstance(result, Command)
+    assert result.update is not None
+    assert "_summarization_event" not in result.update
+    assert runtime.state == original
+    message = result.update["messages"][0]
+    assert message.tool_call_id == runtime.tool_call_id
+    assert "Compaction failed" in message.content
+    assert "trim_tokens_to_summarize left no messages" in message.content
+    assert "Increase trim_tokens_to_summarize or set it to None" in message.content
+    assert "Conversation compacted." not in message.content
+    model.invoke.assert_not_called()
+    model.ainvoke.assert_not_called()
 
 
 class TestCompactErrorHandling:

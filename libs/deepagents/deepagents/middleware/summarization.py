@@ -588,6 +588,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 Pass `None` to summarize all selected history without this
                 trimming. Unlike `create_summarization_middleware`, which
                 defaults to `None`, this constructor defaults to 4000.
+
+                If trimming leaves no valid messages, automatic compaction
+                raises `ValueError` without replacing the active history.
+                The `compact_conversation` tool reports a compaction failure.
             truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
                 Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
@@ -693,13 +697,24 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Partition messages into those to summarize and those to preserve."""
         return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
 
+    @staticmethod
+    def _validate_summary(summary: str) -> str:
+        """Reject LangChain's placeholder for an exhausted summary-input budget."""
+        if summary == "Previous conversation was too long to summarize.":
+            msg = (
+                "Cannot compact conversation: trim_tokens_to_summarize left no messages to summarize. "
+                "Increase trim_tokens_to_summarize or set it to None; the conversation has not been compacted."
+            )
+            raise ValueError(msg)
+        return summary
+
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages."""
-        return self._lc_helper._create_summary(messages_to_summarize)
+        """Generate a summary, raising `ValueError` if input trimming is exhausted."""
+        return self._validate_summary(self._lc_helper._create_summary(messages_to_summarize))
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages (async)."""
-        return await self._lc_helper._acreate_summary(messages_to_summarize)
+        """Generate a summary asynchronously, raising `ValueError` if trimming is exhausted."""
+        return self._validate_summary(await self._lc_helper._acreate_summary(messages_to_summarize))
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.
@@ -1830,6 +1845,10 @@ def create_summarization_middleware(
             `None` skips this trimming and summarizes all selected history.
             This factory defaults to `None`, unlike constructing
             `SummarizationMiddleware` directly, which defaults to 4000.
+
+            If trimming leaves no valid messages, automatic compaction raises
+            `ValueError` without replacing the active history. The
+            `compact_conversation` tool reports a compaction failure.
         token_counter: Function to count tokens in messages.
 
     Returns:

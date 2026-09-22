@@ -27,7 +27,7 @@ def _request(*, tail_size: int = 20000, limit: int = 100000) -> ModelRequest:
     model = make_mock_model("summary")
     model.profile = {"max_input_tokens": limit}
     messages = [
-        HumanMessage(content="old context " * 1000, id="old"),
+        HumanMessage(content="old context\n" * 1000, id="old"),
         AIMessage(content="old answer", id="answer"),
         HumanMessage(content="run the tool", id="user"),
         AIMessage(content="", tool_calls=[{"id": "call", "name": "search", "args": {}}], id="ai"),

@@ -7,6 +7,7 @@ import inspect
 import re
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -360,6 +361,77 @@ class TestSummarizationMiddlewareInit:
                 backend=MockBackend(),
                 history_path_prefix="/history",
             )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("trim_limit", [1, 4000])
+@pytest.mark.parametrize("prior_event", [False, True])
+async def test_trim_exhaustion_preserves_context(*, asynchronous: bool, trim_limit: int, prior_event: bool) -> None:
+    model = make_mock_model()
+    middleware = SummarizationMiddleware(
+        model=model,
+        backend=MockBackend(),
+        trigger=("messages", 2),
+        keep=("messages", 1),
+        trim_tokens_to_summarize=trim_limit,
+    )
+    messages = [
+        HumanMessage(content="Earlier request"),
+        AIMessage(content="Earlier answer"),
+        HumanMessage(content="important context " * 2000),
+        AIMessage(content="Old answer"),
+        HumanMessage(content="Continue the task"),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    if prior_event:
+        state["_summarization_session_id"] = "session_existing"
+        state["_summarization_event"] = {
+            "cutoff_index": 2,
+            "summary_message": HumanMessage(content="Previous summary", additional_kwargs={"lc_source": "summarization"}),
+            "file_path": "/conversation_history/session_existing.md",
+        }
+    original = deepcopy(state)
+    request = make_model_request(state, make_mock_runtime())
+    handler = AsyncMock() if asynchronous else MagicMock()
+
+    with pytest.raises(ValueError, match="trim_tokens_to_summarize left no messages"):
+        await middleware.awrap_model_call(request, handler) if asynchronous else middleware.wrap_model_call(request, handler)
+
+    assert state == original
+    assert request.messages == original["messages"]
+    handler.assert_not_called()
+    model.invoke.assert_not_called()
+    model.ainvoke.assert_not_called()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(("trim_limit", "repetitions"), [(4000, 1), (None, 2000)])
+async def test_usable_summary_input_compacts(*, asynchronous: bool, trim_limit: int | None, repetitions: int) -> None:
+    model = make_mock_model("The task is still in progress.")
+    middleware = SummarizationMiddleware(
+        model=model,
+        backend=MockBackend(),
+        trigger=("messages", 2),
+        keep=("messages", 1),
+        trim_tokens_to_summarize=trim_limit,
+    )
+    state = cast(
+        "AgentState[Any]",
+        {"messages": [HumanMessage(content="important context " * repetitions), AIMessage(content="Old answer"), HumanMessage(content="Continue")]},
+    )
+    if asynchronous:
+        result, request = await call_awrap_model_call(middleware, state, make_mock_runtime())
+        model.ainvoke.assert_awaited_once()
+    else:
+        result, request = call_wrap_model_call(middleware, state, make_mock_runtime())
+        model.invoke.assert_called_once()
+
+    assert isinstance(result, ExtendedModelResponse)
+    event = result.command.update["_summarization_event"]
+    assert event["cutoff_index"] == 2
+    assert "The task is still in progress." in event["summary_message"].content
+    assert request is not None
+    assert request.messages == [event["summary_message"], state["messages"][-1]]
 
 
 class TestOffloadingBasic:

@@ -2199,11 +2199,24 @@ class SummarizationToolMiddleware(AgentMiddleware):
         session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
-            summary = s._create_summary(to_summarize)
-            file_path = s._offload_to_backend(s._backend, to_summarize, session_id)
+            # Upload inline media once so both offload and summary see path
+            # references, mirroring the automatic-summarization path; the XML
+            # history renderer drops `data:` URLs entirely.
+            offloaded, failed_media = s._offload_inline_media(s._backend, to_summarize)
+            summary = s._create_summary(offloaded)
+            file_path = s._offload_to_backend(s._backend, offloaded, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
+
+        if failed_media:
+            msg = (
+                f"Conversation was compacted, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders; "
+                "the original media is not recoverable."
+            )
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=2)
 
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 
@@ -2233,11 +2246,24 @@ class SummarizationToolMiddleware(AgentMiddleware):
         session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
-            summary = await s._acreate_summary(to_summarize)
-            file_path = await s._aoffload_to_backend(s._backend, to_summarize, session_id)
+            # Upload inline media once so both offload and summary see path
+            # references, mirroring the automatic-summarization path; the XML
+            # history renderer drops `data:` URLs entirely.
+            offloaded, failed_media = await s._aoffload_inline_media(s._backend, to_summarize)
+            summary = await s._acreate_summary(offloaded)
+            file_path = await s._aoffload_to_backend(s._backend, offloaded, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
+
+        if failed_media:
+            msg = (
+                f"Conversation was compacted, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders; "
+                "the original media is not recoverable."
+            )
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=2)
 
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 

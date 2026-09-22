@@ -1,4 +1,4 @@
-"""Confirmation modal for an expensive cold prompt-cache turn."""
+"""Modal for a cold prompt cache: send-time confirmation or expiry handoff."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ class ColdCacheChoice(Enum):
     """How to resolve a cold prompt-cache warning."""
 
     HANDOFF = "handoff"
+    """Start a summarized new thread; never sends, so not in `SEND_CHOICES`."""
 
     SEND = "send"
     """Send this turn; keep warning on future cold-cache turns."""
@@ -199,7 +200,9 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         idle duration the caller had explicitly determined it did not know.
 
         Args:
-            warning: Validated policy, pricing, and cause for this turn.
+            warning: Validated policy, pricing, and cause for this turn, or
+                `None` when no reliable estimate exists. The body then shows
+                a generic expiry notice.
             handoff: Offer a summarized thread instead of authorizing a send.
         """
         super().__init__()
@@ -300,8 +303,8 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         """Compose the warning dialog.
 
         Yields:
-            Title, warning copy, one row per choice, and keyboard help.
-
+            Title and warning copy, then either one row per send choice with
+                keyboard help, or the handoff explanation and key legend.
         """
         glyphs = get_glyphs()
         with Vertical():
@@ -354,7 +357,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 yield Static(help_text, classes="cold-cache-help", markup=False)
 
     def on_mount(self) -> None:
-        """Focus the modal and default the cursor to the send row."""
+        """Focus the modal and default the cursor to the first row, if any."""
         self.focus()
         self._set_selected(0)
 
@@ -390,7 +393,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         self.dismiss(self._options[self._selected].choice)
 
     def action_cancel(self) -> None:
-        """Cancel the pending send, keeping the draft.
+        """Cancel the pending send or decline the handoff, keeping the draft.
 
         The method name must stay `cancel`: the app owns a priority `escape`
         binding that, for an active `ModalScreen`, dispatches to `action_cancel`

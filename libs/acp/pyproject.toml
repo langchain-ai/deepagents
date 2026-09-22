@@ -30,7 +30,7 @@ dependencies = [
 
 [dependency-groups]
 examples = [
-    "langchain-openai>=1.6.3",
+    "langchain-openai>=1.6.4",
     "langchain-baseten>=0.2.4",
 ]
 test = [

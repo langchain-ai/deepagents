@@ -9,7 +9,7 @@ import itertools
 import json
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from langchain_core.tools import StructuredTool
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -45,6 +45,23 @@ def _digest(value: str) -> str:
 
 class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
     """Transport cost receipts without caching JavaScript or forwarding state."""
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Preserve synchronous execution; receipt transport is async-only.
+
+        Args:
+            request: Tool call and its runtime context.
+            handler: Synchronous tool executor.
+
+        Returns:
+            The tool result without modification.
+        """
+        return handler(request)
 
     async def awrap_tool_call(
         self,

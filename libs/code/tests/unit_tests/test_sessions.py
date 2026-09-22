@@ -1583,6 +1583,37 @@ class TestLoadInitialPromptsFromWritesBatch:
 
         assert results == {"t1": "first"}
 
+    async def test_preserves_namespace_and_channel_selection(self) -> None:
+        """Earliest messages write should win regardless of its namespace."""
+        serde = JsonPlusSerializer()
+        first = serde.dumps_typed([{"role": "user", "content": "first"}])
+        later = serde.dumps_typed([{"role": "user", "content": "later"}])
+        ignored = serde.dumps_typed([{"role": "user", "content": "ignored"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, ?, ?, '', ?, ?, ?, ?)",
+                [
+                    ("t1", "subgraph", "cp_a", 1, "messages", first[0], first[1]),
+                    ("t1", "", "cp_b", 0, "messages", later[0], later[1]),
+                    ("t1", "", "cp_0", 0, "other", ignored[0], ignored[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": "first"}
+
     async def test_omits_threads_with_no_messages_writes(self) -> None:
         """Threads without any messages-channel write should be absent from result."""
         serde = JsonPlusSerializer()

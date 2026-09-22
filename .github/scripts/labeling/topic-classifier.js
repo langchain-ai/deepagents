@@ -10,6 +10,12 @@ function loadTopicLabels() {
 }
 
 async function classifyTopicLabels(text, allowedLabels, options = {}) {
+  const provider = options.provider ?? (process.env.TOPIC_CLASSIFIER_PROVIDER || 'groq');
+  if (provider === 'semif') {
+    return require('./semif-topic-classifier.js').classifyTopicLabels(text, allowedLabels, options);
+  }
+  if (provider !== 'groq') throw new Error('TOPIC_CLASSIFIER_PROVIDER must be groq or semif');
+
   const input = (text ?? '').trim().slice(0, 20000);
   if (!input) return new Set();
 

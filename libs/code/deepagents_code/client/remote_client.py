@@ -396,16 +396,10 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
         await self.aensure_thread(dict(config))
-        configurable = config.get("configurable") or {}
-        selection = {
-            key: configurable[key]
-            for key in ("model", "model_params")
-            if key in configurable
-        }
         try:
             response = await self._get_graph().client.http.post(
                 f"/dcode/threads/{thread_id}/btw",
-                json={"question": question, "workspace": workspace, **selection},
+                json={"question": question, "workspace": workspace},
             )
         except NotFoundError as exc:
             msg = "This server does not support /btw. Update the built-in dcode server."

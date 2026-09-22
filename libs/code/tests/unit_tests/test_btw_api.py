@@ -49,9 +49,7 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
             if started.is_set():
                 listener_stopped.set()
 
-    async def answer(
-        _thread: str, _state: object, _question: str, **_selection: object
-    ) -> str:
+    async def answer(_thread: str, _state: object, _question: str) -> str:
         started.set()
         try:
             return await result
@@ -124,7 +122,7 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
         ("anthropic:model", {"output_config": {"effort": "high"}}),
     ],
 )
-async def test_provider_generation_overrides_reach_side_answer(
+async def test_checkpoint_generation_overrides_reach_side_answer(
     model: str, params: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from httpx import ASGITransport, AsyncClient
@@ -145,7 +143,13 @@ async def test_provider_generation_overrides_reach_side_answer(
         offload_api,
         "_thread_client",
         lambda: SimpleNamespace(
-            threads=SimpleNamespace(get_state=AsyncMock(return_value={"values": {}}))
+            threads=SimpleNamespace(
+                get_state=AsyncMock(
+                    return_value={
+                        "values": {"_model_spec": model, "_model_params": params}
+                    }
+                )
+            )
         ),
     )
     async with AsyncClient(
@@ -153,12 +157,7 @@ async def test_provider_generation_overrides_reach_side_answer(
     ) as client:
         response = await client.post(
             "/dcode/threads/thread/btw",
-            json={
-                "question": "why",
-                "workspace": {},
-                "model": model,
-                "model_params": params,
-            },
+            json={"question": "why", "workspace": {}},
         )
     assert response.status_code == 200
     assert response.json() == {"text": "side answer"}
@@ -169,22 +168,7 @@ async def test_provider_generation_overrides_reach_side_answer(
 
 @pytest.mark.parametrize(
     "selection",
-    [
-        {"model": 42},
-        {"model": " "},
-        {"model_params": {"temperature": 0.2}},
-        {"model": "provider:model", "model_params": []},
-        *[
-            {"model": "provider:model", "model_params": {key: value}}
-            for key, value in [
-                ("base_url", "http://untrusted"),
-                ("api_key", "untrusted"),
-                ("model_kwargs", {"base_url": "http://untrusted"}),
-                ("extra_body", {"tools": []}),
-                ("tools", []),
-            ]
-        ],
-    ],
+    [{"model": "provider:model"}, {"model_params": {"temperature": 0.2}}],
 )
 async def test_selection_rejected_before_workspace_or_model_access(
     selection: dict[str, object], monkeypatch: pytest.MonkeyPatch

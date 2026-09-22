@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from starlette.responses import JSONResponse
 
@@ -18,61 +18,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
-_GENERATION_PARAMS = frozenset(
-    {
-        "temperature",
-        "top_p",
-        "top_k",
-        "max_tokens",
-        "max_completion_tokens",
-        "max_output_tokens",
-        "reasoning_effort",
-        "reasoning",
-        "thinking",
-        "thinking_level",
-        "thinking_config",
-        "output_config",
-        "effort",
-        "verbosity",
-        "stop",
-        "stop_sequences",
-        "seed",
-        "frequency_penalty",
-        "presence_penalty",
-    }
-)
-"""Only generation options may cross the HTTP boundary.
-
-Provider configuration, credentials, endpoints, and arbitrary constructor kwargs
-remain server-owned. In particular, `model_kwargs` and `extra_body` cannot bypass
-this allowlist. `create_model` enforces the server's model policy on resolution.
-"""
-
-
-def _model_selection(
-    payload: dict[str, object],
-) -> tuple[str | None, dict[str, object]]:
-    """Validate selection without accepting provider connection settings.
-
-    Returns:
-        The requested model and generation overrides.
-
-    Raises:
-        ValueError: If the selection has invalid or unsupported fields.
-    """
-    model = payload.get("model")
-    params = payload.get("model_params", {})
-    if model is not None and (not isinstance(model, str) or not model.strip()):
-        msg = "model must be a non-empty string or null."
-        raise ValueError(msg)
-    if not isinstance(params, dict) or params.keys() - _GENERATION_PARAMS:
-        msg = "model_params must contain only supported generation options."
-        raise ValueError(msg)
-    if params and not model:
-        msg = "model is required with model_params."
-        raise ValueError(msg)
-    # The allowlist above narrows the decoded JSON object's keys to strings.
-    return model, cast("dict[str, object]", params)
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -115,15 +60,10 @@ async def btw(request: Request) -> JSONResponse:
 
     try:
         payload = await request.json()
-        if (
-            not isinstance(payload, dict)
-            or not {"question", "workspace"} <= payload.keys()
-            or payload.keys() - {"question", "workspace", "model", "model_params"}
-        ):
+        if not isinstance(payload, dict) or payload.keys() != {"question", "workspace"}:
             return JSONResponse(
                 {"detail": "Expected question and workspace."}, status_code=422
             )
-        model, params = _model_selection(payload)
         question = payload["question"]
         if (
             not isinstance(question, str)
@@ -151,13 +91,7 @@ async def btw(request: Request) -> JSONResponse:
             state = snapshot.get("values") or {}
             text = await _answer_while_connected(
                 request,
-                operation.answer(
-                    thread_id,
-                    state,
-                    question.strip(),
-                    model_spec=model,
-                    model_params=params,
-                ),
+                operation.answer(thread_id, state, question.strip()),
             )
         if text is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)

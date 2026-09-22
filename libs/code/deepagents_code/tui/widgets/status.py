@@ -1111,6 +1111,7 @@ class StatusBar(Vertical):
             Styled cache usage.
         """
         colors = theme.get_theme_colors(self)
+        timing = self._cache_timing_segment()
         hit_rate = Content("")
         if self.cache_input_tokens:
             cached = min(self.cache_read_tokens, self.cache_input_tokens)
@@ -1123,12 +1124,15 @@ class StatusBar(Vertical):
                 color = colors.muted
             hit_rate = Content.styled(f"{percent:.0f}% hit", color)
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            return Content("")
+            return (
+                Content.assemble(Content.styled("Cache", colors.muted), " ", timing)
+                if timing
+                else Content("")
+            )
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"
         )
-        timing = self._cache_timing_segment()
         return Content.assemble(
             Content.styled("Cache", colors.muted),
             " ",

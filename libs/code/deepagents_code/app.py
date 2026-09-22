@@ -8871,8 +8871,8 @@ class DeepAgentsApp(App):
         # repaints.
         with suppress(NoMatches):
             cache_display = self._status_bar.query_one("#cache-display")
-            cache_display.visible = self._thread_has_completed_turn and (
-                reads > 0 or writes > 0
+            cache_display.visible = self._last_cache_use is not None or (
+                self._thread_has_completed_turn and (reads > 0 or writes > 0)
             )
             self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
@@ -8956,7 +8956,6 @@ class DeepAgentsApp(App):
             has_restored_model_usage: Whether restored history contains model usage.
         """
         self._thread_stats = SessionStats()
-        self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
@@ -8970,6 +8969,7 @@ class DeepAgentsApp(App):
         self._last_cache_endpoint = None
         if self._status_bar is not None:
             self._status_bar.set_cache_timing(None)
+        self._refresh_cache_display()
         self._session_cost_warning_shown = False
         self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
@@ -9450,6 +9450,7 @@ class DeepAgentsApp(App):
             retention_at=parse_cache_timestamp(activity["requested_at"]),
             retention_confidence=policy.confidence if policy is not None else "expired",
         )
+        self._refresh_cache_display()
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -19974,6 +19975,7 @@ class DeepAgentsApp(App):
                 # discard warning here as it does on the live-sync path. Runs
                 # after `_reset_thread_usage`, which clears these fields.
                 self._sync_cache_state_from_state(payload.cache_state)
+                await self._refresh_cache_timing()
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 

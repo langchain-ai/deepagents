@@ -5819,6 +5819,65 @@ class TestCopyCommand:
 class TestCacheTiming:
     """Cache hits renew retention without pretending to be writes."""
 
+    @pytest.mark.parametrize("age_minutes", [2, 6])
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_resume_restores_countdown(
+        self, age_minutes: int, observed_write: bool
+    ) -> None:
+        """A fresh client counts from saved activity, including time spent closed."""
+        now = datetime(2026, 9, 21, 12, tzinfo=UTC)
+        used_at = now - timedelta(minutes=age_minutes)
+        written_at = used_at - timedelta(minutes=1)
+        activity = {
+            "requested_at": used_at.isoformat(),
+            "model_spec": "anthropic:claude-sonnet-4-6",
+            "endpoint": "default",
+            "params": None,
+        }
+        state = {
+            "_last_model_request_at": used_at.isoformat(),
+            "_last_cache_model_spec": activity["model_spec"],
+            "_last_cache_use": activity,
+            "_last_cache_write": (
+                {**activity, "requested_at": written_at.isoformat()}
+                if observed_write
+                else None
+            ),
+        }
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            app._lc_thread_id = "resumed-cache"
+            payload = app._goal_rubric_payload_from_state(
+                state, messages=[], context_tokens=0, model_spec="", model_params=None
+            )
+            with patch(
+                "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+            ) as clock:
+                clock.now.return_value = now
+                await app._load_thread_history(preloaded_payload=payload)
+                await pilot.pause()
+
+                bar = app._status_bar
+                assert bar is not None
+                assert bar.cache_written_at == (written_at if observed_write else None)
+                assert bar.cache_expires_at == used_at + timedelta(minutes=5)
+                display = app.query_one("#cache-display")
+                rendered = str(display.render())
+                assert display.visible
+                assert ("3:00" if age_minutes == 2 else "0:00") in rendered
+                assert ("wrote" in rendered) is observed_write
+                assert "0 read" not in rendered
+                assert "0 write" not in rendered
+
+                app._lc_thread_id = "fresh-thread"
+                await app._load_thread_history(
+                    preloaded_payload=_ThreadHistoryPayload([], 0, "")
+                )
+                await pilot.pause()
+                assert not display.visible
+                assert "Cache" not in str(display.render())
+                assert bar.cache_expires_at is None
+
     @staticmethod
     def _record_activity(
         app: DeepAgentsApp, requested_at: datetime, *, write: bool = False

@@ -1535,6 +1535,38 @@ def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     return load_bool_display_preference(key, fallback=fallback)
 
 
+def _load_cache_prompt_mode() -> str:
+    """Resolve cache prompt timing.
+
+    Returns:
+        The configured mode, with legacy booleans mapped to expiry/send.
+    """
+    from deepagents_code.config_manifest import ConfigOption, OptionKind, get_option
+    from deepagents_code.configuration.resolver import (
+        DEFAULT_RANK,
+        get_config_resolver,
+    )
+
+    resolver = get_config_resolver()
+    option = get_option("warnings.cache_prompt")
+    if option is None:
+        return "expiry"
+    resolved = resolver.get(option)
+    if resolved.value in {"expiry", "send", "off"} and any(
+        rank != DEFAULT_RANK for rank in resolved.ranks
+    ):
+        return str(resolved.value)
+    legacy = ConfigOption(
+        key="warnings.cache_expiry_prompt",
+        group="Warnings",
+        summary="Legacy cache expiry preference",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("warnings", "cache_expiry_prompt"),
+    )
+    return "expiry" if resolver.get(legacy).value else "send"
+
+
 def _load_message_timestamps_visible() -> bool:
     """Resolve whether chat messages show a timestamp footer.
 
@@ -9638,9 +9670,7 @@ class DeepAgentsApp(App):
             or isinstance(self.screen, ModalScreen)
         ):
             return
-        if not _load_bool_display_preference(
-            "warnings.cache_expiry_prompt", fallback=True
-        ):
+        if _load_cache_prompt_mode() != "expiry":
             return
         task = self._schedule_off_message_pump(
             self._confirm_cache_expiry(thread_id, expires_at), context="cache-expiry"
@@ -9648,29 +9678,53 @@ class DeepAgentsApp(App):
         if task is not None:
             self._cache_expiry_seen[thread_id] = expires_at
 
-    async def _confirm_cache_expiry(self, thread_id: str, expires_at: datetime) -> None:
-        """Resolve the expiry prompt off the message pump.
+    async def _confirm_cache_expiry(
+        self,
+        thread_id: str,
+        expires_at: datetime | None,
+        *,
+        message: QueuedMessage | None = None,
+    ) -> None:
+        """Offer one cost-aware handoff without sending.
 
         Raises:
-            asyncio.CancelledError: When the app shuts down.
+            asyncio.CancelledError: When the app exits.
         """
-        from deepagents_code.tui.modals.cache_expiry import CacheExpiryScreen
+        from deepagents_code.tui.modals.cold_cache import (
+            ColdCacheChoice,
+            ColdCacheWarningScreen,
+        )
 
-        screen = CacheExpiryScreen()
+        screen = None
+        draft = message.text if message else None
+        handed_off = False
         try:
+            warning = await self._cold_cache_warning_for(
+                QueuedMessage(text="", mode="normal"), advisory=True
+            )
+            if self._exiting or self._lc_thread_id != thread_id:
+                return
+            if warning is not None:
+                await self._emit_cold_cache_warning_hook(warning)
+            screen = ColdCacheWarningScreen(warning, handoff=True)
             choice = await asyncio.wait_for(
                 self._push_screen_wait(screen), timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
             )
             if self._exiting or self._lc_thread_id != thread_id:
                 return
-            if choice:
+            if choice is ColdCacheChoice.HANDOFF:
+                if draft is None and self._chat_input:
+                    draft = self._chat_input.value
                 await self._handoff_expired_cache(thread_id)
-            else:
-                self._cache_expiry_bypassed = (thread_id, expires_at)
+                handed_off = True
+            elif choice is ColdCacheChoice.CANCEL:
+                if expires_at is not None:
+                    self._cache_expiry_bypassed = (thread_id, expires_at)
+                    self._cache_expiry_seen[thread_id] = expires_at
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("Cache-expiry handoff failed")
+            logger.exception("Cache handoff failed")
             await self._mount_message(
                 ErrorMessage(
                     f"Could not start a summarized thread: {exc}. "
@@ -9678,7 +9732,16 @@ class DeepAgentsApp(App):
                 )
             )
         finally:
-            self._dismiss_orphaned_screen(screen)
+            if screen is not None:
+                self._dismiss_orphaned_screen(screen)
+            if (
+                draft
+                and not self._exiting
+                and (self._lc_thread_id == thread_id or handed_off)
+                and self._chat_input
+                and self._chat_input.value != draft
+            ):
+                self._restore_cold_cache_draft(draft)
             await self._set_spinner(None)
 
     async def _handoff_expired_cache(self, thread_id: str) -> None:
@@ -12435,6 +12498,8 @@ class DeepAgentsApp(App):
     async def _cold_cache_warning_for(
         self,
         message: QueuedMessage,
+        *,
+        advisory: bool = False,
     ) -> ColdCacheWarning | None:
         """Build a warning when an interactive turn may miss a material cache.
 
@@ -12454,19 +12519,17 @@ class DeepAgentsApp(App):
             message.mode != "normal"
             or message.origin != "interactive"
             or not model_spec
-            or (self._cold_cache_suppressed_for_session and not debug_forced)
             or (
-                not debug_forced
-                and self._status_bar is not None
-                and self._cache_expiry_bypassed
-                == (self._lc_thread_id, self._status_bar.cache_expires_at)
+                self._cold_cache_suppressed_for_session
+                and not debug_forced
+                and not advisory
             )
         ):
             return None
         # Each remaining skip is a decision to spend without asking, so each
         # says why. Silence here was previously indistinguishable from the
         # feature working correctly.
-        if not debug_forced and threshold <= 0:
+        if not debug_forced and not advisory and threshold <= 0:
             logger.debug(
                 "Skipping cold-cache warning: threshold %.4f disables the warning",
                 threshold,
@@ -12569,7 +12632,11 @@ class DeepAgentsApp(App):
             # `debug_forced` bypasses persistent suppression too, so the env
             # var stays a true override rather than silently no-opping for
             # anyone who once chose "Send and never warn again".
-            if not debug_forced and is_warning_suppressed(COLD_CACHE_WARNING_KEY):
+            if (
+                not debug_forced
+                and not advisory
+                and is_warning_suppressed(COLD_CACHE_WARNING_KEY)
+            ):
                 return None
             if debug_forced:
                 if policy is None:
@@ -12657,6 +12724,14 @@ class DeepAgentsApp(App):
                     reason = "idle"
                 else:
                     return None
+            if (
+                reason == "idle"
+                and not advisory
+                and self._status_bar is not None
+                and self._cache_expiry_bypassed
+                == (self._lc_thread_id, self._status_bar.cache_expires_at)
+            ):
+                return None
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
                 logger.debug(
@@ -12677,7 +12752,7 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
                 return None
-            if estimate.incremental_cost_usd < threshold:
+            if not advisory and estimate.incremental_cost_usd < threshold:
                 logger.debug(
                     "Skipping cold-cache warning: re-warm delta %.4f is below "
                     "the %.4f threshold",
@@ -12918,6 +12993,29 @@ class DeepAgentsApp(App):
 
     async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
         """Dispatch one queue-head message, interposing an advisory warning."""
+        mode = _load_cache_prompt_mode()
+        if mode == "off":
+            await self._process_message(message.text, message.mode)
+            return
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            message.mode == "normal"
+            and message.origin == "interactive"
+            and thread_id
+            and expires_at is not None
+            and datetime.now(UTC) >= expires_at
+            and self._cache_expiry_seen.get(thread_id) != expires_at
+        ):
+            task = self._schedule_off_message_pump(
+                self._confirm_cache_expiry(thread_id, expires_at, message=message),
+                context="cache-expiry",
+            )
+            if task is not None:
+                self._cache_expiry_seen[thread_id] = expires_at
+            else:
+                self._restore_cold_cache_draft(message.text)
+            return
         warning = await self._cold_cache_warning_for(message)
         if warning is None:
             await self._process_message(message.text, message.mode)

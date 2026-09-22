@@ -96,7 +96,9 @@ def test_send_choices_excludes_cancel() -> None:
     """Spend authorization is a closed set; cancel is never in it."""
     assert ColdCacheChoice.CANCEL not in SEND_CHOICES
     assert {
-        choice for choice in ColdCacheChoice if choice is not ColdCacheChoice.CANCEL
+        choice
+        for choice in ColdCacheChoice
+        if choice not in {ColdCacheChoice.CANCEL, ColdCacheChoice.HANDOFF}
     } == SEND_CHOICES
 
 

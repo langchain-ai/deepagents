@@ -67,7 +67,9 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
     assert all(not isinstance(m, ToolMessage) for m in messages)
     assert all(not m.tool_calls for m in messages if isinstance(m, AIMessage))
     assert "Do not call any tools" in messages[0].text
-    assert invoke.call_args.kwargs == {"config": {"callbacks": []}}
+    assert invoke.call_args.kwargs == {
+        "config": {"callbacks": [], "metadata": {"thread_id": "thread"}}
+    }
     assert state == before
 
 
@@ -174,7 +176,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
     def invoke(messages: list[SystemMessage], **kwargs: object) -> AIMessage:
         assert messages[0].text.startswith("system\n\n")
         assert kwargs == {
-            "config": {"callbacks": []},
+            "config": {"callbacks": [], "metadata": {"thread_id": "thread"}},
             "temperature": 0.2,
             "max_tokens": 512,
             "reasoning": {"effort": "high"},
@@ -195,7 +197,9 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
         new=AsyncMock(return_value=AIMessage(content="other")),
     ) as other:
         assert await operation.answer("other-thread", {}, "why") == "other"
-    assert other.call_args.kwargs == {"config": {"callbacks": []}}
+    assert other.call_args.kwargs == {
+        "config": {"callbacks": [], "metadata": {"thread_id": "other-thread"}}
+    }
     assert request.model_settings["tool_choice"] == "required"
 
 

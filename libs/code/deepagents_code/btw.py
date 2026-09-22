@@ -234,7 +234,9 @@ class BtwOperation(AgentMiddleware):
                 HumanMessage(content=f"{_INSTRUCTIONS}\n\n{question}"),
             ]
             response = await model.ainvoke(
-                messages, config={"callbacks": []}, **settings
+                messages,
+                config={"callbacks": [], "metadata": {"thread_id": thread_id}},
+                **settings,
             )
         return (
             response.text.strip()

@@ -2343,3 +2343,37 @@ class TestGraphCostOwnership:
 
         # One more step with its two side calls, on top of the first turn.
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
+
+
+async def test_side_question_cost_is_charged_on_next_turn(
+    recorder: _SessionCostRecorder,
+) -> None:
+    from deepagents_code.btw import BtwOperation
+
+    agent = create_agent(
+        model=_fake_model(
+            _message(_usage(), message_id="main-1"),
+            _message(_usage(), message_id="main-2"),
+        ),
+        tools=[],
+        middleware=[CostTrackingMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": THREAD_ID}}
+    await agent.ainvoke({"messages": [HumanMessage("main")]}, config)
+    before = (await agent.aget_state(config)).values
+    one_call = before["_session_cost_usd"]
+    assert one_call > 0
+    operation = BtwOperation(
+        _fake_model(_message(_usage(), message_id="side")), "system", None
+    )
+    await operation.answer(THREAD_ID, before, "side question")
+    assert (await agent.aget_state(config)).values == before
+    assert recorder.drain("other-thread") == []
+
+    await agent.ainvoke({"messages": [HumanMessage("continue")]}, config)
+    after = (await agent.aget_state(config)).values
+    assert after["_session_cost_usd"] == pytest.approx(3 * one_call)
+    assert after["_session_cost_breakdown"]["request_count"] == 3
+    assert len(after["messages"]) == 4
+    assert recorder.drain(THREAD_ID) == []

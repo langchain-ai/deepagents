@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import pty
 import re
+import select
 import shlex
 import shutil
 import stat
@@ -1983,7 +1984,7 @@ def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "legacy_entry",
-    [None, "install.lock.d", "install.lock.reclaim.d", "update.lock", "symlink"],
+    [None, "update.lock", "symlink"],
 )
 def test_install_script_lock_is_independent_of_deepagents_home(
     tmp_path: Path, legacy_entry: str | None
@@ -2024,6 +2025,12 @@ def test_install_script_lock_is_independent_of_deepagents_home(
         start_new_session=True,
     )
 
+    if legacy_entry == "symlink":
+        assert proc.returncode == 1, proc.stderr
+        assert "Installer lock root is a symlink" in proc.stderr
+        assert legacy.is_symlink()
+        assert not list(target.iterdir())
+        return
     assert proc.returncode == 0, proc.stderr
     assert not configured.exists()
     assert not (home / ".deepagents").exists()
@@ -2060,6 +2067,106 @@ def test_install_script_leaves_uv_tool_list_clean(
     )
     assert listing.returncode == 0, listing.stderr
     assert "warning:" not in listing.stderr
+
+
+@pytest.mark.parametrize("older_installer_active", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_installer_serializes_with_legacy_mkdir_protocol(
+    tmp_path: Path, older_installer_active: bool, interrupt: bool
+) -> None:
+    """Both generations exclude each other, and both locks release on exit."""
+    root = tmp_path / "tools" / "deepagents-code"
+    legacy = root.parent / ".deepagents-code.deepagents-code-locks" / "install.lock.d"
+    current = tmp_path / ".tools.deepagents-code.deepagents-code-locks/install.lock.d"
+    if older_installer_active:
+        legacy.mkdir(parents=True)
+        (legacy / "pid").write_text(str(os.getpid()))
+    functions = "\n".join(
+        _extract_shell_function(name)
+        for name in (
+            "lock_dir_mtime",
+            "install_lock_identity",
+            "install_lock_is_stale",
+            "install_lock_reclaim_guard_is_stale",
+            "wait_for_install_lock_reclaim_guard",
+            "acquire_install_lock_reclaim_guard",
+            "release_install_lock_reclaim_guard",
+            "acquire_install_lock_root",
+            "acquire_install_lock",
+            "release_install_lock",
+        )
+    )
+    script = (
+        "set -eu\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        f"resolve_installation_root() {{ printf '%s' {shlex.quote(str(root))}; }}\n"
+        "fix_file_owner() { :; }\n"
+        "path_is_under_home() { return 1; }\n"
+        "log_warn() { :; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        # Handshake at contention rather than rely on a timing-dependent sleep.
+        "sleep() { printf 'waiting\\n'; read -r; }\n"
+        f"{functions}\n"
+        "trap release_install_lock EXIT\n"
+        "trap 'exit 143' TERM\n"
+        "acquire_install_lock\n"
+        "printf 'acquired\\n'\n"
+        "read -r\n"
+    )
+    with subprocess.Popen(
+        ["bash", "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as proc:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            assert select.select([proc.stdout], [], [], 10)[0]
+            if older_installer_active:
+                assert proc.stdout.readline().strip() == "waiting"
+                assert (legacy / "pid").read_text() == str(os.getpid())
+                (legacy / "pid").unlink()
+                legacy.rmdir()
+                proc.stdin.write("\n")
+                proc.stdin.flush()
+                assert select.select([proc.stdout], [], [], 10)[0]
+            assert proc.stdout.readline().strip() == "acquired"
+            for lock in (legacy, current):
+                contender = subprocess.run(
+                    ["mkdir", str(lock)], capture_output=True, check=False, timeout=10
+                )
+                assert contender.returncode != 0
+                assert (lock / "pid").read_text().strip() == str(proc.pid)
+            if interrupt:
+                proc.terminate()
+            else:
+                proc.stdin.write("\n")
+                proc.stdin.flush()
+            assert proc.wait(timeout=10) == (143 if interrupt else 0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+    assert not legacy.exists()
+    assert not current.exists()
+
+
+def test_install_script_releases_legacy_lock_when_current_root_is_unusable(
+    tmp_path: Path,
+) -> None:
+    """Failure to acquire the second lock must not strand the first one."""
+    (tmp_path / ".tools.deepagents-code.deepagents-code-locks").touch()
+    proc, args = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "1"},
+        installed_version="0.0.1",
+        latest_version="0.1.0",
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert not args.exists()
+    assert not (tmp_path / "tools/.deepagents-code.deepagents-code-locks").exists()
 
 
 @pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")
@@ -2177,6 +2284,7 @@ class TestInstallLockRootGuessWarning:
             f"{_extract_shell_function('resolve_installation_root')}\n"
             f"{_extract_shell_function('install_lock_identity')}\n"
             f"{_extract_shell_function('install_lock_is_stale')}\n"
+            f"{_extract_shell_function('acquire_install_lock_root')}\n"
             f"{_extract_shell_function('acquire_install_lock')}\n"
             "acquire_install_lock\n",
             encoding="utf-8",
@@ -2237,6 +2345,7 @@ def test_install_lock_fails_when_lock_root_cannot_create_child(
         f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_root')}\n"
         f"{_extract_shell_function('acquire_install_lock')}\n"
         "mkdir() {\n"
         '  if [ "$1" = "$INSTALL_LOCK_DIR" ]; then\n'
@@ -2317,6 +2426,7 @@ def test_install_script_reclaim_skips_new_lock_after_stale_check(
         f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_root')}\n"
         f"{_extract_shell_function('acquire_install_lock')}\n"
         f"{_extract_shell_function('release_install_lock')}\n"
         "mv() {\n"
@@ -2371,6 +2481,7 @@ def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
         f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_root')}\n"
         f"{_extract_shell_function('acquire_install_lock')}\n"
         f"{_extract_shell_function('release_install_lock')}\n"
         "mv() {\n"
@@ -2484,6 +2595,7 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
         f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
         f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_root')}\n"
         f"{_extract_shell_function('acquire_install_lock')}\n"
         # Win the mkdir, but plant a directory named `token` inside the lock so
         # the metadata write `>"$INSTALL_LOCK_DIR/token"` fails.
@@ -2512,7 +2624,8 @@ def test_install_script_aborts_when_lock_token_cannot_be_written(
     assert not (lock_root / "install.lock.d").exists()
 
 
-def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path, legacy: bool) -> None:
     """A stale mkdir lock left by a dead owner is reclaimed, and install proceeds.
 
     Drives the full `acquire_install_lock` mkdir path (not just the
@@ -2527,7 +2640,11 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
     )
-    lock_root = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
+    lock_root = tmp_path / (
+        "tools/.deepagents-code.deepagents-code-locks"
+        if legacy
+        else ".tools.deepagents-code.deepagents-code-locks"
+    )
     lock_dir = lock_root / "install.lock.d"
     lock_dir.mkdir(parents=True)
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
@@ -4661,6 +4778,7 @@ def test_shell_lock_root_matches_python_installation_paths(
     functions = "\n".join(
         _extract_shell_function(name)
         for name in (
+            "acquire_install_lock_root",
             "acquire_install_lock",
             "release_install_lock",
             "release_install_lock_reclaim_guard",

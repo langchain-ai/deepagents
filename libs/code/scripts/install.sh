@@ -212,6 +212,8 @@ TEMP_DIRS=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
 INSTALL_LOCK_TOKEN=""
+LEGACY_INSTALL_LOCK_DIR=""
+LEGACY_INSTALL_LOCK_TOKEN=""
 INSTALL_LOCK_STALE_ID=""
 INSTALL_LOCK_RECLAIM_DIR=""
 INSTALL_LOCK_RECLAIM_TOKEN=""
@@ -1175,14 +1177,27 @@ acquire_install_lock() {
   installation_parent="${installation_parent:-/}"
   lock_parent="$(dirname "$installation_parent")"
   lock_root="${lock_parent%/}/.${installation_parent##*/}.${installation_name}.deepagents-code-locks"
+  if [ "${guessed:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
+  # Reserve the legacy mkdir lock even when absent: an older installer can
+  # start after us. Keep it until exit, including while waiting for the new lock.
+  acquire_install_lock_root "${installation_parent}/.${installation_name}.deepagents-code-locks"
+  LEGACY_INSTALL_LOCK_DIR="$INSTALL_LOCK_DIR"
+  LEGACY_INSTALL_LOCK_TOKEN="$INSTALL_LOCK_TOKEN"
+  INSTALL_LOCK_KIND=""
+  INSTALL_LOCK_TOKEN=""
+  acquire_install_lock_root "$lock_root"
+}
+
+# Use the same metadata, stale-owner handling, and reclaim guard at both paths.
+acquire_install_lock_root() {
+  local lock_root="$1"
   if [ -L "$lock_root" ]; then
     log_error "Installer lock root is a symlink: $lock_root"
     log_error "Remove it or choose a different uv tool directory, then retry."
     exit 1
-  fi
-  if [ "${guessed:-false}" = true ]; then
-    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
-    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
   fi
   if [ ! -d "$lock_root" ]; then
     if ! mkdir -p "$lock_root"; then
@@ -1267,9 +1282,6 @@ acquire_install_lock() {
   fix_file_owner "$INSTALL_LOCK_DIR" "$INSTALL_LOCK_DIR/token" \
     "$INSTALL_LOCK_DIR/pid" "$INSTALL_LOCK_DIR/started_at"
   INSTALL_LOCK_KIND="mkdir"
-  # Only remove an empty legacy root. rmdir cannot remove another process's
-  # install/reclaim directory, an advisory update.lock file, or a symlink.
-  rmdir "${installation_parent}/.${installation_name}.deepagents-code-locks" 2>/dev/null || true
 }
 
 release_install_lock() {
@@ -1290,6 +1302,15 @@ release_install_lock() {
   release_install_lock_reclaim_guard
   INSTALL_LOCK_KIND=""
   INSTALL_LOCK_TOKEN=""
+  if [ -n "${LEGACY_INSTALL_LOCK_TOKEN:-}" ] && \
+    [ "$(cat "$LEGACY_INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$LEGACY_INSTALL_LOCK_TOKEN" ]; then
+    rm -rf "$LEGACY_INSTALL_LOCK_DIR" 2>/dev/null || true
+    # Unlike an advisory lock inode, an empty mkdir-lock root can be removed
+    # after release. Preserve any updater lock or racing installer's directory.
+    rmdir "${LEGACY_INSTALL_LOCK_DIR%/*}" 2>/dev/null || true
+  fi
+  LEGACY_INSTALL_LOCK_DIR=""
+  LEGACY_INSTALL_LOCK_TOKEN=""
 }
 
 # ---------------------------------------------------------------------------

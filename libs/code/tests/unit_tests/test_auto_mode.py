@@ -2860,6 +2860,70 @@ async def test_oversized_ask_user_question_is_excluded_from_classifier_context(
     assert oversized_question not in cast("str", classifier_message.content)
 
 
+@pytest.mark.parametrize("later_turn", [False, True])
+@pytest.mark.parametrize("renewed_consent", [False, True])
+async def test_omitted_later_answer_withholds_older_consent(
+    tmp_path: Path, *, later_turn: bool, renewed_consent: bool
+) -> None:
+    """A filtered refusal must not leave an earlier approval as evidence."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    question = {"question": "Delete build/old.log?", "type": "text"}
+    _append_ask_user_exchange(request, answer="yes", questions=[question])
+    turn_id = "turn-2" if later_turn else "turn-1"
+    if later_turn:
+        _append_trusted_user_prompt(request, "Wait, reconsider", turn_id=turn_id)
+        request.runtime.context["turn_id"] = turn_id
+    _append_ask_user_exchange(
+        request,
+        answer="no",
+        ask_call_id="ask-2",
+        questions=[{"question": "x" * 4001, "type": "text"}],
+        receipt_turn_id=turn_id,
+    )
+    if renewed_consent:
+        _append_ask_user_exchange(
+            request,
+            answer="yes",
+            ask_call_id="ask-3",
+            questions=[question],
+            receipt_turn_id=turn_id,
+        )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == (
+        [
+            {
+                "ask_user_tool_call_id": "ask-3",
+                "turn_id": turn_id,
+                "question": question["question"],
+                "answer": "yes",
+            }
+        ]
+        if renewed_consent
+        else []
+    )
+
+
 async def test_affirmative_to_negated_question_grants_nothing(
     tmp_path: Path,
 ) -> None:

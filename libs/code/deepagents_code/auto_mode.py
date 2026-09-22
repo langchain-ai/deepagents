@@ -1510,6 +1510,11 @@ def _user_answer_evidence(
             thread_id=execution_thread_id,
             turn_id=turn_id_of_exchange,
         )
+        if exchange_rows is None:
+            # An omitted answer may revoke earlier consent. Only exchanges
+            # after this barrier can safely contribute authorization evidence.
+            validated.clear()
+            continue
         if exchange_rows:
             for row in exchange_rows:
                 row["turn_id"] = turn_id_of_exchange

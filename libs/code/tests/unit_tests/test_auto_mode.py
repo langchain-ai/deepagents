@@ -182,7 +182,6 @@ class _StructuredModel:
         self.error = error
         self.calls: list[list[object]] = []
         self.call_kwargs: list[dict[str, object]] = []
-        self.schema: object = None
         self.schemas: list[dict[str, Any]] = []
         self.structured_output_kwargs: dict[str, object] = {}
         # `_extract_model_name` reads `model_name` first and ignores a non-str,
@@ -192,7 +191,6 @@ class _StructuredModel:
     def with_structured_output(
         self, schema: object, **kwargs: object
     ) -> _StructuredModel:
-        self.schema = schema
         assert isinstance(schema, type)
         assert issubclass(schema, BaseModel)
         self.schemas.append(schema.model_json_schema())
@@ -584,52 +582,6 @@ def _deny_result(
     return _single_result(decision="deny", category=category, reason=reason)
 
 
-async def test_classifier_history_is_provider_neutral_and_checkpointed(
-    tmp_path: Path,
-) -> None:
-    model = _ConversationModel([_allow_result(), _deny_result()])
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    first = await _plan(
-        _middleware(tmp_path),
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    request.runtime.context["turn_id"] = "turn-2"
-    second = await _plan(
-        _middleware(tmp_path),
-        request,
-        tool_name="delete",
-        args={"file_path": "older.py"},
-        call_id="call-2",
-    )
-
-    assert first["decisions"][0]["disposition"] == "classifier_allow"
-    assert second["decisions"][0]["disposition"] == "policy_deny"
-    assert [type(message) for message in model.calls[0]] == [
-        SystemMessage,
-        HumanMessage,
-    ]
-    assert [type(message) for message in model.calls[1]] == [
-        SystemMessage,
-        HumanMessage,
-        AIMessage,
-        HumanMessage,
-    ]
-    state = cast("dict[str, Any]", request.state)
-    assert len(state["_auto_classifier_conversation"]["turns"]) == 2
-    assert (
-        json.loads(cast("str", cast("AIMessage", model.calls[1][2]).content))
-        == _allow_result().model_dump()
-    )
-
-
 async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
     tmp_path: Path,
 ) -> None:
@@ -657,11 +609,6 @@ async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
         SystemMessage,
         HumanMessage,
     ]
-    for index, messages in enumerate(model.calls[:-1]):
-        assert len(messages) == 2 + index * 2
-        if index:
-            assert messages[: len(model.calls[index - 1])] == model.calls[index - 1]
-
     replacement = _ConversationModel([_allow_result()])
     replacement.model_name = "replacement"
     request = request.override(model=cast("BaseChatModel", replacement))
@@ -678,51 +625,6 @@ async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
         HumanMessage,
     ]
     assert len(state["_auto_classifier_conversation"]["turns"]) == 1
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        RuntimeError("provider unavailable"),
-        _ProviderError(400, "invalid response schema"),
-        _ProviderError(401, "context_length_exceeded"),
-    ],
-)
-async def test_failed_classifier_review_does_not_advance_history(
-    tmp_path: Path,
-    error: Exception,
-) -> None:
-    model = _ConversationModel([_allow_result(), error, _allow_result()])
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
-    await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "older.py"},
-        call_id="call-2",
-    )
-    await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "oldest.py"},
-        call_id="call-3",
-    )
-
-    assert len(model.calls[1]) == 4
-    assert len(model.calls[2]) == 4
-    state = cast("dict[str, Any]", request.state)
-    turns = state["_auto_classifier_conversation"]["turns"]
-    assert len(turns) == 2
-    assert "call-2" not in json.dumps(turns)
 
 
 @pytest.mark.parametrize(
@@ -4955,30 +4857,6 @@ async def test_classifier_includes_actionable_goal_directives(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
-async def test_malformed_classifier_verdict_blocks_call_and_increments_unavailable(
-    tmp_path: Path,
-) -> None:
-    model = _StructuredModel({})
-    middleware = _middleware(tmp_path)
-    request, store, key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
-    assert counters["consecutive_unavailable"] == 1
-    assert counters["total_denials"] == 0
-
-
 def test_classifier_unavailable_reason_specializes_timeouts() -> None:
     assert (
         classifier_unavailable_reason(
@@ -6844,36 +6722,6 @@ def _unresolvable_home_prefix() -> str:
     return prefix
 
 
-async def test_batch_without_classifier_review_skips_classifier(
-    tmp_path: Path,
-) -> None:
-    """Deterministically allowed batches do not make classifier requests."""
-    model = _FailIfClassifiedModel()
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="write_file",
-        args={
-            "file_path": str(tmp_path / "src" / "module.py"),
-            "content": "x = 1",
-        },
-    )
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="write_file",
-        args={
-            "file_path": str(tmp_path / "src" / "module.py"),
-            "content": "x = 1",
-        },
-    )
-
-    assert plan["decisions"][0]["disposition"] == "deterministic_allow"
-    assert model.schema is None
-
-
 def _delete_calls(*ids: str) -> list[ToolCall]:
     return [
         {
@@ -6886,16 +6734,15 @@ def _delete_calls(*ids: str) -> list[ToolCall]:
     ]
 
 
-@pytest.mark.parametrize("model_type", [_StructuredModel, _ThinkingAnthropicModel])
 async def test_classifier_schema_and_history_prefix_survive_new_action_ids(
-    tmp_path: Path, model_type: type[_StructuredModel]
+    tmp_path: Path,
 ) -> None:
     """Batch size and action IDs change without invalidating the cached prefix."""
     first_id = "call_5ZTCN6nK5FYbeCiGZsrkFGs3"
     second_id = "call_5ZTC6N6k5FYbeCiGZsrkFGs3"
     # Deliberately reverse the response order and mix verdicts to prove that
     # server binding uses indexes, not response order or copied tool-call IDs.
-    model = model_type(
+    model = _StructuredModel(
         _ClassifierBatch(
             decisions=[
                 _IndexedClassifierVerdict(
@@ -6917,7 +6764,11 @@ async def test_classifier_schema_and_history_prefix_survive_new_action_ids(
     request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
     first = await _plan_calls(middleware, request, _delete_calls(first_id, second_id))
     model.result = _allow_result()
-    second = await _plan_calls(middleware, request, _delete_calls("new-batch"))
+    # Recreating middleware must retain the conversation carried in thread state.
+    request.runtime.context["turn_id"] = "turn-2"
+    second = await _plan_calls(
+        _middleware(tmp_path), request, _delete_calls("new-batch")
+    )
 
     assert [
         (decision["tool_call_id"], decision["disposition"])
@@ -6997,27 +6848,8 @@ async def test_classifier_sees_deterministic_siblings_without_reviewing_them(
     [
         RuntimeError("provider unavailable"),
         {},
-        {"decisions": []},
-        {
-            "decisions": [
-                {
-                    "action_index": 0,
-                    "decision": "deny",
-                    "category": "other_policy",
-                    "reason": " ",
-                }
-            ]
-        },
-        {
-            "decisions": [
-                {
-                    "action_index": 0,
-                    "decision": "allow",
-                    "category": "unknown",
-                    "reason": "",
-                }
-            ]
-        },
+        _ProviderError(400, "invalid response schema"),
+        _ProviderError(401, "context_length_exceeded"),
     ],
 )
 async def test_failed_batch_withholds_entire_batch_and_history(

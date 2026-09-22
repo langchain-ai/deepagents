@@ -14,6 +14,7 @@ from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
+from textual import work
 from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -98,9 +99,6 @@ protocol spec (functional key definitions) for background.
 
 _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
-
-_THREAD_CACHE_WORKER_GROUP = "thread-completion-cache"
-"""Textual worker group for `@@` thread-completion cache refreshes."""
 
 _CHAT_INPUT_AUTO_MAX_HEIGHT = 8
 """Rows the composer grows to on its own before the draft starts scrolling.
@@ -2613,18 +2611,8 @@ class ChatInput(Vertical):
             self._thread_controller.update_threads(get_cached_threads() or [])
         self._warm_thread_cache()
 
-    def _warm_thread_cache(self) -> None:
-        """Refresh the `@@` thread-completion cache off the typing path."""
-        if self._thread_controller is None:
-            return
-        self.run_worker(
-            self._load_thread_cache,
-            exclusive=True,
-            group=_THREAD_CACHE_WORKER_GROUP,
-            exit_on_error=False,
-        )
-
-    async def _load_thread_cache(self) -> None:
+    @work(exclusive=True, group="thread-completion-cache", exit_on_error=False)
+    async def _warm_thread_cache(self) -> None:
         """Load bounded recent thread metadata for `@@` completion."""
         from deepagents_code.sessions import (
             get_thread_limit,

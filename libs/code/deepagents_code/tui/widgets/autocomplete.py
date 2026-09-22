@@ -13,7 +13,6 @@ import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
 import subprocess  # noqa: S404
-from datetime import datetime
 from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
@@ -50,9 +49,6 @@ _THREAD_REFERENCE_PREFIX = "@@(thread:"
 _THREAD_TRIGGER = "@@"
 """Trigger reserved for recent-thread completion."""
 
-_THREAD_MAX_AGE_DAYS = 365
-"""Threshold for displaying thread update age in years."""
-
 
 def _thread_label(thread: ThreadInfo) -> str:
     """Return a single-line initial-prompt label for a completion row."""
@@ -62,41 +58,6 @@ def _thread_label(thread: ThreadInfo) -> str:
     if len(label) > _THREAD_LABEL_LIMIT:
         return f"{label[: _THREAD_LABEL_LIMIT - 3].rstrip()}..."
     return label
-
-
-def _thread_updated_at(thread: ThreadInfo) -> str:
-    """Return a compact relative timestamp for a completion row."""
-    raw = thread.get("updated_at")
-    if not raw:
-        return ""
-    try:
-        updated_at = datetime.fromisoformat(raw).astimezone()
-    except (TypeError, ValueError):
-        return ""
-    seconds = max(
-        0, int((datetime.now(tz=updated_at.tzinfo) - updated_at).total_seconds())
-    )
-    if seconds < 60:  # noqa: PLR2004
-        return "now"
-    minutes = seconds // 60
-    if minutes < 60:  # noqa: PLR2004
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 24:  # noqa: PLR2004
-        return f"{hours}h"
-    days = hours // 24
-    if days < _THREAD_MAX_AGE_DAYS:
-        return f"{days}d"
-    return f"{days // _THREAD_MAX_AGE_DAYS}y"
-
-
-def _thread_token(thread: ThreadInfo) -> str:
-    """Build the durable ID-only token inserted into the chat input.
-
-    Returns:
-        Thread ID encoded as a durable token.
-    """
-    return f"{_THREAD_REFERENCE_PREFIX}{thread['thread_id']})"
 
 
 class CompletionResult(StrEnum):
@@ -461,20 +422,13 @@ class ThreadCompletionController:
                 break
 
     @staticmethod
-    def _trigger_is_standalone(text: str, start: int) -> bool:
-        """Return whether `@@` starts a standalone thread query."""
-        if start == 0 or text[start - 1].isspace():
-            return True
-        return text[start - 1] in "([{"
-
-    @staticmethod
     def _mention_start(text: str, cursor_index: int) -> int | None:
         """Return the active `@@` index when the cursor is in a mention."""
         if cursor_index < len(_THREAD_TRIGGER) or cursor_index > len(text):
             return None
         start = text[:cursor_index].rfind(_THREAD_TRIGGER)
-        if start < 0 or not ThreadCompletionController._trigger_is_standalone(
-            text, start
+        if start < 0 or (
+            start > 0 and not (text[start - 1].isspace() or text[start - 1] in "([{")
         ):
             return None
         fragment = text[start:cursor_index]
@@ -538,6 +492,8 @@ class ThreadCompletionController:
 
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Search cached threads and render suggestions."""
+        from deepagents_code.sessions import format_relative_timestamp
+
         self.reset()
         start = self._mention_start(text, cursor_index)
         if start is None:
@@ -566,7 +522,7 @@ class ThreadCompletionController:
                         (
                             "thread",
                             thread.get("agent_name"),
-                            _thread_updated_at(thread),
+                            format_relative_timestamp(thread.get("updated_at")),
                             thread["thread_id"][:8],
                         ),
                     )
@@ -591,7 +547,7 @@ class ThreadCompletionController:
             case "tab" | "enter":
                 return (
                     CompletionResult.HANDLED
-                    if self._apply_selected_completion(text, cursor_index)
+                    if self.apply_selection(self._selected_index, text, cursor_index)
                     else CompletionResult.IGNORED
                 )
             case "down":
@@ -621,20 +577,8 @@ class ThreadCompletionController:
         """
         if index < 0 or index >= len(self._suggestions):
             return False
-        self._selected_index = index
-        return self._apply_selected_completion(text, cursor_index)
-
-    def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
-        """Replace the active query with the selected durable thread token.
-
-        Returns:
-            Whether a valid active query was replaced.
-        """
-        start = self._mention_start(text, cursor_index)
-        if start is None or not self._matches:
-            return False
         return self.replace_active_query(
-            text, cursor_index, self._matches[self._selected_index]["thread_id"]
+            text, cursor_index, self._matches[index]["thread_id"]
         )
 
 

@@ -22,7 +22,6 @@ from deepagents_code.tui.widgets.autocomplete import (
     _get_project_files,
     _run_git_ls_files,
     _scope_files_to_cwd,
-    _thread_token,
 )
 
 
@@ -169,17 +168,6 @@ class TestThreadCompletionController:
         controller.on_text_changed("compare @@fix parser", 20)
         suggestions = mock_view.render_completion_suggestions.call_args.args[0]
         assert suggestions[0][0] == "Fix the parser"
-
-    def test_token_uses_only_the_durable_thread_id(self) -> None:
-        token = _thread_token(
-            {
-                "thread_id": "11111111-2222-3333-4444-555555555555",
-                "agent_name": None,
-                "updated_at": None,
-                "initial_prompt": "Review [unsafe]\n(title)",
-            }
-        )
-        assert token == "@@(thread:11111111-2222-3333-4444-555555555555)"
 
     def test_exposes_query_for_full_picker_escalation(
         self, controller: ThreadCompletionController

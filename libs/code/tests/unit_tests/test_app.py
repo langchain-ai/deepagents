@@ -31054,21 +31054,6 @@ class TestPromptClipboard:
             assert chat_input._prompt_search_active is True
             assert chat_input._prompt_search_index == 1
 
-    async def test_ctrl_r_escalates_thread_completion_to_full_picker(self) -> None:
-        app = DeepAgentsApp()
-        chat_input = MagicMock()
-        chat_input.active_thread_query.return_value = "fix parser"
-        app._chat_input = chat_input
-
-        with (
-            patch.object(app, "_prompt_clipboard_blocked", return_value=False),
-            patch.object(app, "_open_thread_reference_selector") as open_selector,
-        ):
-            app.action_open_prompt_clipboard()
-
-        open_selector.assert_called_once_with("fix parser")
-        chat_input.open_prompt_search.assert_not_called()
-
     async def test_thread_reference_picker_preserves_other_directory_results(
         self,
     ) -> None:

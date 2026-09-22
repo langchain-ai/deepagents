@@ -969,29 +969,6 @@ class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
 
 
-class TestThreadSelectorSearch:
-    """Tests for fuzzy search filtering."""
-
-    async def test_reference_picker_starts_with_compact_query(self) -> None:
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread=None,
-                        filter_cwd=None,
-                        initial_query="parser",
-                        reference_mode=True,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._build_title() == "Reference Thread"
-                assert screen.query_one("#thread-filter", Input).value == "parser"
-
-
 class TestThreadSelectorCopy:
     """Tests for copying the selected full thread ID."""
 

@@ -30734,6 +30734,58 @@ class TestSessionCostWarning:
             assert isinstance(app.screen, SessionCostWarningScreen)
             await pilot.press(dismiss_key)
 
+    async def test_restored_cost_does_not_stack_with_compaction(self) -> None:
+        from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._reset_thread_usage(6.0)
+            await pilot.pause()
+            assert app.screen is screen
+            assert app._displayed_cost_usd == pytest.approx(6.0)
+
+            app.push_screen(
+                ResumeCompactPromptScreen(
+                    context_tokens=100_000, threshold=50_000, pending_work=False
+                )
+            )
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert app.screen is screen
+            assert app._displayed_cost_usd == pytest.approx(7.0)
+
+    @pytest.mark.parametrize("restored_cost", [4.0, 5.0])
+    async def test_restored_cost_keeps_new_crossing_warning(
+        self, restored_cost: float
+    ) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._reset_thread_usage(6.0)
+            app._reset_thread_usage(restored_cost)
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press("enter")
+            app._set_session_cost(6.0)
+            await pilot.pause()
+            assert app.screen is screen
+
     @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
     async def test_dismiss_preserves_running_agent(self, dismiss_key: str) -> None:
         app = DeepAgentsApp()

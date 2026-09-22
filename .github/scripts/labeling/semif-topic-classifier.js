@@ -1,5 +1,5 @@
 const MODEL = 'semif-qwen3.5-4b';
-const THRESHOLD = 0.8;
+const THRESHOLD = 0.7;
 const ENDPOINT = 'https://gateway.smith.langchain.com/v1/systemone';
 
 async function classifyTopicLabels(text, allowedLabels, options = {}) {

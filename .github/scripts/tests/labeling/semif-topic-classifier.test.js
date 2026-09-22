@@ -76,9 +76,9 @@ test('classifies the issue 6485 body without making topics compete', async () =>
 });
 
 test('logs only validated diagnostics, including abstentions', async () => {
-  for (const score of [0.79, 0.95]) {
+  for (const score of [0.69, 0.95]) {
     const debug = [], info = [];
-    const selected = score >= 0.8 ? ['topic:models'] : [];
+    const selected = score >= 0.7 ? ['topic:models'] : [];
     const labels = await classifyTopicLabels('private issue text', allowed, {
       apiKey: 'private-key',
       debug: message => debug.push(JSON.parse(message)),
@@ -98,10 +98,10 @@ test('logs only validated diagnostics, including abstentions', async () => {
     });
     assert.deepEqual([...labels], selected);
     assert.deepEqual(debug, [{
-      model: MODEL, threshold: 0.8,
+      model: MODEL, threshold: 0.7,
       scores: [['topic:models', score], ['topic:mcp', 0.2]], selected,
     }]);
-    assert.deepEqual(info, [`${selected.length} topics met the 0.8 cutoff; selected ${selected.length} (maximum 3).`]);
+    assert.deepEqual(info, [`${selected.length} topics met the 0.7 cutoff; selected ${selected.length} (maximum 3).`]);
   }
 });
 
@@ -134,7 +134,7 @@ test('ranks distinct labels by probability and caps them at three', async () => 
 });
 
 test('abstains below the threshold and accepts the threshold boundary', async () => {
-  for (const [score, expected] of [[0.79, []], [0.8, ['topic:mcp']]]) {
+  for (const [score, expected] of [[0.69, []], [0.7, ['topic:mcp']]]) {
     const labels = await classifyTopicLabels('text', ['topic:mcp'], {
       apiKey: 'secret', fetchImpl: async () => response({ 'topic:mcp': score }),
     });

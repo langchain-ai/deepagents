@@ -59,9 +59,9 @@ class BtwScreen(ModalScreen[None]):
                 id="btw-input",
                 max_length=16_000,
             )
-            yield Static(self._question, id="btw-question", markup=False)
             yield Static(id="btw-loading")
             with VerticalScroll(id="btw-scroll"):
+                yield Static(self._question, id="btw-question", markup=False)
                 yield Markdown("", id="btw-answer", open_links=False)
                 yield Static("", id="btw-error", markup=False)
             yield Static("Esc dismiss · Up/Down scroll", id="btw-help")
@@ -83,6 +83,9 @@ class BtwScreen(ModalScreen[None]):
 
     def _start(self, question: str) -> None:
         self.query_one(Input).display = False
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        scroll.display = True
+        scroll.focus()
         self.query_one("#btw-question", Static).update(question)
         loading = self.query_one("#btw-loading", Static)
         loading.update(f"{self._spinner.current_frame()} Thinking...")
@@ -102,6 +105,7 @@ class BtwScreen(ModalScreen[None]):
 
     @work(exclusive=True)
     async def _generate(self, question: str) -> None:
+        target = "#btw-answer"
         try:
             text = await self._answer(question)
             await self.query_one(Markdown).update(text)
@@ -111,6 +115,7 @@ class BtwScreen(ModalScreen[None]):
             logger.debug("Side question failed", exc_info=True)
             from deepagents_code.client.remote_client import format_agent_exception
 
+            target = "#btw-error"
             self.query_one("#btw-error", Static).update(format_agent_exception(exc))
         self._stop_spinner()
         if self.is_mounted:
@@ -118,6 +123,13 @@ class BtwScreen(ModalScreen[None]):
             scroll = self.query_one("#btw-scroll", VerticalScroll)
             scroll.display = True
             scroll.focus()
+            self.call_after_refresh(self._reveal_answer, target)
+
+    def _reveal_answer(self, selector: str) -> None:
+        target = self.query_one(selector)
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        if target.region.y >= scroll.content_region.bottom:
+            target.scroll_visible(top=True, animate=False)
 
     def on_unmount(self) -> None:
         """Stop the loading animation when the modal closes."""

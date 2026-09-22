@@ -624,3 +624,35 @@ async def test_modal_error_is_plain_text() -> None:
         await pilot.pause()
         assert app.screen.query_one("#btw-error", Static).content == "bad [/tmp/file]"
         await pilot.press("escape")
+
+
+@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
+async def test_long_question_keeps_answer_and_dismissal_hint_visible(
+    size: tuple[int, int],
+) -> None:
+    from textual.app import App
+
+    app = App()
+    question = "What does this mean? " * 125
+    async with app.run_test(size=size) as pilot:
+        app.push_screen(BtwScreen(AsyncMock(return_value="A short answer."), question))
+        await pilot.pause()
+        dialog = app.screen.query_one("#btw-dialog")
+        answer = app.screen.query_one(Markdown)
+        hint = app.screen.query_one("#btw-help")
+        assert answer.region in dialog.content_region
+        assert answer.region in app.screen.region
+        assert hint.region in dialog.content_region
+        scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
+        assert scroll.max_scroll_y > 0
+        await pilot.press("home")
+        await pilot.pause()
+        assert scroll.scroll_y == 0
+        question_widget = app.screen.query_one("#btw-question", Static)
+        assert question_widget.region.y >= scroll.region.y
+        assert question_widget.content == question
+        await pilot.press("end")
+        await pilot.pause()
+        assert answer.region in scroll.content_region
+        await pilot.press("escape")
+        assert not isinstance(app.screen, BtwScreen)

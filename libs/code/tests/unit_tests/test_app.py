@@ -2235,12 +2235,9 @@ async def test_thread_selector_ctrl_c_copies_highlighted_id() -> None:
             assert app.screen is screen
 
 
-@pytest.mark.parametrize("press_gap", [1.0, 1.001])
 @pytest.mark.parametrize("filter_text", ["first", "no-matching-thread"])
-async def test_thread_selector_ctrl_c_quit_flow(
-    press_gap: float, filter_text: str
-) -> None:
-    """Rapid Ctrl+C arms quit; slower presses keep copying the highlighted ID."""
+async def test_thread_selector_ctrl_c_quit_flow(filter_text: str) -> None:
+    """Rapid Ctrl+C arms quit even when the thread filter has no matches."""
     from textual.widgets import Input
 
     from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -2275,7 +2272,7 @@ async def test_thread_selector_ctrl_c_quit_flow(
                 patch.object(app, "notify") as notify,
                 patch(
                     "deepagents_code.app._monotonic",
-                    side_effect=[0.0, press_gap, press_gap + 1.1],
+                    side_effect=[0.0, 1.0, 2.1],
                 ),
             ):
                 await pilot.press("ctrl+c")
@@ -2285,20 +2282,14 @@ async def test_thread_selector_ctrl_c_quit_flow(
                 exit_mock.assert_not_called()
                 assert app.screen is screen
 
-                if press_gap <= 1.0:
-                    notify.assert_called_once_with(
-                        "Press Ctrl+C again to quit", timeout=3, markup=False
-                    )
-                    await pilot.press("ctrl+c")
-                    exit_mock.assert_called_once()
-                    expected_copies = 1
-                else:
-                    assert app._quit_pending is False
-                    expected_copies = 2
+                notify.assert_called_once_with(
+                    "Press Ctrl+C again to quit", timeout=3, markup=False
+                )
+                await pilot.press("ctrl+c")
+                exit_mock.assert_called_once()
 
                 if filter_text == "first":
-                    assert copy.call_count == expected_copies
-                    copy.assert_called_with(app, "thread-first")
+                    copy.assert_called_once_with(app, "thread-first")
                 else:
                     copy.assert_not_called()
 

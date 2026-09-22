@@ -113,7 +113,7 @@ class ToolApprovalRequest:
 
     Args:
         conversation_id: Conversation whose run is waiting for approval.
-        interrupt_id: LangGraph interrupt identifier to resume.
+        interrupt_id: First LangGraph interrupt identifier in this approval batch.
         action_requests: Tool calls awaiting one approve/reject decision.
     """
 

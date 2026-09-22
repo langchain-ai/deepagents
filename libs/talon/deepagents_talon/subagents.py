@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command  # noqa: TC002  # tool schemas resolve return annotations
 
 from deepagents_talon.background import _IN_SUBAGENT
+from deepagents_talon.mcp_middleware import talon_mcp_middleware
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -200,11 +201,14 @@ def _compile_fresh(
     approvals = {
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
+    middleware = [talon_mcp_middleware()]
+    if approvals:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
     graph = create_agent(
         model=spec.get("model", model),
         tools=spec.get("tools", []),
         system_prompt=spec.get("system_prompt", ""),
-        middleware=[HumanInTheLoopMiddleware(interrupt_on=approvals)] if approvals else [],
+        middleware=middleware,
         checkpointer=False,
     )
     return {

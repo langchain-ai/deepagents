@@ -8912,15 +8912,13 @@ class DeepAgentsApp(App):
             not self._session_cost_warning_shown
             and 0 < threshold < self._session_cost_usd
         ):
+            from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
             self._session_cost_warning_shown = True
-            self.notify(
-                f"Estimated session cost is {format_cost(self._session_cost_usd)}, "
-                f"above the configured {format_cost(threshold)} threshold. Consider "
-                "/offload to reduce context usage or /clear to start fresh.",
-                title="Session cost warning",
-                severity="warning",
-                timeout=12,
-                markup=False,
+            self.push_screen(
+                SessionCostWarningScreen(
+                    cost_usd=self._session_cost_usd, threshold=threshold
+                )
             )
 
     @property
@@ -21370,7 +21368,8 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If a focused input has a non-empty selection, copy it (a failed
+        1. In the thread selector, copy the highlighted thread ID; otherwise,
+            copy a focused input's non-empty selection (a failed selection
             copy falls through to the branches below)
         2. If shell command is running, kill it
         3. If approval menu is active, reject it
@@ -21389,15 +21388,21 @@ class DeepAgentsApp(App):
         further press exits). The interrupt branches (2-5) stay unconditional so
         a repeated press still cancels in-flight work rather than quitting.
         """
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
         now = _monotonic()
         window = _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
         self._ctrl_c_times = [t for t in self._ctrl_c_times if now - t <= window]
         self._ctrl_c_times.append(now)
         rapid = len(self._ctrl_c_times) >= _RAPID_QUIT_CTRL_C_PRESSES
 
-        # If a focused input widget has selected text, copy it instead of
-        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
-        if not rapid and self._copy_focused_selection():
+        # Copy the highlighted thread ID before considering the filter's text.
+        # Share the chat input's rapid-press escape hatch and armed quit path.
+        if isinstance(self.screen, ThreadSelectorScreen):
+            if not rapid and not self._quit_pending:
+                self.screen.action_copy_thread_id()
+                return
+        elif not rapid and self._copy_focused_selection():
             self._quit_pending = False
             return
 

@@ -3100,7 +3100,9 @@ class TestSubAgents:
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
 
-    def test_task_call_with_unknown_key_returns_tool_error_without_dispatching(self) -> None:
+    @pytest.mark.parametrize("use_async", [False, True])
+    @pytest.mark.parametrize("unknown_args", [{"prompt": "the real instructions"}, {"prompt": "instructions", "context": "details"}])
+    async def test_task_call_with_unknown_key_returns_tool_error_without_dispatching(self, *, use_async: bool, unknown_args: dict[str, str]) -> None:
         """A `task` call carrying an invented key must not dispatch the label alone.
 
         Models sometimes leave a short label in `description` and put the real
@@ -3119,7 +3121,7 @@ class TestSubAgents:
                                 "args": {
                                     "description": "short label",
                                     "subagent_type": "general-purpose",
-                                    "prompt": "the real instructions",
+                                    **unknown_args,
                                 },
                                 "id": "call_extra",
                                 "type": "tool_call",
@@ -3144,15 +3146,16 @@ class TestSubAgents:
             ],
         )
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Do something")]},
-            config={"configurable": {"thread_id": "test_task_unknown_key"}},
-        )
+        inputs = {"messages": [HumanMessage(content="Do something")]}
+        config = {"configurable": {"thread_id": "test_task_unknown_key"}}
+        result = await agent.ainvoke(inputs, config=config) if use_async else agent.invoke(inputs, config=config)
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         assert tool_messages[0].status == "error"
-        assert "prompt" in tool_messages[0].content
+        for key in unknown_args:
+            assert f"Unexpected argument {key!r}" in tool_messages[0].content
+        assert "put all instructions for the subagent in `description`" in tool_messages[0].content
         assert "Should not run." not in tool_messages[0].content
 
     def test_task_tool_schema_rejects_unknown_keys_and_allows_runtime(self) -> None:

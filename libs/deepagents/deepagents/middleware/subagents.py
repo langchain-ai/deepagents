@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import json
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -27,7 +27,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
@@ -39,6 +39,9 @@ from deepagents.middleware.summarization import (
     SummarizationEvent,
     _DeepAgentsSummarizationMiddleware,
 )
+
+if TYPE_CHECKING:
+    from pydantic_core import InitErrorDetails
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -444,11 +447,15 @@ class TaskToolSchema(BaseModel):
         after injecting the `runtime` parameter, which is not a schema field.
         """
         if isinstance(data, dict):
-            keys: set[str] = {str(key) for key in data}
-            unknown = sorted(keys - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
+            arguments = {str(key): value for key, value in data.items()}
+            unknown = sorted(arguments.keys() - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
             if unknown:
-                msg = f"Unexpected argument(s) {unknown}; put all instructions for the subagent in `description`."
-                raise ValueError(msg)
+                # LangGraph filters out errors without a field location.
+                errors: list[InitErrorDetails] = []
+                for key in unknown:
+                    msg = f"Unexpected argument {key!r}; put all instructions for the subagent in `description`."
+                    errors.append({"type": "value_error", "loc": (key,), "input": arguments[key], "ctx": {"error": ValueError(msg)}})
+                raise ValidationError.from_exception_data(cls.__name__, errors)
         return data
 
 

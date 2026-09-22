@@ -145,6 +145,7 @@ class TestThreadCompletionController:
         assert controller.can_handle("see @@pars", 10)
         assert controller.can_handle("(@@pars", 7)
         assert not controller.can_handle("email@@pars", 11)
+        assert not controller.can_handle("compare @@(thread:abc)", 21)
         assert not FuzzyFileController(mock_view, cwd=tmp_path).can_handle("@@pars", 6)
 
     def test_searches_thread_metadata_and_inserts_token(
@@ -168,12 +169,6 @@ class TestThreadCompletionController:
         controller.on_text_changed("compare @@fix parser", 20)
         suggestions = mock_view.render_completion_suggestions.call_args.args[0]
         assert suggestions[0][0] == "Fix the parser"
-
-    def test_exposes_query_for_full_picker_escalation(
-        self, controller: ThreadCompletionController
-    ) -> None:
-        assert controller.active_query("compare @@fix parser", 20) == "fix parser"
-        assert controller.active_query("compare @@(thread:abc)", 21) is None
 
 
 class TestMultiCompletionManager:

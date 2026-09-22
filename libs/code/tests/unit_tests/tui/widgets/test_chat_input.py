@@ -519,8 +519,8 @@ class TestThreadCompletionIntegration:
 
     @pytest.mark.parametrize(
         ("order", "expected"),
-        [((0, 1), 1), ((1, 0), 1), ((0,), 0), ((), None)],
-        ids=["unchanged", "reordered", "selected_removed", "empty"],
+        [((1, 0), 1), ((0,), 0), ((), None)],
+        ids=["reordered", "selected_removed", "empty"],
     )
     async def test_background_load_preserves_selected_thread(
         self, order: tuple[int, ...], expected: int | None

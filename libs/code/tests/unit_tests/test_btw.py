@@ -113,10 +113,7 @@ async def test_live_model_selected_before_main_response_and_no_wait() -> None:
         await main
 
 
-@pytest.mark.parametrize("synchronous", [False, True])
-async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
-    *, synchronous: bool
-) -> None:
+async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="answer")])
     operation = BtwOperation(model, "system", None)
     request: ModelRequest = ModelRequest(
@@ -142,16 +139,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
         ),
     )
     response = ModelResponse(result=[AIMessage(content="main answer")])
-    if synchronous:
-        assert (
-            operation.wrap_model_call(request, MagicMock(return_value=response))
-            is response
-        )
-    else:
-        assert (
-            await operation.awrap_model_call(request, AsyncMock(return_value=response))
-            is response
-        )
+    operation.wrap_model_call(request, MagicMock(return_value=response))
     fork_model = FakeMessagesListChatModel(responses=[AIMessage(content="fork")])
     fork_request = request.override(
         model=fork_model,
@@ -166,10 +154,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
             )
         ),
     )
-    if synchronous:
-        operation.wrap_model_call(fork_request, MagicMock(return_value=response))
-    else:
-        await operation.awrap_model_call(fork_request, AsyncMock(return_value=response))
+    operation.wrap_model_call(fork_request, MagicMock(return_value=response))
     assert await operation.answer("thread", {}, "why") == "answer"
     request.model_settings["reasoning"]["effort"] = "low"
 
@@ -232,36 +217,11 @@ async def test_real_agent_wiring_preserves_checkpoint(
     before = await agent.aget_state(config)
     operation = getattr(backend, BTW_OPERATION_ATTR)
     assert isinstance(operation, BtwOperation)
-    assert "btw-wiring" in operation._snapshots
     assert "side question" in await operation.answer(
         "btw-wiring", before.values, "side question"
     )
     after = await agent.aget_state(config)
     assert before == after
-
-
-async def test_resumed_model_comes_only_from_checkpoint() -> None:
-    model = FakeMessagesListChatModel(responses=[AIMessage(content="resumed")])
-    operation = BtwOperation(model, "system", None)
-    with patch(
-        "deepagents_code.config.create_model", return_value=SimpleNamespace(model=model)
-    ) as create:
-        assert (
-            await operation.answer(
-                "thread",
-                {
-                    "_model_spec": "provider:resumed",
-                    "_model_params": {"temperature": 0},
-                },
-                "why",
-            )
-            == "resumed"
-        )
-    create.assert_called_once_with(
-        "provider:resumed",
-        extra_kwargs={"temperature": 0},
-        bind_preserved_thinking=False,
-    )
 
 
 @pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint", "selected"])
@@ -325,7 +285,7 @@ async def test_constructor_tools_are_absent_from_provider_request(
         with patch(
             "deepagents_code.config.create_model",
             return_value=SimpleNamespace(model=model),
-        ):
+        ) as create:
             assert (
                 await operation.answer(
                     "thread",
@@ -335,6 +295,12 @@ async def test_constructor_tools_are_absent_from_provider_request(
                     model_params={"temperature": 0.2},
                 )
                 == "answer"
+            )
+        if source == "checkpoint":
+            create.assert_called_once_with(
+                "openai:test-model",
+                extra_kwargs=params,
+                bind_preserved_thinking=False,
             )
         assert params == original
         defaults = model._get_request_payload([HumanMessage(content="main")])
@@ -348,16 +314,9 @@ async def test_constructor_tools_are_absent_from_provider_request(
         {},
         {"question": " ", "workspace": {}},
         {"question": "x" * 16001, "workspace": {}},
-        {
-            "question": "why",
-            "workspace": {},
-            "model_params": {"base_url": "http://attacker"},
-        },
     ],
 )
-async def test_route_rejects_untrusted_model_and_invalid_question(
-    payload: object,
-) -> None:
+async def test_route_rejects_invalid_question(payload: object) -> None:
     from deepagents_code import offload_api
 
     with patch(

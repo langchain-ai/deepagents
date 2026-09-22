@@ -78,7 +78,6 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
         ),
     )
     request = Request({"type": "http", "path_params": {"thread_id": "thread"}}, receive)
-    main = asyncio.create_task(asyncio.Event().wait())
     handler = asyncio.create_task(btw_api.btw(request))
     try:
         await asyncio.wait_for(started.wait(), 2)
@@ -109,11 +108,9 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
                 assert json.loads(bytes(response.body)) == {"text": "side answer"}
         assert stopped.is_set()
         assert listener_stopped.is_set()
-        assert not main.done()
     finally:
         handler.cancel()
-        main.cancel()
-        await asyncio.gather(handler, main, return_exceptions=True)
+        await asyncio.gather(handler, return_exceptions=True)
 
 
 @pytest.mark.parametrize(

@@ -276,7 +276,7 @@ class WorkspaceDiagnostics:
             category=cast("_DiagnosticCategory", category),
             reason=reason,
             changes=tuple(changes),
-            snapshot_status=cast("Literal['current', 'unavailable']", snapshot_status),
+            snapshot_status=snapshot_status,
             binding_schema_version=(
                 binding_schema if isinstance(binding_schema, int) else None
             ),

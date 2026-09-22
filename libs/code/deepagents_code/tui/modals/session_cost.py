@@ -25,23 +25,40 @@ class SessionCostWarningScreen(ModalScreen[None]):
     ]
 
     def __init__(self, *, cost_usd: float, threshold: float) -> None:
-        """Initialize the warning with the current cost and configured threshold."""
+        """Initialize the session cost warning.
+
+        Args:
+            cost_usd: Current estimated session cost in US dollars.
+            threshold: Configured warning threshold in US dollars.
+        """
         super().__init__()
         self._cost_usd = cost_usd
         self._threshold = threshold
 
     def compose(self) -> ComposeResult:
-        """Yield the warning and dismissal hint."""
+        """Compose the warning and dismissal hint.
+
+        Yields:
+            The modal's static content.
+        """
         with Vertical():
-            yield Static("Session cost warning", classes="title", markup=False)
+            yield Static(
+                "Session cost warning",
+                classes="session-cost-warning-title",
+                markup=False,
+            )
             yield Static(
                 f"Estimated session cost is {format_cost(self._cost_usd)}, "
                 f"above the configured {format_cost(self._threshold)} threshold. "
                 "Consider /offload to reduce context usage or /clear to start fresh.",
-                classes="body",
+                classes="session-cost-warning-body",
                 markup=False,
             )
-            yield Static("Enter or Esc: dismiss", classes="help", markup=False)
+            yield Static(
+                "Enter or Esc: dismiss",
+                classes="session-cost-warning-help",
+                markup=False,
+            )
 
     def on_mount(self) -> None:
         """Focus the modal for keyboard dismissal."""

@@ -243,19 +243,14 @@ def show_help() -> None:
         "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
         "comma-separated tool names (must include 'read_file')"
     )
-    console.print("  -n, --non-interactive MSG  Run one task; no human tool approvals")
     console.print(
-        "                             Non-shell tools (file mutations, permitted"
+        "  -n, --non-interactive MSG  Run one task and exit; no human approvals"
     )
     console.print(
-        "                             network requests) run unattended by default"
+        "                             Can change files and access the network"
     )
     console.print(
-        "                             Configured permission hooks still apply"
-    )
-    console.print(
-        "                             Shell disabled unless a shell allow-list "
-        "is configured"
+        "                             Shell off unless a shell allow-list is configured"
     )
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(

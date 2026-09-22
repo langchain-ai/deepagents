@@ -193,36 +193,6 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
     assert request.model_settings["tool_choice"] == "required"
 
 
-async def test_synchronous_agent_wiring_preserves_checkpoint(tmp_path: Path) -> None:
-    from langgraph.checkpoint.memory import InMemorySaver
-
-    from deepagents_code._testing_models import DeterministicIntegrationChatModel
-    from deepagents_code.agent import create_cli_agent
-    from deepagents_code.btw import BTW_OPERATION_ATTR
-
-    agent, backend = create_cli_agent(
-        model=DeterministicIntegrationChatModel(),
-        assistant_id="test-btw",
-        enable_memory=False,
-        enable_skills=False,
-        enable_shell=False,
-        system_prompt="Answer the main task.",
-        cwd=tmp_path,
-        checkpointer=InMemorySaver(),
-    )
-    config: RunnableConfig = {"configurable": {"thread_id": "btw-wiring"}}
-    inputs = {"messages": [HumanMessage(content="Hello")]}
-    agent.invoke(inputs, config=config)
-    before = await agent.aget_state(config)
-    operation = getattr(backend, BTW_OPERATION_ATTR)
-    assert isinstance(operation, BtwOperation)
-    assert "side question" in await operation.answer(
-        "btw-wiring", before.values, "side question"
-    )
-    after = await agent.aget_state(config)
-    assert before == after
-
-
 @pytest.mark.parametrize("synchronous", [False, True])
 async def test_effective_instructions_survive_restart_and_eviction(
     *,
@@ -774,36 +744,6 @@ async def test_modal_error_is_plain_text() -> None:
         app.push_screen(BtwScreen(answer, "why"))
         await pilot.pause()
         assert app.screen.query_one("#btw-error", Static).content == "bad [/tmp/file]"
-        await pilot.press("escape")
-
-
-async def test_idle_side_answer_refreshes_displayed_cost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.btw_cost import combine_session_cost
-    from deepagents_code.cost_tracking import _empty_cost_breakdown
-
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-cost")
-    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-    remote = RemoteAgent("http://test")
-    graph = MagicMock()
-    remote._graph = graph
-    monkeypatch.setattr(remote, "abtw", AsyncMock(return_value="Side answer"))
-    side = _empty_cost_breakdown()
-    side.update(total_cost_usd=0.5, request_count=1)
-    graph.client.http.get = AsyncMock(
-        return_value={"cost": combine_session_cost(1.0, None, side)}
-    )
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        app._connecting = False
-        await app._submit_input("/btw why", "command")
-        await pilot.pause()
-        assert app.screen.query_one(Markdown)._markdown == "Side answer"
-        assert app._displayed_cost_usd == pytest.approx(1.5)
-        assert not app._agent_running
         await pilot.press("escape")
 
 

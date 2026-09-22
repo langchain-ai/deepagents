@@ -308,14 +308,17 @@ class TestCacheTimingDisplay:
             ) as clock:
                 clock.now.return_value = now
                 bar.set_cache_tokens(1000, 2000, input_tokens=3000)
+                written_at = now - timedelta(seconds=30)
                 bar.set_cache_timing(
-                    now - timedelta(seconds=30),
+                    written_at,
                     ttl_seconds=60,
                     retention_confidence=confidence,
                 )
                 await pilot.pause()
                 display = pilot.app.query_one("#cache-display")
-                assert before in str(display.render())
+                rendered = str(display.render())
+                assert f"wrote {written_at.astimezone():%H:%M:%S}" in rendered
+                assert before in rendered
 
                 clock.now.return_value = now + timedelta(seconds=30)
                 bar._tick_cache_timer()
@@ -323,19 +326,6 @@ class TestCacheTimingDisplay:
                 assert after in str(display.render())
                 assert "bust" not in str(display.render())
                 assert bar._cache_timer is None
-
-    async def test_shows_last_write_and_retention_bound(self) -> None:
-        async with StatusBarApp().run_test(size=(160, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            written_at = datetime.now(UTC) - timedelta(seconds=30)
-            bar.set_cache_tokens(1000, 2000, input_tokens=3000)
-            bar.set_cache_timing(written_at, ttl_seconds=300)
-            await pilot.pause()
-
-            rendered = str(pilot.app.query_one("#cache-display").render())
-            assert f"wrote {written_at.astimezone():%H:%M:%S}" in rendered
-            assert "/ 4:2" in rendered
-            assert bar._cache_timer is not None
 
     async def test_clear_stops_countdown(self) -> None:
         async with StatusBarApp().run_test() as pilot:

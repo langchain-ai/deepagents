@@ -4,11 +4,10 @@
 
 ## [0.7.17](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.16...deepagents==0.7.17) (2026-09-22)
 
-
 ### Bug Fixes
 
-* **sdk:** preserve backend exit status when capture metadata is missing ([#6451](https://github.com/langchain-ai/deepagents/issues/6451)) ([c9926b1](https://github.com/langchain-ai/deepagents/commit/c9926b1a96d204309d0b211701b288ce3bb4244b))
-* **sdk:** restrict inline file blocks to supported MIME types ([#6447](https://github.com/langchain-ai/deepagents/issues/6447)) ([191e93a](https://github.com/langchain-ai/deepagents/commit/191e93a05e30aad705ee2cb33d5b03e7104dbe5a))
+- Preserve the backend exit status when capture metadata is missing. ([#6451](https://github.com/langchain-ai/deepagents/pull/6451))
+- Restrict inline file blocks to supported MIME types. ([#6447](https://github.com/langchain-ai/deepagents/pull/6447))
 
 ## [0.7.16](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.15...deepagents==0.7.16) (2026-09-21)
 

@@ -355,6 +355,33 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         agent._graph = mock_graph
         return agent, mock_graph
 
+    async def test_recovery_write_is_distinguished_for_server_tracing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []}, recovery=True)
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(),
+            {"messages": []},
+            as_node=None,
+            headers={"x-deepagents-recovery": "interrupt"},
+        )
+
+    async def test_normal_write_has_no_recovery_header(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(), {"messages": []}, as_node=None
+        )
+
     async def test_cancels_all_active_runs_then_retries(self) -> None:
         runs_list = AsyncMock(
             side_effect=[

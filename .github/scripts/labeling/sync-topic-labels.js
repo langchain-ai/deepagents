@@ -1,7 +1,5 @@
 const fs = require('node:fs');
 
-const RETIRED_TOPIC_LABELS = new Set(['topic:harness']);
-
 function readExistingTopics(outputPath) {
   if (!fs.existsSync(outputPath)) return [];
   const topics = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
@@ -24,8 +22,7 @@ async function syncTopicLabels(github, owner, repo, outputPath) {
   }
   // Labels are created on demand, so absence from the repository does not
   // retire a manifest choice. Removals require an explicit manifest edit.
-  const topics = [...new Set([...readExistingTopics(outputPath), ...discovered])]
-    .filter(name => !RETIRED_TOPIC_LABELS.has(name)).sort();
+  const topics = [...new Set([...readExistingTopics(outputPath), ...discovered])].sort();
   fs.writeFileSync(outputPath, `${JSON.stringify(topics, null, 2)}\n`);
   return topics;
 }

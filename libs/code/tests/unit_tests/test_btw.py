@@ -22,6 +22,8 @@ from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
 
@@ -108,7 +110,10 @@ async def test_live_model_selected_before_main_response_and_no_wait() -> None:
         await main
 
 
-async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() -> None:
+@pytest.mark.parametrize("synchronous", [False, True])
+async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
+    *, synchronous: bool
+) -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="answer")])
     operation = BtwOperation(model, "system", None)
     request: ModelRequest = ModelRequest(
@@ -130,7 +135,17 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
             )
         ),
     )
-    await operation.awrap_model_call(request, AsyncMock())
+    response = ModelResponse(result=[AIMessage(content="main answer")])
+    if synchronous:
+        assert (
+            operation.wrap_model_call(request, MagicMock(return_value=response))
+            is response
+        )
+    else:
+        assert (
+            await operation.awrap_model_call(request, AsyncMock(return_value=response))
+            is response
+        )
     request.model_settings["reasoning"]["effort"] = "low"
 
     def invoke(_messages: object, **kwargs: object) -> AIMessage:
@@ -160,7 +175,10 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
     assert request.model_settings["tool_choice"] == "required"
 
 
-async def test_real_agent_wiring_preserves_checkpoint(tmp_path) -> None:
+@pytest.mark.parametrize("synchronous", [False, True])
+async def test_real_agent_wiring_preserves_checkpoint(
+    tmp_path: Path, *, synchronous: bool
+) -> None:
     from langgraph.checkpoint.memory import InMemorySaver
 
     from deepagents_code._testing_models import DeterministicIntegrationChatModel
@@ -178,7 +196,11 @@ async def test_real_agent_wiring_preserves_checkpoint(tmp_path) -> None:
         checkpointer=InMemorySaver(),
     )
     config: RunnableConfig = {"configurable": {"thread_id": "btw-wiring"}}
-    await agent.ainvoke({"messages": [HumanMessage(content="Hello")]}, config=config)
+    inputs = {"messages": [HumanMessage(content="Hello")]}
+    if synchronous:
+        agent.invoke(inputs, config=config)
+    else:
+        await agent.ainvoke(inputs, config=config)
     before = await agent.aget_state(config)
     operation = getattr(backend, BTW_OPERATION_ATTR)
     assert isinstance(operation, BtwOperation)

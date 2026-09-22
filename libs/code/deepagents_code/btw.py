@@ -88,16 +88,8 @@ class BtwOperation(AgentMiddleware):
             str, tuple[BaseChatModel, SystemMessage, dict[str, Any]]
         ] = OrderedDict()
 
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        """Capture the resolved main model.
-
-        Returns:
-            The unchanged main response.
-        """
+    def _remember_model(self, request: ModelRequest) -> None:
+        """Snapshot resolved settings before either kind of main model call."""
         info = request.runtime.execution_info
         if info is not None and info.thread_id:
             self._snapshots[info.thread_id] = (
@@ -108,6 +100,39 @@ class BtwOperation(AgentMiddleware):
             self._snapshots.move_to_end(info.thread_id)
             while len(self._snapshots) > _MAX_SNAPSHOTS:
                 self._snapshots.popitem(last=False)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Capture the resolved main model for synchronous runs.
+
+        Args:
+            request: Main model request with resolved settings.
+            handler: Callback that executes the main model request.
+
+        Returns:
+            The unchanged main response.
+        """
+        self._remember_model(request)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Capture the resolved main model for asynchronous runs.
+
+        Args:
+            request: Main model request with resolved settings.
+            handler: Callback that executes the main model request.
+
+        Returns:
+            The unchanged main response.
+        """
+        self._remember_model(request)
         return await handler(request)
 
     async def answer(

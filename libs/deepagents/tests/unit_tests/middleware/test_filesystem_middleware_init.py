@@ -58,7 +58,7 @@ def test_openai_docx_support_uses_provider_class_and_responses_api(
     block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": _DOCX_MIME_TYPE}
 
     assert model._llm_type == "langchain-chat"
-    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=True) is supported
+    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=True) is supported
 
 
 @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ def test_openai_docx_support_uses_provider_class_and_responses_api(
 def test_binary_file_allowlist(model: BaseChatModel, mime_type: str, *, supported: bool) -> None:
     block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": mime_type}
 
-    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=False) is supported
+    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=False) is supported
 
 
 @pytest.mark.parametrize("mime_type", ["text/csv", "text/markdown"])
@@ -96,14 +96,14 @@ def test_file_references_bypass_allowlist(reference: dict[str, str]) -> None:
     block: ContentBlock = {"type": "file", **reference}
 
     model = ChatOpenAI.model_construct(use_responses_api=False)
-    assert UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=False)
+    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=False)
 
 
 def test_pdf_tool_message_profile_is_enforced() -> None:
     block: ContentBlock = {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}
 
     model = ChatOpenAI.model_construct(profile={"pdf_inputs": True, "pdf_tool_message": False})
-    assert not UnsupportedContentMiddleware().is_supported(block, model=model, in_tool_message=True)
+    assert not UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=True)
 
 
 class TestLargeToolResultGuidanceInToolDescriptions:

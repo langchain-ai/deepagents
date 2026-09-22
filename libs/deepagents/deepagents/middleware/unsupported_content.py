@@ -34,13 +34,13 @@ class UnsupportedContentMiddleware(_UnsupportedContentMiddleware):
       which attachment went missing.
     """
 
-    def is_supported(self, block: ContentBlock, *, model: "BaseChatModel", in_tool_message: bool) -> bool:
+    def _is_supported(self, block: ContentBlock, *, model: "BaseChatModel", in_tool_message: bool) -> bool:
         """Gate non-PDF `file` blocks on MIME type and the OpenAI endpoint."""
         if block["type"] != "file" or "base64" not in block or block.get("mime_type") == _PDF_MIME_TYPE:
-            return super().is_supported(block, model=model, in_tool_message=in_tool_message)
+            return super()._is_supported(block, model=model, in_tool_message=in_tool_message)
         return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
 
-    def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock:
+    def _replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock:
         """Name the `read_file` path in the placeholder the model sees."""
         mime_type = block.get("mime_type", "unknown")
         path = message.additional_kwargs.get("read_file_path", "the requested file")

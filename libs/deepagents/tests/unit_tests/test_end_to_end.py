@@ -5163,7 +5163,7 @@ class TestUnsupportedContentMiddlewareCustomization:
 
     def test_same_named_middleware_replaces_the_builtin(self) -> None:
         class QuietFilter(UnsupportedContentMiddleware):
-            def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock | None:
+            def _replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock | None:
                 return {"type": "text", "text": "attachment dropped"}
 
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})
@@ -5187,7 +5187,7 @@ class TestUnsupportedContentMiddlewareCustomization:
 
     def test_subagent_spec_middleware_wins_over_the_builtin(self) -> None:
         class QuietFilter(UnsupportedContentMiddleware):
-            def replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock | None:
+            def _replace(self, block: ContentBlock, message: AnyMessage) -> ContentBlock | None:
                 return {"type": "text", "text": "attachment dropped"}
 
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})

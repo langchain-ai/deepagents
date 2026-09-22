@@ -84,6 +84,7 @@ jobs:
             try {
               topics = await classifyTopicLabels(
                 `${issue.title ?? ''}\n\n${issue.body ?? ''}`, loadTopicLabels(),
+                { debug: core.debug, info: core.info },
               );
             } catch (error) {
               core.warning(`Topic classification failed: ${error.message}`);

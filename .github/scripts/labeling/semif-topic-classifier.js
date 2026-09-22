@@ -1,4 +1,5 @@
 const MODEL = 'semif-qwen3.5-4b';
+const THRESHOLD = 0.8;
 const ENDPOINT = 'https://gateway.smith.langchain.com/v1/systemone';
 
 async function classifyTopicLabels(text, allowedLabels, options = {}) {
@@ -48,8 +49,12 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
     clearTimeout(timeout);
   }
 
-  return new Set(scores.filter(([, score]) => score >= 0.8)
-    .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([label]) => label));
+  scores.sort((a, b) => b[1] - a[1]);
+  const eligible = scores.filter(([, score]) => score >= THRESHOLD);
+  const selected = eligible.slice(0, 3).map(([label]) => label);
+  options.debug?.(JSON.stringify({ model: MODEL, threshold: THRESHOLD, scores, selected }));
+  options.info?.(`${eligible.length} topics met the ${THRESHOLD} cutoff; selected ${selected.length} (maximum 3).`);
+  return new Set(selected);
 }
 
 module.exports = { classifyTopicLabels, ENDPOINT, MODEL };

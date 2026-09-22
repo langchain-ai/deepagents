@@ -9767,6 +9767,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code._cli_context import CLIContext
         from deepagents_code.config import runtime_state
+        from deepagents_code.sessions import set_thread_metadata
 
         remote = self._remote_agent()
         if remote is None:
@@ -9837,6 +9838,11 @@ class DeepAgentsApp(App):
                 "_model_params": self._model_params_override or {},
             },
             as_node="model",
+        )
+        await set_thread_metadata(
+            child_id,
+            agent_name=self._assistant_id or DEFAULT_ASSISTANT_ID,
+            cwd=self._cwd,
         )
         await self._mount_message(
             AppMessage(f"Summary saved in new thread: {child_id}")

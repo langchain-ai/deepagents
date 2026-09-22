@@ -3836,7 +3836,8 @@ class ChatInput(Vertical):
         if self._prompt_search_active:
             return "modal"
         if (
-            self._completion_manager is not None
+            self._current_suggestions
+            and self._completion_manager is not None
             and self._file_controller is not None
             and self._completion_manager.is_active(self._file_controller)
         ):

@@ -30972,6 +30972,32 @@ class TestPromptClipboard:
             assert chat_input._current_suggestions == [("@README.md", "md")]
             assert chat_input._prompt_search_active is False
 
+    @pytest.mark.parametrize("draft", ["@zzzzzzzzzz", "contact alice@example.com"])
+    async def test_ctrl_r_opens_prompt_recall_without_file_matches(
+        self, draft: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched `@` query must not block prompt recall."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            assert chat_input._file_controller is not None
+            assert chat_input._text_area is not None
+            chat_input._file_controller._file_cache = []
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: (draft,))
+            chat_input._text_area.insert(draft)
+            await pilot.pause()
+            assert not chat_input._current_suggestions
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert chat_input._prompt_search_active
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat_input.value == draft
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

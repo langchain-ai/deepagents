@@ -893,6 +893,10 @@ class MultiCompletionManager:
             return CompletionResult.IGNORED
         return self._active.on_key(event, text, cursor_index)
 
+    def is_active(self, controller: CompletionController) -> bool:
+        """Return whether `controller` owns the current completion session."""
+        return self._active is controller
+
     def reset(self) -> None:
         """Reset all controllers."""
         if self._active is not None:

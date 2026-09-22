@@ -1,52 +1,18 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a6f2de34761923559e6f9852d85dd2fa20432d6df3223261e172600a1b3611b4",
+  "pageVersion": "sha256:2758b957b9206ed8c270700d0aae88dd5c5288ae3624ea8fa9c54868342f9076",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
       "statement": "Deep Agents is a three-layer stack: LangGraph is the runtime (state, checkpoints, streaming, interrupts), LangChain create_agent is the agent abstraction that builds the model-plus-tools-plus-middleware loop on top of LangGraph, and Deep Agents is an opinionated harness on top of create_agent.",
       "evidence": [
         {
-          "resource": "repo://README.md#L73-L75",
-          "version": "repo-lines-v1:sha256:4c5d8fc25f9a9ca4c46f747b4aaba4dd6544d1b888140f0ee1761f977ee361f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWI0MzY4ODM3ODQ2ZDYyZmVjNzRkMTI5MWUzNDMxYTc4NTgwMzZjZDliZjM0MGExZjY4MWVhOGI5YTI4OTI3MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDdkZjVmMjEyNGY1MTNkNWQ5Y2VmMmQ2NDNhYjg1MzNhZmEwYTRhYWY0NmQyMjYxMTMzMDBhYTk2ZmI5ZjFkNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2FjYjc4ZThkNGIxZjk3Y2ZhMzNlZmZmOWExMjgwYWE5MmM5ZTU2ZmVkZDA2N2MyYmUxY2NjOTMzZDNiMDNjMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzRlZWY2NTVjZTU5NmE2MWU5NjE2NzMzMWNjZWY3OTg4OWNiNWJlOGJiZjI1ZGNmOTYzNjdlYzZlNmRiYzdjMSJ9"
+          "resource": "repo://README.md",
+          "version": "repo-file-v1:sha256:569c79f865abd0d677a71e83ba5c3b971318146a4421e3851a0e25ee2d3b1146"
         },
         {
-          "resource": "repo://libs/ARCHITECTURE.md#L12-L28",
-          "version": "repo-lines-v1:sha256:23398c3df8bf537980a1caa851dd9877a72fd5877a02a8dca483672537d63337:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNmIyZmVjN2E0ZjQ1NjRkNWQ3MGI0M2QwNzEwMjcxNWFlNTE1MTBkMGU1YTcyMWVjNzUyZTQ2OTE3MjVhNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3NzBmZDg3NTQwMTU1ZDg2YzA5ZTFlNDNhODI1NzRlMDlkZmQyYjQ1MjY3YWZmNjFkNDg4ODBmMzM5N2U2YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YjFjNTczYTA3ZjIwMjQwMTBiYWJkZGU0MThiMzA3NmZhNGM0YjhlYmQ2OGNmZWQzYjBkZTFkMmFhODA5ZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxODZjZTE5Y2NlOWIxMGUyZDU1NjA3YzI1ZjljYmY1NDYyNGJhMjJhOWUwMWM5MzNlOTBmYTU3YWJjYTViZWUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_cbc6217aff854d20a0bf5f141fb82ae3",
-      "statement": "Deep Agents does not introduce a new runtime; create_deep_agent() assembles the default middleware stack and configures backends, subagents, skills, memory, and profiles on top of create_agent().",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L26-L30",
-          "version": "repo-lines-v1:sha256:549a324dfb8bdc4d4a7e9913a2d220302ed8a47266ca53ef0857411b296ba1ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjc0ODdlY2Q1ZjFjM2Q2ODlmMmNhOTE1MDNlOGVlYjZjYWM4ODUzYjJlOWFjZWNhYjg2NTI5MmIzMzliY2VhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTUwZjM4NTk4ODY5YTM0ZDljNDMzNjQ3ZWM4ZWQxOWRlODJmZDcyMjhmZjYzNzRkOTViMDQ5NzE0OGE4N2IzNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjFiMjZiOTJlYWE4NDBhM2QzYjEzOWI0YjE2ZDQzNzg0MGQ2MmI1YWVmZTRhNmFlN2M5MzgxZjJlY2M3NWEzMiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_4ca12b1f3fd54872ba573336b929a972",
-      "statement": "The dependency direction runs Deep Agents to LangChain create_agent to LangGraph, so each layer depends on the one below it and any LangGraph CompiledStateGraph can be passed in as a Deep Agents sub-agent.",
-      "evidence": [
-        {
-          "resource": "repo://README.md#L85-L89",
-          "version": "repo-lines-v1:sha256:72c36c30cb3a3bd7683fc6d53d27c94473b6997f74dc4048cc4e068fcfc65fa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2RkNjk4MTVlYzBkOWQ0ZmY1ZTU0MGMxMTVmZGQxYjI2ZjJmZDU3NjFhNTQwNDAwZjZmZGJmOTVlNzkwN2I3NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmFlYzI2ZThiNjAwZTZlZDY0ZjFlZDc4YWFkN2ZkNWNhNWFiNDJlOTAwNjVkOTA1YTVmMWMxZjgxZGVjYTA2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzFjY2JmNDY5ZTg2MDQzMGMyZDQzOGFhNDM0MThiNTZiOWIyYWU1M2QyOGQxMjRmYjQ5Y2UyZmI5ZmE0NjA5NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAxZjJlYzE3NTkzYzEwNTRlYjQ2MzY3ZDg0NTNlZjI0YTE3M2NlOTZiNzExN2Q5MWY5YTY4ZDQ0ZmVmOGIwMSJ9"
-        },
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L14-L20",
-          "version": "repo-lines-v1:sha256:c1d1dfbed120943544b89535091a2384ba1e48850e2f4e3f82d30280fa4310dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I2MWQ4NWI0MDRlZGY1NDQwNGYyZjRkNWI5ZjQ1Zjc4YzY1MGNiNjE0ZGMzZTY3ODk0ZTM5OGM1ZWFiMWI5MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdjMDZjNTYxZDVjMzI3MzQzNjg1MjY4YTQ2YjMzOTFmMzk5OGVlZTg5MGQyYmU1MWYwZDIxY2M0YTUzYWU2ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2EyNjNlNjQ1OGUyNmYwYTYyODcyMjViYjIxZWQ0MWM3ZDM5NjlmMWU0N2RmYmVhMDM0YWIyNTJkY2VmZWFiYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDAzMjJlYzUzZjFkNjFkMjA4NzQ2OWY1YTEyOWVlOTdmYjk1MWVkMjZhZTk1YjBkZmUxYjg4OWU5NzhkZDc2YiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_96b1377ae9274a719f50e9128950aa5b",
-      "statement": "LangGraph owns durable execution behavior — graph state carried between steps, checkpoints, streaming, and interrupt-based pause/resume — while LangChain create_agent owns the model/tool/repeat loop shape.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L22-L25",
-          "version": "repo-lines-v1:sha256:ab7d6c436a77b97909b815d5e9ddf2dc93570c668438e4814e1460f8cb4caeea:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmMyOGUyZTZiZmRmOWQwYjc1MjEzNjE3ODdhNWI2Zjc2YWViYjU2NTI3ZThhNmNjZjkzN2I5MmI3ZGY4MmY1MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJmOWY1MDU4OGNkM2M5MDcxZmUyYjY4ZDdlMGI5ZDE3ZTA3YjhmZGE5ZmE4ZjFjMTdlZGM3ZGEyMjVmNzY2OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmI0YmM2NDViMjUyOTQyMzY0OTRlMGE0ZGQ5YmM0M2MwNzU4NTY3YjFlYzMxNDg5ODdjYTkxMTJhMGVlYjI0MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGFhZjEwYzQ5NjhlNjkzNzU0YWU3MzE3NjE0OWMyMWZlNTg2NjYzNzM2OTQyYTBhYjAwMzdjMDliMDQ1ZTkwNyJ9"
+          "resource": "repo://libs/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
         }
       ]
     },
@@ -55,12 +21,12 @@
       "statement": "Deep Agents extends LangChain's AgentState with DeepAgentState, whose messages field uses a DeltaChannel reducer so checkpoint growth stays linear (O(N)) rather than quadratic (O(N^2)) on long threads.",
       "evidence": [
         {
-          "resource": "repo://libs/ARCHITECTURE.md#L89-L91",
-          "version": "repo-lines-v1:sha256:9d2d24fb090bd6ee2f9dd94ce0c66285bc90038bbef5b6a46e9eab4c71013f0f:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWZlODU0N2I1ZThiODZkYzM5OTRlNGM2M2YyZWIxYWM2ZDBhNjRmMDg0MjZmZDRkYjYwOTQ3MmM2OGY4OWRjNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDY5YjBiNzUxNGQwOTgyYTJmMjhjZTUyMTZiMzljMjUwY2FhZjE5OGU4ZWYzZGNlMGRlM2ZlNjUzNjZkMjE0MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzQ4MmI0OGZiYjVhYjk3NGQxZDk4NTZiMTFiYTQ0OTMzNTRlMTkzMzExZGMyNzk3MGVmZTU4MGJhMWQyZGRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzU4ZWNkMzgzNDQ0NzAyOWViYzE2YmE2MDc4NzU1YzNiNGEwMWJhYmZkNjM2MzdlNTMxZjY5M2I4ZDIwZjU4NyJ9"
+          "resource": "repo://libs/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L70-L73",
-          "version": "repo-lines-v1:sha256:4bbbabe96a41c95879541efc08647bc83bd85f03ca923dd6aab4aaefa29cd1d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZkNWUxZjQ2NzNiZGRlN2Y5MTMxNTkxZDRhYzk5ZjBlNGFiMTY2NTNkMGJlOTBkYWJiYTQ0N2Q4ZTgzMDRmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjVlOTJlNzJiMTg3NTA4ODRmNWFhNTA2ODMzZTc4YWI5OGIyMmZjODNiODUyNWY2YWZkMzZiY2Y1YzBiMDU0OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTYxNjIwMTk2NGExOTdmYWE3NzM4N2JhNzA0Yzg3ZTZiNjI0YmFkMzBkODEzOTg3ZDY4ZjUyN2MwYjcyOTAwNyJ9"
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
         }
       ]
     },
@@ -69,46 +35,12 @@
       "statement": "create_deep_agent() is the assembly point that resolves the model and harness profile, resolves the backend, assembles the main-agent middleware stack, builds the default general-purpose subagent, composes the final system prompt, and delegates to LangChain's create_agent(...) to produce the runnable graph.",
       "evidence": [
         {
-          "resource": "repo://libs/ARCHITECTURE.md#L36-L46",
-          "version": "repo-lines-v1:sha256:290562eb06046a81cf5c9cc412b1321eb8f07e71c6222813a15f2ad93bb2d6d4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0ZDRhMmRjZjBmNzVhYWE0NmZkNDFhYzNkMmNhMjIzNTc2M2VmYzUxNDBhOGJmMTAyY2M4ZjQ0OGM4NTg3MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxNjU1OWUxNDNmMTIyZmEzZGVjMDY5ZjMxYzA1ZDE2YWNkMDcxODMwZDQ1M2Q0ZGI0MWY4NzJmNDIwZmE5NjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkYjlhMTM4YWI1NTY4YmNlNzJhOGRhMzA5NDYxNDM5YWZiNGE3MmYxMjVhOWViZmMyMTRlM2NhYmY5ZmI1N2IifQ"
+          "resource": "repo://libs/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L921-L933",
-          "version": "repo-lines-v1:sha256:58399d92067e3158683f3a81882f0152cb403fcc2d427c1548df7a5650fdd811:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYTYzNGI1MDQwYzhkN2IyM2M0NGUxZWZmMDdmYmU4Nzk2MThmMzA1ODhkOTAzYzM2NDMxZTZiYmZkOGY5ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4M2YxYzQ3NmM0NDY0NmM2ODE0MmEwY2Y0Njc2ZTJiOTkwZGFjMzYzMTU4ZTVkNGRkNTI0MDAxNWVmZDU5ZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYmJmNjZiMzUyYjAzMGFlMWJhMjY0YjgwZTlhOGU5ZjNkYTUwNWYzM2E3NmI3OThjZTFkNGMwZjFhNjc1ODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjllNDkxMTU3ZTkwNWJmZGE5MzQ0ZjAxZTNkNTUyOTlmOTQzMmQ4NTlhYTYyOWQ5MTQxZWY4Mzg0ZjNjNmYwZTEifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_71de25652d5e4513b2cc1f4221b42a4a",
-      "statement": "After building the graph, create_deep_agent() calls .with_config(...) to attach Deep Agents metadata (ls_integration, lc_versions, lc_agent_name) and a recursion_limit of 9,999 so long multi-step runs are not cut off.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L934-L943",
-          "version": "repo-lines-v1:sha256:ee2f27bc48ce7fd1012222e58c41559567371aafbddca5fbd7f39f5f40f4d3ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4YmQ3ZmVlZWY2ZWE4NDhkMTJjYmNmOTZkY2E3YzY5YTVjNWNkMjBjMWYxODI4NmQxMWJkNTE2NTc2MTQ0Y2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNzg3Yzg3MDhkYWU0YTFkYTQ1OWI4NGMxMzYyYmE3MTQyMzVlZjkwMDk0Nzk5ZTYyOTgyM2YzYmRmMDdlZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_929ec8009a6547e9bf721ff4415ec035",
-      "statement": "When a tool is missing the cause is middleware assembly or profile tool exclusions, whereas when a tool is visible but fails the cause is backend capability or filesystem permission enforcement.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L77-L87",
-          "version": "repo-lines-v1:sha256:4c1222f99b02a81b2e5bebf2fc3b5efc3c069305e82905d8d79867c88b6b4b2e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5ZTgyZDk3OTk1MzJlMzVkNDA2NWM3NzY0OWU2OTUxOGY1ODIwMjE5YTE5NWJkOWNkZTBlYTY2OWFiZDVlMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjMzhmNmQ2OTViMWJmZDljYjNlN2Y5NTY1MGUwMjI5YWExZjRlNzQyY2VjY2Q5OWVmZjgwMzY0NWE2ZjZlYjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3OWMxNTZhNGI2NWIxM2Y1YzRkYzhiNWNkYjFlMWI0NDQ5OWNiY2I1MzEzYTZhMDQzZTMzMzI5Y2Q5YjAwMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjViMmQxYWY1NjVhMDkzM2YwMzBlZTA4MTY1MzZlMTRhMjg4NzIwMTM3MDY3NzAzNWFhYTY5ZGZjMTQ5Y2EyZjMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_5435769baa32433dbc5503947f950ebb",
-      "statement": "The main-agent middleware stack is assembled in graph.py with filesystem, subagent, summarization, patch-tool-calls, profile, prompt-caching, memory, tool-exclusion, and human-in-the-loop middleware, and subagents get their own middleware stacks.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L63-L73",
-          "version": "repo-lines-v1:sha256:50efd9eb27d8c1374609d7f6ac6c2a3b14c32b28206af94753291efec808769b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3MjI0YWQ3ZjVkNDI0MzNiODY4NzdjMDc3NmE3MDEwYzk5ZGQ2OGI1YzFjYmZlNDhlZWEwODFmODk3NWE5ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNjlmMjk5MDJlMDc3OTRhZmM4N2FmOGQ0N2FhZTFiZTcwNDEwYTk5NTUyZjZhOTIxZDIyMzMyZTQzMzEwMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjOTA5OTk2OWUyOTY0ZjMwODA3NzllNzEwNTVkNzQ1OTdmNjcxMmEyOWI0ZjBlNzY2ZDEzODg0YmE0OTIzMjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3OWMxNTZhNGI2NWIxM2Y1YzRkYzhiNWNkYjFlMWI0NDQ5OWNiY2I1MzEzYTZhMDQzZTMzMzI5Y2Q5YjAwMzkifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L815-L892",
-          "version": "repo-lines-v1:sha256:e7293f618327a257610429542f35bc59d0d20775a23f8732a10c302c284f05a4:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
         }
       ]
     },
@@ -117,150 +49,8 @@
       "statement": "The repository is a monorepo under libs/ with each package independently versioned, where deepagents is the core SDK exposing create_deep_agent, middleware, and pluggable backends.",
       "evidence": [
         {
-          "resource": "repo://libs/README.md#L6-L23",
-          "version": "repo-lines-v1:sha256:76e9743102c3fdaf97cfcf49164831168be00643382feef817c8f901427cfd9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMzgyNDRmZTdlNDQ0ZTYyNDE0ZTFhYjI1Y2NlMzc0YmU3NGE5ZTQ2ODZhN2NjZGI0ZDU5YThkZjVmYjNiMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1YWQ4NzQ5YzI0MzYxNDMxNWI3YWFjMGUyOTQyY2YyOWZiZjU0ZmE1MDZmMzFiZmYzZmZkMjcyZDZiODNmMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjZDIyMzM3OTI2ZWEwOThlODhmMWYyYjczY2U0ZjUzMTU1MzQyOWI0NDBkMDc1NDVjYWI1Yzk2NGIyMzgxMjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliNzhkODcwYWM4NGVkZWRmZTdlOWRiYTU1MTE5YzIwZjliZDE0Yjg3ZGFiNDliYmZkMDYxMmZjOTkyZmZiOTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_42c40779cccf4d6bb1759459480505fe",
-      "statement": "The code package is Deep Agents Code, a pre-built terminal coding agent built on the SDK, run via the dcode command with a TUI, remote sandboxes, memory, skills, and headless mode.",
-      "evidence": [
-        {
-          "resource": "repo://README.md#L46-L47",
-          "version": "repo-lines-v1:sha256:77d0f5c4bfeb66d08520a637f3046295119a40eede13597cb61afca49f756c1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTIxNzI5NDA5MDg2NmZjNDQ3ZDE0MDczZGI3YWJlZWYzMjM3Yzg1ZTk4OGJhNWI0NDQyNzRmZDU1NWVjZDJmNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWE3N2IyOTM2ZDE4ZTA4ZGU1YzA3MzIyMTc2MjcxMzU4YjE5YmUwZGQ2OGM2NWZiMmUyZmM1OTJjZjBhNWIzOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmNkNmE4ZmEwZDJmYjhhNmE1MTQ3ZjRiYmQ4ZjE4NDk5NjQxOWU3OTlmNzg4NTRmNjE5YjNhNWNkZTlhMGIxNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzIxMDZkYThkNTg1YmJjNjcxNmViMWUzMTU3NWRjZjcwMmMxZDYyZGNhMjRlNWQzYmU2ZGJhOTdmZTk3ZDc5NiJ9"
-        },
-        {
-          "resource": "repo://libs/README.md#L24-L24",
-          "version": "repo-lines-v1:sha256:fa9f80fc709292a92d21f885892a105bf7a802e61ce71ef70c8f447a0296a49b:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmE5ZjgwZmM3MDkyOTJhOTJkMjFmODg1ODkyYTEwNWJmN2E4MDJlNjFjZTcxZWY3MGM4ZjQ0N2EwMjk2YTQ5YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmE5ZjgwZmM3MDkyOTJhOTJkMjFmODg1ODkyYTEwNWJmN2E4MDJlNjFjZTcxZWY3MGM4ZjQ0N2EwMjk2YTQ5YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTVmNDQ4OThiM2ZiNjViOTdkZWViMjA3NjY0YTJiZTdhZTZkYTU2YTFjMjQ2ZTk5YzUzMzMwM2U4MThmY2U0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTJlNTI4OGY0MzZlMDRlMDU5NzA0MWVjZGEwMmQxNTE5NjNmYzZkNzIwYjUzZjhhZGM0ZGVmZTcyNmJjMmM0YiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_4d625310d478400cbfea70ac34cbedc3",
-      "statement": "The acp package provides Agent Client Protocol integration for running a Deep Agent inside editors like Zed, including exposing dcode as an ACP server.",
-      "evidence": [
-        {
-          "resource": "repo://libs/README.md#L25-L25",
-          "version": "repo-lines-v1:sha256:395490a203587e3c4647aabe78151dee593e46334ab84152c3c824bfe6e2d3a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk1NDkwYTIwMzU4N2UzYzQ2NDdhYWJlNzgxNTFkZWU1OTNlNDYzMzRhYjg0MTUyYzNjODI0YmZlNmUyZDNhMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzk1NDkwYTIwMzU4N2UzYzQ2NDdhYWJlNzgxNTFkZWU1OTNlNDYzMzRhYjg0MTUyYzNjODI0YmZlNmUyZDNhMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDVkNTUzYjIxZWYyZTBmOGQwZWJkOTg0Y2U1ZGI2Y2RiYzYzYTJlNzVkODMxNDU5M2E2M2FjZmRlZTk1ZmQ0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDgxYjFkOTg5MGRhNmI5NjQ3NjhlZWMwYWE2MjQ0NzdmZDBjOGUwZDJmZmU0N2EzMTM5ZGEyZjU5NGZmOTVhMiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_172506cbee114b3990c8e4326f460998",
-      "statement": "The evals package is the evaluation suite with Harbor integration for benchmarking agent behavior.",
-      "evidence": [
-        {
-          "resource": "repo://libs/README.md#L26-L26",
-          "version": "repo-lines-v1:sha256:0c30a1bd9f8d27db76677ed484e45e4f704ce2d20251795ee6ddcd7fd87183ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGMzMGExYmQ5ZjhkMjdkYjc2Njc3ZWQ0ODRlNDVlNGY3MDRjZTJkMjAyNTE3OTVlZTZkZGNkN2ZkODcxODNlYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGMzMGExYmQ5ZjhkMjdkYjc2Njc3ZWQ0ODRlNDVlNGY3MDRjZTJkMjAyNTE3OTVlZTZkZGNkN2ZkODcxODNlYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmI5NmQ4YjMwYTAzYTE1NzdkOTBmYTEyNDUxMTNiNDZhZGNiMTE5MDEyYWZiMjBjN2VkYzMxZWFjOTg4YzBjYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I2MDgyZjU3ZGFhYjk1OWZkYzg3YWQ2NmY0ZDJjM2ZmODM5ZTY4ZmU4ZmNiNDU3Nzg3MDVmMWI4ODk4Nzc3ZCJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_886e1535ecf74f329f8ef24bae3528aa",
-      "statement": "The talon package is an experimental local runtime host for long-running agents, providing channel adapters and cron schedulers.",
-      "evidence": [
-        {
-          "resource": "repo://libs/README.md#L27-L27",
-          "version": "repo-lines-v1:sha256:fd2bc532ce3e4a56f550c171fc11d9006bbb25f69c24f1bb7ef45325cbee88b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYmM1MzJjZTNlNGE1NmY1NTBjMTcxZmMxMWQ5MDA2YmJiMjVmNjljMjRmMWJiN2VmNDUzMjVjYmVlODhiMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyYmM1MzJjZTNlNGE1NmY1NTBjMTcxZmMxMWQ5MDA2YmJiMjVmNjljMjRmMWJiN2VmNDUzMjVjYmVlODhiMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWI3OGQ4NzBhYzg0ZWRlZGZlN2U5ZGJhNTUxMTljMjBmOWJkMTRiODdkYWI0OWJiZmQwNjEyZmM5OTJmZmI5NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjNiMzNmODkzMjFhZjUwMjE2ZDIzNmMwMDA3NjRlZmY5Y2U3Y2NhZjMyODJhZWE2OWEyNDg0NTMxZTRhNGUyMyJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_86e654a5397c41caacff256b7b60f7aa",
-      "statement": "The partners package holds provider/sandbox integrations (Daytona, Modal, Runloop, Vercel, QuickJS).",
-      "evidence": [
-        {
-          "resource": "repo://libs/README.md#L28-L28",
-          "version": "repo-lines-v1:sha256:f5eec761ae394f7f1a010d9ba91bdec8408f5c49a73ed38e47f9a4022f4c64f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVlZWM3NjFhZTM5NGY3ZjFhMDEwZDliYTkxYmRlYzg0MDhmNWM0OWE3M2VkMzhlNDdmOWE0MDIyZjRjNjRmMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVlZWM3NjFhZTM5NGY3ZjFhMDEwZDliYTkxYmRlYzg0MDhmNWM0OWE3M2VkMzhlNDdmOWE0MDIyZjRjNjRmMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTJlNTI4OGY0MzZlMDRlMDU5NzA0MWVjZGEwMmQxNTE5NjNmYzZkNzIwYjUzZjhhZGM0ZGVmZTcyNmJjMmM0YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjUwNjcwYTM5ZDMyNjMxNzQwMzMxNTZmYjk4NmQ3OTRiZDJkMGEyODdiNzRlNWUyMzlhZTBlYWM4YjU1N2JkZSJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_d2325b1fdda24c31b6a43b38eb9ba687",
-      "statement": "Most Deep Agents-specific code lives in three places under libs/deepagents/deepagents/: middleware/ adds harness behavior to the loop, backends/ decides where files, memory, and shell execution live, and profiles/ tunes the harness per provider or model; graph.py is the construction entrypoint.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L104-L115",
-          "version": "repo-lines-v1:sha256:5f90d7982713ac6aef83786a9912bf4e685bdb8cb673bd3231cdaab096fabc7b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwM2I2MjA4Y2RmOTY2Mzg3MWY3MDkwNDAwZGNkMTA4ZWY1MWZkNjVmN2EwZDJjMDViNGMyNzI3YmZmZmIyZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0MzA5YzQ3MDk1Njc4ZTRmYmI0NzgzYWZmOThmMDZkNDgxZjA3MjU3MjE0NzI1ODg0MzA5MzRiZWE3MzI5OTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/ARCHITECTURE.md#L30-L30",
-          "version": "repo-lines-v1:sha256:1a0f560ab6892bf1678bbbb912281ad2e8551087cdd8bd4734f02de7f7da6b1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWEwZjU2MGFiNjg5MmJmMTY3OGJiYmI5MTIyODFhZDJlODU1MTA4N2NkZDhiZDQ3MzRmMDJkZTdmN2RhNmIxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjZhODRjNDViMGQ3NGMyNGQ5NjM1NjFhNjk2NjMwOGRhMzhlZDYyNWUyZjljY2FhOGE2MmZhNGJiZjBjZTU5NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjFiMjZiOTJlYWE4NDBhM2QzYjEzOWI0YjE2ZDQzNzg0MGQ2MmI1YWVmZTRhNmFlN2M5MzgxZjJlY2M3NWEzMiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_194da21b93504d00802a4d52e6fe8f93",
-      "statement": "create_deep_agent() uses StateBackend when no backend is supplied, composes the caller prompt with the harness profile prompt, and forwards checkpointer, store, context schema, debug, name, cache, and state schema to LangChain create_agent().",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L637-L648",
-          "version": "repo-lines-v1:sha256:acb38de891e13e28512f0c295e442502d3cebb3573e05e0786620e0ec83ef939:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlZmUxZjA5OTc0MGQxN2IzYjM5MGJiYTNiYzE5MDM1OTA4YTg2MDkzNDYyNGJkNTA0OTFmYTFjNDM3YzAyMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyZmE0NjFlNTdhYTVhMWI3Mjc3ZjdhYjYwY2JlNTE2ZGQ3YWZiOWRkOWZhZDlmYjY3ZDRkMDQyZjMzYmIxMzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3YTU3YTE1NjhkMGQ0MjZlYTljMzQzNzZkZGM0NDlmNTQxMzBlNDZiYjI5MDcwM2JiZDIxZDI1N2NlZWE2NjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljYzlmZDc1ZjVkNDhhMmU1YzA5ZmIyOThmZTIwNDA1NzQ5Yjg5ZTY2Yjg3YTQyNDk1Y2Y1ZWEyZWJkZWQ3NjIifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L956-L978",
-          "version": "repo-lines-v1:sha256:ce72cae51d4840037c22060ea712300d889c9e91699926dc2fbc48e24202fa58:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYTYzNGI1MDQwYzhkN2IyM2M0NGUxZWZmMDdmYmU4Nzk2MThmMzA1ODhkOTAzYzM2NDMxZTZiYmZkOGY5ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0N2MyNWZhNDZiODg0MzJlNDI0NGQ5MjM4MTk0ODg5Mjc1Y2VjZDZiOGIzNzQyMmFmODM2NGIyNTE3MjJmYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_c388837b1bc0459bb181ddaace14c5b6",
-      "statement": "Custom Deep Agents state schemas are expected to subclass DeepAgentState to retain its DeltaChannel message reducer; the schema is forwarded to declarative subagents but compiled and remote subagents retain their independently configured schemas.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L518-L540",
-          "version": "repo-lines-v1:sha256:c2b64b664f56b1d97acb7e7563575779fd2bc05c2ecc277ffe2c4b1fb580e64d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2Y0ZTRkNDU2MWYyNDM3MzkzMDZmOTBiYTBmZmY0YTVlODg0MWIzMDg4MjhhNThmMTIwMmI2ODM0NWZkNzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxMjg4ZDQ4NGE1YmJjYTFhMTZjMmVhNmE4MDA0ZjI0NTczZTVkODBjNDI2MWRiNzlkOGRjNjkxN2I1ZjcwMjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNjkxYzdlM2Q0NTljOTk4OWY1NDU0YzcxMzViZDExMDQ5MGZhMjk4YTc0M2M0MzlmZTEzYzZjNGNhZjNhNWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ZjUxNjNhZmI2N2U4MjY1ZGMyYmI4NGY2MTMxOWIxNjNhOGNkMDdkOGNlNzM0NzdmOGZlNWQwYWRmZTUzYmIifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_52ea32e82eb340fd966bc98fb2f2cd64",
-      "statement": "Profile exclusion validation rejects protected middleware exclusions, private names, ambiguous class matches, and exclusions that match no assembled middleware, preventing silent partial harness configuration.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L577-L588",
-          "version": "repo-lines-v1:sha256:025e794fc6e948fe7147bf682452e9ad3fcf279c06a5cfc49b986fbf979a7667:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkMjliYTQ1YzkzNzU4MDlkMmUzMjg3ODgzMTJlMGQ5YzM2MmNkZmQyNzNhNjVlOWMzNWVjNTUyY2M1YTFjNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlZmFiZmI3MjllNzg4ZmZkZThmZjkwZjU5MWY5NjY1ZjUwNTE5NzIxYjQ2MTQ1MjZlODcxODI0ZTIwMzg5MTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzYWNhNDg5NWUxZjUyZTFmYmM1ZjE4MTI5ZjY2YjdjZGI5ODNlMzBjYjdlZTBkMmFjZGMzYmIzZGE2NDBjM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NzM3OTE4OGUzNmVkYzU1OTQ4MmRiNTNhODNiZjI0NGIzMTFiZWU1MDJjMTQyZWJkYmI4MWNlNzVlZjVmYzAifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L615-L627",
-          "version": "repo-lines-v1:sha256:25ad1c217e97b7a1da20fc0f87e2e42a2d49cab93187cf4e68b7356ea962ed10:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZWE3M2JiM2E5NGVlNjQ5NTMzNzNmZTY1ODRlYWU4ZGU4ZjgxNTgzMzdhMGM4Y2E1OTI5ODU5Njg1N2U3MDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5MWU0YmRkYjg5ZjIwZmMyYzg4M2Q0ZDg1YjY3Mzc1NzI1MTM0ZDg3ZmRiMWM5M2JjZjk3YTQ0NGQ1MTQxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUyOTM1ZGJmN2JhNTZhN2EzZjliM2VmZjNhZWY3MDM3ZWM5OTI4ODllMDYyZjBjYmU0ZWRmNzNjNTMyNWUwNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk1MWQ4M2RiZjg0ZGE4NTBkOWJmZWQ3NjViNGM4NmJiOTcxZjYzOThjMzFkMTQyMmE1NjMyMTNmYjg3YjczNjkifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L944-L954",
-          "version": "repo-lines-v1:sha256:90a794d38671b7509eff9daff29932a337b42457b4da273f28d858a8b7be8eca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyMjZkNTFkZjBjMWU3NDNkYzE0YjMwZTM5YmUxYjA4YWIyMzYzYjYwN2RhMzlhZjcxNDI5OTY1MWNkZTViZWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5NzdiNDRmMWE4YWVkODRlODlkODY1OTVlMTQ1ZGJmMzljOTY2ZDQ3ZWQzNWE2NGVjOThkNjcwYzM5OGZhZGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlNmU0ZTAwZGFjZDcyY2QyNTg5ZmZiZDc0YzAwNWRmYmY2YmE2ODYyMzdmMTE2NDY5ZTdiODFlYjgxZDgzNmMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_2e93df97e4994ebcb3bed429ac7650f8",
-      "statement": "The package manifests make deepagents-code a dependency consumer of deepagents, deepagents-evals a consumer of both deepagents and deepagents-code, and deepagents-talon a consumer of both deepagents and deepagents-code.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/pyproject.toml#L28-L38",
-          "version": "repo-lines-v1:sha256:d07af94ead0134951c766ff41f54ad21d002200ab6b36377be419ef2923a2c05:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGNmYTA0N2MyMWZmNzU5NTMxOWE3ZjBhYTJhYThjY2FhMDcwM2RmMDY5YjkzZDViOGNmM2I3NDdkMTdjYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMWViMjUzOGU2ZWE4NGZjNzEyZGU2MTdhNmI1ZWE3ZjgxNjlhMjJhYWNjMWQzMWQxMzI1YTNhNTc0NmU1NjUifQ"
-        },
-        {
-          "resource": "repo://libs/evals/pyproject.toml#L19-L29",
-          "version": "repo-lines-v1:sha256:10e06fa011690597a9ca96c02a9df3e51b77a2b5092ec6387220ddaa3d3163d5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZGRjZGU3MTZhN2U2OGQ3Y2M4ZTUxMDJmY2NhOWQ4MWY0NWYwNzc5MmUyYzFmYjM0NDg3MjU2NTI4ZjMyNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4ZDlmY2MyMjM3ODRhN2RlMWU4NDFhZDdlNDRlZmRmZDFhOWYwYzA4ZjkyNDgxMjkxODQ0NGMwODJiNmQ5ZTYifQ"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L24-L30",
-          "version": "repo-lines-v1:sha256:56842fc728dfbc5d3d64bf0ac6f27aae6f908af1b9ce132452cfd118113a302b:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjI0MjZmMTUxODQ0NDgzZjYyOGY4ZDM1ZTM5YWU3NDFhZDJhNDFhMTBjZmI3MGE4MTIyOTM3NTBiNDgwYTYxYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQzNGRhZWIyMmM4Y2E1M2JmOTlmZjJkNmRkMjAxMmNjNjAzYWQyNzBjODk3OGMzYmIwY2M0Y2FjZDIwZWJhZCJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_3e506068cd234d57b34c10c3c483a3c4",
-      "statement": "The SDK test configuration excludes benchmark-marked tests by default and promotes unexpected warnings to errors; focused graph tests verify compiled-graph metadata wiring.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/pyproject.toml#L135-L155",
-          "version": "repo-lines-v1:sha256:b0d75be81b67af64af957aea8444c635246995216660a16a5a6000eaa069c25b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2NzZlNjQxNDY1YTY1NTFlOWU5Y2ZmZDdmYWExZTZhNDJmOWI3MjQ4MDk4MTNjOTAzZDdlZGNiNTJmMzAwNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhYmZlOTk3YWY4ZDI0MTgxZTFlYTI3NmFlYzdjM2MzNTI2MjU0YjcyMTJkNzlmMTJjZDFjZDBjY2FhOTY4ZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiYmI5Yjc1YjJjNGZiNjVkNmM2MjEzZDdkOTA0OWNjYjk2NWM5YzhhYThlNWNlMzg0ZDIzNWI0MGRkYzAwMjcifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py#L70-L114",
-          "version": "repo-lines-v1:sha256:056848cca991f96c6a2f9a8058105bd2ce141fbf7eec6a541b202c0913e19e78:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyYjVlZDM3NzE2NGJmNzEwZWZkZDBmYTcwM2I5Mjk5ZDg3M2FkNDE3ZjEzZmFiMGJiMDU4ZTkwNzE5NzI4NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2YTE4YTNiMGYxNGRiNGQ1NmI0ZGFmMGFhMjgyYTVkMTM5OTE2NDk2OWFlZGY4OTdhYmM2YzIyM2YzYjU5ZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2YzIzYzNjMjI2MzJlN2M5MTgxN2NlMTZjYmJmOTJhNzQ5MjQzZDk2YWE2MDZkZDc3MGFmZTNkM2Q3NDcxYWUifQ"
+          "resource": "repo://libs/README.md",
+          "version": "repo-file-v1:sha256:e5d74e3f28cf605b59ca922d1e6195cbaa5237add9bd42e7b1cfa06b74210db9"
         }
       ]
     },
@@ -269,22 +59,8 @@
       "statement": "Deep Agents Code's create_cli_agent() is the product assembly point: it builds an SDK agent with a composite backend, CLI context schema, CLI middleware, interrupt policy, checkpoint/store, subagents, and a sanitized assistant name; registered extensions replace same-named tools and middleware before construction.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2417-L2463",
-          "version": "repo-lines-v1:sha256:4853dc195b0e17c2c6bb7e0bd2264fda5c10536b23b2b5a0f51e04f7e039e63c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3YTg5ZDI2M2Y1YjI3NDFiZTczNzY4MDZhOGU2MDdmMTNkMTcxMjgxNTI1OTQ4MTc0YWRhMTMxMzE3MmJiY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4YzUzMGJhYjMxOWY0Y2M4Y2EyZjNiNWZkZWRjMTVlZmFjYjg1OTc0YTc0NDFiMTQxOTNhMzkyZjg2YjFlOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyMTVmNjE5MWVhOTNhMmQ1YWExY2QyNWRmYjI4MDQ5NTRkZWNhOWI5OTc1MjU2MDZhZjU2MGE2ZTliMjFjMzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0ZmJmOTAxOTcxMjY3MGFlZjMyNzU0NGQ4MDBkMGNjMzk4M2ViZTQzYTJiMTNkYzEyYzZlODk4NmUxNGE2Y2IifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L3484-L3527",
-          "version": "repo-lines-v1:sha256:06f5146219aa19a2344e69ffd19b6e7970a84781d0b46864316c32c066d17a7e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjMWFiN2M3N2UwMDllMTYyZDNiN2ZjZTE2M2JlNjZkNjVjMzI4NWJiMzIwODY0N2JhMzZhNGQ0ODNhOTUzNDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlMjdlYjRkNjQwZGQ1ZGMxZmI0ODQ2NzM5ZGM4NmIzYjI0M2FkZDk2MTcwNzU2ZDM2OTBkMzU1NGQyYTFhZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4MTFmZWJmZTEyNjBhYzcwZjE5ZTIzNTBhMTA5YjE0ZDBjYWM2NDIzZGVmNzJlZjhhNDU5MDk0MjRjODQxNWQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_9c41e62cf99a4ed99ea8b75e075578b8",
-      "statement": "AgentServerACP can support session loading only with a durable LangGraph checkpointer; when enabled, it restores the graph thread, verifies the original working directory, and replays the conversation to the ACP client after restart.",
-      "evidence": [
-        {
-          "resource": "repo://libs/acp/README.md#L113-L125",
-          "version": "repo-lines-v1:sha256:816a1a4b2cbc4ae5dc5c5e2ae8441855b8553a2537871c13fa1e7295e1c8ea9d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3Njc5ZjUyNWFiMTgwNDQ1NDI1MzgyZWFjNjFhMGU1MWZlYjFmMGM0MDliOGQ5YmQ1MjY2OTE5ZTY2OGI1Y2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExMzAwMjM5ZWMxNTEwODZhMDEzMjAzMDU3MDRhYTE1NGE2NmJhOGJmZDgwYjA4MGZlZjdmNWFlMGUwMjI0NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwNmUxZjEwZWU5YjE0YWQ3YWIxNTUzMDg2NmVlNDFlMDE2NWI1YTcyNDUyZTMyYjRkZTg2YjY5ZmRhMmNkOTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmZGMwYmJlMmIxM2FhM2QzNmZhMjRhZjlmOWY5NmQ5YzI5ZmRlYjY1ZjcxZTZmZDY1MjU0NjBhYjcxODI1ZjMifQ"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
         }
       ]
     },
@@ -293,22 +69,8 @@
       "statement": "Talon's DeepAgentRuntime resolves subagents and constructs its SDK graph at start; each invoke establishes request-scoped authorization, history, cron, graph, and background-result context, then resets it in a finally block, while stop cancels background work before releasing the graph and checkpointer resources.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L347-L350",
-          "version": "repo-lines-v1:sha256:82287a25a47ff88824fb89bfd6b50d880737fc7bccb1706eaf7e354b6fe2303e:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWM2ZGZiYjc2YzVmY2M0YmNkMzcyNTg5NTM1OGNlOGJjZWFiNWNiNWViMTI2MzA3NmVjOWNhYTE2N2VlYzAzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjU5YWQ1Y2NiYTA0YjA3YzI4ZmYzYmFlOTkyNjZhMzg1MDc5OTA5NjlmYjE2N2M3MDNlMTM5NmMzMTY3NDExMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTU0NzZmYzA5NTM4Y2M0OTQ1NDg5MzNiNTIyZjg5NjEzNmQ5NzdlZDkwYjA1Mjk5MjRhNjE4ZmMyNGM2ZmExYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODNmZWRhMDliN2E0MzQwZDllNWYxYTU3MTZmNGFlOTA5N2Y3ZTJlNmYwM2EyZTZjNWE4YzZlMTM2YzYwMGRlNSJ9"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L434-L509",
-          "version": "repo-lines-v1:sha256:25db091599ac13eade6595abb9c1fcfe09c8991211077e6eae8d458c2b6781bf:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MWI2N2I2OWQxZDk1MDVlZWI5OTBiNjRjNmM3NWY2ZGViNTg5MzIwODc3OGY3MDExYjNlZGNlZDRkNjhlMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmOGQyYzBmODliOWZmNGFjOTlhODVhMWI1Zjg5NDk2YzcxYzM4NzEwNDEwOTkzNDYwOTE5NWFkMWU3NzU3ZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiNzdlOWQ4N2I1Nzc0YmNlNDJlOGVkOTYyNzI0MmRlN2MxZjc3N2Y4Y2IwYTcyNzU0MGUwMWY0MmFhYThmYjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MmY4ZGE3ZmRkMzQwYTg3ZjQxMDdjZmFmM2UyNmU0NjA1OWIwMDI0ZDU3MjYzZGE1ZmQyODYwMWNhN2UxYjEifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_986bcb6246214705a35ce85b147b03ce",
-      "statement": "Talon is alpha software without production-grade human approval policy, channel administrator controls, sandbox execution isolation, or multi-tenant boundaries; channel users must therefore be treated as having direct access to the operator's agent, credentials, MCP tools, and local host resources.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/README.md#L3-L15",
-          "version": "repo-lines-v1:sha256:e6df2524d8beb98f4c846d1f6f55cd1a0dce6ef861d227f196b04696abd93834:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkZTAwMjcyYjJhYjE0NzM4MjNkMTU0MjU3ZWVhZTc0ODVjMzE4Yjg2OTE5ODEwZjNlYmRkOWZkMGU2OTI2MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NWZjZGE4NDVmNWRjZGQ3ZmI2MTNlZWMwODhjNTA0Y2ZmMTE5NWFiMGIwMmM0OGY5MzE4NThmYWU4M2Y3ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1MzJiNzdmNzcxMWI1NDRiYjY5YTcxOWM1M2Y4YjgzN2IxNWMwMDc0YmUyNDEyNDhiZWU5N2E3MmJmMDU0YzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMTA2ZGE4ZDU4NWJiYzY3MTZlYjFlMzE1NzVkY2Y3MDJjMWQ2MmRjYTI0ZTVkM2JlNmRiYTk3ZmU5N2Q3OTYifQ"
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:3888d82fb92e6c8572289483b2e7762887486b640ef271460daa87bbdd1a1efd"
         }
       ]
     },
@@ -317,18 +79,8 @@
       "statement": "The evaluation suite runs agents against real LLMs, captures tool calls, file mutations, and final responses, and scores correctness and efficiency; its Harbor integration runs sandboxed benchmarks such as Terminal Bench 2.0.",
       "evidence": [
         {
-          "resource": "repo://libs/evals/README.md#L3-L7",
-          "version": "repo-lines-v1:sha256:e5838a74dd80f19ead3874bf0400c9ab04e2680731632475bf6b5539c0092587:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzBjY2ZkMDlmYjRiNDVlZmM2YWVmMDU1ZDQ0ZWUwM2FkZTZiZDJmZWNlNWE4ZTM2MjNjNzkwMDRmZDNmYjMwMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDhhNDE0NTI2YTZlMzgyYjBhMzBkMjVkZGY3YTc2MGMyMDE4ZjQ2YTFlMzg3MDI3NDZjZmNmMGYzMTAzZDU4NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTU4ODVhNGRhNGFkMzkwNjhiMDIzMDM0MTI3YzE0ZTNjNmU1NWFkNTE1OTEwNzhmMDBjYjA5MzYzZThlMjAzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjNhYTM3YTE5OThkMjY1M2YwZGJhNDJhYWY5YjFmMzcyOTRjOWJmYTNiNGIyNDg5YmFiYTliYWU2NzY0MjRmOCJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_08b6577b08e14eb4bbc0d21801cadaca",
-      "statement": "The deepagents package publicly exports create_deep_agent, DeepAgentState, common filesystem, memory, rubric, and subagent middleware types, and registration APIs for harness and provider profiles.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/__init__.py#L3-L47",
-          "version": "repo-lines-v1:sha256:4f590219499c0d5235304e7114996a559f61d97c363465ce238dca38c134e929:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZWQ5MTY4MTRlZjhjYjcwYWFkYjA4ZTliNWQwNGVlMDI5MTMxMWE2YjE0YjVkZTUyNTExZDRkMjBmZTNmOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1MzQwNGY1N2YwZjAxNDBlMTY2ZGRkOTI0N2EwNzE2NDM0ZTQzOGM4NDNiMzkyNTY5MjE0NmJlYzA0MGNjZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlYzM5YTRlNjc2NGIxMTM4YzYyNzNjZjJmMjRjNmJmZmEyMmJjMWM0NDAwM2Q2ZDQzZGU4NDU4Zjk1MzA4NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAifQ"
+          "resource": "repo://libs/evals/README.md",
+          "version": "repo-file-v1:sha256:88443acb01ceea42de14ede461bd126771570b8808c7eb3522ebe99e75688dca"
         }
       ]
     },
@@ -337,48 +89,278 @@
       "statement": "deepagents-acp depends on deepagents and Agent Client Protocol, and AgentServerACP accepts either a compiled graph or a factory that builds a graph from ACP session context.",
       "evidence": [
         {
-          "resource": "repo://libs/acp/deepagents_acp/server.py#L215-L252",
-          "version": "repo-lines-v1:sha256:61c187623d31be588d59e46d063c91c1bdd715f18072dde581c781e7c3420981:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlM2ZiMWU1OGZiYzkwNDc5NGQ1MDczMTRmYTkxYzlmMmYxOThjODhkM2ZmMzk1ZTAwODI4OTAxYzM3ZGM5MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3YTgzMzM0NGEwNDM1NjIxOGUxNGVkNjc3ODg5ZjVkOGRmNWQ3NzE2NzYwZGUxN2RhZDExYTYxN2Y1NWJlN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyYjhkMjMzYzgzZWIwYzRmMGQ3Y2QzODY5OTRlOWIyM2Y3MjJkYTc0NWRhMmYxZWJiNDk2OTA3OTg5MzEzNGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNTJkZmNkOGRhYjZkOTFhZWI5MjJmYTI1NDQzNzg5OGMzYTNlOGYzOWVkMTllZmYyMzI1ZDc0OTJlNzRjNTEifQ"
+          "resource": "repo://libs/acp/deepagents_acp/server.py",
+          "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
         },
         {
-          "resource": "repo://libs/acp/pyproject.toml#L25-L28",
-          "version": "repo-lines-v1:sha256:df141617054b877061f78ffe0e0c837a1c18edd991ada93b5a43495618cf95f0:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzExODc3ZTIyZmI3ZGYwNzA0ZjE3MDZkMDI2M2ZiZTM4NzI2OWQ5M2RiM2YxMDc1OTFlMTQ4Yzc5MzZmZGYwZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDc2MGQxM2FkMTViNWYxMmNmZmIzMTk0OTMyZTg0YmVkZTI1NGMwNmY5NDczY2Q4MmNjYjg1MGU4YjdjYzI3YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDQ4MDYzZjk1MWU1MjAzODA3NjIwNDEzZmNiMDFlNThiNjliMGUzYzU3ZGIyYmZiZWJlMjY1MWY2Njk5ODNkZSJ9"
+          "resource": "repo://libs/acp/pyproject.toml",
+          "version": "repo-file-v1:sha256:7c55c376be23deebe48b983de1623784e1a5bed0dba6672e88c128119d7533ba"
         }
       ]
     },
     {
       "id": "claim_837e7b13e9f94a098eb350808a7d0a3c",
-      "statement": "The release manifest records independent versions for deepagents, ACP, Code, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partner packages.",
+      "statement": "The release manifest records independent versions for deepagents 0.7.15, ACP 0.0.12, Code 0.1.72, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages; Code's pyproject and current changelog also identify it as 0.1.72.",
       "evidence": [
         {
-          "resource": "repo://.release-please-manifest.json#L1-L11",
-          "version": "repo-lines-v1:sha256:4e585b7184077b0c1f58a31952dce4bb6ff9555c7b7723d368ac578ee28afeb2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://.release-please-manifest.json",
+          "version": "repo-file-v1:sha256:2eac712431439c99465ff509ccb2e335dbbe8392f25833a3e9eccb5a1ca61738"
+        },
+        {
+          "resource": "repo://libs/code/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:cf41ff0679913296156e65fd8dfcea7d8048c4940657f1c8bcd4a7b84dc865e8"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:afd21cf7c730ad008e35ebc32a0721d79aa3460b428e97079f5ea3f116688711"
         }
       ]
     },
     {
-      "id": "claim_eaa35b97c7d44680b78ceb5cba86e0ee",
-      "statement": "The code package exposes both deepagents-code and dcode console commands through deepagents_code:cli_main.",
+      "id": "claim_b19f6e4fa84f4ddcbb16f247e4f05f65",
+      "statement": "Release Please is configured for separate draft pull requests and independent Python package releases with package-specific version files and changelogs; it uses component-bearing tags separated by `==` and excludes package test paths from release analysis.",
       "evidence": [
         {
-          "resource": "repo://libs/code/pyproject.toml#L154-L156",
-          "version": "repo-lines-v1:sha256:7cb5b20ef64ed337f9edb88d7b3602f2618c8e673386d6f655088ae52d138d2b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGVhYjRlYzYzZGU1MTdkYTRjZDhlNWM4MzA3ZmIyYzc3MzdkMzkxOTBhYjY5ZjMyYTVlOWVmODFlYTQ0MTZkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzIzYjdmMGUzZjQ0OGM0ZjU0ZGY3MTgzZWZjYTE5MDgzMTAxNDMzNWJlNjhkMjAwNDZiM2Q5NmNjNWM1OTkyMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjgxYzcwMWM1MjY3YjgxYzczZmQ2ZDkwMjZhOGRjMTFmNDE5NjdhZTZlODVhZTgzMjU5ZmM4M2Q2NjQ5MjY1MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGFhZGYyZTg5MDY1NzI1M2FjMTQ4NjNmNTU1M2RhODk0NzBjNmI1YTczMTJhMjk2YzUzMjlhMzA4YjRmNTE3MyJ9"
+          "resource": "repo://release-please-config.json",
+          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
         }
       ]
     },
     {
-      "id": "claim_89e178babcb7411bb998820c03467197",
-      "statement": "The Talon package exposes the deepagents-talon command through deepagents_talon.__main__:main.",
+      "id": "claim_a992efb395a947a0a6ea9fac80c58f05",
+      "statement": "Deep Agents Code separates a terminal client from an agent server in separate processes: the client owns presentation and input while the server owns the coding graph, and both interactive and headless operation use that runtime boundary.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/pyproject.toml#L61-L62",
-          "version": "repo-lines-v1:sha256:ae5a58e96b793996423b965021fd29c371adbc4f402b1e9918d4c279346e1e27:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGVhYjRlYzYzZGU1MTdkYTRjZDhlNWM4MzA3ZmIyYzc3MzdkMzkxOTBhYjY5ZjMyYTVlOWVmODFlYTQ0MTZkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjEzNDIyOWZjOGYxYmUzYmQwN2I3NTcyNWQxZGM5M2EzNjUwOGE0YzM4Zjk5ZWM0ZTJhMTlhMmI1Y2FlZGJhMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjlmZGE2ZjNjMzQ5MjliMTk0OTY5ZDFhYzk1YjExNjA0ZjhkN2U1YTYwYTlhYWRlNDIzMDhjZjI1OWU4MzlkYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDg4MjZiYzE4OTJlOWUxMzljYzE5NzNmNzkxOTFjOTIxODY2MjNmMDhmN2YxODFjMjY1MWViY2JmZTZmYTRiZiJ9"
+          "resource": "repo://libs/code/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:1044d5960a89cb0a26efdc7ff02036cba8f13332e6c4c6b1e08f443c49796aed"
+        }
+      ]
+    },
+    {
+      "id": "claim_dd3ce600e7634e1eb8fd1c2b0d36b870",
+      "statement": "Talon refuses invoke before startup, rebuilds its graph when the approval snapshot changes, and leaves runtime resources open if background cancellation fails to avoid closing the checkpointer while a worker may still be writing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:3888d82fb92e6c8572289483b2e7762887486b640ef271460daa87bbdd1a1efd"
+        }
+      ]
+    },
+    {
+      "id": "claim_7b0ac1838356454c818cffb6e23b5c19",
+      "statement": "When ACP durable session loading is enabled, AgentServerACP verifies that checkpoint metadata marks the requested ACP session and that its recorded working directory matches, restores session options, and replays the session; it rejects loading when the capability is disabled.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L394-L428",
+          "version": "repo-lines-v1:sha256:46b9c974b06fed92e82e9dfee0251350726d492a9fd57b7f15947beac5508f3d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzcxMjY1MTEyZTI4NmE3NDdjYWMzNDY5MmJmMGNkY2Q2YjRkMzJiNDQ4MTI0ZmQzNTQyZjhjZTMwN2MzZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhNDc0ZWI4N2ZhZjY1N2E4MThiZmFiNGVjMmE2NGI5NTJiNjQ4N2I2ZjhkMGJmNmRiYTIwZjFlMTdiNjg3NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3OTg3OWRkZjdlYzI5OTQ5OWJkMzc2ZDlkOTYyYmM0MTFlZjJmYmE4MDVjYjFhZDU1NjYxYWYyZDQ1Yzg2YjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a49fb7b51f794c52b206c53ebad1caec",
+      "statement": "Talon's CLI loads MCP tools and constructs DeepAgentRuntime with Talon MCP middleware; with a configured checkpointer it uses the supplied checkpoint resource, and otherwise the model-backed host creates an SQLite saver and conversation archive wrapper.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L191-L282",
+          "version": "repo-lines-v1:sha256:5efe880fc445b0afc6854f71f278ed1ee0d0da893f9ea86fe422926ee2161da2:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmYzkyMjNhY2Y4NmU1MDA5NmE0NDUzMzMzNDE4ODZkMTc0MWU1NTdhZDFmMDRhMjA2ZmFhOGJmOTg2MzdhOWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYTViZmQzZDAyM2QwZTZjOGZlZDdkNzg2ODYyNWQ3MTg2NDdmNzAxNTk3MmY2ZGJjODNhYmYzOWZlNjBlOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NWRjY2NiN2JmYmEwYTZjNzI0MjNlYTE2NjdiMjMwNTBjNzY5MzM1MmEzOTU1YjZhNmNhYWRmMTVkZTA3NmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b115cf98ab154316aeb483d6a1df7263",
+      "statement": "Talon replaces the SDK subagent middleware with TaskTools so task calls can add only unique tool names from the current parent catalog to named local subagents; fresh local subagents run without inherited parent history, and fork mode is rejected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L398-L425",
+          "version": "repo-lines-v1:sha256:7a07edaeb22556bac0f8d1f982c9a6f7d24ef36d677ccaebd70fa6ab6e9a0f33:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhNjE0YTJkNTkxYTVkMTBkNjc3YWNlZGU1M2FmNWY1MWEyMDhjMWQyMTFiMGFjZDQxMzAxOGE2YzZmNzM0MTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZGIyYjkxYmVhOTkyODdjOTYzZWE0NmIxNDA3Y2VjYmE5MDYzMWI2MDczNmJjZGM0ZjY5NGRkNTI4MmM2M2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0Mjc5YmIyNTQ1ZDc2ZTdjYzFlYWJiOTg5NjZmNjFmMDA2YTg3YTgwMzlmNDVhNDBkOTFjYzU2NGE2ZTA4YzgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py#L221-L264",
+          "version": "repo-lines-v1:sha256:88477aafaa590139e5447a21220d4445c67c88177f0bd4b838dfdccf18d36c25:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0M2MxMWFkODRkZjhhYjYwNmQ3MGRkNTI2NWVkODZjMzIzYmM1MzhkZmFlMTZmNmUzZmM4ZjBmNzI5ZGQ2OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NmE1YmY2YTliZTFhOWJjOGUyYzUwNjFkNzNkNTZjMjVlN2M4YmUzMTE1OGJiOGJmMzVlZTcyNjM3Y2U1NDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMzZhOTY0MDQ1ZDc1NzFiNTExZmU5Nzc1Y2FlMjI3YTVkNTQ0ZDk0MGY3ZGNkNGFhZDk4MjA0OGRkMTk0NmYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py#L64-L159",
+          "version": "repo-lines-v1:sha256:8f4224942a8f1dfa15b9e26468c6dd23851413968d27d6a3e8aa3cfe09812725:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkOWMzYTFkN2EyZGI0NGJkMTY5ZDZiYmM4ZGU1ODkzNmEwNTBmYmYzNmY5ZjMxNGU1MzkwYWY2ZTVhZmM4ZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOWY4ODUxNTA2NjA2M2MxOTE4NTA3YzJhNmYzZTc1YjQ2YTczMTBlMTY1MmZhMjgzODQyOTY1YTJiMjAzYmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyMzc1NjhmMzcxYzY2NGZhNzM5ZmU2ZGYzNzAyZTc2MjUzZTA3NDMyOGQwMjU2YTRhYWQzZGVkOTlkN2Y4YTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a8e81f1c8a214d3eb8f19e3721ef27b1",
+      "statement": "Talon MCP refresh and subagent reload construct replacement graphs under a lock, leaving the previous graph active when validation or reload fails and applying successful replacements to later turns.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L608-L648",
+          "version": "repo-lines-v1:sha256:4b12921aae276ae27b87776724bc37bd6be33266cb409fc9bd1f4746404a25d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1YjNlNTQxMmMzZjNiMzA0M2E3YWY0Y2E0ODBhOTIwY2Y1ZDk2NTM5NmVhZDAwYjg0MTg5Y2U1ZDBkZDI5MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2MmUyYTA3M2U5ZTNjNjBiZDJkMzU4N2NmYmNmZmVlYmEyZGEwZGMzNzAyNTQ4ZmIzYmM1OGZiNmIyYTY0MWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxNDU5N2Y5ODMzYmFjYmJlMDAwZTU3MTNkMmZmZjAyNWI1ZTY1MTUzMDg5Mzk5MTBmNWI2MzhmMDllZmRiZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MzlhZWFhZGJkM2FiZjViZDFmYjg4OTEwNWE4ZGRkOTYwZDliMDEwMjI2ZDA0NTcyOTM5MDdkNjRhOGM3ZWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L650-L696",
+          "version": "repo-lines-v1:sha256:ccc020ec7caf950b8529aeceb16809a16dd0674c8ce8f4ed4354034072dceafd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlYjI4MzU2NGM0MTc5MzY3NjY2MjJhOGRiZTc1YmJlN2Q1N2RlM2E2YmFiZTIxYzY5YWJhYjUzMzFlYTlkYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxZGU2ODM3ZTk0NjY1YmQ3YWNlNjQ0MmVjNWE3ODVmY2U0NTdhZDE1MTQwMDNiMGU0ZTE2ZDJkMDc3ZTZjNGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2EzOWQ4NWNmMTc5NDM5NmQ2ZTM0ZjEzYWI4NGYxZTE2YWZmNTU2MGY1OTVhMjNkNzc0NzIwNjNkY2YwYWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzNDM5NTZjMzM2ZjRkM2UzYWIwYTQzNTQ3MjA4ZjM4NmY0MDYyMzU2MGY5OTU1N2JiM2NhMzZmOWM4YjJlNzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_94dd64563ae644319f3db76269852692",
+      "statement": "TalonHost owns process-level lifecycle: it starts the agent runtime before channels and an optional scheduler, unwinds a partial start in reverse order, and on shutdown cancels work before stopping channels, scheduler, and runtime while isolating component stop failures.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L310-L370",
+          "version": "repo-lines-v1:sha256:a95ef5974a18d9f32d36bd7754966b4972aac9f848da1b9e3d7708c5d2bece14:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmRmYmI3NmM1ZmNjNGJjZDM3MjU4OTUzNThjZThiY2VhYjVjYjVlYjEyNjMwNzZlYzljYWExNjdlZWMwMzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwNDEyNTlkMzIwNzc4ZGI3MzVmZWJmOTMwMjU5YjFkOTQ3ZjQwYTRiMjY2YWM3NzYwYzdlMDYxMTI5MTUxZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyYzBhMzQxOTcxODI5NjE5YzhhZDk3YWQ4ODNhMGM5ZTAxZTE2NjIxM2IxMTE4ZDk1ODU2ZDM1YmE3YWZkYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2MjBiZDBlZTIwMGYwZjc0ZDMxN2YxZTM3OTMwZDZiNzQ1MjU4YjExMmM3NWIxMTRkYjgxM2Y4OTRkYjk4MzAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L339-L354",
+          "version": "repo-lines-v1:sha256:3679526c58d90d686c718e0d29238d6695e3b5b2cb41c5df3d68cc06caa4e408:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4NTE3YWE3ODM3ZjU3NzY3N2U0NmRmZDhlNjVmMmQwY2U2NTczMjIyODQ4NzVkNTQwMzk4NTE1ZmE4MTFkNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmM1OGU3Zjg3NDEwNjM4ZDFhODk0NjMyOTE4OGZmZjAzOGQ4ZGI3ZmE1NGE4NjYwMThmNGQ2ODYzMmM3NmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZmU4ODdkYmRkZGNmODk5MzIyOTVhMmViZTZkYzRlYmZhOGE3ZjliZWUzNDZlYjgzNzQzYjU5NWFkMGU2ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlNDdlMzUzOGVlMDZkNzYzNzllMmVjZDIxZjE5OTM3YjQ3ZWZmYjBkN2MyMjIxODg2OWRjNjI1MzBkYmVlZGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9055c8156d9c4dfd9cab84afe9169ba9",
+      "statement": "Talon serializes work per conversation; an incoming message cancels and replaces an active turn, but if cancellation does not complete within the configured timeout the conversation is blocked until restart.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L260-L303",
+          "version": "repo-lines-v1:sha256:7367df10336d2d0a770c23e4d4c1ff8fcf609b0c031bf72de2d3d5a93a5ac2a0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkMDI2ZDU3OGI1ZjNkM2E5YzJiNjlkY2I5OTNhNmI3MzVhZTc5NmIxMDc1ZTk2YTZhN2YyNTI2ODE1MTc3ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhNzIxYjJjODQ3ZTEyMTRhMzE2MjExMGU5YjQwMzE5YjA0YWZiNzFhZmFkY2VhMWFjMTY1MzU5Y2RjN2IwMjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3ZTE0YjdmNmQ1ZWQ3NjRhOTI3ZjdmYjMwYmVlMjJhNDEwZGUyZDY4OGJlY2VhMzI2ZThkZmFhMzJkZjBmNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzYjQ4Y2U1MmRlYzUxMjRlMmI2OTZlZWViMjM4ZjNjYTlkNzA0MjBhNGQ1NTZkZjMxMWZhMGFlY2ZlM2ZiOGYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L554-L590",
+          "version": "repo-lines-v1:sha256:d8696dcddc2296804fc938527889b49acd83f905ef05d4eecc980c46757d80ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3YjJiZjg4MDM4YjgxODY1Zjg1OTI0OTI2YzU2N2JhNjc1MTVmMGRhMGQ5ZDYyNjM3MGNmYjAyYTFlM2JlOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzNzNlYTdiODM0MzI4MTYyYWUzZGU2YTk0Y2ZhZTFmOGY3YmUxYmFiNTZlNzA1NjgxZjQ3ZGY4ZmZmM2JmYjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwMWE2MjBhOWRkYWE4ZDk1YzlmYmQ0YWZlZDBmMThiMTZiNjVkNGIyOTBjMWNkMWQ0ZWQ2MzA4MjhkNDk2NWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkMzBiMTNhNTdmMTE0NzQzYzBlY2FkY2ZjYjA0NzlhOWQ5NDlkNTFhZjRlYjQ0YTAzOGU3NWE1MjJlYWZmMjUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L835-L857",
+          "version": "repo-lines-v1:sha256:2acf9ff500588c103e2541b4a2db1d66988ea77022fb66bf052e9e9030d548a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4ZTgzMGZmOGQ0ODVhNWNjMDRhNGYxNjg0OTgyZDc3OWYxMjY2MjBmZWQ4YWEwMDNhOWUxMzJlOTU1YjNlNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MGMxMjgwYzA4NjEzY2M0ZWFlYTgzOWY2NWU1ZDlhNTY3ODhiMDAyN2FkNTk4ZTlkMTg0ZmNiZjU3NDMzNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg4YTdjYmUzYzg1OThiZDhhNzc5YTFiY2UyNjg4NWEyMTg5Zjk1YWFjNjcyZjU4NzdjZWViOGVmNjliYTg4MWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxZjY0M2MyNWRhZjhkZTQwNzc4NGM5MjQwMDE4NjYxZTE3ODIzZTg4ZjQ5ZmM1OTcxNjhjMjg4YzMyZDA4NWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_995ddaa42cc34b12b0ee9593200b0106",
+      "statement": "For ordinary non-cron turns, BackgroundSubagents detaches task and start_async_task delegation into in-memory, conversation-owned jobs; workers use separate thread IDs, cannot delegate again, clear inherited authorization handlers, and expose completed results for a later owner turn.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L187-L237",
+          "version": "repo-lines-v1:sha256:3d37cac97c7be2accbd7f2f97cf2868f748412c0d4c89fbd4ac252db35131651:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMmNhYzcxY2Y0MWQ0MjIzYzBkZmYxMDU1YjNiYTUyZGFlNTdjOWIwNDJiNDkwMmU2NTAyMTMwMjVmNDVjYjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5NjAzNmViYTY2MmI0MGUwNTBjNDI0YTJlZjIwNDRiNmQ1NTY0YzVlMmM0YzE3OTk1YmVlZTExYzFhZTA3MDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMjdmY2Y4ODMxMWYwNDVmMzVkNDJhMmJmZDkxNWY1MjYwMzkyMGM2ZjM5ZjE3OWJiNWMyMWE5NzQ3NzlmNjYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L291-L375",
+          "version": "repo-lines-v1:sha256:1be0fb3d11371d19b6609dad82d71e34b9b17d7ac8e77f9676b462cd46d7000b:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MTIzODhmY2EyMDRkMTY5Y2M4ZTJhZTk5M2Q2MmM0OTZiMDVlZWI4MjI5ZWFmZjBiOGVjNjMyYzBkOTVkMTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhMjJmYzRiMGY3ZWZjMTcyNDA3MzkwNzk4MzQ1ZDEyOWUxM2E4OGM2MWM5ZTUyYzEzNGE3NzEwMDgyZGMxMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1YTQyNjk5YWE0MWRiMzRjMmNkZjQwYzhjYWIzODliNTAxNGEyOWYwZmRhNWIwYTU1M2MyODBjNTVkNjJiYmQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L593-L639",
+          "version": "repo-lines-v1:sha256:f05483d89acc2eabdf25b01759cb13b1b55bb29ca63aa08ce370a4162b414494:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwNTY1YmRlOTlmOTNiNjgzMjg0NzY1YmQ4NjVkMmQyMzk0NDVmNjQzNzgwZmViNzA3YzgwZWE2MDAxZDc5NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMDEwNWUwYTY4NTIxYzNkMzMyNjE1MzkwZTg1OWUzOWNmMjQxMjc0YTdkNzgxZDE5NmEzYWRhMDdiMTBmZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmMmYwZDE3YmRmMTNiOTQ0Njc4N2M5MjI5NTdkNmUwZDM1MDYwMDRjYzQyZWM3ODNjOTBmODYyMDBhNTg0MWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4Zjk1NGI5YjlmMmJkYzNhOTg1YzBlYjk4YTM5MzcyZWFkZDY1YzY2YmYxMzk0NzIxYzVjM2E3ZDNiY2JmZDkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L73-L121",
+          "version": "repo-lines-v1:sha256:7744c8026261ff1d3ae180d57d5e1bfa1f6922fb3313bbe008cfb136eaf93fe3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkZTIyMmJiN2QzNTU4MmUyYzEyMDc0YWQyOTE0NjlmNTYzOGM1NGNmZGZiZjViMTAyZjg1Yzg1ZTRkNTY4ZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4YTI0NmZiZmYwNDZkMDcwYmU1YzYyNDNkZWVmZTk1YjQ3YzA3MjFjYjdmZjE4Y2M4ODNlNDM0Mzg5MDVkOWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_27f0e5fc7ac9428eabdf5fb8b7b7b65f",
+      "statement": "Cron requests are marked as scheduled by DeepAgentRuntime, causing task and start_async_task delegation to execute inline and return a result in the same turn rather than create a background job or later delivery turn; nested delegation is prevented.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L187-L205",
+          "version": "repo-lines-v1:sha256:3bcbbc0117a8b67da7ce29592250e878dedeae783ad140c25dcf9034fd337f39:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMmNhYzcxY2Y0MWQ0MjIzYzBkZmYxMDU1YjNiYTUyZGFlNTdjOWIwNDJiNDkwMmU2NTAyMTMwMjVmNDVjYjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZWE0Mzk3ZDkzNTMzNjE3YTNjZTZiNmRjYzU0N2U5ZjE0OThkYzkxYThhOTk1YzVhZTA4Mjk0N2Y0NjY3NTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5NjAzNmViYTY2MmI0MGUwNTBjNDI0YTJlZjIwNDRiNmQ1NTY0YzVlMmM0YzE3OTk1YmVlZTExYzFhZTA3MDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiMmQ0ZjVkNmJiYTNjYzk3YTY5NjIyYWIyZTcyODE5ODkwMjgyNmM0YzE5NmNhZDZjZDBlNjlhZjE3ZTRjZmMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L239-L289",
+          "version": "repo-lines-v1:sha256:14f86fd06964ced0fd82fa2ae3bca5ff223681fd85b704355a9bf870f6e1004d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5YzNkYmYzMDUzZjdmNDc5MWJhZDEyY2E2N2Y4OGMxNjg2MjA0NjEzZDlhZGRmM2Y4ODgwMzliZDRjMzVhNDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5ZWJhN2ExZjE2MDEyYzRmMDk2Y2YxNWJlODY1YWFmNTJlZTNlMWZkMGZjMWEwZjdlMWNlMjcwMTdiMzUzZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzODMzNmI1NGFmZjIzZDcxN2FiYWM1OTdiMjE0MTUwODYzNmYxMjAyMTI2YzZmNmE2MjM5MjVjZTM2MWE1YzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzNzRmZGY0MTliOWIwOWIyZmU2NDk4ZTExOTBiODBiOWNkNDdhMWFkNTQzMWY2ZjBiZmIzOTBmZDYwM2VkZWYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L544-L578",
+          "version": "repo-lines-v1:sha256:51e52c9b0c2bb989ef30ee019ba123844bf62c9ef1a63c85b9e6e18d7fb4d0b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwZmUyMjBmNzY3NGFlYjZjMTgxNDk1YjRjYjgzZGZiMjk1Njc0YTc1M2VjZjc3ZDI1ZjcxZjUzM2I0ZGUzNjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NzIyZjc4ODE3ZTNjYzRiY2EwMjNkOWEyOTZlZjMxZDRhMWQ1ZjE5ZGJjMWE3YzhkYThhNGU0NjI2NjBhZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhNTgxY2IwN2U0NzBiYmI3N2Y3NWJiMjQ5YmM3MTRlNTk1NDk2YzI0ZDljMzQ4ZDIwMDY0ODU0OGYxYWNjM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MmY4ZGE3ZmRkMzQwYTg3ZjQxMDdjZmFmM2UyNmU0NjA1OWIwMDI0ZDU3MjYzZGE1ZmQyODYwMWNhN2UxYjEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L614-L647",
+          "version": "repo-lines-v1:sha256:3c64732a2e78420f0c70c336372bea1e5c87565ca74e809da58730e1cdf97460:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxODU4MTlkMDM1OTg4MThlMGUxZDc3NDNlYzdmMTUxMWViNjI2MmY1ZmYzYTcwZjA5OGZkM2RkMDk0ZmM4MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyMmQxMzhiZDc0MDY4YjlmZDVlYzg4MzYzM2Q5MTJiZGQzYTUwMzYzODU2OWUwNmUyMjAxMzIxOWQ4NDA0MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1ZmU1M2IxNDA0ZmRhNTk4MmEyZDVhNzc2YzM3OGI3NjhkMzJhODE2YzRkYzM4OThkYjc1NjMxZDkxM2RiMzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjZTIxMjIwNTc0ZmUwMWU2ZmU3MzU0NDBmOTIxMjc4NjQwOWY2YWRkOWRhMDU0Y2Q1ZWQ5MTgxNTZkZmVhYTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_331786c4b2014ef7871c1ec84802843c",
+      "statement": "Scheduled delegation has separate operational bounds: inline work is semaphore-limited and queued, has a shorter timeout that becomes an error tool result, and the host bounds each scheduled run and repairs its job thread after a run timeout.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L261-L289",
+          "version": "repo-lines-v1:sha256:e981b749cafc81995db0b99b6e49aa8c678f6504b67da025be38119284ca764a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyOTdiMGYzNWMzNmMwMWFkOWU0MTMzYzk3OTdlYmQ1YzA1YmYzY2M2OTAxYTE3MTA0ZGY1ODEzM2JhOWM5YmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5ZWJhN2ExZjE2MDEyYzRmMDk2Y2YxNWJlODY1YWFmNTJlZTNlMWZkMGZjMWEwZjdlMWNlMjcwMTdiMzUzZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0N2RiNGU2OGNiMWQ3ZTcwNDYzNWE3MGY4ZjRiNzEzN2M1NjczZDQyYzFhNjhlMDMxMDg5MDM3MWM3NWJkMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzNzRmZGY0MTliOWIwOWIyZmU2NDk4ZTExOTBiODBiOWNkNDdhMWFkNTQzMWY2ZjBiZmIzOTBmZDYwM2VkZWYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py#L42-L55",
+          "version": "repo-lines-v1:sha256:af13607f5f7d76f4c3d1608e02fb8c85ce61d9f98dd07638f418ec82cff74dbc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzYWRhYjZlNjRiN2Y1ZWU4MzQ1YzIzNzE5ZGQ0ZTBlYjY1ZjZiZjUwZGI1NTY5NmQ3ODM2ZTQzOTMwMjM5NGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNjQwNDNlZjQyZTA3ZWRkNGU3MTZjYjYwNGIxMDgyYTM4YmI3M2Y3ZjZhYzY4MTBkODE3MWE1OGY3ZWMwMWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE4NGNhZTIxNDM2ZmU0MjNlOGVlZTNlNzRjOWI4NmE1ZGU2MDMwNDYzMzMzNmU4ZDRkOTFmYTEzZTIxNWRlNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzYjJmNmZmNzdkZGJlODkyMWM4YjRjZGNjNGZmYzIxODJhZDY5YWVlZDA0MDczMzU0YTlhOTk1ZGNjMDliNWIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L848-L886",
+          "version": "repo-lines-v1:sha256:8d25c861048e873ee21c471812c4890d30809f8ba2cb77972fdf212407cdf93e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3NWYzZTRjNGQyZmExYTU4MDQyNTk5Y2IyNTU0YmY4Zjk1M2Q3MDljYTM2ZWFhZmQ2NzU2ZDVkM2Q4ODc3ZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkNmM1YmQyNjE1OTNmMDZiYzlhYzVlOWMwZDE0Mzc2NWYzOTUwY2M5YzE2MGJkOGVjNWZkMTlkMDdkOTM4ZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyYWI2NzdiYTZiNGMwNDJiMTA4NGRiNjViNWIzNGE3YmQ0Y2U5YzU0MGE1MmEzYjJkYjM2OWNkNzNlZDI5ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwM2FhMTY1YjhiZmZhZmYwY2EwMDc1ZGJjMGNmMDRiNWY3Y2U3NDdmZTUzN2EyYThjY2ZlMWYxMWMzNzZiYWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L869-L920",
+          "version": "repo-lines-v1:sha256:f5d9f8e108148cdfa224f9abba4c5437fda32fd220c8b5dcf85f8b8813199d5b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczYmRlYWZkZWUwMjE0ZjM4ZGU1NWVlNTJkZTU0MDM5MTMxMzEyYzY4ZjU1ZWFkOGRlMWQ0NGZiNjk2MDBkMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4MWJlNTk4MWNhOTk2OWRiYjcyZTQ4ZWQ0YzUwM2ViOGJlOTcyMmEwNTZhZDdjN2M2MDYyOTAzMDk5NThiMmIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L694-L759",
+          "version": "repo-lines-v1:sha256:de587d4eb3745ab58018d5ac574da95ffcf7406929530f36744a3563108fa452:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MWQ5ZGVlYzQ5NzAzNDJiZTgwNDM3ZjZlYmFiODhlYTI3MTU2NDZiYjc2MWI5ZjM0ODg0Y2Y2MTQxOTE2OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4OTYyY2JkZmQ0MGY5NTRmMjliZGQ0ZTFlOWEyYTg3M2EyMWEyM2M4MTZhNzViY2Q1MDQzMGMwYTMwZTQ5MzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwZTVmOWZiNzZjY2I2OTBlZjExZDkyNDMyN2Q5MTdkNzkzNGY5NzQxZDk2NjgzZGU2YjgwZGZkMjcxNDYwZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjZTJhZjAzYjMxYjg5NmE4OWZjMGJlNDhkZGExNWNiNmJiNjFiYjNkYTExZDk0ODIxODZiYTQzMGRjZjFmNDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_703a32d6e5ef4a6e9ca02b70d515f48e",
+      "statement": "PersistentCronScheduler claims and advances each due job before invoking it, records successful or failed runs, suppresses delivery for [SILENT] output, and records a delivery failure as an error.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/cron/scheduler.py#L114-L188",
+          "version": "repo-lines-v1:sha256:089dd931b6422647e0004fa659d807cdc11aa74b6b78df300c41fe4860f229c4:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmM2I4MzBmYjJjZmIyOTQ3MDAyZmVkMmUxMTNjNWM2MmQyZmIzZWYzM2JkMWJmODIwMDE2NDNiZmEzNjNiNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1MzNjNjJmODY4MDYzOThlM2FjZWM0YWU3ZjljOTM0MDdkM2MxZmE3MDdhZjcwMDZiZWY0NzZkOGE4OTI2ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlZDg0NmZkYzZmY2VlYzMxMGVmOGE2MzQwNGE4N2RjOGU1Yjc0OWM2MTQ3NDEzNTU4MWUzNzNkODg3YzhkZGEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/cron/scheduler.py#L76-L82",
+          "version": "repo-lines-v1:sha256:09afe15abf88881df71585d12992f53bd0d0bde036ffcb58bcb2381c9f94d303:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2Q1YmUyN2I3ZDk5NWZmOGRhOGZmNDMwZjE0NDFiYmI2MThiNGU4YjMzOTYzMzFjYmU2OGY5MTNlZDA1ZTIyZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmYzOWM1ODA0NDIzODFlODA3Y2EzNTNiYWRkNTZjYTE1MTdiMWQ1YzlmN2MwMTY4MWE2M2JiZTIxMmI1OGVjMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODI5ZjcyZmYyMDNlNzdjMjQwNzY3NDQ2MGZkZDEzOGMyNWQwZTQ0M2NmNGM0MzM1NWFlMjEwM2Y2NmRlOTAwNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzFjZmYzMTk4MmNlMzQyMTg4YmEwMWM4NTgzYjc0OWZjMGJiZDI5ZWE4NzA1ZDkyODJkNjBjZjU4MDYxYmJhOCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6b8d28a31dbc4004a46a8293ffa05767",
+      "statement": "For each Talon invocation, the runtime captures an immutable approval-policy snapshot; an approval interrupt batch must have unique IDs, is presented as one decision for all protected actions, and resumes with a decision payload for every interrupt ID while cancelling any co-batched MCP elicitation. Cron and background-delivery invocations are auto-rejected because they have no interactive approval path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L525-L570",
+          "version": "repo-lines-v1:sha256:cd5642561a581c9bbd8cfa50194f8abc717e1ef5181181125e793009d0715042:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZTI3ZjIzNWM1MzliN2Q5MGViNDUxMDhlODU3OTU1Y2NlZWZkOTI4MjFmNDdmMjJkYjVhMjc5Nzc1YzI2MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhMTYxNDYwNjU5MmNiMTM4MGVmNGZiNTFjMDFhNTE3NDI0Mjc3ZjZlY2MxZjZjZjc3OWMzYTIyYjc4ZDAxMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYWNkMzkxMTBlMmY0MTM1MTc3NDUzZTFlNjY5YTM3Y2FiOGVhMWRhOTQzNTlhNDg5MmZkOGEwYjNjYWU4N2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4N2Y5YjdlZGQzYjg5MGI0MTEyZDgwMGU3ZGY2YTRhZWUyM2E1MzcyN2YwMjFjOTE3ZDc2OTU4ZTRjNzhhZDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L853-L899",
+          "version": "repo-lines-v1:sha256:c5061d54f583b258e481797adb65cb0a176a3cf6b386a9770278c10e64080da6:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNzA1OGQ0MjY3MmRhZjg1MDIxZDMzZjE1YTNkYzhjZGE3YTllZTIxMDRjZTM0Y2U1YmQ2NGE4ZjlmMWNmZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZTYyNTFlZjA3ZDZiNzgyZDcwYWRiZDk5N2FkY2Q2MzVkOGQzZWI2YzlmN2ZmN2Y4OGQ5MzhmYmYxMDZiZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhN2JkNzUzZjFhOWMyYmFkNmE1M2MzZDA1ZDdjZmQ5OGI2NzlkY2IyYTEyZTlmNWEwYWQ1NTk5MmVhNzVjMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5NGYxZWVjNjUwZjE1ZDBiMWY0Njc2ODM5MDIyYjMzNzUzMWQ1YTRmMmQxMmQ2MjczNjI4M2IwNWJhMTY0NjQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L984-L1050",
+          "version": "repo-lines-v1:sha256:3ceb9e4ce86513d27f423c5e91f01d6a1d96d1113caeafa21bb9335dac6685a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0YmFlNTlmM2JjNjUzOTJiNDUyMjFjZWFkZmE4NDNkNTJlZWE3OWJiZDc2OWNhNTA1NGZjNDIyZjYxMjRiNDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZTgxYzZhYjEzMWQ4NjBhMWUzNmIxNmRmOTE5OGY1NzQ4YzMyYzhiYWNlMjdmYzEyZDI1ZGYwNDY3YzIzN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljNGI4MGYzM2VkMDA3ZjA2NTBhZjY2NDBlNzI4YWIzZGMxODU1MjIxMmFiMTUwMTk2YzI4Njk1MjdiZTZiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0MDkzNjk4MmVhODBlMmRkNDA4Zjk4ZjdjN2IwYjcxZjY5MzE4NzllNDc1ZTY5OTI2NzhhNDk5MjBhZTVhNWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L65-L87",
+          "version": "repo-lines-v1:sha256:f079fe8e43b695c12ae6b2a85b06548329b4795684d5a8e7821a6b4e471ff228:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhNDNjZTc5NWE0MmY4NTM5NmE0OTcyZTA4NDZjNjMwMmIxOWJkNzZmYzMzZDIzYzAwZTI4NWY2OWI5Nzk2ODUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkMmFjMzdhZTJmNGMxMzQwNWE1YTczOGI1OTYwYTlkNmU0NjBjMTY1YTE3OThhMWNlNDRjYTVhOGY5YjlmMDQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py#L16-L108",
+          "version": "repo-lines-v1:sha256:e4d6ab4868d9d717a32c6842083161a8a84cac166da5dab3c34d0d5ba32142d2:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNzlhYmFlZmVmNzYwNTU2NDU5NzRlNzNlN2E0MWY3ZTFiMjU0NjI5ZjBiNzc1N2NmZDRkNGU0ZGYxMTA1MzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkNTE4Njc3MWVjZTIxNThlMTY4YmIwYzc0YzY4MWIwZDJiMDlmNTcwZTE1YTgwZTkzMGUwOTdiN2JkNzRjZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyZDY2ZmE5NWQxMzQwNDEzNDAxZjFlMThlNDdkODIzY2FiOGExMGUxMDEyNGY5YzdjYmYzODMxMDI3MGRjNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_49e30d14d13b4b9fa7922375de8ef1fb",
+      "statement": "TalonHost exposes a pending tool-approval request to the originating channel and resumes it only after an approve/reject response from the sender who started the run; a validated reaction on the approval prompt can resolve the same pending request.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1476-L1537",
+          "version": "repo-lines-v1:sha256:bbbf5c523103c4dc838d7fb93085f933305d7b6b162e78537fb88d0c2b4ee5e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4Mzc5MDA2ZGM3NTg2NGEwYmMxODdhZTgyODFkNGIzNTY0MDVjNzEzZGY2MDk1Yjc0YjU2MTRiYTQ5MThhMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3Mzg1YmE1MGIwNzNiYjFkYWU1OWVlNWYzMDliNTI4OTc5ZjhjYTQ1ZmE1NjNmMjJlNzQyZmRmMTFhMDRmMTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1NTk5MjYyODE3NTIwYTc3MDVmZjIwYjA1OTA2MTg0MTQ3N2U1YWQ4MjJmYWRmNjViZDViZjdiYmQzNjg2NjIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1538-L1576",
+          "version": "repo-lines-v1:sha256:0786647b427cdf44a45b7194df6256f7e4f47daac1b3507a01d9a46444c44f83:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlY2UwMzA5ZjRkYzJjZjY5NTgxZDllMDM2YzkwMTk0ODliYjEwNGFmNjhiNGI3NDM1OGE5MWI1YzRhZTY3MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxZjA2ZTliNjc5ZmQ1ZDcwYzVkMzhiMmM5ZmJiMzU5Y2I1Y2UzMmNjNjQ0ZGM1YzdmOTMyNzY4OWM2ZGM3N2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhZWE1YjkyMGZjYjcwMTA2ZmM3ZmMzNGFjYWIwMWEzZDFlMGM5YjE1Y2QxMThmNWJmNTI3YThhMmJhZmEyNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4MWVjMzk1ZGQ3N2I3M2I4MTkwMjE1NDRiMjg0YzRhZTMxNGFjZWUzOTVmZTA2Y2MxNDljZDJkYjBkNWYwOWIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L1217-L1240",
+          "version": "repo-lines-v1:sha256:2af6d9b6956d3799b7034810353b1c20347db253fdb7d4786463eb9dd764b392:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxYjMxNTc0MzUzNTkwOTQ5ZjdiYmZmMGJiYzdmYzI2ODYxMDgyZjQ1OGRmZjE2MmNhNTFmNmI4YzEzMGJiNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmZWU3YzYwMGNjYTVjNjMwODgxZjg4YWRiN2NmY2I4NTBkMmM3OGI0ZGQ1NDliZDNiOWVmOTM0YjgyMGJlZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlOTFkNzVlNWE2ODdiODNhNWE1MzMwNzliMDA2MGJhMjc4MzM3M2M4OGUzNGMyZDdiMTk5MTIwMGM0OGJhYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2ODBiYWM2OTc2NGJhZmJmNTY4ZjM2ZmRkZDI4NmY4NTEwMjVmMDBiZjdlOTJhODE2OWYyYWJkYTgyNjkxNWEifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-21T08:06:25.442Z"
   }
 }

@@ -2187,6 +2187,113 @@ class TestModalScreenEscapeDismissal:
             assert app.interrupt_called is False
 
 
+async def test_thread_selector_ctrl_c_copies_highlighted_id() -> None:
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": f"thread-{name}",
+            "initial_prompt": name,
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+        for name in ("first", "second")
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+        patch("deepagents_code.app._monotonic", side_effect=[0.0, 2.0, 4.0]),
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("down", "ctrl+c")
+            copy.assert_called_once_with(app, "thread-second")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "first"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_called_once_with(app, "thread-first")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "no-matching-thread"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_not_called()
+            assert app.screen is screen
+
+
+@pytest.mark.parametrize("filter_text", ["first", "no-matching-thread"])
+async def test_thread_selector_ctrl_c_quit_flow(filter_text: str) -> None:
+    """Rapid Ctrl+C arms quit even when the thread filter has no matches."""
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": "thread-first",
+            "initial_prompt": "first",
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.query_one("#thread-filter", Input).value = filter_text
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(app, "notify") as notify,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 1.0, 2.1],
+                ),
+            ):
+                await pilot.press("ctrl+c")
+                assert app._quit_pending is False
+                notify.reset_mock()
+                await pilot.press("ctrl+c")
+                exit_mock.assert_not_called()
+                assert app.screen is screen
+
+                notify.assert_called_once_with(
+                    "Press Ctrl+C again to quit", timeout=3, markup=False
+                )
+                await pilot.press("ctrl+c")
+                exit_mock.assert_called_once()
+
+                if filter_text == "first":
+                    copy.assert_called_once_with(app, "thread-first")
+                else:
+                    copy.assert_not_called()
+
+
 class TestModalScreenCtrlDHandling:
     """Tests for app-level Ctrl+D behavior while modals are open."""
 
@@ -16997,6 +17104,37 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["second"]
 
+    async def test_repeated_footer_effort_click_queues_once(self) -> None:
+        """Repeated effort clicks during a turn keep one queued picker request."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            await app.action_open_effort_selector()
+            await app.action_open_effort_selector()
+
+            assert [message.text for message in app._pending_messages] == ["/effort"]
+
+    async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
+        """Clicking the model label again does not stack another selector."""
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+            assert isinstance(app.screen, ModelSelectorScreen)
+            stack_size = len(app.screen_stack)
+
+            await app.action_open_model_selector()
+            await pilot.pause()
+
+            assert len(app.screen_stack) == stack_size
+            assert isinstance(app.screen, ModelSelectorScreen)
+
     async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
         """Bare `/auto` and `/auto model` bypass; the mutating forms must not.
 
@@ -25714,7 +25852,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(50)
+                for index in range(579)
             ],
             context_tokens=0,
             model_spec="",
@@ -25735,14 +25873,14 @@ class TestResumeScrollPosition:
             for _ in range(20):
                 await pilot.pause()
                 if (
-                    app._message_store.visible_count == 51
+                    app._message_store.visible_count == 580
                     and not app._history_prefetch_active
                     and chat.max_scroll_y > 0
                     and chat.scroll_y == chat.max_scroll_y
                 ):
                     break
 
-            assert app._message_store.visible_count == 51
+            assert app._message_store.visible_count == 580
             assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
@@ -25750,6 +25888,24 @@ class TestResumeScrollPosition:
             # initial tail load and prefetch, not bottom-follow (see
             # `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
+
+    async def test_prefetch_teardown_preserves_new_bottom_follow(self) -> None:
+        """A live bottom-follow request should outlive resumed-history prefetch."""
+        app = DeepAgentsApp()
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            await chat.mount(Static("\n".join(f"line {index}" for index in range(20))))
+            await pilot.pause()
+
+            app._history_prefetch_active = True
+            chat.anchor()
+            app._history_prefetch_anchor_generation = chat._bottom_follow_generation
+            chat.anchor()
+            app._stop_history_prefetch()
+
+            assert chat.is_anchored
+            assert chat._follow_bottom_when_scrollable
 
 
 class TestWelcomeBannerLiveUpdates:
@@ -25780,6 +25936,72 @@ class TestWelcomeBannerLiveUpdates:
                 mock_runtime_state.model_name = "gpt-5.5"
                 app._sync_status_model()
         assert "Welcome banner not found during model sync" in caplog.text
+
+
+class TestHookStatusReveal:
+    """Hook progress appears only after continuous activity."""
+
+    async def test_fast_hook_status_never_reaches_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Running hook")
+            app._update_hook_status("")
+            await pilot.pause(0.05)
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is False
+
+    async def test_slow_hook_status_appears_after_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            status = app.query_one("#status-message", Static)
+            app._update_hook_status("Checking output")
+            assert status.display is False
+
+            await pilot.pause(0.05)
+
+            assert status.display is True
+            assert str(status.render()) == "Checking output"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is True
+
+    async def test_clearing_revealed_hook_status_restores_agent_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Checking output")
+            await pilot.pause(0.05)
+            assert str(status.render()) == "Checking output"
+
+            app._update_hook_status("")
+            await pilot.pause()
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_visible is False
 
 
 class TestStatusBarConnectionMirroring:
@@ -30476,6 +30698,72 @@ class TestPromptClipboard:
                 setattr(app, attribute, None)
 
             assert app._prompt_clipboard_block_reason() is None
+
+
+class TestSessionCostWarning:
+    """Session cost warnings respect thread state and preserve running work."""
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_warning_modal_once_per_thread(self, dismiss_key: str) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(5.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            app._set_session_cost(6.0)
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+            assert app._session_cost_usd == pytest.approx(6.0)
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._reset_thread_usage()
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press(dismiss_key)
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_dismiss_preserves_running_agent(self, dismiss_key: str) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_agent_running(True)
+            worker = MagicMock()
+            app._agent_worker = worker
+            screen = app.screen
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert app.screen is not screen
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert app._agent_running is True
+            worker.cancel.assert_not_called()
+
+    async def test_zero_threshold_disables_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 0.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._set_session_cost(100.0)
+            await pilot.pause()
+            assert app.screen is screen
 
 
 class TestProvisionalCostReconciliation:

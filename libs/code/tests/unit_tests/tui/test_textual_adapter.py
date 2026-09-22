@@ -2420,15 +2420,8 @@ class TestSessionCostEvents:
         assert updates[0] > 0
         assert turn_stats.per_kind["subagent"].request_count == 1
 
-    async def test_usage_already_counted_from_messages_is_not_added_twice(
-        self,
-    ) -> None:
-        """A nested request the message stream recorded stays a single charge.
-
-        The graph streams provisional usage for every nested call, including the
-        ones whose messages do reach this client. Both paths share one ledger, so
-        the second arrival must move neither the stats nor the displayed cost.
-        """
+    async def test_mixed_id_usage_counts_once(self) -> None:
+        """Mixed provider and fallback IDs still identify one nested request."""
         from langchain_core.messages import AIMessageChunk
 
         async def mount_message(_: object) -> bool:
@@ -2462,7 +2455,11 @@ class TestSessionCostEvents:
                 ("tools:task",),
                 "messages",
                 (
-                    AIMessageChunk(content="", id="child-1", usage_metadata=usage),  # ty: ignore[invalid-argument-type]
+                    AIMessageChunk(
+                        content="",
+                        id="lc_run--00000000-0000-0000-0000-000000000123",
+                        usage_metadata=usage,
+                    ),  # ty: ignore[invalid-argument-type]
                     {},
                 ),
             ),
@@ -2472,7 +2469,8 @@ class TestSessionCostEvents:
                 {
                     "type": "model_usage",
                     "version": 1,
-                    "request_id": "child-1",
+                    "request_id": "resp_child",
+                    "invocation_id": "00000000-0000-0000-0000-000000000123",
                     "usage_metadata": usage,
                     "model_name": "gpt-5.5",
                     "provider": "openai",

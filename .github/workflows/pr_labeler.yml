@@ -177,6 +177,14 @@ jobs:
               for (const label of h.matchFileLabels(files)) {
                 toAdd.add(label);
               }
+
+              // `topic:*` from the modules the PR touched. Additive, like the
+              // package labels: a topic is never removed on edit, because a
+              // later push dropping the file does not mean the PR stopped
+              // being about the subject.
+              for (const label of h.matchTopicFileLabels(files)) {
+                toAdd.add(label);
+              }
             }
 
             // ── Branch-name-based labels ──

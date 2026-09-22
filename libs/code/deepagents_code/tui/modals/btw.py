@@ -65,7 +65,11 @@ class BtwScreen(ModalScreen[None]):
         with Vertical(id="btw-dialog"):
             yield Static("/btw", id="btw-title")
             yield Static(
-                "A side question. No tools. Not added to the conversation.",
+                "Ask a quick question without interrupting your conversation.",
+                id="btw-description",
+            )
+            yield Static(
+                "Replies don't use tools and aren't saved to the conversation.",
                 id="btw-subtitle",
             )
             yield BtwTextArea(

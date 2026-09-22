@@ -270,3 +270,56 @@ async def test_stop_still_cancels_a_guarded_ticker(tmp_path) -> None:
 async def _append_and_return(values: list[str], value: str) -> str:
     values.append(value)
     return "[SILENT]"
+
+
+async def test_a_stalled_job_does_not_silence_the_others(tmp_path) -> None:
+    """One job that never finishes must not stop the rest of the fleet firing.
+
+    Due jobs run one at a time, so an unbounded run silences every other schedule --
+    and because a job's next run time is claimed before it starts, the fires it
+    swallows are deleted rather than merely delayed. `run_scheduled_job` bounds the
+    run; this pins that the bound is what lets the tick move on.
+    """
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    stalled = store.create_job(
+        prompt="stall",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    healthy = store.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    delivered: list[str] = []
+
+    async def run_job(claimed: CronJob) -> str:
+        if claimed.id == stalled.id:
+            # Stands in for `run_scheduled_job`'s own bound, which the host applies
+            # around the agent turn.
+            async with asyncio.timeout(0.05):
+                await asyncio.Event().wait()
+        return "report filed"
+
+    async def deliver_result(_claimed: CronJob, text: str) -> None:
+        delivered.append(text)
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=run_job,
+        deliver_result=deliver_result,
+        now=lambda: now + timedelta(minutes=1),
+    )
+
+    await asyncio.wait_for(scheduler.tick_once(), 2)
+
+    assert delivered == ["report filed"]
+    stalled_after = store.get_job(stalled.id)
+    healthy_after = store.get_job(healthy.id)
+    assert stalled_after is not None
+    assert healthy_after is not None
+    assert stalled_after.last_status == "error"
+    assert healthy_after.last_status == "ok"

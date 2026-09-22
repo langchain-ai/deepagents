@@ -8863,7 +8863,9 @@ class DeepAgentsApp(App):
         # repaints.
         with suppress(NoMatches):
             cache_display = self._status_bar.query_one("#cache-display")
-            cache_display.visible = self._thread_has_completed_turn and writes > 0
+            cache_display.visible = self._thread_has_completed_turn and (
+                reads > 0 or writes > 0
+            )
             self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
@@ -9368,9 +9370,11 @@ class DeepAgentsApp(App):
                 type(raw_endpoint).__name__,
             )
 
-    def _refresh_cache_timing(self) -> None:
-        """Show timing for a cache write observed in the latest turn."""
+    def _refresh_cache_timing(self, turn_stats: SessionStats) -> None:
+        """Refresh retention on cache use, preserving the last actual write."""
         if self._status_bar is None or not self._last_model_request_at:
+            return
+        if not (turn_stats.cache_write_tokens or turn_stats.cache_read_tokens):
             return
         from deepagents_code.cold_cache import (
             parse_cache_timestamp,
@@ -9388,8 +9392,11 @@ class DeepAgentsApp(App):
             else None
         )
         self._status_bar.set_cache_timing(
-            timestamp,
+            timestamp
+            if turn_stats.cache_write_tokens
+            else self._status_bar.cache_written_at,
             ttl_seconds=policy.window_seconds if policy is not None else None,
+            retention_at=timestamp,
         )
 
     async def _stamp_cache_identity_locally(self) -> None:
@@ -18999,8 +19006,7 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
-                if turn_stats.cache_write_tokens > 0:
-                    self._refresh_cache_timing()
+                self._refresh_cache_timing(turn_stats)
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,

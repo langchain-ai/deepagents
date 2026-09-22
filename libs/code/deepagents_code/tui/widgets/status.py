@@ -1142,16 +1142,19 @@ class StatusBar(Vertical):
         Returns:
             Compact local timestamp and cache-bust countdown.
         """
-        if self.cache_written_at is None:
-            return ""
-        written = self.cache_written_at.astimezone().strftime("%H:%M:%S")
+        written = (
+            f"wrote {self.cache_written_at.astimezone():%H:%M:%S}"
+            if self.cache_written_at is not None
+            else ""
+        )
         if self.cache_expires_at is None:
-            return f"wrote {written}"
+            return written
         remaining = max(
             0, int((self.cache_expires_at - datetime.now(UTC)).total_seconds())
         )
         minutes, seconds = divmod(remaining, 60)
-        return f"wrote {written} / bust {minutes}:{seconds:02d}"
+        countdown = f"bust {minutes}:{seconds:02d}"
+        return f"{written} / {countdown}" if written else countdown
 
     def _stop_cache_timer(self) -> None:
         """Stop the cache countdown timer."""
@@ -1258,14 +1261,25 @@ class StatusBar(Vertical):
         self._refresh_metrics()
 
     def set_cache_timing(
-        self, written_at: datetime | None, *, ttl_seconds: int | None = None
+        self,
+        written_at: datetime | None,
+        *,
+        ttl_seconds: int | None = None,
+        retention_at: datetime | None = None,
     ) -> None:
-        """Set the last cache write time and optional retention countdown."""
+        """Set the last cache write time and optional retention countdown.
+
+        Args:
+            written_at: Last observed write, or `None` if none is known.
+            ttl_seconds: Provider retention window, if known.
+            retention_at: Latest cache hit or write; falls back to `written_at`.
+        """
         self._stop_cache_timer()
         self.cache_written_at = written_at
+        retention_at = retention_at or written_at
         self.cache_expires_at = (
-            datetime.fromtimestamp(written_at.timestamp() + ttl_seconds, UTC)
-            if written_at is not None and ttl_seconds is not None and ttl_seconds > 0
+            datetime.fromtimestamp(retention_at.timestamp() + ttl_seconds, UTC)
+            if retention_at is not None and ttl_seconds is not None and ttl_seconds > 0
             else None
         )
         if (

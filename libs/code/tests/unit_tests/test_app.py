@@ -5816,6 +5816,62 @@ class TestCopyCommand:
     """Tests for `/copy` command behavior."""
 
 
+class TestCacheTiming:
+    """Cache hits renew retention without pretending to be writes."""
+
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_cache_hit_renews_countdown(self, observed_write: bool) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=6)
+            hit_at = datetime.now(UTC)
+            app._lc_thread_id = "cache-timing-test"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if observed_write:
+                app._last_model_request_at = written_at.isoformat()
+                app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                app._last_model_request_at = hit_at.isoformat()
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            await pilot.pause()
+
+            assert bar.cache_written_at == (written_at if observed_write else None)
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+            rendered = str(app.query_one("#cache-display").render())
+            assert "bust 4:" in rendered
+            assert ("wrote" in rendered) is observed_write
+
+            # A turn without cache activity must not renew the countdown.
+            app._last_model_request_at = (hit_at + timedelta(minutes=1)).isoformat()
+            app._refresh_cache_timing(SessionStats())
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+
+
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 

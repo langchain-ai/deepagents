@@ -26,7 +26,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
+    from langgraph.pregel import Pregel
 
 
 async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
@@ -225,6 +227,90 @@ async def test_real_agent_wiring_preserves_checkpoint(
     )
     after = await agent.aget_state(config)
     assert before == after
+
+
+@pytest.fixture
+def instruction_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from deepagents_code import agent
+
+    user = tmp_path / "user.md"
+    project = tmp_path / "AGENTS.md"
+    user.write_text("Always answer in Spanish.\n<!-- private marker -->\n")
+    project.write_text("Reuse the existing HTTP client.\n")
+    skills = tmp_path / "skills"
+    skill = skills / "review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review database migrations.\n---\nCheck SQL.\n"
+    )
+    monkeypatch.setattr(agent, "get_user_agent_md_path", lambda _name: user)
+    monkeypatch.setattr(agent, "get_project_agent_md_path", lambda _root: [project])
+    monkeypatch.setattr(
+        agent, "get_skill_sources", lambda **_kwargs: [(str(skills), "Project")]
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_side_instructions_survive_a_fresh_runtime(
+    instruction_workspace: Path, monkeypatch: pytest.MonkeyPatch, *, resumed: bool
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from deepagents_code._testing_models import DeterministicIntegrationChatModel
+    from deepagents_code.agent import create_cli_agent
+    from deepagents_code.btw import BTW_OPERATION_ATTR
+
+    model = DeterministicIntegrationChatModel()
+    monkeypatch.setattr(
+        "deepagents_code.config.create_model",
+        lambda *_args, **_kwargs: SimpleNamespace(model=model),
+    )
+    saver = InMemorySaver()
+    config: RunnableConfig = {"configurable": {"thread_id": "instructions"}}
+
+    def build() -> tuple[Pregel, BtwOperation]:
+        graph, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-btw-instructions",
+            cwd=instruction_workspace,
+            enable_shell=False,
+            system_prompt="Explain the project.",
+            checkpointer=saver,
+        )
+        return graph, getattr(backend, BTW_OPERATION_ATTR)
+
+    graph, warm = build()
+    if resumed:
+        await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    before = await graph.aget_state(config)
+    _new_graph, cold = build()
+    captured: list[str] = []
+
+    def answer(messages: list[BaseMessage], **_kwargs: object) -> AIMessage:
+        captured.append(messages[0].text)
+        return AIMessage(content="Una respuesta.")
+
+    with patch.object(
+        DeterministicIntegrationChatModel, "ainvoke", new=AsyncMock(side_effect=answer)
+    ):
+        # Calling the operation directly must neither populate the checkpoint
+        # nor need a regular agent turn in the newly constructed runtime.
+        for operation in (warm, cold):
+            assert (
+                await operation.answer("instructions", before.values, "Why?")
+                == "Una respuesta."
+            )
+        warm._snapshots.clear()  # Simulate eviction within the same runtime.
+        assert (
+            await warm.answer("instructions", before.values, "Why?") == "Una respuesta."
+        )
+    for prompt in captured:
+        assert "Always answer in Spanish." in prompt
+        assert "Reuse the existing HTTP client." in prompt
+        assert "Review database migrations." in prompt
+        assert "private marker" not in prompt
+    assert (await graph.aget_state(config)) == before
 
 
 @pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint"])

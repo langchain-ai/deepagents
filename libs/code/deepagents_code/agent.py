@@ -3599,7 +3599,16 @@ def create_cli_agent(
     if interactive:
         from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 
-        btw = BtwOperation(model, system_prompt, environment)
+        btw = BtwOperation(
+            model,
+            system_prompt,
+            environment,
+            instruction_middleware=[
+                item
+                for item in agent_middleware
+                if isinstance(item, MemoryMiddleware | PluginSkillsMiddleware)
+            ],
+        )
         agent_middleware.append(btw)
         setattr(composite_backend, BTW_OPERATION_ATTR, btw)
     with warnings.catch_warnings():

@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
+from deepagents.middleware.memory import MemoryState
+from deepagents.middleware.skills import SkillsState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
@@ -24,10 +26,13 @@ from langchain_core.messages import (
     convert_to_messages,
 )
 from langchain_core.runnables import RunnableBinding
+from langgraph.runtime import Runtime
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents.middleware.memory import MemoryMiddleware
+    from deepagents.middleware.skills import SkillsMiddleware
     from langchain_core.messages import MessageLikeRepresentation
 
 _INSTRUCTIONS = (
@@ -42,6 +47,41 @@ _TOOL_OPTIONS = frozenset(
     {"tools", "tool_choice", "functions", "function_call", "parallel_tool_calls"}
 )
 _OPTION_CONTAINERS = ("model_kwargs", "extra_body")
+
+
+class _InstructionState(MemoryState, SkillsState):
+    """Local copy of the checkpoint channels used to assemble instructions."""
+
+
+async def _restore_system(
+    system: SystemMessage,
+    model: BaseChatModel,
+    state: Mapping[str, object],
+    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
+) -> SystemMessage:
+    channels = ("memory_contents", "skills_metadata", "skills_load_errors")
+    local = cast(
+        "_InstructionState",
+        {
+            "messages": [],
+            **{key: deepcopy(state[key]) for key in channels if key in state},
+        },
+    )
+    runtime = Runtime()
+    request = ModelRequest(
+        model=model,
+        system_message=system,
+        state=local,
+        messages=[],
+        tools=[],
+        runtime=runtime,
+    )
+    for item in middleware:
+        update = await item.abefore_agent(local, runtime, {})
+        if update:
+            local.update(update)
+        request = item.modify_request(request)
+    return request.system_message or system
 
 
 def _tool_free_options(options: Mapping[str, Any]) -> dict[str, Any]:
@@ -128,11 +168,21 @@ class BtwOperation(AgentMiddleware):
         model: str | BaseChatModel,
         system_prompt: str,
         environ: Mapping[str, str] | None,
+        *,
+        instruction_middleware: Sequence[MemoryMiddleware | SkillsMiddleware] = (),
     ) -> None:
-        """Keep the workspace-bound bootstrap model and prompt."""
+        """Keep workspace defaults and the read-only instruction loaders.
+
+        Args:
+            model: Workspace bootstrap model.
+            system_prompt: Base instructions for a thread without a live snapshot.
+            environ: Workspace environment for lazy model resolution.
+            instruction_middleware: Main agent memory and skill loaders, in order.
+        """
         self._model = model
         self._system = SystemMessage(content=system_prompt)
         self._environ = environ
+        self._instruction_middleware = tuple(instruction_middleware)
         self._snapshots: OrderedDict[
             str, tuple[BaseChatModel, SystemMessage, dict[str, Any]]
         ] = OrderedDict()
@@ -193,7 +243,9 @@ class BtwOperation(AgentMiddleware):
         """Generate without tools or checkpoint writes.
 
         Use the thread's latest server-resolved model and instructions, falling
-        back to checkpoint settings or the workspace's bootstrap model.
+        back to checkpoint settings or the workspace's bootstrap model. Restore
+        memory and skills through the main agent's loaders when no live snapshot
+        exists, without writing their updates back to the conversation.
 
         Args:
             thread_id: Thread whose conversation supplies context.
@@ -208,15 +260,14 @@ class BtwOperation(AgentMiddleware):
         """
         from deepagents_code.config import create_model, use_environment
 
-        model, system, settings = self._snapshots.get(
-            thread_id, (self._model, self._system, {})
-        )
+        snapshot = self._snapshots.get(thread_id)
+        model, system, settings = snapshot or (self._model, self._system, {})
         settings = deepcopy(settings)
         with use_environment(self._environ):
             spec = state.get("_model_spec")
-            if (
-                thread_id not in self._snapshots and isinstance(spec, str) and spec
-            ) or isinstance(model, str):
+            if (snapshot is None and isinstance(spec, str) and spec) or isinstance(
+                model, str
+            ):
                 params = state.get("_model_params")
                 result = await asyncio.to_thread(
                     create_model,
@@ -232,6 +283,10 @@ class BtwOperation(AgentMiddleware):
             if not isinstance(model, BaseChatModel):
                 msg = "Side questions require an unbound chat model."
                 raise TypeError(msg)
+            if snapshot is None:
+                system = await _restore_system(
+                    system, model, state, self._instruction_middleware
+                )
             model = _tool_free_model(model)
             messages = [
                 SystemMessage(content=f"{system.text}\n\n{_INSTRUCTIONS}"),

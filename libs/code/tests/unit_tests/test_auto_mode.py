@@ -64,12 +64,13 @@ from deepagents_code.auto_mode import (
     _active_user_directives,
     _ask_user_question_count,
     _batch_id,
+    _ClassifierBatch,
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
     _ClassifierModelUnavailableError,
-    _ClassifierVerdict,
     _default_counters,
     _fixed_repo_command_allowed,
+    _IndexedClassifierVerdict,
     _merge_temp_artifacts,
     _routine_write_allowed,
     _unresolvable_write_path_reason,
@@ -216,7 +217,7 @@ class _ThinkingAnthropicModel(_StructuredModel):
 
 class _ConversationModel(_StructuredModel):
     def __init__(
-        self, results: Sequence[_ClassifierVerdict | dict[str, object] | Exception]
+        self, results: Sequence[_ClassifierBatch | dict[str, object] | Exception]
     ) -> None:
         super().__init__()
         self.results = list(results)
@@ -318,9 +319,9 @@ class _AskReceiptFlowModel(_ToolBindingFakeModel):
     ) -> Runnable[LanguageModelInput, dict[str, Any] | BaseModel]:
         del include_raw, kwargs
         assert isinstance(schema, type)
-        assert issubclass(schema, _ClassifierVerdict)
+        assert issubclass(schema, _ClassifierBatch)
 
-        def classify(model_input: LanguageModelInput) -> _ClassifierVerdict:
+        def classify(model_input: LanguageModelInput) -> _ClassifierBatch:
             assert isinstance(model_input, list)
             classifier_message = model_input[1]
             assert isinstance(classifier_message, HumanMessage)
@@ -551,8 +552,23 @@ def _capture_review_events(request: ModelRequest[Any]) -> list[dict[str, Any]]:
     return events
 
 
-def _allow_result() -> _ClassifierVerdict:
-    return _ClassifierVerdict(
+def _single_result(
+    *,
+    decision: Literal["allow", "deny"],
+    category: AutoDecisionCategory,
+    reason: str,
+) -> _ClassifierBatch:
+    return _ClassifierBatch(
+        decisions=[
+            _IndexedClassifierVerdict(
+                action_index=0, decision=decision, category=category, reason=reason
+            )
+        ]
+    )
+
+
+def _allow_result() -> _ClassifierBatch:
+    return _single_result(
         decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
     )
 
@@ -564,8 +580,8 @@ def _deny_result(
     *,
     category: AutoDecisionCategory = AutoDecisionCategory.OTHER_POLICY,
     reason: str = "The selected answer does not authorize this action.",
-) -> _ClassifierVerdict:
-    return _ClassifierVerdict(decision="deny", category=category, reason=reason)
+) -> _ClassifierBatch:
+    return _single_result(decision="deny", category=category, reason=reason)
 
 
 async def test_classifier_history_is_provider_neutral_and_checkpointed(
@@ -848,7 +864,7 @@ async def test_classifier_review_lifecycle_reports_only_opaque_ids(
 )
 async def test_classifier_review_lifecycle_balances_blocked_results(
     tmp_path: Path,
-    result: _ClassifierVerdict | dict[str, object],
+    result: _ClassifierBatch | dict[str, object],
     disposition: str,
 ) -> None:
     middleware = _middleware(tmp_path)
@@ -1772,7 +1788,7 @@ async def test_absolute_outside_write_resolves_path_off_event_loop(
             resolution_threads.append(threading.get_ident())
         return real_resolve(path, strict=strict)
 
-    result = _ClassifierVerdict(
+    result = _single_result(
         decision="deny",
         category=AutoDecisionCategory.TRUST_BOUNDARY,
         reason="The target crosses the repository trust boundary.",
@@ -1809,7 +1825,7 @@ async def test_symlink_escape_requires_classifier(tmp_path: Path) -> None:
     outside.mkdir()
     link = tmp_path / "linked"
     link.symlink_to(outside, target_is_directory=True)
-    result = _ClassifierVerdict(
+    result = _single_result(
         decision="deny",
         category=AutoDecisionCategory.TRUST_BOUNDARY,
         reason="The target crosses the repository trust boundary.",
@@ -1965,7 +1981,7 @@ async def test_predictable_preexisting_temp_path_remains_denied(
     preexisting = tmp_path / "pr-body.md"
     preexisting.write_text("keep me")
     model = _StructuredModel(
-        _ClassifierVerdict(
+        _single_result(
             decision="deny",
             category=AutoDecisionCategory.TRUST_BOUNDARY,
             reason="The path was not allocated by dcode for this request.",
@@ -2108,7 +2124,7 @@ async def test_broad_temp_directory_deletion_remains_denied(
     update = cast("dict[str, Any]", command.update)
     assert cast("ToolMessage", update["messages"][0]).status == "error"
     model = _StructuredModel(
-        _ClassifierVerdict(
+        _single_result(
             decision="deny",
             category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
             reason="Broad directory deletion is not authorized.",
@@ -2234,7 +2250,7 @@ async def test_non_temp_outside_worktree_write_remains_denied(
     worktree.mkdir()
     outside_path = tmp_path / "neighbor-project" / "module.py"
     model = _StructuredModel(
-        _ClassifierVerdict(
+        _single_result(
             decision="deny",
             category=AutoDecisionCategory.TRUST_BOUNDARY,
             reason="The target crosses the repository trust boundary.",
@@ -2343,7 +2359,7 @@ async def test_failed_proposed_creation_is_not_temp_provenance(
 ) -> None:
     failed_path = tmp_path / "dcode-scratch-failed.md"
     model = _StructuredModel(
-        _ClassifierVerdict(
+        _single_result(
             decision="deny",
             category=AutoDecisionCategory.TRUST_BOUNDARY,
             reason="No successful allocation establishes ownership.",
@@ -2688,7 +2704,7 @@ async def test_unavailable_manual_control_state_stays_plain_manual(
 async def test_sensitive_write_requires_classifier(
     tmp_path: Path, file_path: str
 ) -> None:
-    result = _ClassifierVerdict(
+    result = _single_result(
         decision="deny",
         category=AutoDecisionCategory.TRUST_BOUNDARY,
         reason="The target crosses the repository trust boundary.",
@@ -2737,7 +2753,7 @@ async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
 
 
 async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> None:
-    result = _ClassifierVerdict(
+    result = _single_result(
         decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
     )
     model = _StructuredModel(result)
@@ -3227,17 +3243,23 @@ async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
     delete_tool = _tool("delete")
-    result = [
-        _ClassifierVerdict(
-            decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
-        ),
-        _ClassifierVerdict(
-            decision="deny",
-            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
-            reason="The affirmative did not cover deleting the .env file.",
-        ),
-    ]
-    model = _ConversationModel(result)
+    result = _ClassifierBatch(
+        decisions=[
+            _IndexedClassifierVerdict(
+                action_index=0,
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            ),
+            _IndexedClassifierVerdict(
+                action_index=1,
+                decision="deny",
+                category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                reason="The affirmative did not cover deleting the .env file.",
+            ),
+        ]
+    )
+    model = _StructuredModel(result)
     middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
     request, _store, _key = _request(
         tmp_path,
@@ -3287,17 +3309,12 @@ async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
         }
     ]
     assert [action["tool_call_id"] for action in payload["current_actions"]] == [
-        "bound-call"
+        "bound-call",
+        "extra-call",
     ]
-    assert [action["tool_call_id"] for action in payload["other_actions"]] == [
-        "extra-call"
-    ]
-    second_message = cast("HumanMessage", model.calls[1][-1])
-    second_payload = json.loads(cast("str", second_message.content))
-    assert second_payload["same_turn_user_answers"] == payload["same_turn_user_answers"]
-    assert [action["tool_call_id"] for action in second_payload["current_actions"]] == [
-        "extra-call"
-    ]
+    assert [action["action_index"] for action in payload["current_actions"]] == [0, 1]
+    assert payload["other_actions"] == []
+    assert len(model.calls) == 1
 
     dispositions = {
         decision["tool_call_id"]: decision["disposition"]
@@ -3721,17 +3738,23 @@ async def test_ambiguous_affirmative_does_not_grant_escalation(
     answer = "sure, and also push hard to main"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
-    result = [
-        _ClassifierVerdict(
-            decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
-        ),
-        _ClassifierVerdict(
-            decision="deny",
-            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
-            reason="The bound proposal did not cover force-pushing main.",
-        ),
-    ]
-    model = _ConversationModel(result)
+    result = _ClassifierBatch(
+        decisions=[
+            _IndexedClassifierVerdict(
+                action_index=0,
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            ),
+            _IndexedClassifierVerdict(
+                action_index=1,
+                decision="deny",
+                category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                reason="The bound proposal did not cover force-pushing main.",
+            ),
+        ]
+    )
+    model = _StructuredModel(result)
     middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
     request, _store, _key = _request(
         tmp_path,
@@ -5613,7 +5636,7 @@ async def test_unavailable_decision_log_names_classifier_model(
 
 
 async def test_twentieth_total_denial_escalates_immediately(tmp_path: Path) -> None:
-    result = _ClassifierVerdict(
+    result = _single_result(
         decision="deny",
         category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
         reason="Destructive target was not explicitly authorized.",
@@ -6867,45 +6890,67 @@ def _delete_calls(*ids: str) -> list[ToolCall]:
 async def test_classifier_schema_and_history_prefix_survive_new_action_ids(
     tmp_path: Path, model_type: type[_StructuredModel]
 ) -> None:
-    """Both structured-output paths retain a stable schema across batch sizes."""
+    """Batch size and action IDs change without invalidating the cached prefix."""
     first_id = "call_5ZTCN6nK5FYbeCiGZsrkFGs3"
     second_id = "call_5ZTC6N6k5FYbeCiGZsrkFGs3"
-    model = model_type(_allow_result())
+    # Deliberately reverse the response order and mix verdicts to prove that
+    # server binding uses indexes, not response order or copied tool-call IDs.
+    model = model_type(
+        _ClassifierBatch(
+            decisions=[
+                _IndexedClassifierVerdict(
+                    action_index=1,
+                    decision="deny",
+                    category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                    reason="Not authorized.",
+                ),
+                _IndexedClassifierVerdict(
+                    action_index=0,
+                    decision="allow",
+                    category=AutoDecisionCategory.OTHER_POLICY,
+                    reason="",
+                ),
+            ]
+        )
+    )
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
     first = await _plan_calls(middleware, request, _delete_calls(first_id, second_id))
-    model.result = _deny_result()
+    model.result = _allow_result()
     second = await _plan_calls(middleware, request, _delete_calls("new-batch"))
 
-    assert [decision["tool_call_id"] for decision in first["decisions"]] == [
-        first_id,
-        second_id,
+    assert [
+        (decision["tool_call_id"], decision["disposition"])
+        for decision in first["decisions"]
+    ] == [
+        (first_id, "classifier_allow"),
+        (second_id, "policy_deny"),
     ]
-    assert all(
-        decision["disposition"] == "classifier_allow" for decision in first["decisions"]
-    )
     assert second["decisions"][0]["tool_call_id"] == "new-batch"
-    assert second["decisions"][0]["disposition"] == "policy_deny"
-    assert len(model.calls) == 3
+    assert second["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 2
     assert model.schemas[0] == model.schemas[1]
-    assert set(model.schemas[0]["properties"]) == {"decision", "category", "reason"}
     assert first_id not in json.dumps(model.schemas)
     assert second_id not in json.dumps(model.schemas)
-    for previous, current in zip(model.calls, model.calls[1:], strict=False):
-        assert current[: len(previous)] == previous
-    for index, call_id in enumerate([first_id, second_id, "new-batch"]):
-        message = cast("HumanMessage", model.calls[index][-1])
-        payload = json.loads(cast("str", message.content))
-        assert [action["tool_call_id"] for action in payload["current_actions"]] == [
-            call_id
-        ]
+    assert model.calls[1][: len(model.calls[0])] == model.calls[0]
+    for messages, expected_ids in zip(
+        model.calls, [[first_id, second_id], ["new-batch"]], strict=True
+    ):
+        payload = json.loads(cast("str", cast("HumanMessage", messages[-1]).content))
+        assert [
+            action["tool_call_id"] for action in payload["current_actions"]
+        ] == expected_ids
+        assert [
+            action["action_index"] for action in payload["current_actions"]
+        ] == list(range(len(expected_ids)))
     state = cast("dict[str, Any]", request.state)
     conversation = state["_auto_classifier_conversation"]
-    assert conversation["revision"] == 3
-    assert len(conversation["turns"]) == 3
+    assert conversation["revision"] == 2
+    assert len(conversation["turns"]) == 2
     assert all(
-        "tool_call_id" not in json.loads(turn["response"])
+        "tool_call_id" not in decision
         for turn in conversation["turns"]
+        for decision in json.loads(turn["response"])["decisions"]
     )
 
 
@@ -6952,16 +6997,33 @@ async def test_classifier_sees_deterministic_siblings_without_reviewing_them(
     [
         RuntimeError("provider unavailable"),
         {},
-        {"decisions": [_allow_result().model_dump()]},
-        {**_allow_result().model_dump(), "tool_call_id": "first"},
-        {"decision": "deny", "category": "other_policy", "reason": " "},
-        {"decision": "allow", "category": "unknown", "reason": ""},
+        {"decisions": []},
+        {
+            "decisions": [
+                {
+                    "action_index": 0,
+                    "decision": "deny",
+                    "category": "other_policy",
+                    "reason": " ",
+                }
+            ]
+        },
+        {
+            "decisions": [
+                {
+                    "action_index": 0,
+                    "decision": "allow",
+                    "category": "unknown",
+                    "reason": "",
+                }
+            ]
+        },
     ],
 )
-async def test_failed_second_review_withholds_entire_batch_and_history(
+async def test_failed_batch_withholds_entire_batch_and_history(
     tmp_path: Path, failure: dict[str, object] | Exception
 ) -> None:
-    model = _ConversationModel([_allow_result(), _allow_result(), failure])
+    model = _ConversationModel([_allow_result(), failure])
     middleware = _middleware(tmp_path)
     request, store, key = _request(tmp_path, model=model, tool_name="delete", args={})
     await _plan_calls(middleware, request, _delete_calls("prior-batch"))
@@ -6976,33 +7038,77 @@ async def test_failed_second_review_withholds_entire_batch_and_history(
     ]
     assert plan["pending_result_ids"] == []
     assert json.dumps(state["_auto_classifier_conversation"]) == before
-    assert len(model.calls) == 3
+    assert len(model.calls) == 2
     counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
     assert counters["consecutive_unavailable"] == 1
     assert counters["total_denials"] == 0
 
 
-async def test_second_review_timeout_cancels_request_without_partial_approval(
+@pytest.mark.parametrize(
+    "indexes",
+    [
+        [],
+        [0],
+        [0, 0],
+        [0, 2],
+        [0, 1, 2],
+        [-1, 0],
+        [False, 1],
+        ["0", 1],
+        [0.0, 1],
+    ],
+)
+async def test_invalid_batch_indexes_withhold_verdicts_and_history(
+    tmp_path: Path,
+    indexes: list[object],
+) -> None:
+    invalid: dict[str, object] = {
+        "decisions": [
+            {
+                "action_index": index,
+                "decision": "allow",
+                "category": "other_policy",
+                "reason": "",
+            }
+            for index in indexes
+        ]
+    }
+    model = _ConversationModel([_allow_result(), invalid])
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    await _plan_calls(middleware, request, _delete_calls("previous"))
+    before = json.dumps(request.state.get("_auto_classifier_conversation"))
+
+    plan = await _plan_calls(middleware, request, _delete_calls("first", "second"))
+
+    assert [decision["disposition"] for decision in plan["decisions"]] == [
+        "classifier_unavailable",
+        "classifier_unavailable",
+    ]
+    assert plan["pending_result_ids"] == []
+    assert json.dumps(request.state.get("_auto_classifier_conversation")) == before
+
+
+async def test_batch_timeout_cancels_request_without_partial_approval(
     tmp_path: Path,
 ) -> None:
     cancelled = asyncio.Event()
 
-    class _BlockingSecondModel(_StructuredModel):
+    class _BlockingBatchModel(_StructuredModel):
         async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
-            result = await super().ainvoke(messages, **kwargs)
-            if len(self.calls) == 2:
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    cancelled.set()
-            return result
+            await super().ainvoke(messages, **kwargs)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
 
-    model = _BlockingSecondModel(_allow_result())
+    model = _BlockingBatchModel()
     middleware = _middleware(tmp_path, classifier_timeout_seconds=0.05)
     request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
     plan = await _plan_calls(middleware, request, _delete_calls("first", "second"))
 
     assert cancelled.is_set()
+    assert len(model.calls) == 1
     assert [decision["disposition"] for decision in plan["decisions"]] == [
         "classifier_unavailable",
         "classifier_unavailable",

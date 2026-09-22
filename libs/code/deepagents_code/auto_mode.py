@@ -182,7 +182,7 @@ _MAX_PENDING_EVENT_SCOPES = 32
 # a session creates by switching specs with `/auto model`.
 _MAX_CLASSIFIER_MODEL_CACHE = 4
 _MAX_CLASSIFIER_CONVERSATION_TURNS = 8
-_CLASSIFIER_CONVERSATION_VERSION = 2
+_CLASSIFIER_CONVERSATION_VERSION = 3
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -326,12 +326,54 @@ class AutoDecision(_ClassifierVerdict):
         return value
 
 
+class _IndexedClassifierVerdict(_ClassifierVerdict):
+    """One verdict identified by its position in the current review batch."""
+
+    action_index: int = Field(strict=True, ge=0)
+
+
+class _ClassifierBatch(BaseModel):
+    """Stable provider-facing schema independent of action IDs and batch size."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[_IndexedClassifierVerdict]
+
+
 class AutoDecisionBatch(BaseModel):
     """Server-assembled verdicts for one unresolved action batch."""
 
     model_config = ConfigDict(extra="forbid")
 
     decisions: list[AutoDecision]
+
+
+def _bind_classifier_verdicts(
+    batch: _ClassifierBatch, calls: Sequence[ToolCall]
+) -> AutoDecisionBatch:
+    """Require complete index coverage before binding verdicts to original IDs.
+
+    Returns:
+        Verdicts bound to the original tool-call IDs.
+
+    Raises:
+        ValueError: If indexes are missing, duplicated, or out of range.
+    """
+    indexes = [decision.action_index for decision in batch.decisions]
+    if len(indexes) != len(calls) or set(indexes) != set(range(len(calls))):
+        msg = "Classifier result did not contain exactly one decision per reviewed call"
+        raise ValueError(msg)
+    return AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id=_tool_call_id(calls[decision.action_index]),
+                decision=decision.decision,
+                category=decision.category,
+                reason=decision.reason,
+            )
+            for decision in batch.decisions
+        ]
+    )
 
 
 class AutoClassifierTurn(TypedDict):
@@ -1602,7 +1644,7 @@ def _user_answer_evidence(
 
 def _classifier_context(
     request: ModelRequest,
-    current_call: ToolCall,
+    current_calls: Sequence[ToolCall],
     receipt_current_calls: Sequence[ToolCall],
     dispositions: Mapping[str, str],
     tools: Mapping[str, BaseTool],
@@ -1685,6 +1727,7 @@ def _classifier_context(
                 _MAX_AUTHORIZATION_EVIDENCE_ROWS,
             )
             receipt_rows = []
+    indexes = {_tool_call_id(call): index for index, call in enumerate(current_calls)}
     payload = {
         "authorization_evidence": evidence,
         "active_user_directives": _active_user_directives(state),
@@ -1701,14 +1744,12 @@ def _classifier_context(
         ],
         "prior_tool_calls_for_current_request": prior_calls[-30:],
         "current_actions": [
-            action
+            {**action, "action_index": indexes[str(action["tool_call_id"])]}
             for action in actions
-            if action["tool_call_id"] == _tool_call_id(current_call)
+            if action["tool_call_id"] in indexes
         ],
         "other_actions": [
-            action
-            for action in actions
-            if action["tool_call_id"] != _tool_call_id(current_call)
+            action for action in actions if action["tool_call_id"] not in indexes
         ],
     }
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
@@ -1716,8 +1757,10 @@ def _classifier_context(
 
 _CLASSIFIER_POLICY = (
     "You are dcode's action authorization classifier.\n"
-    "Return one verdict for the single action in current_actions, without a "
-    "tool_call_id. other_actions contains sibling actions from the same batch: "
+    "Return exactly one verdict for each action in current_actions, identified "
+    "by its action_index, without a tool_call_id. Indexes are local to this "
+    "request; never copy a verdict from an earlier request for the same index. "
+    "other_actions contains sibling actions from the same batch: "
     "consider their combined effects as context, but do not return verdicts for "
     "them or treat their presence as authorization. "
     "This request is a fresh authorization boundary: prior classifier requests, "
@@ -2952,7 +2995,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "policy": sha256(_CLASSIFIER_POLICY.encode()).hexdigest(),
             "schema": sha256(
                 json.dumps(
-                    _ClassifierVerdict.model_json_schema(),
+                    _ClassifierBatch.model_json_schema(),
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode()
@@ -3050,45 +3093,38 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     and thinking.get("type") in {"adaptive", "enabled"}
                 ):
                     structured = model.with_structured_output(
-                        _ClassifierVerdict, method="json_schema"
+                        _ClassifierBatch, method="json_schema"
                     )
                 else:
-                    structured = model.with_structured_output(_ClassifierVerdict)
+                    structured = model.with_structured_output(_ClassifierBatch)
                 identity = self._classifier_conversation_identity(model, spec)
                 conversation = _validate_classifier_conversation(
                     request.state.get(AUTO_CLASSIFIER_CONVERSATION_STATE_KEY)
                 )
-                decisions: list[AutoDecision] = []
-                # Keep one linear history and one deadline for the whole batch.
-                # Only the complete batch is checkpointed; any failed review
-                # discards these local verdicts and history updates.
-                for call in calls:
-                    current = _classifier_context(
-                        request,
-                        call,
-                        all_calls,
-                        dispositions,
-                        tools,
-                        self._trusted_environment,
-                        self._trusted_ask_user_tool,
-                    )
-                    verdict, conversation = await self._review_action(
-                        request,
-                        model,
-                        spec,
-                        structured,
-                        identity,
-                        conversation,
-                        current,
-                    )
-                    decisions.append(
-                        AutoDecision(
-                            tool_call_id=_tool_call_id(call),
-                            decision=verdict.decision,
-                            category=verdict.category,
-                            reason=verdict.reason,
-                        )
-                    )
+                if not calls:
+                    msg = "Classifier review requires at least one action"
+                    raise ValueError(msg)
+                current = _classifier_context(
+                    request,
+                    calls,
+                    all_calls,
+                    dispositions,
+                    tools,
+                    self._trusted_environment,
+                    self._trusted_ask_user_tool,
+                )
+                classified, conversation = await self._invoke_classifier(
+                    request,
+                    model,
+                    spec,
+                    structured,
+                    identity,
+                    conversation,
+                    current,
+                )
+                # Validate the complete batch before publishing any decisions or
+                # history. Provider schemas never embed batch-specific indexes.
+                batch = _bind_classifier_verdicts(classified, calls)
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget
             # from a provider that raises `TimeoutError` itself. `wait_for`
@@ -3098,12 +3134,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     self._classifier_timeout_seconds
                 ) from None
             raise
-        if conversation is None:
-            msg = "Classifier review requires at least one action"
-            raise ValueError(msg)
-        return AutoDecisionBatch(decisions=decisions), conversation
+        return batch, conversation
 
-    async def _review_action(
+    async def _invoke_classifier(
         self,
         request: ModelRequest,
         model: BaseChatModel,
@@ -3112,11 +3145,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         identity: str,
         conversation: AutoClassifierConversation | None,
         current: str,
-    ) -> tuple[_ClassifierVerdict, AutoClassifierConversation]:
-        """Review one action and extend only the local, uncommitted history.
+    ) -> tuple[_ClassifierBatch, AutoClassifierConversation]:
+        """Review a batch and extend only the local, uncommitted history.
 
         Returns:
-            The validated verdict and the updated conversation.
+            The parsed verdicts and the updated conversation.
         """
         from deepagents_code.model_retry import aretry_model_call
 
@@ -3156,16 +3189,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             ),
             call=invoke,
         )
-        verdict = _ClassifierVerdict.model_validate(result)
+        batch = _ClassifierBatch.model_validate(result)
         conversation = AutoClassifierConversation(
             identity=identity,
             turns=[
                 *turns,
-                {"request": current, "response": verdict.model_dump_json()},
+                {"request": current, "response": batch.model_dump_json()},
             ],
             revision=revision + 1,
         )
-        return verdict, conversation
+        return batch, conversation
 
     async def awrap_model_call(
         self,

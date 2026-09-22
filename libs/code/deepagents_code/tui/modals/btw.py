@@ -10,12 +10,15 @@ from textual import work
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, LoadingIndicator, Markdown, Static
+from textual.widgets import Input, Markdown, Static
+
+from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from textual.app import ComposeResult
+    from textual.timer import Timer
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,8 @@ class BtwScreen(ModalScreen[None]):
         super().__init__()
         self._answer = answer
         self._question = question
+        self._spinner = Spinner()
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         """Build the side-question dialog.
@@ -55,7 +60,7 @@ class BtwScreen(ModalScreen[None]):
                 max_length=16_000,
             )
             yield Static(self._question, id="btw-question", markup=False)
-            yield LoadingIndicator(id="btw-loading")
+            yield Static(id="btw-loading")
             with VerticalScroll(id="btw-scroll"):
                 yield Markdown("", id="btw-answer", open_links=False)
                 yield Static("", id="btw-error", markup=False)
@@ -79,8 +84,21 @@ class BtwScreen(ModalScreen[None]):
     def _start(self, question: str) -> None:
         self.query_one(Input).display = False
         self.query_one("#btw-question", Static).update(question)
-        self.query_one("#btw-loading").display = True
+        loading = self.query_one("#btw-loading", Static)
+        loading.update(f"{self._spinner.current_frame()} Thinking...")
+        loading.display = True
+        self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
         self._generate(question)
+
+    def _tick_spinner(self) -> None:
+        self.query_one("#btw-loading", Static).update(
+            f"{self._spinner.next_frame()} Thinking..."
+        )
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
 
     @work(exclusive=True)
     async def _generate(self, question: str) -> None:
@@ -94,11 +112,16 @@ class BtwScreen(ModalScreen[None]):
             from deepagents_code.client.remote_client import format_agent_exception
 
             self.query_one("#btw-error", Static).update(format_agent_exception(exc))
+        self._stop_spinner()
         if self.is_mounted:
             self.query_one("#btw-loading").display = False
             scroll = self.query_one("#btw-scroll", VerticalScroll)
             scroll.display = True
             scroll.focus()
+
+    def on_unmount(self) -> None:
+        """Stop the loading animation when the modal closes."""
+        self._stop_spinner()
 
     def action_cancel(self) -> None:
         """Dismiss only this answer, leaving the main run untouched."""

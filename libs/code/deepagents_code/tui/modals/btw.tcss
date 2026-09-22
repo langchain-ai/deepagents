@@ -28,7 +28,8 @@ BtwScreen #btw-question {
 }
 
 BtwScreen #btw-loading {
-    height: 3;
+    height: auto;
+    color: $primary;
 }
 
 BtwScreen #btw-scroll {

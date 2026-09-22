@@ -385,9 +385,13 @@ async def test_app_modal_while_main_run_continues(
             app.screen.query_one(Input).value = "Why this approach?"
             await pilot.press("enter")
         await asyncio.wait_for(started.wait(), 2)
+        loading = app.screen.query_one("#btw-loading", Static)
+        assert loading.display
+        assert "Thinking..." in str(loading.content)
         assert app._agent_running
         release.set()
         await pilot.pause()
+        assert not loading.display
         assert app.screen.query_one(Markdown)._markdown == "**Side answer**"
         await pilot.press("escape")
         await pilot.pause()

@@ -5843,7 +5843,7 @@ class TestCacheTiming:
             app._last_model_request_at = datetime.now(UTC).isoformat()
             bar.set_cache_tokens(0, 2000, input_tokens=2000)
             app.query_one("#cache-display").visible = True
-            app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+            await app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
             await pilot.pause()
 
             rendered = str(app.query_one("#cache-display").render())
@@ -5869,7 +5869,7 @@ class TestCacheTiming:
             app._last_cache_endpoint = "default"
             if observed_write:
                 app._last_model_request_at = written_at.isoformat()
-                app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+                await app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
 
             def execute(
                 *_args: object, turn_stats: SessionStats, **_kwargs: object
@@ -5903,8 +5903,71 @@ class TestCacheTiming:
 
             # A turn without cache activity must not renew the countdown.
             app._last_model_request_at = (hit_at + timedelta(minutes=1)).isoformat()
-            app._refresh_cache_timing(SessionStats())
+            await app._refresh_cache_timing(SessionStats())
             assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+
+    @pytest.mark.parametrize(
+        ("endpoint", "base_url", "trusted", "shows_retention"),
+        [
+            ("default", None, False, True),
+            ("https://api.openai.com/v1", "https://api.openai.com/v1", False, True),
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com:443/v1/",
+                False,
+                True,
+            ),
+            ("https://gateway.example.com", "https://gateway.example.com", True, True),
+            (
+                "https://gateway.example.com",
+                "https://gateway.example.com",
+                False,
+                False,
+            ),
+            ("https://gateway.example.com", "https://api.openai.com/v1", True, False),
+            (None, "https://api.openai.com/v1", False, False),
+        ],
+    )
+    async def test_configured_endpoint_retention(
+        self,
+        endpoint: str | None,
+        base_url: str | None,
+        trusted: bool,
+        shows_retention: bool,
+    ) -> None:
+        """Official and trusted endpoints show retention for observed cache hits."""
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            requested_at = datetime.now(UTC)
+            app._last_cache_model_spec = "openai:gpt-6-astra"
+            app._last_cache_endpoint = endpoint
+            app._last_model_request_at = requested_at.isoformat()
+            bar.set_cache_tokens(2000, 0, input_tokens=2000)
+            app.query_one("#cache-display").visible = True
+            config = MagicMock()
+            config.get_effective_kwargs.return_value = {"base_url": base_url}
+            with (
+                patch(
+                    "deepagents_code.model_config.ModelConfig.load", return_value=config
+                ),
+                patch(
+                    "deepagents_code.cold_cache.load_trusted_cache_endpoints",
+                    return_value=frozenset({"gateway.example.com"})
+                    if trusted
+                    else frozenset(),
+                ),
+            ):
+                await app._refresh_cache_timing(SessionStats(cache_read_tokens=2000))
+            await pilot.pause()
+
+            rendered = str(app.query_one("#cache-display").render())
+            assert ("retention min 29:" in rendered) is shows_retention
+            assert bar.cache_expires_at == (
+                requested_at + timedelta(minutes=30) if shows_retention else None
+            )
 
 
 class TestRunAgentTaskMediaTracker:

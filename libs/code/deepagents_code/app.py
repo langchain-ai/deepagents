@@ -1112,7 +1112,11 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
+    from deepagents_code.cold_cache import (
+        ColdCacheReason,
+        ColdCacheWarning,
+        PromptCachePolicy,
+    )
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
@@ -9370,27 +9374,61 @@ class DeepAgentsApp(App):
                 type(raw_endpoint).__name__,
             )
 
-    def _refresh_cache_timing(self, turn_stats: SessionStats) -> None:
+    def _cache_timing_policy(self) -> PromptCachePolicy | None:
+        """Resolve retention for the recorded endpoint; offload config reads.
+
+        Returns:
+            The endpoint's policy, or `None` if it cannot be established.
+        """
+        from deepagents_code.cold_cache import (
+            endpoint_cache_identity,
+            load_trusted_cache_endpoints,
+            resolve_prompt_cache_policy,
+        )
+        from deepagents_code.model_config import ModelConfig
+
+        endpoint = self._last_cache_endpoint
+        if endpoint is None:
+            return None
+        base_url = None
+        if endpoint != "default":
+            provider, _, model_name = self._last_cache_model_spec.partition(":")
+            kwargs = ModelConfig.load().get_effective_kwargs(
+                provider.strip().lower(),
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            raw_base_url = kwargs.get("base_url")
+            base_url = raw_base_url if isinstance(raw_base_url, str) else None
+            # The checkpoint identity is opaque. Resolve the real URL, and
+            # don't apply a new endpoint's policy to an earlier request.
+            if endpoint_cache_identity(base_url) != endpoint:
+                return None
+        return resolve_prompt_cache_policy(
+            self._last_cache_model_spec,
+            self._last_cache_model_params,
+            base_url=base_url,
+            trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
+        )
+
+    async def _refresh_cache_timing(self, turn_stats: SessionStats) -> None:
         """Refresh retention on cache use, preserving the last actual write."""
         if self._status_bar is None or not self._last_model_request_at:
             return
         if not (turn_stats.cache_write_tokens or turn_stats.cache_read_tokens):
             return
-        from deepagents_code.cold_cache import (
-            parse_cache_timestamp,
-            resolve_prompt_cache_policy,
-        )
+        from deepagents_code.cold_cache import parse_cache_timestamp
 
+        thread_id = self._lc_thread_id
+        request_at = self._last_model_request_at
         timestamp = parse_cache_timestamp(self._last_model_request_at)
-        policy = (
-            resolve_prompt_cache_policy(
-                self._last_cache_model_spec,
-                self._last_cache_model_params,
-                base_url=None,
-            )
-            if self._last_cache_endpoint == "default"
-            else None
-        )
+        try:
+            policy = await asyncio.to_thread(self._cache_timing_policy)
+        except Exception:
+            logger.debug("Could not resolve footer cache retention", exc_info=True)
+            policy = None
+        if self._lc_thread_id != thread_id or self._last_model_request_at != request_at:
+            return
         self._status_bar.set_cache_timing(
             timestamp
             if turn_stats.cache_write_tokens
@@ -19007,7 +19045,7 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
-                self._refresh_cache_timing(turn_stats)
+                await self._refresh_cache_timing(turn_stats)
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,

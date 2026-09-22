@@ -9461,6 +9461,21 @@ class DeepAgentsApp(App):
         elif direction == "below":
             self._check_hydration_below_needed()
 
+    async def _fill_history_viewport(self) -> None:
+        """Hydrate a compact resumed tail until scrolling becomes possible."""
+        if not self._message_store.has_messages_above:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+        if chat.max_scroll_y > 0:
+            return
+        if await self._hydrate_messages(
+            "above", count=self._message_store.HYDRATE_BUFFER
+        ):
+            self.call_after_refresh(self._fill_history_viewport)
+
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
         if not self._message_store.has_messages_above:
@@ -19956,6 +19971,10 @@ class DeepAgentsApp(App):
             with suppress(NoMatches):
                 chat = self.query_one("#chat", VerticalScroll)
                 chat.scroll_end(animate=False)
+            # A compact tail may not scroll, so no Scrolled event will start
+            # hydration. Fill only until the transcript is tall enough to
+            # scroll, checking the settled layout after each batch.
+            self.call_after_refresh(self._fill_history_viewport)
 
         except asyncio.CancelledError:
             # The offloaded conversion and hook projection are await points, so

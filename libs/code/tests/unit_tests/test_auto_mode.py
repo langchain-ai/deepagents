@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain.tools import ToolRuntime
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -228,6 +229,27 @@ class _FailIfClassifiedModel(_StructuredModel):
     ) -> _StructuredModel:
         msg = f"unexpected classifier call for {schema} with {kwargs}"
         raise AssertionError(msg)
+
+
+class _ProviderError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _SizeLimitedConversationModel(_ConversationModel):
+    max_chars: int | None = None
+    overflow_error: Exception = ContextOverflowError("maximum context length exceeded")
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        size = sum(
+            len(str(cast("BaseMessage", message).content)) for message in messages
+        )
+        if self.max_chars is not None and size > self.max_chars:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            raise self.overflow_error
+        return await super().ainvoke(messages, **kwargs)
 
 
 class _AskReceiptFlowModel(_ToolBindingFakeModel):
@@ -643,12 +665,19 @@ async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
     assert len(state["_auto_classifier_conversation"]["turns"]) == 1
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("provider unavailable"),
+        _ProviderError(400, "invalid response schema"),
+        _ProviderError(401, "context_length_exceeded"),
+    ],
+)
 async def test_failed_classifier_review_does_not_advance_history(
     tmp_path: Path,
+    error: Exception,
 ) -> None:
-    model = _ConversationModel(
-        [_allow_result(), RuntimeError("provider unavailable"), _allow_result("call-3")]
-    )
+    model = _ConversationModel([_allow_result(), error, _allow_result("call-3")])
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(
         tmp_path,
@@ -679,6 +708,90 @@ async def test_failed_classifier_review_does_not_advance_history(
     turns = state["_auto_classifier_conversation"]["turns"]
     assert len(turns) == 2
     assert "call-2" not in json.dumps(turns)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ContextOverflowError("input exceeds model capacity"),
+        _ProviderError(400, "context_length_exceeded"),
+        _ProviderError(400, "prompt is too long"),
+        _ProviderError(413, "exceeds the available context size"),
+        _ProviderError(422, "input tokens exceed the configured limit"),
+    ],
+)
+async def test_classifier_context_overflow_retries_with_complete_current_payload(
+    tmp_path: Path,
+    error: Exception,
+) -> None:
+    model = _SizeLimitedConversationModel(
+        [_allow_result(f"call-{index}") for index in range(1, 5)]
+    )
+    model.overflow_error = error
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        raw_user_text="Delete old.py. " * 1000,
+    )
+    middleware = _middleware(tmp_path)
+    for index in range(1, 5):
+        if index == 3:
+            # Each current payload fits; replaying multiple copies does not.
+            model.max_chars = sum(
+                len(str(cast("BaseMessage", message).content))
+                for message in model.calls[1]
+            )
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+    oversized, retried, subsequent = model.calls[2:]
+    assert retried == [oversized[0], oversized[-1]]
+    assert len(subsequent) == 4
+    state = cast("dict[str, Any]", request.state)
+    conversation = state["_auto_classifier_conversation"]
+    assert conversation["revision"] == 4
+    assert len(conversation["turns"]) == 2
+    assert "call-1" not in json.dumps(conversation)
+    assert "call-2" not in json.dumps(conversation)
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+async def test_classifier_irreducible_context_overflow_fails_closed(
+    tmp_path: Path, *, with_history: bool
+) -> None:
+    model = _SizeLimitedConversationModel([_allow_result()])
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    middleware = _middleware(tmp_path)
+    if with_history:
+        await _plan(
+            middleware, request, tool_name="delete", args={"file_path": "old.py"}
+        )
+    state = cast("dict[str, Any]", request.state)
+    before = state.get("_auto_classifier_conversation")
+    model.calls.clear()
+    model.max_chars = 0
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        call_id="call-2",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == (2 if with_history else 1)
+    assert state.get("_auto_classifier_conversation") == before
 
 
 async def test_classifier_review_lifecycle_reports_only_opaque_ids(

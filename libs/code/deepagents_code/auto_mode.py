@@ -44,6 +44,7 @@ from langchain.agents.middleware.types import (
     omit_payload,
 )
 from langchain.tools import ToolRuntime  # noqa: TC002  # runtime injection marker
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -79,9 +80,37 @@ from deepagents_code.goal_state_notice import project_goal_state
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
+
+
+def _is_classifier_context_overflow(exc: Exception) -> bool:
+    """Recognize context limits without retrying unrelated provider failures.
+
+    Returns:
+        Whether the provider reported that the input exceeds its context limit.
+    """
+    if isinstance(exc, ContextOverflowError):
+        return True
+    if getattr(exc, "status_code", None) not in {400, 413, 422}:
+        return False
+    return any(
+        marker in str(exc).lower()
+        for marker in (
+            "context_length_exceeded",
+            "contextwindowexceedederror",
+            "maximum context length",
+            "exceeds the context window",
+            "exceeds the available context size",
+            "context window exceeded",
+            "context limit exceeded",
+            "input tokens exceed the configured limit",
+            "prompt is too long",
+        )
+    )
+
 
 _MAX_AUTHORIZATION_EVIDENCE_ROWS = 100
 _MAX_ASK_USER_ANSWER_ROWS = 20
@@ -3075,6 +3104,30 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 settings = request.model_settings if spec is None else {}
                 from deepagents_code.model_retry import aretry_model_call
 
+                async def invoke() -> object:
+                    nonlocal messages, turns
+                    config: RunnableConfig = {
+                        "run_name": "dcode_auto_classifier",
+                        "tags": ["dcode:auto"],
+                        "metadata": {
+                            "lc_source": "auto_mode_classifier",
+                            "classifier_model": spec or "inherited",
+                        },
+                    }
+                    try:
+                        return await structured.ainvoke(
+                            messages, config=config, **settings
+                        )
+                    except Exception as exc:
+                        if not turns or not _is_classifier_context_overflow(exc):
+                            raise
+                    # Retry once within the same deadline, retaining the full
+                    # policy and current authorization evidence. Checkpoint only
+                    # the shortened conversation if the review succeeds.
+                    messages = [messages[0], messages[-1]]
+                    turns = []
+                    return await structured.ainvoke(messages, config=config, **settings)
+
                 # The retry backoff sleeps inside this deadline, so an
                 # honoured `Retry-After` would be cancelled mid-wait and
                 # resurface as a classifier timeout -- a diagnosis pointing at
@@ -3086,18 +3139,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         self._classifier_timeout_seconds
                         * _CLASSIFIER_RETRY_DELAY_FRACTION
                     ),
-                    call=lambda: structured.ainvoke(
-                        messages,
-                        config={
-                            "run_name": "dcode_auto_classifier",
-                            "tags": ["dcode:auto"],
-                            "metadata": {
-                                "lc_source": "auto_mode_classifier",
-                                "classifier_model": spec or "inherited",
-                            },
-                        },
-                        **settings,
-                    ),
+                    call=invoke,
                 )
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget

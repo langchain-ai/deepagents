@@ -1681,6 +1681,30 @@ def _owning_checkpoint_scope(scope: str) -> str:
     return "|".join(parts)
 
 
+def _set_stream_invocation_id(run_id: UUID) -> None:
+    """Attach identity to the message handler's per-run metadata copy."""
+    from langgraph.pregel._messages import (  # noqa: PLC2701  # Per-run stream metadata has no public accessor.
+        StreamMessagesHandler,
+    )
+
+    callbacks = ensure_config().get("callbacks")
+    if callbacks is None:
+        return
+    handlers = callbacks if isinstance(callbacks, list) else callbacks.handlers
+    for handler in handlers:
+        if not isinstance(handler, StreamMessagesHandler):
+            continue
+        if entry := handler.metadata.get(run_id):
+            namespace, metadata = entry
+            # Configure hooks append our recorder after the stream handler.
+            # Start callbacks share metadata across a batch, so replace only
+            # this run's entry before any response can be streamed.
+            handler.metadata[run_id] = (
+                namespace,
+                {**metadata, _MODEL_INVOCATION_METADATA_KEY: str(run_id)},
+            )
+
+
 class _SessionCostRecorder(BaseCallbackHandler):
     """Collect completed model requests per thread for the graph to price.
 
@@ -1772,8 +1796,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         **kwargs: Any,  # noqa: ARG002  # Callback interface.
     ) -> None:
         """Retain cost context and share run identity with message-stream callbacks."""
-        if metadata is not None:
-            metadata[_MODEL_INVOCATION_METADATA_KEY] = str(run_id)
+        _set_stream_invocation_id(run_id)
         self._start(run_id, metadata)
 
     def on_llm_start(

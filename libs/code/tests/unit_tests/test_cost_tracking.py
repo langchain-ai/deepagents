@@ -938,6 +938,75 @@ class TestCostTrackingMiddleware:
 class TestSessionCostRecorder:
     """Tests for the callback handler that collects completed requests."""
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_batched_responses_keep_separate_usage(
+        self, recorder: _SessionCostRecorder, asynchronous: bool
+    ) -> None:
+        from dataclasses import dataclass
+
+        from langgraph.graph import END, START, StateGraph
+
+        @dataclass
+        class BatchState:
+            prompt: str = "hello"
+
+        model = _fake_model(
+            _message(_usage(), message_id="batch-1"),
+            _message(_usage(), message_id="batch-2"),
+        )
+        prompts: list[list[BaseMessage]] = [
+            [HumanMessage("first")],
+            [HumanMessage("second")],
+        ]
+
+        def batch(state: BatchState, config: RunnableConfig) -> BatchState:
+            model.generate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        async def abatch(state: BatchState, config: RunnableConfig) -> BatchState:
+            await model.agenerate(
+                prompts, callbacks=config["callbacks"], metadata=config["metadata"]
+            )
+            return state
+
+        builder = StateGraph(BatchState)
+        builder.add_node("batch", abatch if asynchronous else batch)
+        builder.add_edge(START, "batch")
+        builder.add_edge("batch", END)
+        graph = builder.compile()
+        deliveries: list[tuple[BaseMessage, dict[str, Any]]] = []
+        async for message, metadata in graph.astream(
+            BatchState(),
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, BaseMessage)
+            assert isinstance(metadata, dict)
+            deliveries.append((message, metadata))
+        stats = SessionStats()
+        ledger = {}
+        for message, metadata in deliveries:
+            record_message_usage(
+                stats, message, request_metadata=metadata, recorded_requests=ledger
+            )
+
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2 * _usage()["input_tokens"]
+        assert stats.output_tokens == 2 * _usage()["output_tokens"]
+        assert {
+            metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in deliveries
+        } == {record.invocation_id for record in recorder.drain(THREAD_ID)}
+        finalize_recorded_requests(ledger)
+        for message, metadata in deliveries:
+            assert (
+                record_message_usage(
+                    stats, message, request_metadata=metadata, recorded_requests=ledger
+                )
+                is None
+            )
+
     def test_nested_request_emits_provisional_usage(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
     ) -> None:

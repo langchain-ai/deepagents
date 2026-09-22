@@ -30972,6 +30972,32 @@ class TestPromptClipboard:
             assert chat_input._current_suggestions == [("@README.md", "md")]
             assert chat_input._prompt_search_active is False
 
+    @pytest.mark.parametrize("draft", ["@zzzzzzzzzz", "contact alice@example.com"])
+    async def test_ctrl_r_opens_prompt_recall_without_file_matches(
+        self, draft: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched `@` query must not block prompt recall."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            assert chat_input._file_controller is not None
+            assert chat_input._text_area is not None
+            chat_input._file_controller._file_cache = []
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: (draft,))
+            chat_input._text_area.insert(draft)
+            await pilot.pause()
+            assert not chat_input._current_suggestions
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert chat_input._prompt_search_active
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat_input.value == draft
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -31053,6 +31079,53 @@ class TestPromptClipboard:
             toggle.assert_awaited_once()
             assert chat_input._prompt_search_active is True
             assert chat_input._prompt_search_index == 1
+
+    async def test_thread_reference_picker_preserves_other_directory_results(
+        self,
+    ) -> None:
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+                "cwd": "/another/project",
+            }
+        ]
+        with (
+            patch.object(ChatInput, "_initialize_thread_cache"),
+            patch("deepagents_code.sessions.get_cached_threads", return_value=threads),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new=AsyncMock(
+                    side_effect=lambda *, cwd=None, **_kwargs: (
+                        threads if cwd is None else []
+                    )
+                ),
+            ),
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                chat = app._chat_input
+                assert chat is not None
+                assert chat._thread_controller is not None
+                assert chat._text_area is not None
+                chat._thread_controller.update_threads(threads)
+                chat._text_area.insert("compare @@parser")
+                await pilot.pause()
+                assert chat._current_suggestions[0][0] == "Fix the parser"
+
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                assert isinstance(app.screen, ThreadSelectorScreen)
+                assert app.screen._filtered_threads == threads
+                await pilot.press("enter")
+                await pilot.pause()
+                assert chat._text_area.text == (
+                    "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+                )
 
     async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
         app = DeepAgentsApp()

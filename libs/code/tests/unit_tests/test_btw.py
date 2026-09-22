@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -257,6 +258,74 @@ async def test_resumed_model_comes_only_from_checkpoint() -> None:
         extra_kwargs={"temperature": 0},
         bind_preserved_thinking=False,
     )
+
+
+@pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint"])
+@pytest.mark.parametrize("container", ["model_kwargs", "extra_body"])
+async def test_constructor_tools_are_absent_from_provider_request(
+    source: str, container: str
+) -> None:
+    from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+
+    options = {
+        "tools": [{"type": "function", "function": {"name": "execute"}}],
+        "tool_choice": "required",
+        "functions": [{"name": "execute"}],
+        "function_call": "auto",
+        "parallel_tool_calls": True,
+    }
+    params = {container: options}
+    original = deepcopy(params)
+
+    def respond(request: Request) -> Response:
+        payload = json.loads(request.content)
+        assert not options.keys() & payload.keys()
+        assert payload["temperature"] == pytest.approx(0.2)
+        return Response(
+            200,
+            json={
+                "id": "side-answer",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "answer"},
+                        "finish_reason": "stop",
+                        "index": 0,
+                    }
+                ],
+            },
+        )
+
+    async with AsyncClient(transport=MockTransport(respond)) as client:
+        model = ChatOpenAI(
+            model="test-model",
+            api_key=SecretStr("test"),
+            http_async_client=client,
+            temperature=0.2,
+            use_responses_api=False,
+            max_retries=0,
+            model_kwargs=options if container == "model_kwargs" else {},
+            extra_body=options if container == "extra_body" else None,
+        )
+        operation = BtwOperation(model, "system", None)
+        state: dict[str, object] = {}
+        if source == "snapshot":
+            operation._snapshots["thread"] = (
+                model,
+                SystemMessage(content="system"),
+                {},
+            )
+        elif source == "checkpoint":
+            state = {"_model_spec": "openai:test-model", "_model_params": params}
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            assert await operation.answer("thread", state, "why") == "answer"
+        assert params == original
+        defaults = model._get_request_payload([HumanMessage(content="main")])
+        assert (defaults.get("extra_body") or defaults)["tools"] == options["tools"]
 
 
 @pytest.mark.parametrize(

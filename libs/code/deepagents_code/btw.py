@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,7 +24,7 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableBinding
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable
 
     from langchain_core.messages import MessageLikeRepresentation
 
@@ -35,6 +36,42 @@ _INSTRUCTIONS = (
 )
 _MAX_SNAPSHOTS = 16
 BTW_OPERATION_ATTR = "_dcode_btw"
+_TOOL_OPTIONS = frozenset(
+    {"tools", "tool_choice", "functions", "function_call", "parallel_tool_calls"}
+)
+_OPTION_CONTAINERS = ("model_kwargs", "extra_body")
+
+
+def _tool_free_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy request defaults, including nested provider payload overrides.
+
+    Returns:
+        Options with tool configuration removed.
+    """
+    return {
+        key: (
+            _tool_free_options(value)
+            if key in _OPTION_CONTAINERS and isinstance(value, Mapping)
+            else deepcopy(value)
+        )
+        for key, value in options.items()
+        if key not in _TOOL_OPTIONS
+    }
+
+
+def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
+    """Isolate request defaults while sharing the provider's HTTP clients.
+
+    Returns:
+        A model copy with tool-free provider defaults.
+    """
+    return model.model_copy(
+        update={
+            key: _tool_free_options(value)
+            for key in _OPTION_CONTAINERS
+            if isinstance(value := getattr(model, key, None), Mapping)
+        }
+    )
 
 
 def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
@@ -168,17 +205,11 @@ class BtwOperation(AgentMiddleware):
             while isinstance(model, RunnableBinding):
                 settings = {**deepcopy(model.kwargs), **settings}
                 model = model.bound
-            for key in (
-                "tools",
-                "tool_choice",
-                "functions",
-                "function_call",
-                "parallel_tool_calls",
-            ):
-                settings.pop(key, None)
+            settings = _tool_free_options(settings)
             if not isinstance(model, BaseChatModel):
                 msg = "Side questions require an unbound chat model."
                 raise TypeError(msg)
+            model = _tool_free_model(model)
             messages = [
                 SystemMessage(content=f"{system.text}\n\n{_INSTRUCTIONS}"),
                 *_conversation(state),

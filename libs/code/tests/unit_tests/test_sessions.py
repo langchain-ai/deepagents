@@ -1448,6 +1448,38 @@ class TestBatchCheckpointSummaries:
         assert results["t1"].initial_prompt == "hello"
         assert results["t2"].message_count == 1
 
+    async def test_selects_latest_checkpoint_across_namespaces(self) -> None:
+        """The latest checkpoint should win without filtering its namespace."""
+        serde = JsonPlusSerializer()
+        older = serde.dumps_typed({"channel_values": {"messages": []}})
+        newer = serde.dumps_typed(
+            {"channel_values": {"messages": [{"role": "user", "content": "new"}]}}
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "type TEXT, checkpoint BLOB, metadata TEXT)"
+            )
+            await conn.executemany(
+                "INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, '{}')",
+                [
+                    ("t1", "", "cp_1", older[0], older[1]),
+                    ("t1", "subgraph", "cp_2", newer[0], newer[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_latest_checkpoint_summaries_batch(
+                conn, ["t1"], serde
+            )
+
+        assert results["t1"].message_count == 1
+        assert results["t1"].initial_prompt == "new"
+
     async def test_batch_chunking_returns_all_results(self) -> None:
         """Chunking across multiple batches should merge all results."""
         serde = JsonPlusSerializer()

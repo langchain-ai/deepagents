@@ -1,13 +1,16 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
+import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.graph.message import add_messages
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
@@ -283,6 +286,138 @@ async def test_handoff_child_is_discoverable_and_resumable(
         resume.assert_not_awaited()
     else:
         resume.assert_awaited_once_with(child_id)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "write_failure",
+        "cancel",
+        "lost_response",
+        "summary_failure",
+        "during_save",
+        "during_summary",
+        "running_shell",
+    ],
+)
+async def test_handoff_preserves_shell_context(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langgraph.graph import END, StateGraph
+
+    from deepagents_code import sessions
+
+    @dataclass
+    class State:
+        messages: Annotated[list[BaseMessage], add_messages]
+
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._buffer_shell_for_model_context("echo important", "important result", 0)
+    remote = MagicMock()
+    remote.aensure_thread = AsyncMock()
+    remote.aswitch_workspace = AsyncMock()
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    source_config: RunnableConfig = {"configurable": {"thread_id": "source"}}
+    archive: list[BaseMessage] = []
+
+    async with sessions.get_checkpointer() as checkpointer:
+        builder = StateGraph(State)
+        builder.add_node("model", lambda state: {"messages": state.messages})
+        builder.set_entry_point("model")
+        builder.add_edge("model", END)
+        graph = builder.compile(checkpointer=checkpointer)
+        await graph.aupdate_state(
+            source_config, {"messages": [HumanMessage("original")]}, as_node="model"
+        )
+
+        async def update_state(
+            config: "RunnableConfig",
+            values: dict[str, object],
+            *,
+            as_node: str,
+            recovery: bool = False,
+        ) -> None:
+            del recovery
+            if outcome == "write_failure":
+                msg = "checkpoint down"
+                raise RuntimeError(msg)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            # Cross the same serialization boundary as the HTTP client: the graph
+            # must not assign IDs back onto the app's buffered message objects.
+            await graph.aupdate_state(config, deepcopy(values), as_node=as_node)
+            if outcome == "lost_response":
+                msg = "response lost"
+                raise RuntimeError(msg)
+            if outcome == "during_save" and config == source_config:
+                app._buffer_shell_for_model_context("echo later", "later result", 0)
+
+        async def summarize(**_kwargs: object) -> dict[str, str]:
+            state = await graph.aget_state(source_config)
+            archive[:] = state.values["messages"]
+            if outcome == "during_summary":
+                app._buffer_shell_for_model_context("echo later", "later result", 0)
+            if outcome == "running_shell":
+                app._shell_running = True
+            if outcome == "summary_failure":
+                return {"status": "failed", "error": "summary failed"}
+            return {"status": "compacted"}
+
+        def summarized_state(_thread_id: str) -> dict[str, object]:
+            return {
+                "messages": archive,
+                "_summarization_event": {
+                    "summary_message": HumanMessage("\n".join(m.text for m in archive)),
+                    "cutoff_index": len(archive),
+                    "file_path": "/conversation_history/source.md",
+                },
+            }
+
+        def resume(child_id: str) -> None:
+            # Resuming clears this buffer along with the previous transcript.
+            app._pending_shell_messages.clear()
+            app._lc_thread_id = child_id
+
+        remote.aupdate_state = AsyncMock(side_effect=update_state)
+        remote.aoffload = AsyncMock(side_effect=summarize)
+        monkeypatch.setattr(
+            app, "_get_thread_state_values", AsyncMock(side_effect=summarized_state)
+        )
+        monkeypatch.setattr(app, "_resume_thread", AsyncMock(side_effect=resume))
+
+        if outcome in {"write_failure", "cancel", "lost_response", "summary_failure"}:
+            error = asyncio.CancelledError if outcome == "cancel" else RuntimeError
+            with pytest.raises(error):
+                await app._handoff_expired_cache("source")
+            assert app._lc_thread_id == "source"
+            if outcome != "summary_failure":
+                remote.aoffload.assert_not_awaited()
+                assert len(app._pending_shell_messages) == 1
+                assert "important result" in app._pending_shell_messages[0].text
+            outcome = "success"
+
+        await app._handoff_expired_cache("source")
+        original = await graph.aget_state(source_config)
+        assert remote.aupdate_state.await_args is not None
+        child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
+        child = await graph.aget_state({"configurable": {"thread_id": child_id}})
+        assert len(original.values["messages"]) == 2
+        assert "important result" in original.values["messages"][1].text
+        assert "important result" in archive[1].text
+        assert "important result" in child.values["messages"][0].text
+        if outcome in {"during_save", "during_summary", "running_shell"}:
+            assert app._lc_thread_id == "source"
+            if outcome != "running_shell":
+                assert len(app._pending_shell_messages) == 1
+                assert "later result" in app._pending_shell_messages[0].text
+        else:
+            assert app._lc_thread_id == child_id
+            assert app._pending_shell_messages == []
 
 
 @pytest.mark.parametrize("mode", ["expiry", "send", "off"])

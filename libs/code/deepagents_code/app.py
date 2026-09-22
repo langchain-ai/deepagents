@@ -4305,9 +4305,8 @@ class DeepAgentsApp(App):
 
         `!` runs outside the agent graph, so each run is buffered here as a
         single structured `HumanMessage` (command + output) and written into
-        thread state on the next user send (see
-        `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
-        never appends here."""
+        thread state on the next user send or accepted cache handoff. `!!`
+        (incognito) never appends here."""
 
         self._prewarm_worker: Worker[None] | None = None
         """Background worker that prewarms `deepagents`/LangChain imports.
@@ -9774,6 +9773,7 @@ class DeepAgentsApp(App):
             auto_approve=self._auto_approve,
         )
         self._hooks.apply_graph_context(context)
+        await self._persist_shell_for_handoff(remote, thread_id)
         result = await remote.aoffload(
             config={"configurable": {"thread_id": thread_id}},
             context=context,
@@ -9836,15 +9836,46 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Summary saved in new thread: {child_id}")
         )
-        if self._pending_messages:
+        if (
+            self._pending_messages
+            or self._pending_shell_messages
+            or self._shell_running
+        ):
             await self._mount_message(
                 AppMessage(
-                    "Messages arrived during summarization; staying on this thread "
-                    "so they are not discarded. Open the saved summary with /threads."
+                    "New messages or shell activity arrived during summarization; "
+                    "staying on this thread so they are not discarded. "
+                    "Open the saved summary with /threads."
                 )
             )
         elif self._lc_thread_id == thread_id and not self._exiting:
             await self._resume_thread(child_id)
+
+    async def _persist_shell_for_handoff(
+        self, remote: RemoteAgent, thread_id: str
+    ) -> None:
+        """Save buffered shell context; retain it on failure or cancellation."""
+        from uuid import uuid4
+
+        messages = list(self._pending_shell_messages)
+        if not messages:
+            return
+        for message in messages:
+            # A lost response may follow a successful write. Stable IDs keep a
+            # retry from appending the same output twice.
+            if message.id is None:
+                message.id = str(uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+        await remote.aensure_thread(config)
+        await remote.aupdate_state(
+            config, {"messages": messages}, as_node="model", recovery=True
+        )
+        saved_ids = {message.id for message in messages}
+        self._pending_shell_messages = [
+            message
+            for message in self._pending_shell_messages
+            if message.id not in saved_ids
+        ]
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -13495,8 +13526,8 @@ class DeepAgentsApp(App):
         than write to thread state immediately (which would spend a model turn
         on output the user may never reference), the command/output are queued
         here as a structured `HumanMessage` and flushed when the user sends
-        their next message (see `_flush_pending_shell_messages`). `!!`
-        (incognito) callers skip this and stay local-only.
+        their next message or accepts a cache handoff. `!!` (incognito)
+        callers skip this and stay local-only.
 
         Args:
             command: The shell command that was run (without the `!` prefix).

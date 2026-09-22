@@ -7,6 +7,7 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
   if (!input || !labels.length) return new Set();
 
   const apiKey = options.apiKey ?? process.env.LANGSMITH_API_KEY;
+  const workspaceId = process.env.LANGSMITH_WORKSPACE_ID;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (!apiKey) throw new Error('LANGSMITH_API_KEY is required for topic classification');
 
@@ -22,6 +23,7 @@ async function classifyTopicLabels(text, allowedLabels, options = {}) {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          ...(workspaceId ? { 'X-Tenant-ID': workspaceId } : {}),
         },
         body: JSON.stringify({
           model: MODEL,

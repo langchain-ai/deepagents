@@ -42,6 +42,26 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.equal(body.questions['topic:mcp'].type, 'noul');
 });
 
+test('sends the configured workspace header and omits it when unset or empty', async t => {
+  const previous = process.env.LANGSMITH_WORKSPACE_ID;
+  t.after(() => {
+    if (previous === undefined) delete process.env.LANGSMITH_WORKSPACE_ID;
+    else process.env.LANGSMITH_WORKSPACE_ID = previous;
+  });
+  for (const workspace of ['00000000-0000-4000-8000-000000000001', '', undefined]) {
+    if (workspace === undefined) delete process.env.LANGSMITH_WORKSPACE_ID;
+    else process.env.LANGSMITH_WORKSPACE_ID = workspace;
+    await classifyTopicLabels('text', ['topic:mcp'], {
+      apiKey: 'secret',
+      fetchImpl: async (_url, options) => {
+        assert.equal(options.headers['X-Tenant-ID'], workspace || undefined);
+        assert.equal(Object.hasOwn(options.headers, 'X-Tenant-ID'), Boolean(workspace));
+        return response({ 'topic:mcp': 0.95 });
+      },
+    });
+  }
+});
+
 test('ranks distinct labels by probability and caps them at three', async () => {
   const scores = { a: 0.8, b: 0.99, c: 0.9, d: 0.95, e: 0.79 };
   const labels = await classifyTopicLabels('text', [...Object.keys(scores), 'b'], {

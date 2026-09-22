@@ -2341,6 +2341,11 @@ class _ThreadHistoryPayload:
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
 
+    session_cost_breakdown: Mapping[str, object] | None = field(
+        default=None, kw_only=True
+    )
+    """Persisted thread-wide cost detail, or `None` when absent."""
+
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
 
@@ -9066,15 +9071,17 @@ class DeepAgentsApp(App):
         cost_usd: float = 0.0,
         *,
         has_restored_model_usage: bool = False,
+        breakdown: Mapping[str, object] | None = None,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
         Args:
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
+            breakdown: Structured cost detail restored from the checkpoint.
         """
         self._thread_stats = SessionStats()
-        self._session_cost_breakdown = None
+        self._session_cost_breakdown = breakdown
         self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
@@ -14389,6 +14396,7 @@ class DeepAgentsApp(App):
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
         )
+        session_cost_breakdown = state_values.get("_session_cost_breakdown")
         raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
         rubric_model = (
             None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
@@ -14436,6 +14444,11 @@ class DeepAgentsApp(App):
                 else None
             ),
             session_cost_usd=session_cost_usd,
+            session_cost_breakdown=(
+                session_cost_breakdown
+                if isinstance(session_cost_breakdown, Mapping)
+                else None
+            ),
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -20010,6 +20023,7 @@ class DeepAgentsApp(App):
             self._reset_thread_usage(
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
+                breakdown=payload.session_cost_breakdown,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the

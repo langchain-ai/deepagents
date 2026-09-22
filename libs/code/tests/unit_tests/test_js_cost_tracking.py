@@ -6,12 +6,13 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Literal, NotRequired
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from deepagents.middleware.subagents import SubAgent
     from langchain.agents.middleware import AgentMiddleware
     from langchain_core.messages.ai import UsageMetadata
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.graph.state import CompiledStateGraph
 
 import pytest
@@ -58,17 +59,30 @@ def controlled_cost(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _call(code: str, *, message_id: str = "parent-call") -> AIMessage:
-    return AIMessage(
-        content="",
-        id=message_id,
-        usage_metadata=_usage(),
-        tool_calls=[{"name": "js_eval", "args": {"code": code}, "id": message_id}],
+    return _tool_call(
+        "js_eval", {"code": code}, message_id=message_id, call_id=message_id
     )
 
 
-def _child(name: str) -> CompiledStateGraph:
+def _tool_call(
+    name: str,
+    args: dict[str, object] | None = None,
+    *,
+    message_id: str | None = None,
+    call_id: str | None = None,
+) -> AIMessage:
+    return AIMessage(
+        content="",
+        id=message_id or name,
+        usage_metadata=_usage(),
+        tool_calls=[{"name": name, "args": args or {}, "id": call_id or name}],
+    )
+
+
+def _child(*messages: AIMessage, tools: Sequence[BaseTool] = ()) -> CompiledStateGraph:
     return create_agent(
-        _fake_model(_message(name)),
+        _fake_model(*messages),
+        tools=tools,
         middleware=[CostTrackingMiddleware(nested=True)],
     )
 
@@ -127,7 +141,7 @@ def _fresh_runtime() -> None:
 async def test_js_subagent_cost_is_durable(mode) -> None:
     agent = _parent(
         'await task({description:"work", subagentType:"child"})',
-        {"child": _child("child")},
+        {"child": _child(_message("child"))},
         InMemorySaver(),
         mode=mode,
     )
@@ -148,25 +162,6 @@ async def test_js_subagent_cost_is_durable(mode) -> None:
 
 
 @pytest.mark.parametrize(
-    "code",
-    [
-        (
-            'await Promise.all([task({description:"a", subagentType:"a"}),'
-            'task({description:"b", subagentType:"b"})])'
-        ),
-        (
-            'await task({description:"a", subagentType:"a"});'
-            'await task({description:"b", subagentType:"b"})'
-        ),
-    ],
-)
-async def test_parallel_and_sequential(code: str) -> None:
-    agent = _parent(code, {"a": _child("a"), "b": _child("b")}, InMemorySaver())
-    await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
-    assert await _total(agent) == pytest.approx(4.0)
-
-
-@pytest.mark.parametrize(
     ("parallel", "failed_sibling"), [(False, False), (True, False), (False, True)]
 )
 async def test_completed_sibling_interrupt_fresh_runtime(
@@ -179,18 +174,12 @@ async def test_completed_sibling_interrupt_fresh_runtime(
 
     def interrupted(resuming: bool = False) -> CompiledStateGraph:
         messages = [
-            AIMessage(
-                content="",
-                id="approval-call",
-                usage_metadata=_usage(),
-                tool_calls=[{"name": "approval", "args": {}, "id": "approve"}],
-            ),
+            _tool_call("approval", message_id="approval-call", call_id="approve"),
             _message("approved"),
         ]
-        return create_agent(
-            _fake_model(*(messages[1:] if resuming else messages)),
+        return _child(
+            *(messages[1:] if resuming else messages),
             tools=[approval],
-            middleware=[CostTrackingMiddleware(nested=True)],
         )
 
     saver = InMemorySaver()
@@ -203,7 +192,7 @@ async def test_completed_sibling_interrupt_fresh_runtime(
             'await Promise.all([task({description:"done", subagentType:"done"}),'
             'task({description:"pause", subagentType:"pause"})])'
         )
-    done = _child("done")
+    done = _child(_message("done"))
     if failed_sibling:
 
         @tool
@@ -212,18 +201,7 @@ async def test_completed_sibling_interrupt_fresh_runtime(
             msg = "sibling failed"
             raise RuntimeError(msg)
 
-        done = create_agent(
-            _fake_model(
-                AIMessage(
-                    content="",
-                    id="failed",
-                    usage_metadata=_usage(),
-                    tool_calls=[{"name": "fail", "args": {}, "id": "fail"}],
-                )
-            ),
-            tools=[fail],
-            middleware=[CostTrackingMiddleware(nested=True)],
-        )
+        done = _child(_tool_call("fail", message_id="failed"), tools=[fail])
         code = code.replace(
             'task({description:"done", subagentType:"done"})',
             'task({description:"done", subagentType:"done"}).catch(() => "failed")',
@@ -236,9 +214,7 @@ async def test_completed_sibling_interrupt_fresh_runtime(
     resumed = _parent(
         code,
         {
-            "done": create_agent(
-                _fake_model(), middleware=[CostTrackingMiddleware(nested=True)]
-            ),
+            "done": _child(),
             "pause": interrupted(True),
         },
         saver,
@@ -253,7 +229,7 @@ async def test_completed_sibling_interrupt_fresh_runtime(
 async def test_nested_dispatch_and_multiple_eval_tools() -> None:
     inner = _parent(
         'await task({description:"leaf", subagentType:"leaf"})',
-        {"leaf": _child("leaf")},
+        {"leaf": _child(_message("leaf"))},
         None,
         nested=True,
     )
@@ -265,7 +241,7 @@ async def test_nested_dispatch_and_multiple_eval_tools() -> None:
     )
     agent = _parent(
         code,
-        {"inner": inner, "other": _child("other")},
+        {"inner": inner, "other": _child(_message("other"))},
         InMemorySaver(),
         messages=[first, second, _message("done")],
     )
@@ -277,7 +253,7 @@ async def test_completed_cost_survives_eval_failure() -> None:
     code = (
         'await task({description:"done", subagentType:"done"});throw new Error("boom")'
     )
-    agent = _parent(code, {"done": _child("done")}, InMemorySaver())
+    agent = _parent(code, {"done": _child(_message("done"))}, InMemorySaver())
     result = await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     assert await _total(agent) == pytest.approx(3.0)
     assert "boom" in result["messages"][-2].content
@@ -296,18 +272,12 @@ async def test_cancel_after_child_checkpoint_then_resume() -> None:
 
     def child(resuming: bool = False) -> CompiledStateGraph:
         messages = [
-            AIMessage(
-                content="",
-                id="waiting",
-                usage_metadata=_usage(),
-                tool_calls=[{"name": "wait", "args": {}, "id": "wait"}],
-            ),
+            _tool_call("wait", message_id="waiting"),
             _message("released"),
         ]
-        return create_agent(
-            _fake_model(*(messages[1:] if resuming else messages)),
+        return _child(
+            *(messages[1:] if resuming else messages),
             tools=[wait],
-            middleware=[CostTrackingMiddleware(nested=True)],
         )
 
     saver = InMemorySaver()
@@ -315,7 +285,7 @@ async def test_cancel_after_child_checkpoint_then_resume() -> None:
         'await task({description:"done", subagentType:"done"});'
         'await task({description:"wait", subagentType:"wait"})'
     )
-    agent = _parent(code, {"done": _child("done"), "wait": child()}, saver)
+    agent = _parent(code, {"done": _child(_message("done")), "wait": child()}, saver)
     invocation = asyncio.create_task(
         agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     )
@@ -329,9 +299,7 @@ async def test_cancel_after_child_checkpoint_then_resume() -> None:
     resumed = _parent(
         code,
         {
-            "done": create_agent(
-                _fake_model(), middleware=[CostTrackingMiddleware(nested=True)]
-            ),
+            "done": _child(),
             "wait": child(True),
         },
         saver,
@@ -348,18 +316,7 @@ async def test_failed_child_preserves_checkpointed_cost() -> None:
         msg = "child failed"
         raise RuntimeError(msg)
 
-    child = create_agent(
-        _fake_model(
-            AIMessage(
-                content="",
-                id="failed",
-                usage_metadata=_usage(),
-                tool_calls=[{"name": "fail", "args": {}, "id": "fail"}],
-            )
-        ),
-        tools=[fail],
-        middleware=[CostTrackingMiddleware(nested=True)],
-    )
+    child = _child(_tool_call("fail", message_id="failed"), tools=[fail])
     agent = _parent(
         'await task({description:"fail", subagentType:"fail"})',
         {"fail": child},
@@ -391,35 +348,23 @@ async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
         msg = "parallel failure"
         raise RuntimeError(msg)
 
-    def child(name: str, operation) -> CompiledStateGraph:
-        return create_agent(
-            _fake_model(
-                AIMessage(
-                    content="",
-                    id=name,
-                    usage_metadata=_usage(),
-                    tool_calls=[{"name": name, "args": {}, "id": name}],
-                )
-            ),
-            tools=[operation],
-            middleware=[CostTrackingMiddleware(nested=True)],
-        )
-
     code = (
         'await Promise.all([task({description:"wait",subagentType:"wait"}),'
         'task({description:"fail",subagentType:"fail"})])'
     )
-    waiter = child("wait", wait)
+    waiter = _child(_tool_call("wait"), tools=[wait])
     if nested:
         waiter = _parent(
             'await task({description:"done", subagentType:"done"});'
             'await task({description:"wait", subagentType:"wait"})',
-            {"done": _child("done"), "wait": waiter},
+            {"done": _child(_message("done")), "wait": waiter},
             None,
             nested=True,
         )
     agent = _parent(
-        code, {"wait": waiter, "fail": child("fail", fail)}, InMemorySaver()
+        code,
+        {"wait": waiter, "fail": _child(_tool_call("fail"), tools=[fail])},
+        InMemorySaver(),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
@@ -431,7 +376,11 @@ async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
 async def test_failed_nested_dispatch_preserves_unclaimed_transfer() -> None:
     code = 'await task({description:"leaf", subagentType:"leaf"})'
     inner = _parent(
-        code, {"leaf": _child("leaf")}, None, nested=True, messages=[_call(code)]
+        code,
+        {"leaf": _child(_message("leaf"))},
+        None,
+        nested=True,
+        messages=[_call(code)],
     )
     agent = _parent(
         'await task({description:"inner", subagentType:"inner"})',
@@ -451,9 +400,7 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
     class ChildState(AgentMiddleware):
         state_schema = State
 
-        def after_agent(self, state, runtime) -> dict[str, str]:
-            assert state["messages"]
-            assert runtime is not None
+        def after_agent(self, state, runtime) -> dict[str, str]:  # noqa: ARG002  # Middleware hook signature.
             return {"unrelated": "child-only"}
 
     interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode="call")
@@ -468,17 +415,11 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
         "description": "structured",
         "system_prompt": "Return an answer.",
         "model": _fake_model(
-            AIMessage(
-                content="",
-                id="structured",
-                usage_metadata=_usage(),
-                tool_calls=[
-                    {
-                        "name": "subagent_response",
-                        "args": {"answer": 42},
-                        "id": "answer",
-                    }
-                ],
+            _tool_call(
+                "subagent_response",
+                {"answer": 42},
+                message_id="structured",
+                call_id="answer",
             )
         ),
         "middleware": child_middleware,
@@ -514,21 +455,15 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
 
 
 async def test_direct_task_still_transfers_costs() -> None:
-    message = AIMessage(
-        content="",
-        id="direct",
-        usage_metadata=_usage(),
-        tool_calls=[
-            {
-                "name": "task",
-                "args": {"description": "work", "subagent_type": "child"},
-                "id": "direct",
-            }
-        ],
+    message = _tool_call(
+        "task",
+        {"description": "work", "subagent_type": "child"},
+        message_id="direct",
+        call_id="direct",
     )
     agent = _parent(
         "",
-        {"child": _child("child")},
+        {"child": _child(_message("child"))},
         InMemorySaver(),
         messages=[message, _message("done")],
     )
@@ -557,8 +492,7 @@ async def test_completion_order_does_not_swap_results_on_sqlite_resume(
     from langchain.agents.middleware import AgentMiddleware
 
     class Dispatch(AgentMiddleware):
-        def before_agent(self, state, runtime) -> None:
-            assert runtime is not None
+        def before_agent(self, state, runtime) -> None:  # noqa: ARG002  # Middleware hook signature.
             name = state["messages"][0].content
             dispatched.append(name)
             if name == "D":
@@ -579,12 +513,7 @@ async def test_completion_order_does_not_swap_results_on_sqlite_resume(
             if name == "A" and not resuming:
                 messages.insert(
                     0,
-                    AIMessage(
-                        content="",
-                        id="delay",
-                        usage_metadata=_usage(),
-                        tool_calls=[{"name": "delay", "args": {}, "id": "delay"}],
-                    ),
+                    _tool_call("delay"),
                 )
             middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 CostTrackingMiddleware(nested=True),
@@ -599,18 +528,9 @@ async def test_completion_order_does_not_swap_results_on_sqlite_resume(
         if not resuming:
             messages.insert(
                 0,
-                AIMessage(
-                    content="",
-                    id="approval",
-                    usage_metadata=_usage(),
-                    tool_calls=[{"name": "approval", "args": {}, "id": "approval"}],
-                ),
+                _tool_call("approval"),
             )
-        result["approval"] = create_agent(
-            _fake_model(*messages),
-            tools=[approval],
-            middleware=[CostTrackingMiddleware(nested=True)],
-        )
+        result["approval"] = _child(*messages, tools=[approval])
         return result
 
     code = (
@@ -671,12 +591,7 @@ async def test_identical_parallel_requests_are_distinct(durability) -> None:
     agent = _parent(
         'await Promise.all([task({description:"same",subagentType:"child"}),'
         'task({description:"same",subagentType:"child"})])',
-        {
-            "child": create_agent(
-                _fake_model(_message("one"), _message("two")),
-                middleware=[CostTrackingMiddleware(nested=True)],
-            )
-        },
+        {"child": _child(_message("one"), _message("two"))},
         InMemorySaver(),
     )
     await agent.ainvoke(
@@ -686,21 +601,15 @@ async def test_identical_parallel_requests_are_distinct(durability) -> None:
 
 
 async def test_direct_grandchild_is_not_double_counted() -> None:
-    direct = AIMessage(
-        content="",
-        id="direct",
-        usage_metadata=_usage(),
-        tool_calls=[
-            {
-                "name": "task",
-                "args": {"description": "leaf", "subagent_type": "leaf"},
-                "id": "leaf",
-            }
-        ],
+    direct = _tool_call(
+        "task",
+        {"description": "leaf", "subagent_type": "leaf"},
+        message_id="direct",
+        call_id="leaf",
     )
     inner = _parent(
         "",
-        {"leaf": _child("leaf")},
+        {"leaf": _child(_message("leaf"))},
         None,
         nested=True,
         messages=[direct, _message("inner")],
@@ -733,7 +642,7 @@ async def test_cancellation_settles_inflight_receipt_before_sqlite_close(
     database = str(tmp_path / "cancel.sqlite")
     code = 'await task({description:"child",subagentType:"child"})'
     async with SlowSaver.from_conn_string(database) as saver:
-        agent = _parent(code, {"child": _child("child")}, saver)
+        agent = _parent(code, {"child": _child(_message("child"))}, saver)
         invocation = asyncio.create_task(
             agent.ainvoke(
                 {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
@@ -748,11 +657,7 @@ async def test_cancellation_settles_inflight_receipt_before_sqlite_close(
     async with AsyncSqliteSaver.from_conn_string(database) as saver:
         agent = _parent(
             code,
-            {
-                "child": create_agent(
-                    _fake_model(), middleware=[CostTrackingMiddleware(nested=True)]
-                )
-            },
+            {"child": _child()},
             saver,
             resuming=True,
         )

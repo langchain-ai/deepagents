@@ -42,6 +42,36 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.equal(body.questions['topic:mcp'].type, 'noul');
 });
 
+test('logs only validated diagnostics, including abstentions', async () => {
+  for (const score of [0.79, 0.95]) {
+    const debug = [], info = [];
+    const selected = score >= 0.8 ? ['topic:models'] : [];
+    const labels = await classifyTopicLabels('private issue text', allowed, {
+      apiKey: 'private-key',
+      debug: message => debug.push(JSON.parse(message)),
+      info: message => info.push(message),
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          model: 'untrusted response text',
+          extra: 'private response field',
+          answers: {
+            'topic:mcp': { type: 'noul', noul: 0.2, extra: 'private answer field' },
+            'topic:models': { type: 'noul', noul: score },
+            'unexpected response label': { type: 'noul', noul: 1 },
+          },
+        }),
+      }),
+    });
+    assert.deepEqual([...labels], selected);
+    assert.deepEqual(debug, [{
+      model: MODEL, threshold: 0.8,
+      scores: [['topic:models', score], ['topic:mcp', 0.2]], selected,
+    }]);
+    assert.deepEqual(info, [`${selected.length} topics met the 0.8 cutoff; selected ${selected.length} (maximum 3).`]);
+  }
+});
+
 test('sends the configured workspace header and omits it when unset or empty', async t => {
   const previous = process.env.LANGSMITH_WORKSPACE_ID;
   t.after(() => {

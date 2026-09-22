@@ -14,6 +14,7 @@ from langgraph.graph.message import add_messages
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+from deepagents_code.tui.widgets.messages import ErrorMessage
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -440,18 +441,41 @@ async def test_send_mode_does_not_interrupt_idle_composer(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
+def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    errors: list[str] = []
+    mount = app._mount_message
+
+    async def record(widget: object) -> None:
+        if isinstance(widget, ErrorMessage):
+            errors.append(str(widget._content))
+        await mount(widget)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(app, "_mount_message", record)
+    return errors
+
+
 @pytest.mark.parametrize("failure", [False, True])
 async def test_handoff_keeps_submitted_draft_without_sending(
     failure: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
     process = AsyncMock()
-    handoff = AsyncMock(side_effect=RuntimeError("summary failed") if failure else None)
+
+    async def handoff(_thread_id: str) -> None:  # noqa: RUF029  # mock contract
+        if failure:
+            msg = "summary failed"
+            raise RuntimeError(msg)
+        # A real handoff resumes the child thread, which clears the composer.
+        app._lc_thread_id = "child"
+        assert app._chat_input is not None
+        app._chat_input.value = ""
+
     monkeypatch.setattr(app, "_process_message", process)
     monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)
+        errors = _record_errors(app, monkeypatch)
         await app._dispatch_queued_message(
             QueuedMessage("retain this request", "normal")
         )
@@ -461,7 +485,37 @@ async def test_handoff_keeps_submitted_draft_without_sending(
         assert app._chat_input is not None
         assert app._chat_input.value == "retain this request"
         process.assert_not_awaited()
-        handoff.assert_awaited_once_with("source")
+        assert app._lc_thread_id == ("source" if failure else "child")
+        if failure:
+            assert len(errors) == 1
+            assert "summary failed" in errors[0]
+            assert "original thread is unchanged" in errors[0]
+        else:
+            assert errors == []
+
+
+async def test_unanswered_prompt_stays_without_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    handoff = AsyncMock()
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr("deepagents_code.app._MODAL_WATCHDOG_TIMEOUT_SECONDS", 0.05)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        errors = _record_errors(app, monkeypatch)
+        assert app._chat_input is not None
+        app._chat_input.value = "keep this draft"
+        app._check_cache_expiry()
+        await pilot.pause(0.2)
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        assert errors == []
+        handoff.assert_not_awaited()
+        assert app._chat_input.value == "keep this draft"
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
 @pytest.mark.parametrize("identity_changed", [False, True])

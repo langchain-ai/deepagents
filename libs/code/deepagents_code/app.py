@@ -1258,6 +1258,7 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
+    from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
     from deepagents_code.tui.modals.plugin_manager.models import (
         PluginManagerAction,
         PluginManagerResult,
@@ -9700,10 +9701,43 @@ class DeepAgentsApp(App):
         *,
         message: QueuedMessage | None = None,
     ) -> None:
-        """Offer one cost-aware handoff without sending.
+        """Offer a summarized-thread handoff for an expired cache; never sends.
+
+        Esc, or leaving the prompt unanswered, keeps the current thread and
+        suppresses the send-time warning for this window. The draft is restored
+        whichever way the prompt resolves.
+
+        Args:
+            thread_id: Thread whose cache window expired.
+            expires_at: The expired window. `None` records no bypass.
+            message: Submitted message whose text is restored as the draft.
+        """
+        from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
+
+        draft = message.text if message else None
+        handed_off = False
+        try:
+            choice = await self._ask_cache_handoff(thread_id)
+            if choice is ColdCacheChoice.HANDOFF:
+                if draft is None and self._chat_input:
+                    draft = self._chat_input.value
+                handed_off = await self._run_cache_handoff(thread_id)
+            elif choice is ColdCacheChoice.CANCEL and expires_at is not None:
+                self._cache_expiry_bypassed = (thread_id, expires_at)
+                self._cache_expiry_seen[thread_id] = expires_at
+        finally:
+            self._restore_handoff_draft(draft, thread_id, handed_off=handed_off)
+            await self._set_spinner(None)
+
+    async def _ask_cache_handoff(self, thread_id: str) -> ColdCacheChoice | None:
+        """Show the handoff prompt and wait for the user's choice.
+
+        Returns:
+            The choice, `CANCEL` when the prompt times out, or `None` when the
+                prompt could not be shown or the thread changed meanwhile.
 
         Raises:
-            asyncio.CancelledError: When the app exits.
+            asyncio.CancelledError: If the task is cancelled, such as on exit.
         """
         from deepagents_code.tui.modals.cold_cache import (
             ColdCacheChoice,
@@ -9711,31 +9745,49 @@ class DeepAgentsApp(App):
         )
 
         screen = None
-        draft = message.text if message else None
-        handed_off = False
         try:
             warning = await self._cold_cache_warning_for(
                 QueuedMessage(text="", mode="normal"), advisory=True
             )
             if self._exiting or self._lc_thread_id != thread_id:
-                return
+                return None
             if warning is not None:
                 await self._emit_cold_cache_warning_hook(warning)
             screen = ColdCacheWarningScreen(warning, handoff=True)
             choice = await asyncio.wait_for(
                 self._push_screen_wait(screen), timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
             )
-            if self._exiting or self._lc_thread_id != thread_id:
-                return
-            if choice is ColdCacheChoice.HANDOFF:
-                if draft is None and self._chat_input:
-                    draft = self._chat_input.value
-                await self._handoff_expired_cache(thread_id)
-                handed_off = True
-            elif choice is ColdCacheChoice.CANCEL:
-                if expires_at is not None:
-                    self._cache_expiry_bypassed = (thread_id, expires_at)
-                    self._cache_expiry_seen[thread_id] = expires_at
+        except TimeoutError:
+            # The idle prompt usually opens while the user is away. An
+            # unanswered prompt means "stay", not a failure to report.
+            logger.info("Cache handoff prompt timed out; staying on the thread")
+            return ColdCacheChoice.CANCEL
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Could not show the cache handoff prompt")
+            await self._mount_message(
+                ErrorMessage(f"Could not show the cache handoff prompt: {exc}")
+            )
+            return None
+        finally:
+            if screen is not None:
+                self._dismiss_orphaned_screen(screen)
+        if self._exiting or self._lc_thread_id != thread_id:
+            return None
+        return choice
+
+    async def _run_cache_handoff(self, thread_id: str) -> bool:
+        """Run the handoff and report a failure to the user.
+
+        Returns:
+            Whether the summarized thread was created.
+
+        Raises:
+            asyncio.CancelledError: If the task is cancelled, such as on exit.
+        """
+        try:
+            await self._handoff_expired_cache(thread_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -9743,21 +9795,29 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     f"Could not start a summarized thread: {exc}. "
-                    "Your original thread is preserved; use /threads to recover it."
+                    "The original thread is unchanged."
                 )
             )
-        finally:
-            if screen is not None:
-                self._dismiss_orphaned_screen(screen)
-            if (
-                draft
-                and not self._exiting
-                and (self._lc_thread_id == thread_id or handed_off)
-                and self._chat_input
-                and self._chat_input.value != draft
-            ):
-                self._restore_cold_cache_draft(draft)
-            await self._set_spinner(None)
+            return False
+        return True
+
+    def _restore_handoff_draft(
+        self, draft: str | None, thread_id: str, *, handed_off: bool
+    ) -> None:
+        """Put the draft back in the input, or say where to find it."""
+        if not draft or self._exiting or not self._chat_input:
+            return
+        if self._lc_thread_id != thread_id and not handed_off:
+            self.notify(
+                "The active thread changed, so your draft was not restored. "
+                "Press Up to recall it.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            return
+        if self._chat_input.value != draft:
+            self._restore_cold_cache_draft(draft)
 
     async def _handoff_expired_cache(self, thread_id: str) -> None:
         """Seed a summarized child thread, then switch to it unless work arrived.

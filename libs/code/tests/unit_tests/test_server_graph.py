@@ -1068,7 +1068,7 @@ class TestWorkspaceRuntime:
         assert call.kwargs["config_override"].trust_project_extensions is False
 
     async def test_model_change_rebuilds_runtime_without_refusing(
-        self, tmp_path
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A model-only change is permitted: the runtime rebuilds, the binding holds.
 
@@ -1077,11 +1077,13 @@ class TestWorkspaceRuntime:
         a fresh runtime is built rather than reusing the stale one.
         """
         module = _import_fresh_server_graph()
-        bound_config = ServerConfig(model="trusted:model")
+        bound_config = ServerConfig(model="trusted:model", sandbox_type="daytona")
         binding = _bind(bound_config, tmp_path)
         first_runtime = module.ServerRuntime(object(), object(), object())
         second_runtime = module.ServerRuntime(object(), object(), object())
         make = AsyncMock(side_effect=[first_runtime, second_runtime])
+        sandbox_backend = object()
+        monkeypatch.setattr(module, "_sandbox_backend", sandbox_backend)
 
         with (
             patch.object(ServerConfig, "from_env", return_value=bound_config),
@@ -1093,16 +1095,25 @@ class TestWorkspaceRuntime:
             patch.object(
                 ServerConfig,
                 "from_env",
-                return_value=ServerConfig(model="changed:model"),
+                return_value=ServerConfig(
+                    model="changed:model", sandbox_type="daytona"
+                ),
             ),
             patch.object(module, "_make_graphs", new=make),
         ):
             rebuilt = await module._workspace_runtime(
-                _bind(ServerConfig(model="changed:model"), tmp_path)
+                _bind(
+                    ServerConfig(model="changed:model", sandbox_type="daytona"),
+                    tmp_path,
+                )
             )
 
         assert rebuilt is second_runtime
         assert make.await_count == 2
+        assert all(
+            call.kwargs["sandbox_backend_override"] is sandbox_backend
+            for call in make.await_args_list
+        )
 
     async def test_rejects_access_policy_drift(self, tmp_path) -> None:
         """Real policy drift (approval/tool/sandbox/trust) still refuses."""

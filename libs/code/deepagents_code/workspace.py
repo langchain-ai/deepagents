@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 _SCHEMA_VERSION = 4
+_STRICT_LEGACY_SCHEMA_VERSION = 3
 """Binding schema generation.
 
 Version 4 splits the single config fingerprint into a durable policy
@@ -468,12 +469,12 @@ def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> 
     if not existing.config_fingerprint:
         # Pre-fingerprint rows have no recorded policy to preserve.
         return False
-    # Legacy rows (v2/v3): the old fingerprint was the full runtime fingerprint.
-    # Exact equality proves nothing changed, so the row may migrate. Otherwise
-    # the recorded session policy is the only proof available; if it matches but
-    # the full fingerprint differs, the change is confined to non-session
-    # (model/runtime) fields, which is permitted. A session-policy change is a
-    # real conflict.
+    # A v3 row's old fingerprint covered the full runtime and policy. Exact
+    # equality is the only proof that project policy did not change; unlike v2,
+    # v3 recorded enough information to fail closed rather than infer safety
+    # from the narrower session-policy payload.
+    if existing.schema_version >= _STRICT_LEGACY_SCHEMA_VERSION:
+        return existing.config_fingerprint != proposed.config_fingerprint
     if existing.config_fingerprint == proposed.config_fingerprint:
         return False
     from deepagents_code._server_config import SESSION_WORKSPACE_FIELDS

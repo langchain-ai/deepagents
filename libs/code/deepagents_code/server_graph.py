@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from deepagents.backends.composite import CompositeBackend
+    from deepagents.backends.protocol import SandboxBackendProtocol
 
     EnvironmentContext = Callable[
         [Mapping[str, str] | None], AbstractContextManager[None]
@@ -321,6 +322,7 @@ async def _make_graphs(
     *,
     config_override: ServerConfig | None = None,
     project_context_override: ProjectContext | None = None,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Create the agent graph and the backend carrying its shared resources.
 
@@ -388,6 +390,7 @@ async def _make_graphs(
             project_context_override=project_context_override,
             workspace_env=workspace_env,
             workspace_credentials=workspace_credentials,
+            sandbox_backend_override=sandbox_backend_override,
         )
 
 
@@ -397,6 +400,7 @@ async def _make_graphs_in_environment(
     project_context_override: ProjectContext | None,
     workspace_env: Mapping[str, str],
     workspace_credentials: CredentialsSnapshot,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Build one runtime while its immutable workspace environment is active.
 
@@ -472,8 +476,8 @@ async def _make_graphs_in_environment(
     # graph, so this runs once per process despite LangGraph's per-run factory
     # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
-    sandbox_backend = None
-    if sandbox_type := config.sandbox_type:
+    sandbox_backend = sandbox_backend_override
+    if (sandbox_type := config.sandbox_type) and sandbox_backend is None:
         from deepagents_code.integrations.sandbox_factory import create_sandbox
 
         try:
@@ -1002,6 +1006,9 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         runtime = await _make_graphs(
             config_override=current_config,
             project_context_override=project_context,
+            sandbox_backend_override=(
+                _sandbox_backend if current_config.sandbox_type else None
+            ),
         )
         _remember_workspace_runtime(
             binding, runtime, current_config_fingerprint=runtime_fp

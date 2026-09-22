@@ -283,11 +283,21 @@ async def test_legacy_v3_row_migrates_only_when_nothing_changed(
     assert history == ("conversation-state",)
 
 
+@pytest.mark.parametrize(
+    ("original", "changed"),
+    [
+        ({"auto_approve": False}, {"auto_approve": True}),
+        ({"trust_project_extensions": True}, {"trust_project_extensions": False}),
+        ({"trust_project_mcp": True}, {"trust_project_mcp": False}),
+        ({"extension_paths": ["/original"]}, {"extension_paths": ["/changed"]}),
+        ({"sandbox_setup": "/original"}, {"sandbox_setup": "/changed"}),
+    ],
+)
 async def test_legacy_v3_row_with_policy_change_is_rejected(
-    tmp_path, workspace_database
+    tmp_path, workspace_database, original, changed
 ) -> None:
     """A v3 row whose full fingerprint no longer matches cannot be proven safe."""
-    await bind_thread_workspace("thread-1", str(tmp_path), {"auto_approve": False})
+    await bind_thread_workspace("thread-1", str(tmp_path), original)
     with closing(sqlite3.connect(workspace_database)) as conn, conn:
         conn.execute(
             """
@@ -301,7 +311,7 @@ async def test_legacy_v3_row_with_policy_change_is_rejected(
     # A real policy change flips the full fingerprint, so the legacy row is
     # unprovable and is rejected rather than assumed equivalent.
     with pytest.raises(WorkspaceConflictError):
-        await bind_thread_workspace("thread-1", str(tmp_path), {"auto_approve": True})
+        await bind_thread_workspace("thread-1", str(tmp_path), changed)
 
 
 async def test_model_only_change_does_not_rebind_current_schema(tmp_path) -> None:

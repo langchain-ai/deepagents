@@ -1,4 +1,4 @@
-"""Tests for sandbox factory optional dependency handling."""
+"""Tests for sandbox lifecycle and optional dependency handling."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from deepagents.backends.protocol import ExecuteResponse
 
 from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
@@ -25,6 +26,7 @@ from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
+    from pathlib import Path
 
 _FACTORY = "deepagents_code.integrations.sandbox_factory"
 
@@ -54,6 +56,135 @@ def _bind_environment(environment: Mapping[str, str]) -> Iterator[None]:
 def _registry_with(config: SandboxConfig) -> SandboxRegistry:
     """Build a deterministic registry (no entry-point discovery) from config."""
     return SandboxRegistry(config=config, include_entry_points=False)
+
+
+@pytest.fixture
+def sandbox_provider() -> Iterator[MagicMock]:
+    """Supply a sandbox without remote calls or local configuration reads."""
+    provider = MagicMock()
+    provider.get_or_create.return_value.id = "sb-test"
+    provider.get_or_create.return_value.execute.return_value = ExecuteResponse(
+        exit_code=1, output="setup failed"
+    )
+    registry = _registry_with(SandboxConfig())
+    with (
+        patch(f"{_FACTORY}._get_registry", return_value=registry),
+        patch(f"{_FACTORY}._get_provider", return_value=provider),
+        _bind_environment({}),
+    ):
+        yield provider
+
+
+@pytest.fixture
+def setup_script(tmp_path: Path) -> str:
+    """Create a setup script whose execution is supplied by the fake backend."""
+    script = tmp_path / "setup.sh"
+    script.write_text("exit 1", encoding="utf-8")
+    return str(script)
+
+
+@pytest.mark.parametrize("sandbox_id", [None, "sb-test"])
+def test_setup_failure_cleans_up_only_owned_sandbox(
+    sandbox_provider: MagicMock, setup_script: str, sandbox_id: str | None
+) -> None:
+    with (
+        pytest.raises(RuntimeError, match="Setup failed - aborting"),
+        create_sandbox("fake", sandbox_id=sandbox_id, setup_script_path=setup_script),
+    ):
+        pytest.fail("A failed setup must not enter the context body")
+
+    if sandbox_id is None:
+        sandbox_provider.delete.assert_called_once_with(sandbox_id="sb-test")
+    else:
+        sandbox_provider.delete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("script_name", "error_type"),
+    [("missing.sh", FileNotFoundError), (".", IsADirectoryError)],
+)
+def test_setup_file_error_cleans_up_sandbox(
+    sandbox_provider: MagicMock,
+    tmp_path: Path,
+    script_name: str,
+    error_type: type[OSError],
+) -> None:
+    with (
+        pytest.raises(error_type),
+        create_sandbox("fake", setup_script_path=str(tmp_path / script_name)),
+    ):
+        pytest.fail("A setup file error must not enter the context body")
+
+    sandbox_provider.delete.assert_called_once_with(sandbox_id="sb-test")
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_setup_execution_error_cleans_up_sandbox(
+    sandbox_provider: MagicMock, setup_script: str, error_type: type[BaseException]
+) -> None:
+    error = error_type("setup execution interrupted")
+    sandbox_provider.get_or_create.return_value.execute.side_effect = error
+    with (
+        pytest.raises(error_type) as caught,
+        create_sandbox("fake", setup_script_path=setup_script),
+    ):
+        pytest.fail("An interrupted setup must not enter the context body")
+
+    assert caught.value is error
+    sandbox_provider.delete.assert_called_once_with(sandbox_id="sb-test")
+
+
+def test_cleanup_failure_preserves_setup_error(
+    sandbox_provider: MagicMock, setup_script: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    error = RuntimeError("setup execution failed")
+    sandbox_provider.get_or_create.return_value.execute.side_effect = error
+    sandbox_provider.delete.side_effect = RuntimeError("deletion unavailable")
+    with (
+        pytest.raises(RuntimeError) as caught,
+        create_sandbox("fake", setup_script_path=setup_script),
+    ):
+        pytest.fail("A failed setup must not enter the context body")
+
+    assert caught.value is error
+    sandbox_provider.delete.assert_called_once_with(sandbox_id="sb-test")
+    output = capsys.readouterr().out
+    assert "Cleanup failed" in output
+    assert "deletion unavailable" in output
+
+
+@pytest.mark.parametrize("sandbox_id", [None, "sb-test"])
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_context_exit_cleans_up_only_owned_sandbox(
+    sandbox_provider: MagicMock,
+    setup_script: str,
+    sandbox_id: str | None,
+    body_fails: bool,
+) -> None:
+    sandbox_provider.get_or_create.return_value.execute.return_value = ExecuteResponse(
+        exit_code=0, output=""
+    )
+    expected_error = (
+        pytest.raises(ValueError, match="body failed")
+        if body_fails
+        else contextlib.nullcontext()
+    )
+    with (
+        expected_error,
+        create_sandbox(
+            "fake", sandbox_id=sandbox_id, setup_script_path=setup_script
+        ) as backend,
+    ):
+        assert backend is sandbox_provider.get_or_create.return_value
+        sandbox_provider.delete.assert_not_called()
+        if body_fails:
+            msg = "body failed"
+            raise ValueError(msg)
+
+    if sandbox_id is None:
+        sandbox_provider.delete.assert_called_once_with(sandbox_id="sb-test")
+    else:
+        sandbox_provider.delete.assert_not_called()
 
 
 @pytest.mark.parametrize(

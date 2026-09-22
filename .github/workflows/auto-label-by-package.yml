@@ -82,9 +82,19 @@ jobs:
 
             let topics;
             try {
+              const allowed = new Set(loadTopicLabels());
+              const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+                owner, repo, per_page: 100,
+              });
+              const descriptions = Object.fromEntries(labels
+                .filter(label => allowed.has(label.name) && typeof label.description === 'string' && label.description.trim())
+                .map(label => [label.name, label.description]));
+              const missing = [...allowed].filter(name => !Object.hasOwn(descriptions, name));
+              if (missing.length) core.warning(`Skipping topics without descriptions: ${missing.join(', ')}`);
+              if (!Object.keys(descriptions).length) return;
               topics = await classifyTopicLabels(
-                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, loadTopicLabels(),
-                { debug: core.debug, info: core.info },
+                `${issue.title ?? ''}\n\n${issue.body ?? ''}`, Object.keys(descriptions),
+                { descriptions, debug: core.debug, info: core.info },
               );
             } catch (error) {
               core.warning(`Topic classification failed: ${error.message}`);

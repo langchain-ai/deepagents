@@ -4,6 +4,11 @@ const test = require('node:test');
 const { classifyTopicLabels, loadTopicLabels, ENDPOINT, MODEL } = require('../../labeling/topic-classifier.js');
 
 const allowed = ['topic:mcp', 'topic:models'];
+const descriptions = {
+  'topic:mcp': 'Model Context Protocol support and behavior.',
+  'topic:models': 'Model providers, model selection, and model configuration.',
+  'priority:urgent': 'Not a topic description',
+};
 
 function response(content, status = 200, finishReason = 'stop') {
   return {
@@ -29,7 +34,7 @@ test('classifies with the small open model and filters output to the allowlist',
   };
 
   const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
-    apiKey: 'secret', fetchImpl,
+    apiKey: 'secret', fetchImpl, descriptions,
   });
 
   assert.deepEqual([...labels], ['topic:mcp']);
@@ -38,7 +43,8 @@ test('classifies with the small open model and filters output to the allowlist',
   assert.equal(body.model, MODEL);
   assert.equal(body.temperature, 0);
   assert.deepEqual(body.response_format, { type: 'json_object' });
-  assert.match(body.messages[1].content, /topic:models/);
+  const taxonomy = body.messages[1].content.split('\n\nGitHub item:')[0].replace('Allowed labels and descriptions: ', '');
+  assert.deepEqual(JSON.parse(taxonomy), allowed.map(name => ({ name, description: descriptions[name] })));
 });
 
 test('keeps at most three distinct allowed labels in relevance order', async () => {

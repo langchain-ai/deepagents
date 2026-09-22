@@ -16,6 +16,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -512,6 +513,125 @@ def _coerce_session_cost_usd(value: object) -> float:
         )
         return 0.0
     return cost_usd
+
+
+def _format_cost_breakdown_table(
+    total_usd: float, breakdown: Mapping[str, Any] | None
+) -> str:
+    """Build the copyable entire-thread estimated token/cost table.
+
+    Returns:
+        A plain-text table, or an empty string when historical detail is missing.
+    """
+    if (
+        not isinstance(breakdown, Mapping)
+        or breakdown.get("version") != 1
+        or breakdown.get("historical_complete") is not True
+    ):
+        return ""
+
+    def _number(key: str) -> float | None:
+        value = breakdown.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+
+    def _tokens(key: str, complete_key: str | None = None) -> str:
+        value = breakdown.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return "unavailable"
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{value} (partial)"
+        return str(value)
+
+    def _cost(key: str, complete_key: str | None = None) -> str:
+        value = _number(key)
+        if value is None:
+            return "unavailable"
+        text = repr(value)
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{text} (partial)"
+        return text
+
+    def _percent(key: str) -> str:
+        value = _number(key)
+        if value is None or total_usd <= 0:
+            return "n/a"
+        return f"{value / total_usd * 100:.6g}%"
+
+    rows = [
+        (
+            "Input",
+            _percent("input_cost_usd"),
+            _tokens("input_tokens", "input_tokens_complete"),
+            _cost("input_cost_usd", "input_cost_complete"),
+        ),
+        (
+            "  cache creation",
+            _percent("cache_creation_cost_usd"),
+            _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
+            _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
+        ),
+        (
+            "  cache read",
+            _percent("cache_read_cost_usd"),
+            _tokens("cache_read_tokens", "cache_read_tokens_complete"),
+            _cost("cache_read_cost_usd", "cache_read_cost_complete"),
+        ),
+        (
+            "Output",
+            _percent("output_cost_usd"),
+            _tokens("output_tokens", "output_tokens_complete"),
+            _cost("output_cost_usd", "output_cost_complete"),
+        ),
+        (
+            "  reasoning",
+            _percent("reasoning_cost_usd"),
+            _tokens("reasoning_tokens", "reasoning_tokens_complete"),
+            _cost("reasoning_cost_usd", "reasoning_cost_complete"),
+        ),
+        (
+            "Total",
+            "100%" if total_usd > 0 else "n/a",
+            str(int(_number("input_tokens") or 0) + int(_number("output_tokens") or 0)),
+            repr(total_usd),
+        ),
+    ]
+    widths = [
+        max(
+            len(row[index])
+            for row in [("Category", "% cost", "Tokens", "Cost (USD)"), *rows]
+        )
+        for index in range(4)
+    ]
+    rendered = [
+        "  ".join(
+            value.ljust(widths[index])
+            for index, value in enumerate(
+                ("Category", "% cost", "Tokens", "Cost (USD)")
+            )
+        ).rstrip()
+    ]
+    rendered.append("  ".join("-" * width for width in widths))
+    rendered.extend(
+        "  ".join(
+            value.ljust(widths[index]) for index, value in enumerate(row)
+        ).rstrip()
+        for row in rows
+    )
+    notes: list[str] = ["Parent rows are inclusive; indented rows are subsets."]
+    attributed = (_number("input_cost_usd") or 0.0) + (
+        _number("output_cost_usd") or 0.0
+    )
+    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
+        notes.append(
+            f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
+            "directionless/unattributed."
+        )
+    if breakdown.get("priced_request_count") != breakdown.get("request_count"):
+        notes.append("Some requests were unpriceable; costs are partial.")
+    return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)
 
 
 _PRICING_UNAVAILABLE_MESSAGE = (
@@ -1090,7 +1210,6 @@ if TYPE_CHECKING:
         Callable,
         Coroutine,
         Iterator,
-        Mapping,
         Sequence,
     )
 
@@ -1112,7 +1231,12 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
+    from deepagents_code.cold_cache import (
+        CacheActivity,
+        ColdCacheReason,
+        ColdCacheWarning,
+        PromptCachePolicy,
+    )
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
@@ -2219,6 +2343,11 @@ class _ThreadHistoryPayload:
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
+
+    session_cost_breakdown: Mapping[str, object] | None = field(
+        default=None, kw_only=True
+    )
+    """Persisted thread-wide cost detail, or `None` when absent."""
 
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
@@ -4394,6 +4523,9 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._last_cache_write: CacheActivity | None = None
+        self._last_cache_use: CacheActivity | None = None
+
         self._last_model_request_at: str | None = None
         """Latest successful main-model request start restored from graph state."""
 
@@ -4416,6 +4548,9 @@ class DeepAgentsApp(App):
         the streamed absolute total during a turn. The client never adds its own
         estimates here.
         """
+
+        self._session_cost_breakdown: Mapping[str, Any] | None = None
+        """Authoritative thread-wide structured detail when checkpoints provide it."""
 
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
@@ -8863,7 +8998,9 @@ class DeepAgentsApp(App):
         # repaints.
         with suppress(NoMatches):
             cache_display = self._status_bar.query_one("#cache-display")
-            cache_display.visible = self._thread_has_completed_turn and writes > 0
+            cache_display.visible = self._last_cache_use is not None or (
+                self._thread_has_completed_turn and (reads > 0 or writes > 0)
+            )
             self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
@@ -8873,6 +9010,7 @@ class DeepAgentsApp(App):
         *,
         thread_id: str = "",
         pricing_ok: bool | None = None,
+        breakdown: Mapping[str, Any] | None = None,
     ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
@@ -8892,6 +9030,7 @@ class DeepAgentsApp(App):
                 the source reported it. `None` leaves the last known value
                 alone, so a source that cannot speak to pricing health (a
                 restored checkpoint read) does not erase what a stream said.
+            breakdown: Optional authoritative thread-wide structured detail.
         """
         if thread_id and thread_id != self._lc_thread_id:
             logger.debug(
@@ -8903,6 +9042,8 @@ class DeepAgentsApp(App):
         if pricing_ok is not None:
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        if breakdown is not None:
+            self._session_cost_breakdown = breakdown
         self._provisional_cost_usd = 0.0
         self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
         self._provisional_cost_by_request.clear()
@@ -8936,25 +9077,36 @@ class DeepAgentsApp(App):
         cost_usd: float = 0.0,
         *,
         has_restored_model_usage: bool = False,
+        breakdown: Mapping[str, object] | None = None,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
         Args:
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
+            breakdown: Structured cost detail restored from the checkpoint.
         """
         self._thread_stats = SessionStats()
-        self._refresh_cache_display()
+        self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._last_cache_write = None
+        self._last_cache_use = None
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
-        self._session_cost_warning_shown = False
+        if self._status_bar is not None:
+            self._status_bar.set_cache_timing(None)
+        self._refresh_cache_display()
+        self._session_cost_warning_shown = (
+            0
+            < self._session_cost_warning_threshold_usd
+            < self._thread_restored_cost_usd
+        )
         self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -9267,8 +9419,10 @@ class DeepAgentsApp(App):
         """
         if "_session_cost_usd" not in state_values:
             return
+        breakdown = state_values.get("_session_cost_breakdown")
         self._set_session_cost(
-            _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
+            _coerce_session_cost_usd(state_values.get("_session_cost_usd")),
+            breakdown=breakdown if isinstance(breakdown, Mapping) else None,
         )
 
     def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
@@ -9289,6 +9443,11 @@ class DeepAgentsApp(App):
         channels hold the same value on every write since; the fallback exists
         for those older checkpoints, not for a case where they diverge.
         """
+        from deepagents_code.cold_cache import parse_cache_activity
+
+        for key in ("_last_cache_write", "_last_cache_use"):
+            if key in state_values:
+                setattr(self, key, parse_cache_activity(state_values[key]))
         if "_last_model_request_at" not in state_values:
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
@@ -9363,6 +9522,73 @@ class DeepAgentsApp(App):
                 "request records a fresh one",
                 type(raw_endpoint).__name__,
             )
+
+    def _cache_timing_policy(self, activity: CacheActivity) -> PromptCachePolicy | None:
+        """Resolve retention for the recorded endpoint; offload config reads.
+
+        Returns:
+            The endpoint's policy, or `None` if it cannot be established.
+        """
+        from deepagents_code.cold_cache import (
+            endpoint_cache_identity,
+            load_trusted_cache_endpoints,
+            resolve_prompt_cache_policy,
+        )
+        from deepagents_code.model_config import ModelConfig
+
+        endpoint = activity["endpoint"]
+        base_url = None
+        if endpoint != "default":
+            provider, _, model_name = activity["model_spec"].partition(":")
+            kwargs = ModelConfig.load().get_effective_kwargs(
+                provider.strip().lower(),
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            raw_base_url = kwargs.get("base_url")
+            base_url = raw_base_url if isinstance(raw_base_url, str) else None
+            # The checkpoint identity is opaque. Resolve the real URL, and
+            # don't apply a new endpoint's policy to an earlier request.
+            if endpoint_cache_identity(base_url) != endpoint:
+                return None
+        return resolve_prompt_cache_policy(
+            activity["model_spec"],
+            activity["params"],
+            base_url=base_url,
+            trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
+        )
+
+    async def _refresh_cache_timing(self) -> None:
+        """Render checkpointed main-model cache activity with its own policy."""
+        activity = self._last_cache_use
+        if self._status_bar is None or activity is None:
+            return
+        from deepagents_code.cold_cache import parse_cache_timestamp
+
+        thread_id = self._lc_thread_id
+        written = self._last_cache_write
+        try:
+            policy = await asyncio.to_thread(self._cache_timing_policy, activity)
+        except Exception:
+            logger.debug("Could not resolve footer cache retention", exc_info=True)
+            policy = None
+        if self._lc_thread_id != thread_id or self._last_cache_use != activity:
+            return
+        # A write from another model/endpoint/cache configuration cannot label
+        # the current cache's retention window.
+        same_cache = written is not None and all(
+            written[key] == activity[key]
+            for key in ("model_spec", "endpoint", "params")
+        )
+        self._status_bar.set_cache_timing(
+            parse_cache_timestamp(written["requested_at"])
+            if written is not None and same_cache
+            else None,
+            ttl_seconds=policy.window_seconds if policy is not None else None,
+            retention_at=parse_cache_timestamp(activity["requested_at"]),
+            retention_confidence=policy.confidence if policy is not None else "expired",
+        )
+        self._refresh_cache_display()
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -14256,6 +14482,7 @@ class DeepAgentsApp(App):
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
         )
+        session_cost_breakdown = state_values.get("_session_cost_breakdown")
         raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
         rubric_model = (
             None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
@@ -14296,6 +14523,8 @@ class DeepAgentsApp(App):
                     ),
                     "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
                     "_last_cache_params": state_values.get("_last_cache_params"),
+                    "_last_cache_write": state_values.get("_last_cache_write"),
+                    "_last_cache_use": state_values.get("_last_cache_use"),
                     "_model_spec": model_spec,
                     "_model_params": model_params,
                 }
@@ -14303,6 +14532,11 @@ class DeepAgentsApp(App):
                 else None
             ),
             session_cost_usd=session_cost_usd,
+            session_cost_breakdown=(
+                session_cost_breakdown
+                if isinstance(session_cost_breakdown, Mapping)
+                else None
+            ),
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -18971,6 +19205,7 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+                await self._refresh_cache_timing()
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,
@@ -19877,6 +20112,7 @@ class DeepAgentsApp(App):
             self._reset_thread_usage(
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
+                breakdown=payload.session_cost_breakdown,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the
@@ -19884,6 +20120,7 @@ class DeepAgentsApp(App):
                 # discard warning here as it does on the live-sync path. Runs
                 # after `_reset_thread_usage`, which clears these fields.
                 self._sync_cache_state_from_state(payload.cache_state)
+                await self._refresh_cache_timing()
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
@@ -25119,6 +25356,9 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
+                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
+                    self._session_cost_usd, self._session_cost_breakdown
+                ),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,

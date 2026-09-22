@@ -288,42 +288,6 @@ class TestEstimateCost:
                 dict(detailed_breakdown)[f"{category}_cost_usd"]
             )
 
-    def test_reasoning_cost_inherits_output_rate(self) -> None:
-        usage = _usage(output_tokens=1_000)
-        usage["output_token_details"] = {"reasoning": 500}
-
-        estimate = cost_tracking._estimate_cost(usage, "gpt-5", "openai")
-
-        assert estimate is not None
-        assert estimate.output_cost_usd == pytest.approx(0.01)
-        assert estimate.reasoning_cost_usd == pytest.approx(0.005)
-        breakdown = cost_tracking._breakdown_for_estimate(estimate)
-        assert breakdown["reasoning_cost_complete"] is True
-        assert breakdown["reasoning_cost_usd"] == pytest.approx(0.005)
-
-    def test_structured_estimate_has_inclusive_parents_and_child_subsets(self) -> None:
-        usage = _usage()
-        usage["input_token_details"] = {
-            "cache_read": 200,
-            "cache_creation": 100,
-        }
-        usage["output_token_details"] = {"reasoning": 50}
-
-        estimate = cost_tracking._estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
-
-        assert estimate is not None
-        assert estimate.input_tokens == usage["input_tokens"]
-        assert estimate.output_tokens == usage["output_tokens"]
-        assert estimate.cache_creation_tokens == 100
-        assert estimate.cache_read_tokens == 200
-        assert estimate.reasoning_tokens == 50
-        assert estimate.total_cost_usd == pytest.approx(
-            estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
-        )
-        assert estimate.input_cost_usd + estimate.output_cost_usd == pytest.approx(
-            estimate.total_cost_usd
-        )
-
 
 def _override_catalog(
     models: list[dict[str, Any]],

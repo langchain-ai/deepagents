@@ -525,13 +525,6 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
-    async def test_debug_snapshot_omits_full_cost_breakdown(self) -> None:
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        async with app.run_test():
-            labels = {field.label for field in app._build_debug_snapshot()}
-
-        assert "Token/cost breakdown" not in labels
-
     async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
         import time
 

@@ -3749,7 +3749,7 @@ class ChatInput(Vertical):
         """
         return self._prompt_search_draft is not None
 
-    def open_prompt_search(self) -> Literal["inline", "modal", "noop"]:
+    def open_prompt_search(self) -> Literal["inline", "modal", "file_picker", "noop"]:
         """Open the inline prompt search, or escalate an open one to the modal.
 
         First call shows the inline panel with a fresh prompt snapshot, seeds
@@ -3759,13 +3759,19 @@ class ChatInput(Vertical):
 
         Returns:
             `"inline"` when the panel opened, `"modal"` when the caller should
-            open the full `PromptClipboardScreen`, or `"noop"` when the
-            composer is unavailable.
+            open the full `PromptClipboardScreen`, `"file_picker"` when file
+            completion owns the chord, or `"noop"` when the composer is unavailable.
         """
         if self._text_area is None or self._prompt_search is None:
             return "noop"
         if self._prompt_search_active:
             return "modal"
+        if (
+            self._completion_manager is not None
+            and self._file_controller is not None
+            and self._completion_manager.is_active(self._file_controller)
+        ):
+            return "file_picker"
         if self._current_suggestions:
             # Completion owns the shared panel rows; inserting the search panel
             # between the popup and the input row would break the completion

@@ -30949,6 +30949,29 @@ class TestPromptClipboard:
             assert app.screen is not screen
             assert chat_input.value == "oldest"
 
+    async def test_ctrl_r_keeps_file_picker_open(self) -> None:
+        """Prompt recall must not replace an active `@` file picker."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            assert chat_input._file_controller is not None
+            assert chat_input._text_area is not None
+            chat_input._file_controller._file_cache = ["README.md"]
+            chat_input._text_area.insert("@")
+            await pilot.pause()
+            assert chat_input._current_suggestions == [("@README.md", "md")]
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert not isinstance(app.screen, PromptClipboardScreen)
+            assert chat_input._current_suggestions == [("@README.md", "md")]
+            assert chat_input._prompt_search_active is False
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

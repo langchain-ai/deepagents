@@ -23641,7 +23641,7 @@ class DeepAgentsApp(App):
             return
 
         tier = chat_input.open_prompt_search()
-        if tier == "inline":
+        if tier in {"inline", "file_picker"}:
             return
         if tier == "noop":
             # The composer is mounted but its text area or search panel is not.

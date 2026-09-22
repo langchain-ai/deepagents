@@ -9102,7 +9102,11 @@ class DeepAgentsApp(App):
         if self._status_bar is not None:
             self._status_bar.set_cache_timing(None)
         self._refresh_cache_display()
-        self._session_cost_warning_shown = False
+        self._session_cost_warning_shown = (
+            0
+            < self._session_cost_warning_threshold_usd
+            < self._thread_restored_cost_usd
+        )
         self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 

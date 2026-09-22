@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NotRequired, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from weakref import WeakValueDictionary
 
@@ -486,7 +486,9 @@ class _OffloadState(CostState, SummarizationState, total=False):
     """
 
 
-type OffloadStatus = Literal["compacted", "empty", "noop", "denied", "failed"]
+type OffloadStatus = Literal[
+    "compacted", "summarized", "empty", "noop", "denied", "failed"
+]
 """Outcome of one offload attempt. Aliased so the result type and the private
 `_result` factory cannot drift apart."""
 
@@ -502,6 +504,8 @@ class OffloadResult(TypedDict):
     archive_path: str | None
     archive_ephemeral: bool
     error: str | None
+    summary: NotRequired[str]
+    """Summary text for a handoff; the source thread stays uncompacted."""
 
 
 class OffloadStateUpdate(TypedDict, total=False):
@@ -1435,7 +1439,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         state: _OffloadState,
         runtime: _HasRunContext,
         *,
-        summarize_all: bool = False,
+        handoff: bool = False,
     ) -> _ForcedCompactionPlan | None:
         """Summarize forced-compaction history without writing its archive.
 
@@ -1448,7 +1452,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Args:
             state: Checkpointed conversation and prior summarization event.
             runtime: Run context carrier used to select the summarizer model.
-            summarize_all: Include the recent tail in the handoff summary.
+            handoff: Summarize every message, including the recent tail that
+                compaction normally keeps verbatim.
 
         Returns:
             The checkpoint/archive plan, or `None` when nothing can be compacted.
@@ -1468,7 +1473,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         effective = summarization._apply_event_to_messages(messages, event)
         cutoff = (
             len(effective)
-            if summarize_all
+            if handoff
             else summarization._determine_cutoff_index(effective)
         )
         if cutoff == 0:
@@ -1790,9 +1795,15 @@ class OffloadOperation:
         state: _OffloadState,
         runtime: Runtime[CLIContextSchema],
         *,
-        summarize_all: bool = False,
+        handoff: bool = False,
     ) -> OffloadExecution:
         """Run one offload against server-read checkpoint state.
+
+        Args:
+            state: Checkpointed conversation and prior summarization event.
+            runtime: Runtime context for hooks and the summarizer model.
+            handoff: Summarize every message for a new thread. The caller
+                commits only cost and the transcript, not the summary event.
 
         Returns:
             State update for the server to persist and the typed client result.
@@ -1825,7 +1836,7 @@ class OffloadOperation:
 
         try:
             plan = await self._compaction._aplan_forced_compaction_update(
-                state, runtime, summarize_all=summarize_all
+                state, runtime, handoff=handoff
             )
         except HookTransportInterruptError:
             raise

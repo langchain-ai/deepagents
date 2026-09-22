@@ -560,7 +560,7 @@ class TestOperationPayload:
         """
         from deepagents_code.offload_api import _operation_payload
 
-        _, context, _ = _operation_payload(
+        _, context, _, _ = _operation_payload(
             {
                 "operation_id": "op-1",
                 "context": {
@@ -914,6 +914,70 @@ class TestExecuteOffload:
         )
         assert calls == ["checkpoint", "archive", "checkpoint"]
         prepared.rollback.assert_not_called()
+
+    @pytest.mark.parametrize("archived", [True, False])
+    async def test_handoff_leaves_source_context_uncompacted(
+        self, archived: bool
+    ) -> None:
+        """A handoff saves cost and the transcript but never a summary event.
+
+        The summary seeds a new thread. Writing the event would replace the
+        source thread's context with that summary.
+        """
+        from deepagents_code import offload_api
+
+        append = SimpleNamespace(path="/conversation_history/archive-1.md")
+        archive = SimpleNamespace(
+            session_id="archive-1",
+            summary="LLM summary",
+            write=AsyncMock(return_value=append if archived else None),
+        )
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {"_summarization_event": {"cutoff_index": 1, "file_path": None}},
+                    _result(archive_path=None),
+                    cast("_PendingArchive", archive),
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+        )
+
+        with self._patched(offload_api, threads, operation, prepared):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+                handoff=True,
+            )
+
+        assert operation.execute.await_args.kwargs == {"handoff": True}
+        threads.update_state.assert_awaited_once()
+        assert threads.update_state.await_args.args == (
+            "thread-1",
+            {"_session_cost_usd": 0.25},
+        )
+        prepared.commit.assert_called_once()
+        assert response["status"] == "complete"
+        result = response["result"]
+        if archived:
+            assert result["status"] == "summarized"
+            assert result["summary"] == "LLM summary"
+            assert result["archive_path"] == append.path
+        else:
+            assert result["status"] == "failed"
+            assert result["error"]
+            assert "summary" not in result
 
     async def test_failed_archive_link_restores_the_append(self) -> None:
         """A failed follow-up checkpoint cannot leave duplicate history."""
@@ -2143,8 +2207,8 @@ class TestRouteRegistration:
         # converter name and the key it indexes agree.
         assert calls == [("thread-42", "op-1")]
 
-    @pytest.mark.parametrize("summarize_all", [True, "true"])
-    def test_handoff_mode_validation(self, summarize_all: bool | str) -> None:
+    @pytest.mark.parametrize("handoff", [True, "true"])
+    def test_handoff_mode_validation(self, handoff: bool | str) -> None:
         from starlette.testclient import TestClient
 
         from deepagents_code import offload_api
@@ -2165,16 +2229,16 @@ class TestRouteRegistration:
                 json={
                     "operation_id": "handoff",
                     "context": {},
-                    "summarize_all": summarize_all,
+                    "handoff": handoff,
                 },
             )
-        if isinstance(summarize_all, str):
+        if isinstance(handoff, str):
             assert response.status_code == 422
             execute.assert_not_awaited()
         else:
             assert response.status_code == 200
             assert execute.await_args is not None
-            assert execute.await_args.kwargs["summarize_all"] is True
+            assert execute.await_args.kwargs["handoff"] is True
 
     def test_cancel_path_is_registered(self) -> None:
         from starlette.testclient import TestClient

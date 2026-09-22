@@ -1220,6 +1220,43 @@ class TestServerOffload:
 
         assert actual == result
 
+    @pytest.mark.parametrize("handoff", [False, True])
+    async def test_handoff_flag_reaches_the_server(self, handoff: bool) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {"status": "noop", "error": None}
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+
+        with patch.object(agent, "_get_graph", return_value=_offload_graph(http)):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+                handoff=handoff,
+            )
+
+        body = http.post.await_args.kwargs["json"]
+        assert body.get("handoff", False) is handoff
+
+    async def test_handoff_result_requires_summary_and_transcript(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {"status": "summarized", "archive_path": "/t.md"}
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+
+        with (
+            patch.object(agent, "_get_graph", return_value=_offload_graph(http)),
+            pytest.raises(RuntimeError, match="summary"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+                handoff=True,
+            )
+
     async def test_round_limit_logs_the_ids_it_saw(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

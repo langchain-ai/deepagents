@@ -582,6 +582,66 @@ def _deny_result(
     return _single_result(decision="deny", category=category, reason=reason)
 
 
+@pytest.mark.parametrize(
+    ("llm_type", "distinct", "model_kwargs", "expected_cache_control"),
+    [
+        ("anthropic-chat", True, {}, {"type": "ephemeral", "ttl": "5m"}),
+        (
+            "anthropic-chat",
+            True,
+            {"cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "ephemeral", "ttl": "1h"},
+        ),
+        ("anthropic-chat", False, {}, {"type": "ephemeral", "ttl": "1h"}),
+        ("openai-chat", True, {}, None),
+    ],
+)
+async def test_classifier_replay_uses_provider_local_cache_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    llm_type: str,
+    *,
+    distinct: bool,
+    model_kwargs: dict[str, object],
+    expected_cache_control: dict[str, str] | None,
+) -> None:
+    """Replayed Anthropic reviews enable caching without leaking primary settings."""
+    classifier = _StructuredModel(_allow_result())
+    monkeypatch.setattr(classifier, "_llm_type", llm_type, raising=False)
+    monkeypatch.setattr(classifier, "model_kwargs", model_kwargs, raising=False)
+    _install_model_factory(monkeypatch, _RecordingModelFactory(classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel() if distinct else classifier,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model="provider:classifier" if distinct else None,
+    )
+    primary_settings = {
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        "temperature": 0.7,
+    }
+    request = request.override(model_settings=primary_settings)
+    middleware = _middleware(tmp_path)
+
+    for index in range(2):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+    assert len(classifier.calls[1]) == 4
+    for kwargs in classifier.call_kwargs:
+        effective_settings = {**model_kwargs, **kwargs}
+        assert effective_settings.get("cache_control") == expected_cache_control
+        assert ("temperature" in kwargs) is (not distinct)
+    assert request.model_settings == primary_settings
+
+
 async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
     tmp_path: Path,
 ) -> None:

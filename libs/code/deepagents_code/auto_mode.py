@@ -2858,7 +2858,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     result = await asyncio.to_thread(
                         create_model,
                         selected,
-                        # One-shot classification never replays thinking blocks,
+                        # Classifier history never replays thinking blocks,
                         # so the Anthropic preserved-thinking binding would only
                         # cost it the forced tool call `with_structured_output`
                         # relies on.
@@ -3159,6 +3159,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         # Primary-model settings are provider- and model-specific, so they only
         # travel with that model. A distinct classifier runs on its own defaults.
         settings = request.model_settings if spec is None else {}
+        if (
+            spec is not None
+            and getattr(model, "_llm_type", None) == "anthropic-chat"
+            and "cache_control" not in getattr(model, "model_kwargs", {})
+        ):
+            # Distinct classifiers bypass prompt-caching middleware. Enable
+            # prefix caching for replay, preserving any constructor override.
+            settings["cache_control"] = {"type": "ephemeral", "ttl": "5m"}
         config: RunnableConfig = {
             "run_name": "dcode_auto_classifier",
             "tags": ["dcode:auto"],

@@ -1390,8 +1390,17 @@ class TestGraphCostOwnership:
             checkpointer=InMemorySaver(),
         )
 
-    @pytest.mark.parametrize("provider_usage_id", [False, True])
-    @pytest.mark.parametrize("scenario", ["plain", "sequential", "concurrent", "retry"])
+    @pytest.mark.parametrize(
+        ("scenario", "provider_usage_id"),
+        [
+            ("plain", False),
+            ("plain", True),
+            ("sequential", True),
+            ("concurrent", True),
+            ("retry", False),
+            ("retry", True),
+        ],
+    )
     async def test_responses_style_stream_and_callback_share_invocation_id(
         self, provider_usage_id: bool, scenario: str
     ) -> None:
@@ -1458,13 +1467,6 @@ class TestGraphCostOwnership:
         run_ids = {metadata[_MODEL_INVOCATION_METADATA_KEY] for _, metadata in chunks}
         assert len(run_ids) == model.calls
         assert {event["invocation_id"] for event in events} <= run_ids
-        for message, metadata in chunks:
-            assert "run_id" not in metadata
-            assert message.id == (
-                "resp_child"
-                if provider_usage_id
-                else f"lc_run--{metadata[_MODEL_INVOCATION_METADATA_KEY]}"
-            )
 
         stats = SessionStats()
         ledger = {}

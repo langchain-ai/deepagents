@@ -41,6 +41,18 @@ test('classifies with the small open model and filters output to the allowlist',
   assert.match(body.messages[1].content, /topic:models/);
 });
 
+test('keeps at most three distinct allowed labels in relevance order', async () => {
+  const topics = ['topic:prompts', 'topic:memory', 'topic:models', 'topic:middleware'];
+  const labels = await classifyTopicLabels('text', topics, {
+    apiKey: 'secret',
+    fetchImpl: async () => response(JSON.stringify({
+      labels: ['priority:urgent', topics[0], topics[0], ...topics.slice(1)],
+    })),
+  });
+
+  assert.deepEqual([...labels], topics.slice(0, 3));
+});
+
 test('keeps the timeout active while reading the response body', async () => {
   const fetchImpl = async (_url, options) => ({
     ok: true,
@@ -102,4 +114,31 @@ test('rejects failed and malformed model responses', async () => {
     classifyTopicLabels('text', allowed, { apiKey: 'secret', fetchImpl: async () => response('{}') }),
     /invalid labels/,
   );
+});
+
+test('environment selects the provider and defaults to Groq', async t => {
+  const previous = process.env.TOPIC_CLASSIFIER_PROVIDER;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TOPIC_CLASSIFIER_PROVIDER;
+    else process.env.TOPIC_CLASSIFIER_PROVIDER = previous;
+  });
+  for (const provider of [undefined, '', 'groq', 'semif', 'invalid']) {
+    if (provider === undefined) delete process.env.TOPIC_CLASSIFIER_PROVIDER;
+    else process.env.TOPIC_CLASSIFIER_PROVIDER = provider;
+    const options = {
+      apiKey: 'secret',
+      fetchImpl: async (url) => {
+        assert.equal(url, provider === 'semif' ? 'https://gateway.smith.langchain.com/v1/systemone' : ENDPOINT);
+        return provider === 'semif'
+          ? { ok: true, json: async () => ({ answers: { 'topic:mcp': { type: 'noul', noul: 0.95 } } }) }
+          : response('{"labels":["topic:mcp"]}');
+      },
+    };
+    if (provider === 'invalid') {
+      options.fetchImpl = async () => assert.fail('invalid provider must not make a request');
+      await assert.rejects(classifyTopicLabels('text', ['topic:mcp'], options), /must be groq or semif/);
+    } else {
+      assert.deepEqual([...await classifyTopicLabels('text', ['topic:mcp'], options)], ['topic:mcp']);
+    }
+  }
 });

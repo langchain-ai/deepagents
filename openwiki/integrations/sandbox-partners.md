@@ -1,12 +1,11 @@
 ---
 type: integration-guide
-title: Sandbox and Partner Integrations
-description: How dcode discovers, provisions, and owns sandbox providers; how provider adapters meet the deepagents shell and filesystem contract; and the operational boundaries of supported partner packages.
+title: Sandbox and Partner Backends
+description: How deepagents shell backends and partner adapters expose filesystem operations, and how dcode discovers, provisions, owns, and safely configures sandbox providers. Distinguishes provider lifecycle and capability boundaries from isolation guarantees.
 tags: [sandbox, backends, integrations, deepagents, dcode, partners, quickjs]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
 sources:
+  - id: openwiki-source-9f207ab48c42b84dcfd05f43
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
   - id: openwiki-source-03e3942e51522a3aa485168d
@@ -15,6 +14,8 @@ sources:
     resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-ea49272aef6bfc33d634a15c
     resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
   - id: openwiki-source-ba6aa10dca5a8aea05030887
@@ -25,42 +26,57 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-478a579b56d29c6928ec2320
+    resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-7c1cff57fb2b25a4a7848547
     resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
   - id: openwiki-source-a7a618389fa5cf95185c7070
     resource: repo://libs/partners/daytona/tests/integration_tests/test_integration.py
   - id: openwiki-source-5e387cb8bab7ca8537e7d97c
     resource: repo://libs/partners/modal/langchain_modal/sandbox.py
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-47e7cf704d54342cf95c8125
     resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
   - id: openwiki-source-e93ea9e1f8eb3113683abb76
     resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
   - id: openwiki-source-432765ddd062caf048e7f51e
     resource: repo://libs/partners/quickjs/README.md
   - id: openwiki-source-cbe167006ecbe803d01c6520
     resource: repo://libs/partners/runloop/langchain_runloop/provider.py
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-c16a7598b4b3a3ef0cee3328
     resource: repo://libs/partners/runloop/tests/integration_tests/test_integration.py
   - id: openwiki-source-edb310aff3786a7a99593231
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-1176ea0659c06327fcdf25b1
     resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-21T08:06:25.442Z
 ---
 
-# Sandbox and Partner Integrations
+# Sandbox and Partner Backends
 
 A sandbox integration has two distinct roles. A **backend adapter** exposes a provider environment through the deepagents filesystem-and-shell contract. A dcode **provider** owns lifecycle: it creates or attaches an environment, establishes readiness, and deletes environments that dcode created. This separation keeps provider SDK concerns at the edge while `BaseSandbox` supplies common agent-facing filesystem behavior.
 
-`SandboxBackendProtocol` is a shell-execution capability contract, not an isolation certification. Although designed for containers, VMs, and remote hosts, `LocalShellBackend` implements it while executing directly on the host. Treat provider configuration—not the protocol—as the authority on isolation, accessible files and networks, credentials, quotas, retention, and teardown. See [Backends](../concepts/backends.md), [Runtime behavior](../architecture/runtime-behavior.md), [Filesystem tools](../concepts/tools-filesystem.md), and [Security](../operations/security.md).
+`SandboxBackendProtocol` is a shell-execution capability contract, not an isolation certification. Although designed for containers, VMs, and remote hosts, `LocalShellBackend` implements it while executing directly on the host. Treat provider configuration—not the protocol—as the authority on isolation, accessible files and networks, credentials, quotas, retention, and teardown. See [Backends](../concepts/backends.md), [Filesystem tools](../concepts/tools-filesystem.md), and [Security](../operations/security.md).
 
 ## Backend contract and derived operations
 
 The protocol extends `BackendProtocol` with an `id` and `execute()`/`aexecute()`. `execute(command, timeout=...)` takes a complete shell command and returns combined output, an exit code, and truncation status. The default async implementation runs the synchronous method in a worker thread; it forwards a supplied timeout only when the concrete `execute` method accepts that keyword. Use non-negative integer timeouts portably: `None` uses the backend default, and some adapters interpret `0` as no timeout.
 
-The agent's `execute` tool works only when its configured backend implements `SandboxBackendProtocol`; otherwise it reports an error. A normal adapter subclasses `BaseSandbox` and implements four primitives: `execute()`, `upload_files()`, `download_files()`, and `id`. Transfer implementations are expected to return one response per file and preserve partial failure as response errors rather than aborting a whole batch.
+The agent's execute capability requires a backend implementing `SandboxBackendProtocol`. A normal adapter subclasses `BaseSandbox` and implements four primitives: `execute()`, `upload_files()`, `download_files()`, and `id`. Transfer implementations must return one response per request and represent per-file failures in response errors rather than aborting the batch.
 
 ```mermaid
 sequenceDiagram
@@ -94,7 +110,7 @@ These helpers do not narrow shell authority. Delete uses shell quoting only to p
 
 `SandboxProvider` standardizes synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)` plus worker-thread async wrappers. Static `SandboxProviderMetadata` lets dcode describe a working directory, installation hint, reattachment support, snapshot support, and an optional dependency probe without constructing credential-dependent providers.
 
-`SandboxRegistry` combines curated built-ins, third-party providers advertised through the `deepagents_code.sandbox_providers` entry-point group, and providers declared in `[sandboxes.providers]` in user configuration. Collision order is **config > entry point > built-in**. Config can specify a `class_path`, working directory, package/install hint, capability flags, and `params` forwarded to `get_or_create()`. A configured `class_path` imports Python under the user account, so configuration is a trusted local-administration boundary.
+`SandboxRegistry` combines curated built-ins, third-party providers advertised through the `deepagents_code.sandbox_providers` entry-point group, and providers declared in `[sandboxes.providers]`. Collision order is **config > entry point > built-in**. Config can specify a `class_path`, working directory, package/install hint, capability flags, and `params` forwarded to `get_or_create()`. A configured `class_path` imports Python under the user account, so configuration is a trusted local-administration boundary. The default provider alone never enables sandbox mode implicitly.
 
 `create_sandbox()` resolves metadata before provisioning. It rejects snapshots that the provider does not advertise and rejects combining `snapshot_name` with an existing `sandbox_id`. Configured parameters are merged with call-time parameters, with call-time keys winning; the snapshot is forwarded as `snapshot`. Only after a backend is ready does an optional setup file run. `${VAR}` expansion reads the active workspace environment—not the server process environment—and the expanded content executes as `bash -c`; a nonzero exit raises `RuntimeError` and aborts startup.
 
@@ -129,16 +145,20 @@ The curated set is `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and 
 - **Vercel:** creates a `python3.13` sandbox with a 30-minute lifetime or retrieves an existing ID, then waits for `running`. Terminal status or timeout fails startup, and dcode stops a newly created sandbox when readiness fails. Workspace-scoped explicit Vercel credentials must be complete and cannot mix workspace and inherited server fields.
 - **AgentCore:** validates workspace AWS credential combinations before constructing a session where possible; it avoids silently substituting server credentials when a workspace pinned a distinct, invalid credential configuration.
 
-## Partner adapters
+## Partner adapters and current packages
 
-Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. Adding a sandbox-backed partner involves release and operational wiring—CI, labels, release metadata, credential inventory, integration-test secret gating, and Harbor sandbox options—not only an adapter.
+Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. The current package metadata is: `langchain-daytona` 0.0.8, `langchain-modal` 0.0.6, `langchain-runloop` 0.0.7, `langchain-vercel-sandbox` 0.0.2, and `langchain-quickjs` 0.3.7. All require Python `>=3.11,<4.0`, but they do **not** offer interchangeable execution or isolation properties.
+
+### QuickJS compatibility constraints
+
+`langchain-quickjs` 0.3.7 requires `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.2,<2.0.0`, `langchain-core>=1.6.3,<2.0.0`, `langgraph>=1.2.11,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`. The package itself supports Python 3.11+, but `deepagents-code` supports Python 3.12+ and pins `deepagents==0.7.15`; that pin is inside QuickJS's declared Deep Agents range. `deepagents` exposes QuickJS as an optional dependency at `langchain-quickjs>=0.3.7`, while dcode accepts `langchain-quickjs>=0.3.4,<0.4.0`. Consequently, a dcode installation on a supported interpreter can resolve the repository's 0.3.7 QuickJS package, whereas a standalone QuickJS integration may run on Python 3.11. Keep these constraints aligned when upgrading either side of the middleware boundary.
 
 | Package | Boundary | Key behavior |
 | --- | --- | --- |
-| `langchain-daytona` | `DaytonaSandbox` | Per-command sessions and Daytona batch file APIs. |
-| `langchain-modal` | `ModalSandbox` | `bash -c` execution and Modal file handles. |
-| `langchain-runloop` | `RunloopSandbox` and `RunloopProvider` | Devbox execution/file APIs and blueprint-aware lifecycle. |
-| `langchain-vercel-sandbox` | `VercelSandbox` | Detached commands, polling, logs, and Vercel file APIs. |
+| `langchain-daytona` | `DaytonaSandbox` | Provider-backed shell sessions and batch file APIs. |
+| `langchain-modal` | `ModalSandbox` | Provider-backed `bash -c` execution and Modal file handles. |
+| `langchain-runloop` | `RunloopSandbox` and `RunloopProvider` | Provider-backed devbox execution/file APIs and blueprint-aware lifecycle. |
+| `langchain-vercel-sandbox` | `VercelSandbox` | Provider-backed detached commands, polling, logs, and Vercel file APIs. |
 | `langchain-quickjs` | `CodeInterpreterMiddleware` | In-process JavaScript REPL with explicit capability bridges, not a remote shell backend. |
 
 ### Daytona, Modal, Runloop, and Vercel
@@ -153,11 +173,19 @@ Partner packages under `libs/partners/` are independently versioned distribution
 
 ## QuickJS: capability isolation, not a remote sandbox
 
-`langchain-quickjs` installs `CodeInterpreterMiddleware`, which gives an agent a persistent JavaScript `eval` tool backed by an embedded QuickJS engine. In the default `mode="thread"`, state persists across calls and turns for one LangGraph `thread_id`; `turn` limits it to a turn and `call` creates a fresh REPL for every evaluation. Each thread has an isolated worker/runtime/context slot. Thread-mode snapshots can be persisted, and supplying `snapshot_signing_key` HMAC-signs them; missing or invalid signatures are discarded before restore.
+`langchain-quickjs` is an alpha middleware package backed by `quickjs-rs` (QuickJS embedded through PyO3 and rquickjs), not a remote execution provider. `CodeInterpreterMiddleware` gives an agent a persistent JavaScript `eval` tool. In the default `mode="thread"`, state persists across calls and turns for one LangGraph `thread_id`; `turn` limits it to a turn and `call` creates a fresh REPL for every evaluation. Each thread has an isolated worker/runtime/context slot. Thread-mode snapshots can be persisted, and supplying `snapshot_signing_key` HMAC-signs them; missing or invalid signatures are discarded before restore.
 
-The guest has no ambient filesystem, network, `fetch`, `require`, `process`, or real-clock capability. Authority enters only through configured `tools.<name>` programmatic tool calling (PTC) or the optional `task(...)` subagent bridge. This is capability isolation rather than OS isolation: a bridged tool receives its actual authority. PTC and the subagent bridge bypass normal `ToolNode` routing, so `interrupt_on`/HITL approval is not automatically applied per bridged invocation. Gate `eval`, add approval middleware inside subagents, or disable bridges when per-operation approval is required; see [Permissions and HITL](../concepts/permissions-hitl.md).
+The guest has no ambient filesystem, network, `fetch`, `require`, `process`, or real-clock capability. Authority enters only through configured `tools.<name>` programmatic tool calling (PTC) or the optional `task(...)` subagent bridge. This is capability isolation rather than OS isolation: a bridged tool receives its actual authority. PTC and the subagent bridge bypass normal `ToolNode` routing, so `interrupt_on`/HITL approval is not automatically applied per bridged invocation. Gate `eval`, add approval middleware inside subagents, or disable bridges when per-operation approval is required.
 
-Defaults are a 64 MiB runtime memory limit, a 5-second QuickJS VM execution timeout, 256 PTC host calls per evaluation, and 4,000-character result/console blocks. The VM timeout does not include waiting for Python host calls, so it is not a total wall-clock bound. `max_ptc_calls=None` permits unbounded host-call loops and is unsuitable for untrusted prompts.
+Defaults are a 64 MiB runtime memory limit, a 5-second QuickJS VM execution timeout, 256 PTC host calls per evaluation, and 4,000-character result/console blocks. The VM timeout does not include waiting for Python host calls, so it is not a total wall-clock bound. `max_ptc_calls=None` permits unbounded host-call loops and is unsuitable for untrusted prompts. Because PTC bridges are asynchronous host functions, use `ainvoke`; synchronous `invoke` with async bridges raises `ConcurrentEvalError`.
+
+## Adding or changing an integration
+
+1. **Choose the boundary first.** Use `BaseSandbox` only where the provider exposes an environment capable of the required command execution, `python3`-based helper scripts, and byte transfer. Do not describe an adapter as isolated solely because it implements the protocol. Use middleware such as QuickJS when the intended boundary is in-process capability restriction rather than a shell environment.
+2. **Implement the adapter contract.** Supply `execute()`, `upload_files()`, `download_files()`, and `id`; preserve ordered, per-file results and structured partial errors. Decide explicitly whether the image supports capture offload rather than enabling it by default.
+3. **Add lifecycle separately.** Implement `SandboxProvider` with accurate metadata, including attach and snapshot capability. Publish it under `deepagents_code.sandbox_providers` for distributable discovery, or use trusted `[sandboxes.providers]` configuration for local/internal code. Ensure fresh resources are cleaned up after readiness or setup failures, while attached IDs are never deleted by `create_sandbox()`.
+4. **Protect configuration and credentials.** Treat `class_path` and setup scripts as code-execution inputs. Preserve workspace-scoped credential boundaries and fail closed rather than allowing a partially configured workspace to inherit a broader server identity.
+5. **Test at both seams and complete repository wiring.** Unit-test readiness, reattachment, timeout, cleanup, credential, and partial-transfer behavior; run the shared backend integration contract against a real provider when credentials are available. A new partner also requires CI, labels, release metadata, Harbor sandbox options, integration secret gating, and credential inventory updates.
 
 ## What the focused tests establish
 

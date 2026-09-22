@@ -2963,6 +2963,7 @@ class _ChatScroll(VerticalScroll):
         """
         super().__init__(*args, **kwargs)
         self._follow_bottom_when_scrollable = False
+        self._bottom_follow_generation = 0
 
     def anchor(self, anchor: bool = True) -> None:
         """Anchor only once the transcript is tall enough to scroll.
@@ -2979,6 +2980,8 @@ class _ChatScroll(VerticalScroll):
                 delegate to the base class.
         """
         self._follow_bottom_when_scrollable = anchor
+        if anchor:
+            self._bottom_follow_generation += 1
         if not anchor:
             super().anchor(False)
             return
@@ -4080,6 +4083,9 @@ class DeepAgentsApp(App):
 
         self._agent_running = False
         """True while the agent worker is streaming a response."""
+
+        self._footer_picker_requests: set[str] = set()
+        """Footer picker commands currently being submitted."""
 
         self._agent_reconciling = False
         """True while turn-end checkpoint state is being synchronized."""
@@ -20315,9 +20321,8 @@ class DeepAgentsApp(App):
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
-                # Re-derive groups for any tools mounted outside this path
-                # (resumed history), which carry no live group.
-                await self._regroup_completed_tools()
+                if not isinstance(widget, UserMessage):
+                    await self._regroup_completed_tools()
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached
@@ -21305,7 +21310,8 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If a focused input has a non-empty selection, copy it (a failed
+        1. In the thread selector, copy the highlighted thread ID; otherwise,
+            copy a focused input's non-empty selection (a failed selection
             copy falls through to the branches below)
         2. If shell command is running, kill it
         3. If approval menu is active, reject it
@@ -21324,15 +21330,21 @@ class DeepAgentsApp(App):
         further press exits). The interrupt branches (2-5) stay unconditional so
         a repeated press still cancels in-flight work rather than quitting.
         """
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
         now = _monotonic()
         window = _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
         self._ctrl_c_times = [t for t in self._ctrl_c_times if now - t <= window]
         self._ctrl_c_times.append(now)
         rapid = len(self._ctrl_c_times) >= _RAPID_QUIT_CTRL_C_PRESSES
 
-        # If a focused input widget has selected text, copy it instead of
-        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
-        if not rapid and self._copy_focused_selection():
+        # Copy the highlighted thread ID before considering the filter's text.
+        # Share the chat input's rapid-press escape hatch and armed quit path.
+        if isinstance(self.screen, ThreadSelectorScreen):
+            if not rapid and not self._quit_pending:
+                self.screen.action_copy_thread_id()
+                return
+        elif not rapid and self._copy_focused_selection():
             self._quit_pending = False
             return
 
@@ -23536,6 +23548,26 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def _submit_footer_picker(self, command: str) -> None:
+        """Submit a footer picker unless the same request is open or queued."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        screen_type = (
+            ModelSelectorScreen if command == "/model" else EffortSelectorScreen
+        )
+        if (
+            command in self._footer_picker_requests
+            or isinstance(self.screen, screen_type)
+            or any(message.text == command for message in self._pending_messages)
+        ):
+            return
+        self._footer_picker_requests.add(command)
+        try:
+            await self._submit_input(command, "command")
+        finally:
+            self._footer_picker_requests.discard(command)
+
     async def action_open_model_selector(self) -> None:
         """Open the model selector via `/model`.
 
@@ -23545,7 +23577,7 @@ class DeepAgentsApp(App):
         tip is dismissed. The bare form is `IMMEDIATE_UI`, so it still bypasses
         the queue and opens while the agent is busy.
         """
-        await self._submit_input("/model", "command")
+        await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
         """Open the reasoning effort picker via `/effort`.
@@ -23553,7 +23585,7 @@ class DeepAgentsApp(App):
         `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
         place behind any pending input instead of jumping an in-flight turn.
         """
-        await self._submit_input("/effort", "command")
+        await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(
         self,
@@ -25129,7 +25161,7 @@ class DeepAgentsApp(App):
             started_at = self._first_invocation_at
             if started_at is None:
                 return "not started"
-            return format_duration(max(0.0, time.monotonic() - started_at))
+            return format_duration(int(max(0.0, time.monotonic() - started_at)))
 
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks

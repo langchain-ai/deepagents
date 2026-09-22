@@ -588,6 +588,90 @@ class TestPriceCatalogGuard:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
+    @pytest.mark.parametrize("path", ["message", "recorder", "operation"])
+    @pytest.mark.parametrize("provider", ["openai", "ollama", "openai_codex"])
+    def test_unpriced_requests_retain_reported_tokens(
+        self, recorder: _SessionCostRecorder, path: str, provider: str
+    ) -> None:
+        usage = _usage(cache_read=200, cache_write=100)
+        usage["output_token_details"] = {"reasoning": 50}
+        model = "uncatalogued-test-model"
+        if path != "message":
+            _collect(recorder, _record(model=model, provider=provider, usage=usage))
+        state: CostState = {
+            "messages": (
+                [_message(usage, model=model, provider=provider)]
+                if path == "message"
+                else []
+            ),
+        }
+        events: list[dict[str, Any]] = []
+
+        result = (
+            cost_tracking.prepare_operation_cost(state, THREAD_ID).update
+            if path == "operation"
+            else CostTrackingMiddleware().after_model(
+                state, _runtime(thread_id=THREAD_ID, events=events)
+            )
+        )
+
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        assert breakdown["request_count"] == 1
+        assert breakdown["priced_request_count"] == 0
+        for category, count in (
+            ("input", 1_000),
+            ("output", 100),
+            ("cache_read", 200),
+            ("cache_creation", 100),
+            ("reasoning", 50),
+        ):
+            assert breakdown[f"{category}_tokens"] == count
+            assert breakdown[f"{category}_tokens_complete"] is True
+            assert breakdown[f"{category}_cost_complete"] is False
+        assert breakdown["total_cost_usd"] == 0
+        if path != "operation":
+            assert events[0]["breakdown"] == breakdown
+
+    @pytest.mark.parametrize("details_reported", [False, True])
+    def test_unpriced_usage_distinguishes_missing_details_from_zero(
+        self, details_reported: bool
+    ) -> None:
+        usage = _usage()
+        if details_reported:
+            usage["input_token_details"] = {}
+            usage["output_token_details"] = {}
+        result = CostTrackingMiddleware().after_model(
+            {"messages": [_message(usage, provider="openai_codex")]}, _runtime()
+        )
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        for category in ("cache_read", "cache_creation", "reasoning"):
+            assert breakdown[f"{category}_tokens"] == 0
+            assert breakdown[f"{category}_tokens_complete"] is details_reported
+
+    @pytest.mark.parametrize(
+        ("provider", "output"), [("ollama", 100), ("perplexity", 300)]
+    )
+    def test_unpriced_usage_normalizes_cache_and_reasoning_counts(
+        self, provider: str, output: int
+    ) -> None:
+        usage = _usage(cache_read=900)
+        usage["input_token_details"].update(
+            ephemeral_5m_input_tokens=80, ephemeral_1h_input_tokens=80
+        )
+        usage["output_token_details"] = {"reasoning": 200}
+        result = CostTrackingMiddleware().after_model(
+            {"messages": [_message(usage, model="uncatalogued", provider=provider)]},
+            _runtime(),
+        )
+        assert result is not None
+        breakdown = result["_session_cost_breakdown"]
+        assert breakdown["cache_read_tokens"] == 900
+        assert breakdown["cache_creation_tokens"] == 100
+        assert breakdown["output_tokens"] == output
+        assert breakdown["reasoning_tokens"] == min(output, 200)
+
     def test_prepared_operation_cost_can_commit_or_rollback(
         self,
         recorder: _SessionCostRecorder,

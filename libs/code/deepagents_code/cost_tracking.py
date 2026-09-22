@@ -261,6 +261,8 @@ def _merge_cost_breakdowns(
 def _breakdown_for_estimate(
     estimate: _CostEstimate | None,
     *,
+    usage_metadata: Mapping[str, Any] | None = None,
+    provider: str = "",
     historical_complete: bool = True,
 ) -> CostBreakdown:
     """Build one request's additive checkpoint contribution.
@@ -271,13 +273,9 @@ def _breakdown_for_estimate(
     result = _empty_cost_breakdown(historical_complete=historical_complete)
     result["request_count"] = 1
     if estimate is None:
-        result["input_tokens_complete"] = False
-        result["output_tokens_complete"] = False
+        _retain_unpriced_tokens(result, usage_metadata, provider)
         result["input_cost_complete"] = False
         result["output_cost_complete"] = False
-        result["cache_creation_tokens_complete"] = False
-        result["cache_read_tokens_complete"] = False
-        result["reasoning_tokens_complete"] = False
         result["cache_creation_cost_complete"] = False
         result["cache_read_cost_complete"] = False
         result["reasoning_cost_complete"] = False
@@ -311,6 +309,38 @@ def _breakdown_for_estimate(
     if estimate.reasoning_cost_usd is not None:
         result["reasoning_cost_usd"] = estimate.reasoning_cost_usd
     return result
+
+
+def _retain_unpriced_tokens(
+    result: CostBreakdown,
+    usage_metadata: Mapping[str, Any] | None,
+    provider: str,
+) -> None:
+    """Keep reported usage independent of catalog or pricing availability."""
+    usage = usage_metadata or {}
+    for key, complete_key in (
+        ("input_tokens", "input_tokens_complete"),
+        ("output_tokens", "output_tokens_complete"),
+    ):
+        value = usage.get(key)
+        result[key] = _token_count(value)
+        result[complete_key] = (
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        )
+    cache_reported = isinstance(usage.get("input_token_details"), Mapping)
+    cache_read, cache_writes = cache_token_counts(usage)
+    result["cache_read_tokens"] = cache_read
+    result["cache_creation_tokens"] = sum(cache_writes)
+    result["cache_read_tokens_complete"] = cache_reported
+    result["cache_creation_tokens_complete"] = cache_reported
+    output_details = usage.get("output_token_details")
+    result["reasoning_tokens_complete"] = isinstance(output_details, Mapping)
+    if isinstance(output_details, Mapping):
+        reasoning = _token_count(output_details.get("reasoning"))
+        # Perplexity reports reasoning in addition to completion tokens.
+        if provider.strip().lower() == "perplexity":
+            result["output_tokens"] += reasoning
+        result["reasoning_tokens"] = min(reasoning, result["output_tokens"])
 
 
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -2610,7 +2640,14 @@ def prepare_operation_cost(
                 *_pricing_target(record.model_name, record.provider, fallback),
             )
             breakdown = _merge_cost_breakdowns(
-                breakdown, _breakdown_for_estimate(estimate)
+                breakdown,
+                _breakdown_for_estimate(
+                    estimate,
+                    usage_metadata=record.usage_metadata,
+                    provider=_pricing_target(
+                        record.model_name, record.provider, fallback
+                    )[1],
+                ),
             )
             if estimate is None:
                 # Matches `CostTrackingMiddleware`: silently omitting an
@@ -3010,7 +3047,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 )
                 if not defer_to_message:
                     breakdown = _merge_cost_breakdowns(
-                        breakdown, _breakdown_for_estimate(estimate)
+                        breakdown,
+                        _breakdown_for_estimate(
+                            estimate,
+                            usage_metadata=record.usage_metadata,
+                            provider=_pricing_target(
+                                record.model_name, provider, fallback
+                            )[1],
+                        ),
                     )
                     represented_count += 1
                     if record.message_id is not None:
@@ -3063,7 +3107,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                         *_pricing_target(model_name, provider, fallback),
                     )
                     breakdown = _merge_cost_breakdowns(
-                        breakdown, _breakdown_for_estimate(estimate)
+                        breakdown,
+                        _breakdown_for_estimate(
+                            estimate,
+                            usage_metadata=getattr(message, "usage_metadata", None),
+                            provider=_pricing_target(model_name, provider, fallback)[1],
+                        ),
                     )
                     if estimate is not None:
                         delta_usd += estimate.total_cost_usd

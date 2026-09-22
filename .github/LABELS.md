@@ -54,7 +54,7 @@ Package and integration labels are additive: title edits do not remove them. `pr
 
 ### `topic:*` — `pr_labeler.yml`, `auto-label-by-package.yml`, maintainers
 
-`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. Any number may apply.
+`topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness-profiles`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. Any number may apply.
 
 Two signals feed them, both additive. A topic is never removed, so a maintainer's hand-applied topic survives. Issue classification runs on `opened` only, so a removed topic is not re-added by a later edit:
 

@@ -41,6 +41,10 @@ class VectorArchive(Protocol):
         """Find bounded keyword candidates within scope."""
         ...
 
+    async def semantic(self, scope: ArchiveScope, keys: list[str]) -> list[str]:
+        """Exclude untrusted or ineligible vector hits before combining with keywords."""
+        ...
+
     async def ranked(
         self, scope: ArchiveScope, keys: list[str], after: int, limit: int
     ) -> list[ArchiveEntry]:

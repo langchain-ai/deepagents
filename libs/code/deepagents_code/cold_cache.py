@@ -8,13 +8,56 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, assert_never
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Set as AbstractSet
 
 logger = logging.getLogger(__name__)
+
+
+class CacheActivity(TypedDict):
+    """A cache-using request's start time and effective cache identity."""
+
+    requested_at: str
+    model_spec: str
+    endpoint: str
+    params: dict[str, object] | None
+
+
+def parse_cache_activity(value: object) -> CacheActivity | None:
+    """Validate a checkpointed cache activity record.
+
+    Args:
+        value: Untrusted checkpoint value.
+
+    Returns:
+        A usable request record, or `None` for missing or malformed data.
+    """
+    if not isinstance(value, dict):
+        return None
+    timestamp = parse_cache_timestamp(value.get("requested_at"))
+    model_spec, endpoint, params = (
+        value.get("model_spec"),
+        value.get("endpoint"),
+        value.get("params"),
+    )
+    if timestamp is None or not isinstance(model_spec, str) or not model_spec:
+        return None
+    if not isinstance(endpoint, str) or not endpoint:
+        return None
+    if params is not None and not isinstance(params, dict):
+        return None
+    return CacheActivity(
+        requested_at=timestamp.isoformat(),
+        model_spec=model_spec,
+        endpoint=endpoint,
+        params={key: item for key, item in params.items() if isinstance(key, str)}
+        if params is not None
+        else None,
+    )
+
 
 COLD_CACHE_WARNING_KEY = "cold-cache"
 """Suppression key for the cold-cache warning in `[warnings].suppress`.

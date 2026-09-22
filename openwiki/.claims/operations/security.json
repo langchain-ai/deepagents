@@ -1,36 +1,44 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d59dcf2396ed21434ae3cd3d667d9bce443c007d0605adaefd9fbcb2e33f8330",
+  "pageVersion": "sha256:746bb7ef77b4c3e565cedc33e03ecba580d806c416185b931b6c541b6a21df71",
   "claims": [
     {
       "id": "claim_842d191498324c558672b6f9d9aa40a4",
       "statement": "Talon's WhatsApp channel defaults to 'self' exposure for the paired account; 'allowlist' can restrict triggering chats or mentions, while 'open' permits arbitrary senders only after the explicit DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK acknowledgement and gives them the operator's model, channel, MCP, and local-host authority.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/README.md#L217-L217",
+          "resource": "repo://libs/talon/README.md#L281-L281",
           "version": "repo-lines-v1:sha256:f3282310a03114ce463426a6a26602796d868c03380a04e3a3695bc4c9e929f0:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjMyODIzMTBhMDMxMTRjZTQ2MzQyNmE2YTI2NjAyNzk2ZDg2OGMwMzM4MGEwNGUzYTM2OTViYzRjOWU5MjlmMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjMyODIzMTBhMDMxMTRjZTQ2MzQyNmE2YTI2NjAyNzk2ZDg2OGMwMzM4MGEwNGUzYTM2OTViYzRjOWU5MjlmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjgxNzIxYmYyNmQyMTkwOWM1MzRmYWMyM2RkZjJkMWVhMGViYThhMDRlMGQwYjU4ZmViMmMzMzA3MDNmZjQ3MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDU5YTNlMDU5OWY0YmZjNmRiOGEyN2YxYzUzYWRlNDA1ODRiYWNiZTI3ZjdiOTBlNTYyMWViYjEyNjY4ZjkwOSJ9"
         },
         {
-          "resource": "repo://libs/talon/README.md#L231-L236",
-          "version": "repo-lines-v1:sha256:fd43f787916b4d5fd64198590ce74f4ece8ea0ccf033c57a3003a0cfaad320b9:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2M4N2Q1YTBiYzQ0MWY2MmY5YjNhMmZjYzNjYmE0NDk0ZGQ5MzY2NDdlODMxODAyZGNlM2E2NzNkMGUzMTViZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdjMDZjNTYxZDVjMzI3MzQzNjg1MjY4YTQ2YjMzOTFmMzk5OGVlZTg5MGQyYmU1MWYwZDIxY2M0YTUzYWU2ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzgwNzEwZWFjZWVlMWExY2YxNDU3ODVjMmU1NTE3OGQ3NzljNmJhZDgwNGIyNWUzODMwZjcwNjg5ZjJhM2RmMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmFiNzJjYTgwZmQ3YzQ4ZTgzMGQ4YzBmYTNkNDhhMTJjMzRjYmJjOTY4Mzg2YjUyMjA4Y2EzMTgwMzgzMzhiYSJ9"
+          "resource": "repo://libs/talon/README.md#L5-L7",
+          "version": "repo-lines-v1:sha256:90100de62114e9f466b350de332123a0a7079d08399034c47f78f4db8a094369:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGU4MTAyYTZkOWIyZWNjYjFkZDMyY2U4NWUzZDg0ODYyNjVmNTUxODg2MjIwMDRlODBkZDQyZjhhMjYxZmRkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWQyYTAxYWYzNDNiNjllNGY4NWRhMWNmYzFmZmIyOTQwODJhYmI2YjAzMTdiMzI5M2M0Zjk5YTI1MDIyMTg1YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjJmY2M1NzY4YjllN2M5NWZhYTEzZjU1MWU1ZjZhN2FmZTAzYzFkYTNjYjMwYmRmNWIwZGQ0NGRiMmVlNDJkOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjYwMDQzNGYxYzVjY2Q1YmY1OGRhMDZjYWQxOWYyOTM1YjU4MGI3OTI1MWE0ZDc3ZjE5OWMzNzhiNDRjOGY3NiJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp.py#L142-L175",
+          "version": "repo-lines-v1:sha256:603452ef1ca95b677f260a732278c1c4730539f3b1c1481ffb706c68f6f47126:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkNjAzZjkzZmQxZWM1MGNkMGVkMmE5NzIyNDkyZDE5ZTg4NzFlYmQyNTVhYzVhNGNlZjRkMjNiZGQ1ODQ1MjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwNmFlZmE4MGQ4YmEwN2YzYWY2NDY5YjU1NDJiZDgxMjBkNzQ5NGI0MjY3ODkyMDg3MTEwZmU5MWI4N2JiNjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyM2RmNzQ2YmNiMTY1Y2RhOGIxNTczZDgzYzBiMjdjODJiYWUwZTIyMmEwNDFhZTllNjRkNmM4YzU0MTBlODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2Zjg5MGJjMDExNjA3M2IzNzk4ZTUyYjk0MzdlMDlmMDJlODdmY2ExN2YzMzUxOTA4NGNjYTZlODU1N2ZjNzQifQ"
         }
       ]
     },
     {
       "id": "claim_099db605fb5b49b2ac7ab0a20b5accfa",
-      "statement": "dcode workspace binding canonicalizes an existing absolute directory and persists a thread's workspace and policy fingerprint transactionally; a conflicting workspace or policy is refused, and runtime context must match the stored binding.",
+      "statement": "dcode canonicalizes an existing absolute workspace directory and transactionally persists a thread's workspace identity, durable policy fingerprint, and runtime fingerprint; a different workspace or durable policy is refused, while a compatible runtime-only change can refresh the runtime fingerprint and later context must match the stored binding.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L328-L382",
-          "version": "repo-lines-v1:sha256:f56a783ffa71538ad5a2352226265049b1124a11ea7a25d02c5532350b49b7d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YmZjZTBhNmM1OTFkNjBlMzQ4OGJjOGE4MTJjYzQxYjQ5MGI0NjcyYzk0NDljZmFiOGY0MGE1YWE5NzU3MzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxNDY1MGJkOGU5MTZkMzY4ZTk1MTFkNDZiOTI5NDg2NzQ2ZWI1M2RiMmQwYWZjNDhmNzY4NTY3Njg5YTMxYzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwMWQ4YmE2NGE3ZmRiMjBhMjc1MmNkY2IzNDZiNjIyNWUzMDJhMDBkODM2NTk5ZDc5ZDg2NjhkNWMwNDZlYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZjdiNzUwNDNiMTJjZjE3ODE0OTI1ZmRkNTcyNjEyOTA1M2M5YmJjZDYyYjJkMjk4ZTljNjljYmUwOWQ2MDMifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L397-L421",
-          "version": "repo-lines-v1:sha256:34f4880c67a001eef57ae9ca8bbc441e229e06989ef1fb2f31d89dc31a116dd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExMzM1Y2JiYTU3MDhmZDYwNTk2Y2MwMGU5YThiZjNjNTZjNWJmZjQwMDI2NGRkNzgwOWZjOGExNGVhYjdkM2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxMDFmYThhZWM4NzliZTczNjc5MjMzMDcxNGM0ZDJjMzE5ZTQxMDRkMjk2MDYzNzIxYjNhYjY3MmYyMjYxMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMjkwOTcyYTUxZjJkYTI4ZmRkY2IyMmEwZDQ3OTRkZGNkMGY1NzYwOGU3ZmQ1YzhjMDY5NDMwZjRmOWI0NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ZmZkNjU3ODMzNGI3MGFiM2ZiNmViYTBmMDA3YTg4ZWNkZjI0YmIzODZiZTFlMWE2N2Q2YjVjMmI0YjFmZTcifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L92-L116",
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L143-L167",
           "version": "repo-lines-v1:sha256:94493a22838f73b8d2eb4ca43e455f724be227d5ea32d0a87f04e61cdfc06ebf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOTRiMDU1MjgwZWE0YzhkZGRmNzRjY2Y2MWMwMWVmOWRkN2RiZmQ2ZjVmOTg2YzExMGQ2MmMwMmMwYjFjMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNDQ3YTlkMDRlZTAwZWYwNmI3YmNhZGM4MWU1MmExNWMyNjgzNTk4OGE0ZDNjMzViNjBhYzgzMTMyMzMxZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2MDcxYzE1YjNhZTUxYmRkZjQ0ZGIzMjhlYWJhN2IwMjFhY2UzZTYyYzc3M2RkYmFmMjUxZjBkNmVhMmZlNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlODIyMzhiMWYzMjVlN2I5NWNkMjhkOTEwM2EzNzllNDc4ODA5MjY5YTAxYzAwODE5M2I5YjMxNTcwYWZhZDAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L207-L267",
+          "version": "repo-lines-v1:sha256:99cb1c7b7e2c8b15079d2c55f9c611fd11cc1aff7942878481234c63d6f525e4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzNTE2NjNiYjA0ZGM3MTQ3ZTQxYzVlZGU5ZGFmOTBjNWYxYzE3YWFiMGRjYzRmZWY5ZmQzNjYwNjdhZWMwZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2NzBmMjllMDc5YzY3NzQzM2Q4NTg1ZGVmZDhjYjY4YzRjMDZiNjRjN2E5ZGNiYjIyOWE4Mzg0MTBhYzk3MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NzQxNGRkOTlmOWE4ZjgzNzUxOGM0ZGJmOThiN2NmMmY3NjFiM2FkNTI2MWZjZjQ2NjgwZGVmYzQwNWU5YTEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L588-L696",
+          "version": "repo-lines-v1:sha256:708b69454c2277c20608baba53c6eb7c50bb8c35de30310e24cd8ba8f5dcc5a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1ODUyNmM1NTA0NTNjNmE3NmZkNWRiOTBmMTRhYWNhM2Y2YWU2NTc3ZjhlMjgwZDQ1OWI2NWQ4NGRjNDMwZGUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MTQ2NTBiZDhlOTE2ZDM2OGU5NTExZDQ2YjkyOTQ4Njc0NmViNTNkYjJkMGFmYzQ4Zjc2ODU2NzY4OWEzMWMyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OGY3Yjc1MDQzYjEyY2YxNzgxNDkyNWZkZDU3MjYxMjkwNTNjOWJiY2Q2MmIyZDI5OGU5YzY5Y2JlMDlkNjAzIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L750-L861",
+          "version": "repo-lines-v1:sha256:813230d1bd0624054db870d35a52cfadf2b361b9c4a2a7c23e2ff976ee4543e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNTA2ZDk0YjMzZjM0ZGMzMGFkY2RiZGJkNGY0NDliZDc5ODM0ZjdiZjRkODkwZGVjNzU5Yzc0MDAxZjBjOWM1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwNTU1ZGZhZjVhOTAyZTYwNTZmNzg4ZWMwMDk1MjA3MDlhYTJiNDI3NDYwZmMyNWQ0MDQ0NzM3MDNmYzcyODRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NWI5OWEzNjY0YmM5OWM5MDlkNzY5MDUxYmIwZTY5NGYwYjVhYWU4MDc0YzJkM2QxYjcxY2Y0N2EyZjhjMzE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
     },
@@ -53,12 +61,12 @@
       "statement": "FilesystemPermission rules control filesystem-tool reads and writes but are not a shell or host confidentiality boundary; execute-tool permissions are not implemented for execution-capable backends.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1741-L1748",
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1821-L1828",
           "version": "repo-lines-v1:sha256:990548a59f26609e2a03df755ff237d5c689bbb31a7f0b591dbf834e7869f2f9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGU0MzE5NDRhOTJkNWY0NDUwOTllNDIzM2RhY2RhZjY4ZTc2MWM5Zjc5MjZkOGRjMWE2MWY4OGEzNGNhMWIxMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDE2Y2RiZGZjY2E2M2MyN2RkNjUwMDYzNTdmMmRiNzJiMmNmMTIxMTJmYWY1M2NiNmQzZTg5MGZhMTg0ODgwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmViNzJmYTQ3MzcyZDI5MDRlZmQ5OGZiYTIzMjBhMTcxMzBhZmE4MmQyMTRlYWJhMDU3YzFhMWQ1MjQ0NTFmOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWRiZjYyZTlhZmFjYTcwNmJjZDk1NGUyMzc1OWYxNDdlMDExOTdjOGQzOGIyZTQyNmMyYWM5ZGVhODE3NmYzNiJ9"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L388-L433",
-          "version": "repo-lines-v1:sha256:061d3ae4890a8f9e7d0167dc7f473f2e592eac90e2208c2339dec6f5e9a545c5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NzBlODllNTYxNTc0MjY0OWQ3MWYzZjNkODdhYzg2YjU0ZjY3ZmE1NzNjYWZiODg2YzNjNjM3ODNhNDVhMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDZhMTlkY2YzM2M4NmI0NTI1YWMwMjU0YmNjZjgyZjhjZWM5YzYyNzQ4NzA1NWQwYWZjOTNhZmI0YmVhYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjZTM4YWY2OWY2ZTU5ZTk4YzBlNzhlMzQ2YTUyOGRlOTA0MTM0OGRiOGY4Zjk1YTQ1OGIxYTg5MTYxODgxOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L386-L433",
+          "version": "repo-lines-v1:sha256:286f5213651c88c95c6ddf53ecda1f02a5a34b95f63c37992a9bf96a60b5dfb0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZmJhZTBiOTFkNDRmYzBkNDlmNWRlNjkxZGE2ZmM0MzFmMjYwMTM0YmY3MzFlMGUyMWY3NjQ4MDk0MzM0Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDZhMTlkY2YzM2M4NmI0NTI1YWMwMjU0YmNjZjgyZjhjZWM5YzYyNzQ4NzA1NWQwYWZjOTNhZmI0YmVhYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjZDU5ZGEwMjljZTNhNWIxNjI4MDdlNzc4M2FkYjY2ZWNiZDkzYzEzZjc3ZTM3OTY5YmVmOTEyMWI5NzI1ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
         }
       ]
     },
@@ -81,8 +89,8 @@
       "statement": "Talon explicitly classifies MCP configuration redaction and placement warnings as non-confidentiality controls because its default local shell can access readable absolute paths outside the mediated configuration tools.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/mcp_config.py#L80-L143",
-          "version": "repo-lines-v1:sha256:c8768ee074b9428cc9b986539bc804ea68b4b1b840311055eb9c6455786e846f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZWRjZjJlYWM2YjdjYTYwNTNlOWM1YzFhYjUxZDQ0ZmU3M2E1MDBlMTNlYmY2ODE5NDY3MGEwZDI5OGFiMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyNDViN2FmMWZlYTM0MTFhODg5ZTM1ZTg0MWVmZjgxNDVkYzcwZWVkOGYxYjNhMWJkODI1MzI2YTRlNDM3NzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzMzEwOTVkNWZkOTQ5N2Y0M2RkNjkwMWE5M2Y3NDNiYjY1NTUwNmEwNTBlMTVjMjgxNWJmMWM5ZDRmMTMyOTgifQ"
+          "resource": "repo://libs/talon/deepagents_talon/mcp_config.py#L79-L132",
+          "version": "repo-lines-v1:sha256:ec925d149b3fd580dd4ce1f489902b2e647e4095aa9673aced7173c0e56d0884:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZWRjZjJlYWM2YjdjYTYwNTNlOWM1YzFhYjUxZDQ0ZmU3M2E1MDBlMTNlYmY2ODE5NDY3MGEwZDI5OGFiMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmExMDZhYzgzMjVlN2E1Njc1NTk0ZTExNGQ3YTFlOTFjYzI4MzgwMWFlMzNlMTExYWNlMjQ4MDY2MmEwZTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyNDViN2FmMWZlYTM0MTFhODg5ZTM1ZTg0MWVmZjgxNDVkYzcwZWVkOGYxYjNhMWJkODI1MzI2YTRlNDM3NzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwNDZjMmMzYzY4MGY1MmMzMDdjZGJiYmQ3MjdmYzZjM2E2ODdhNmNlYjY1ODdlMDJmY2MzYTdiYjJiMzc4YTIifQ"
         }
       ]
     },
@@ -115,14 +123,234 @@
       "statement": "Talon is an experimental alpha runtime that explicitly lacks production-grade complete HITL, channel administrator controls, sandbox execution isolation, and multi-tenant boundaries; channel access is operator-level authority.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/README.md#L5-L7",
-          "version": "repo-lines-v1:sha256:90100de62114e9f466b350de332123a0a7079d08399034c47f78f4db8a094369:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGU4MTAyYTZkOWIyZWNjYjFkZDMyY2U4NWUzZDg0ODYyNjVmNTUxODg2MjIwMDRlODBkZDQyZjhhMjYxZmRkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWQyYTAxYWYzNDNiNjllNGY4NWRhMWNmYzFmZmIyOTQwODJhYmI2YjAzMTdiMzI5M2M0Zjk5YTI1MDIyMTg1YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjJmY2M1NzY4YjllN2M5NWZhYTEzZjU1MWU1ZjZhN2FmZTAzYzFkYTNjYjMwYmRmNWIwZGQ0NGRiMmVlNDJkOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjYwMDQzNGYxYzVjY2Q1YmY1OGRhMDZjYWQxOWYyOTM1YjU4MGI3OTI1MWE0ZDc3ZjE5OWMzNzhiNDRjOGY3NiJ9"
+          "resource": "repo://libs/talon/README.md#L3-L7",
+          "version": "repo-lines-v1:sha256:62a7a737eeb585c9ac692f99d1d912d5fd7d59b1039d3e2dbe010ec925636f7d:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGRlMDAyNzJiMmFiMTQ3MzgyM2QxNTQyNTdlZWFlNzQ4NWMzMThiODY5MTk4MTBmM2ViZGQ5ZmQwZTY5MjYzOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWQyYTAxYWYzNDNiNjllNGY4NWRhMWNmYzFmZmIyOTQwODJhYmI2YjAzMTdiMzI5M2M0Zjk5YTI1MDIyMTg1YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTUzMmI3N2Y3NzExYjU0NGJiNjlhNzE5YzUzZjhiODM3YjE1YzAwNzRiZTI0MTI0OGJlZTk3YTcyYmYwNTRjMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjYwMDQzNGYxYzVjY2Q1YmY1OGRhMDZjYWQxOWYyOTM1YjU4MGI3OTI1MWE0ZDc3ZjE5OWMzNzhiNDRjOGY3NiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_96176bf0882b42c8b06745f102ea224f",
+      "statement": "Talon's approval store validates exact-name boolean policies, uses revision compare-and-swap under a lock, and binds each invocation to an immutable snapshot so a successfully saved policy applies only on the next invocation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L187-L212",
+          "version": "repo-lines-v1:sha256:f1307f8b0a8eab257636d251795010aa7e6bde63b48228214094514222f9d8a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNTc1YzY5ZDE2ZjJlMTMyYzBlMDg4M2YzYjNhYTU2M2IyZDExYTZmNDgxMzc1MTE1ZWE2ZTEyN2YwNjJiNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZWNkNmFiYmM1YWJjOGZjNDM5ZTY1ODViMjZmZDdjMmE5MjAzNTgwZjlkNTk4ODRlYjRhNjgxZDEwMjVkNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwMDk4NmRjNzJiNjNlMzUyZDlkMWNlMTdmM2ZkNzQyZjIzODViYTZlYzRiMWU4ZmNhYmM5OGYwOTA1YjFiYzUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L65-L83",
+          "version": "repo-lines-v1:sha256:00f6a7c5be5f3707e591b32ab9db68abe5e928b5e8efc2fe435968816ece8fe4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3YmY5YjQ2NjZmMjY5YmNmODkyOTMxMzc3YTMzYjkwMzhkNmM4ZWFiZGEyZTgwMDE2ZmRhYjFhNWQxNDI5NjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L90-L163",
+          "version": "repo-lines-v1:sha256:d3e7b0c27fbbd596e51493533934c7409868674f7ab383dff7f480ad54ce8145:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjMzE5YjkzNzZlNGYxOWZhZTk3ZTJhMzFiYjhlNGMxN2MzZDBmMzFiM2RjZmRmYTU4ZWI5M2ExZGZmYTk1MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMjUxODIyZjM3Njc1Y2NkYTRkYjM0MjU2NjY5ZjY0YzkyMDA2YTFmYTUxMTUyZGM0YTg2Y2E4YzFhN2Y4ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjMzU2NjllZWI0ZWY0M2U1YWM5NTZkNDNmNzc3YmRlMGE1NTFjMDQzMjQzMGVlYTc0Nzk0YTYyN2IzODYxZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0d3b7735a9ea44cd9685e2de6d6a12ba",
+      "statement": "Talon requires a trusted operator marker and active approval snapshot before its tool can modify the persisted approval policy; a false policy value disables prompting rather than establishing authorization.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md#L217-L220",
+          "version": "repo-lines-v1:sha256:5aaa181b76455a468581e39688ba7ad978e6fc6325c2d7a82f26958b3c7ae047:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmU3NTMyMGEwODJhY2RhNGE3ZGJiM2JmNDVhMTExY2E3MGM0NDU0ZTNhN2Q5YTQzNmJmNTVhZDE5ZjU2N2IyNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjk2ODc3NmVhYzVmZDNhNDg4NWYzNWNhOTRlZTIzODgxMmNlOGM5MDUyMjkwNmNlNDczZjYwNWQyNTQzYmM0YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODgwOTE4YWM2NDMwNzA0MDMwMDQzMjc4YWJiMTY3MDAxYzY4MzQzZmM1YTNhZGY3ZjgyYjYxNjk1MjliODRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjcyNjc5Y2ZkN2M4YmJkNzlkMmRjYjYwYTFhZWFjYTY1ODhhOWU1Njc2OTMxMTYzMjY1NWI4OWIzMTY2MjQzNSJ9"
+        },
+        {
+          "resource": "repo://libs/talon/README.md#L239-L254",
+          "version": "repo-lines-v1:sha256:969ea7cdf1a3c74df7a898ce0bf9eab4db4899b9b01107cd9d0be51c3705fb1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMTU4ZjNkNGY1NGU5OWViOGJkYzM5NjcxYTU3NDIxOTg5ODM2ODQyNGQwMzI3NDU4MzFkMDMyMTYwZDg3YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmOGQ1YTZjYTk1ODQ5Y2I4NTMxNGM2MzA2MTA5OWJmYjdhMjVmZmZjNDk3MmMzMTgzN2VlM2ZhNGMxMjhlMWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVkYjZkZDM4ZWM2ZDk2ZGMyMjIyOTNjM2M1NTVjMDVmNzJkMGRjYTYwNjAwYzRjNzRlOGEwN2M1OTQwZTNkMTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlYzk0MmFkYWViMzIwNTk3NDQxMzljMWYyZWIxNzdiYmI3ZWY0ODAzOTk5MTg4MjE5NWRlOGQ5ZmZkNjhhMTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L196-L211",
+          "version": "repo-lines-v1:sha256:900f91ca7f7d370ae9a041ef5f24446b29bc18299d8c812f82dba8a346061ca4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyNjQ5Zjg4MzAyZDVhNTMyMDIxMjY5YjY1ZGFkNjVjMTU0ZGJkYWNhNjdhYzM5NzIxZWY5OWFkNDg0MTFmYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzYmE5OWQ0ODc1ZDA1NDE0MWE2NjYxYjE5MmM4YTBiZTYxYjEwMjNkMWU1ODE1MDEyMDgyY2QwMTRjYzk1YmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhkZDNiYmRmZTcyNDU1NjE5YTM3NDE0NWQ0MDEyZjUwMjFmYTMwZWU4NzkzYjgyZDU2NmNiMTc2MzdjYzI3MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTc2MzllODY1ZTY1ODgzZGFhMGM2YWRlYjRiYWNkNjI3ZDZjZmM4MDNhZTY5M2E2MzBmZTE1MzhiZWJkMGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f2d6b36f46543d9a307092b6d7301a0",
+      "statement": "The repository's secret inventory treats GitHub environment selection as target configuration rather than proof that secrets or protections exist, and directs CI credentials to the narrowest environment and consuming runtime step.",
+      "evidence": [
+        {
+          "resource": "repo://.github/SECRETS.md#L3-L25",
+          "version": "repo-lines-v1:sha256:9369fc68ff1b874082c7e67de3f8a4cee792f4b2e5ecfeaf1e2ec4685df555cc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyYTBiY2UzZTFhNmFmYmE3N2QzNDE1N2U2MWMzZDFmZGU3ZmExNGQ4ZjFlMTExMDMzZTRkNTAwMjg0MDYxOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmZmZiZmUyOWQ2NjA3MzhhYmM5NDI4ODk0ZWE5NTk0MGQ5ZDNiZDRiNGVmY2Y2NDcwZTdiNWYwZmEyZjExY2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA0NTM1MDk5MmFlNDY1MmU2ZmM2NDY3NWMzYjU2NDMxODNkMWZiY2JmMjQwYzhjMmM3YjIyMzBlZTNmNGQ1YTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmZTA4YWNjMDY0YzRiZGI2OWIwZjM3YzQ4ZDRlNzY4ZmRmOWI5MzRhYmI2NDZjYWRhOTkxZmE0NjMyOTA5YWUifQ"
+        },
+        {
+          "resource": "repo://.github/SECRETS.md#L51-L64",
+          "version": "repo-lines-v1:sha256:6c57260319fb70feaed2c88b4ca96b838e3fc426b570957b6bf30be532f248d4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmODEwZjlmOTczMjFiMzBmODUwNmZhNzBhNDFkYTAwZTE2OGQxMmQzMzk1ODI2MmViNzc5ZmYwZmU0ZDA5MGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2OTIwYTNlN2Y1MDgzMWRkYmM0NmI2NTFmNGVhZWViYjA1MTEyODgxNjZlM2QwZDFhNTNiODY0Y2MzODk0YzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2MTdhOWUxMDM1ZDhhMjlhZWU5NTI1NzE4M2UwY2M4YmRlNjFkOTdlNzkwZmRhMjgzY2FiZjRjMmUzNjVjODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiNTI0NjVhYmY3MjdhNjI0ZmVhMTEzOTM5MDQ0MTQwZGQ4MWIyZjFkN2E2MWZhMTJlNjlmYzQ4NmQ2N2U2NTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6a7899f1d8754c3a9a3da5822986e7ee",
+      "statement": "The OpenWiki update workflow uses a read-only GITHUB_TOKEN by default, checks out without persisted credentials, and mints a separate repository-scoped GitHub App token with explicit contents and pull-request write permissions for update and pull-request operations.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L39-L53",
+          "version": "repo-lines-v1:sha256:41ed9242a66fbc55cfb6d7660603843621b8aa32cbe0ab911c55ee6f5e596d9a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNGNhMzM5M2I4YzI2MjE0YzI5OTdiZjIwN2RlMGQyYWE1MzRiZTdlMDg4MDBiMDBlM2YxMzhhMzBiMDRhZDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZmRhZDQ5MWRmYzkzYjNlOWE2MjI1OGMzYjg1MjA2YWExMTg3M2RkZWEwYWI0NGZlZTBjNTEyNDAwYzZhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjOTdkOGE3MTM0M2QyMzk4ZTQ3MDBjYzdiZGFmZTVjYmEwODRjYjIxNTRkMjNiZDAxMGU1YjI3ZDUxMWEwZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhM2VhZmJlNWM4Y2RmZTRmNWMyZDM5ZGUxMjRiZjlkNmQ3OWQwZTFlYThhM2RjNmNiYmFlNDUwMGRiZGViZGQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L8-L20",
+          "version": "repo-lines-v1:sha256:8e2f581afce6af62c49993506ab3fd3e67ce1d9f6af2982bf65a16de6e18fb68:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MjYyNDdlZGUwMDZlOWJkYWI5YzY4NTA3Mjg0MjVkMWI0MTY2Y2FmNWNhYzUwY2YwOTU1YzQ0ZDI0YzFhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4OGRjMDI3MDg2OTk0MmI4NWU1Mjk1YmJhNDRjN2IyNDFmYmE3MTdkZjRkZGY3MjJlNTgzY2U2YzQxMGYyMGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1NmRkYjM1NzMyZmE2Y2EzN2RjOTU4ZWYxMWMyNDQyOTI1NzFlZjY0YTk1OGVmYjM0MmVkZGU5NzUwY2YzMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac9c728e4bbd464ea5f80643e66e4202",
+      "statement": "The standard CI workflow grants its GITHUB_TOKEN only read access to checks, contents, and pull requests, while the issue-labeling job elevates only its job token to issues write and injects its provider credential only into the classification step.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L12-L21",
+          "version": "repo-lines-v1:sha256:622ec21cd980146617dc627a9e6018315a6c2247a5f6b65bda31f449f17b47b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MjYyNDdlZGUwMDZlOWJkYWI5YzY4NTA3Mjg0MjVkMWI0MTY2Y2FmNWNhYzUwY2YwOTU1YzQ0ZDI0YzFhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzMzczMzRhZWMwZGNiMjRlNDBlM2MyMGRjMDlkNTlhZjY3NDNkMDI3ZGJmZjUwYzFhY2EwODk3NDcxMTc2NzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0MzEyMDYzM2NlM2E0MTRkNTI1ZmI5ZjRhMjdhNjQ0NzA4YTM0ZGUzZWQ3M2ZlMzk4NTRiMTFlM2FmZmZhNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhYjIxNjZiM2JhZDllNTA1M2YwNDUyY2VmOWI2YTUyZDQzNGQ2YTI4OGMxMmE0ZTc1YjQxYTlkMWYyMTZmZTIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L67-L72",
+          "version": "repo-lines-v1:sha256:fe151c9db58fc402ab826bf0c9927075d2469dcd4a3ab3758b38e31640ab1518:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2M0MmRkNzVkN2Y1ZDlkMzBhNTFjMTRlNzQzOTA4MGJhOGUwZTM4NjYxZWM1NDBhOWRlOWMxMTNhZjQ5ZThkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIzMmI5ODcyNjNkZjIxNjNlNzI2ZDQ4YjkyZjZmOTY1MTQ4Y2I2YjZkMjgzMTc5MTUxNGM5MzlmODM3YTE0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjRhMjgxZDVhZGFiNDFhMzlhZjZkYjU5OGMxZmQ5ODBkZDdiODE1ZGI1MjM1NzhmNDg0NzkwMGM3ZjI2MzczOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjkwNzg2ZTBhYmQ4Y2MwNTE3NjIzNjg3YjRjODQ3NmRmM2EwM2I4OGIxM2RmNzIyMWI2ZTk0MTYxMjllYmU2NiJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L30-L38",
+          "version": "repo-lines-v1:sha256:d643344a8734080d78f08317bed89d75e8e0696a1aec032648f79c0bd0f84832:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODJlYjkxMDY5NmRjZDhiMGRhN2IyYTZmZmJjOWJhNjU3NWY4NWU1MDRmOTJiMTBlNmRjYjFiZjM1OTY5YzE0MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM2OThjY2RmZjdlYThlMDFjMzk5YWZjNTI4ZmY4YThmNjQ0MDY1MWQxNDhlZjdiZGRkNzk3N2IyMzE4MzM1MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTliMmIxZmRmMGVhM2JkY2EyODFmNWZmMzJjZWRmZmFjNDUyN2Y2NjU5YTM1YmQwM2E0MDg0YzBiOTU0MzI1NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTYzMGYzZTQwNmE3ZTM0Y2I4Mjk1NDRhMjJhZDIwNDRmNmY1OTMwMjBhNDYxNDdiNDEyZmUwMmFlNDMwZDIwOCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_394911eac99f434395d4c44c5852e53c",
+      "statement": "Reusable eval runs declare optional provider credentials, execute in the evals environment, and retain read-only repository contents permission.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L100-L119",
+          "version": "repo-lines-v1:sha256:9f22482a705340b161dea3a9085f1593fd91e8b3eee5174e5c81fe941f6340a1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiOWFmYzRiMmI2ZWNmMmI4MWE5YTYwNzUzMDU4YzhmOGFmYzMzMmI4OGZiNzVkNjcxOThmMmRkYTg0YWFjNDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0MjBjZWQwODkzNGVlMDMxMDAzNTVjYjQ0ZGM3MWQxNDkzZTI2NDhlMTljOGI1MGU0YzZhMTgwYTk4ZGI5NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzNzVhOGU5MDgxZDM5YWJmN2I3YTdhMjJlZWQyOWVkZTMxZDQxYzU3ZGJmNGYzYWZkODNkNjkxMGY3NDAxNGYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L69-L95",
+          "version": "repo-lines-v1:sha256:568198099ae09274a6fb729493aa439a40e79dde5b44ff7ed70bbe4005ba3e1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiM2Q0YjY1NzVlMDE4MDBmODAyYWZiZjAwNWE0ZDQxNTdkNDk1NDU2YjViNWZhZDUwMzNiYjgwYmQxZDhjOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjYTFmNzIzMGU3NDhhMjE2M2RjOGM2ODhjZDgzOTk3NjgwOWE5ZmUwZDZhNjhkYjcxZWU4ZTM0ZTVhYzVhMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzNDA4ZTkwMzA3M2E3MDU4MWE0NWMyODAzNmFhYzllZmI2ZDQ5Yzk5YTc4NzM0OTE5YmVhMjNlZDFlYjY1MjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f06a3e553cc2470b8b364dfbeb87217b",
+      "statement": "The OpenWiki workflow runs generation before minting its dedicated App token, restores its own workflow file, and stages only `openwiki` and `AGENTS.md`; an empty staged diff closes only a matching repository-owned update pull request, while changes are committed and force-pushed to the update branch before a pull request is created or reused.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L120-L170",
+          "version": "repo-lines-v1:sha256:ecb80ec874e07050a7ef639834dca28aa59370187e21eaebd5ec9ee8d82dc951:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyNGY3YTUyNjVkYjVmM2I2NmUwZjgwMmIxZjE2ZmE5MTE5YzFmMWMzMzkzM2RkMzBhZTY5YTJiZjRmMTA4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMjZjNWUzZWZjOWYzYzAzMGM4Mzk0ODlkMzlhMWJiOWMzYTQ3NzQzZjlhNTI4NDk0MDcyOTJhZWQzZmUwMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmNWU1MGFiMWIzNzk0MmM4MTBkOGFiODQxNTU1ZDkwMjA1ZTNhMzE0ZTM5ZTI2NTY0YzVhMzg3YjI5NTRkYmEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L30-L53",
+          "version": "repo-lines-v1:sha256:c335710a1b9f9df9b7940528da16a62eb62f92253a6216a63ebd5a6c3b70cd1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZThmOWZhNDBlN2JkMDQ5OWQxYzBkODNmZDc1OGFhODViMzA4NDJkYmQ2MWYwZWE2YjdhZTEwZWZlYzc2ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZmRhZDQ5MWRmYzkzYjNlOWE2MjI1OGMzYjg1MjA2YWExMTg3M2RkZWEwYWI0NGZlZTBjNTEyNDAwYzZhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NTJiYTFhNjFkZThhNTlhZjA2OTY2MDIzNDQ4YTM3NTdiYTExODE2YWExMmNlYzhiYmUyNDVlZmRlMDc2YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhM2VhZmJlNWM4Y2RmZTRmNWMyZDM5ZGUxMjRiZjlkNmQ3OWQwZTFlYThhM2RjNmNiYmFlNDUwMGRiZGViZGQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L63-L113",
+          "version": "repo-lines-v1:sha256:171ea7d504f5c34ea7693a0af9ce69f27ea14fa21377d5b11eb4e46b479e7cf3:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkN2IwOTcxYWFiZjE3YjExOWJiOTczZTBiYmFiZTM4NDQ5N2EzYTJlMGRiOTU0MTAwNTBlNzRkZDE2NzNiN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MDRiMzFhNTI5YzM0ZmRhOTBjZGE1Mjk0YTk4MDRlZWJjOWU3MTM1MzcyY2U0NWE1MzRkMmJlOTI5MWUzZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwZDNkZjFlMzMwN2RlNDhhZjQ2MGE3ZDEzOTQ2YWNjMGFiNjdmYWMwNDZmYjFmYzY4ZmJlMGZiNGFlODAzNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ODAwNTNjZDE3ZjU2MDljMGFhMmIyMDQwMmFkOGNkYWY0MDBlODE2MTU2ZmNiY2UxNTFmNTFlNDcwOTc2OWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f5a63e4b16640188de5cc9bfb50d470",
+      "statement": "Before every OpenWiki merge attempt, the workflow verifies the expected base, repository-owned head, and recorded head SHA as well as open and non-conflicted state, then requests a SHA-pinned squash merge and requires `merged == true`; it retries only HTTP 405 responses up to 60 times with 15-second waits and treats other failures as terminal.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_openwiki_workflow.py#L145-L250",
+          "version": "repo-lines-v1:sha256:d92d8fc33a64ab47490ec6eb9b961d8b16daa4db6a260d6f78461f9a107044bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzODg1ODU0MjgzNzVjZjU0MTA0NWI0OWRiMDc0ZjVjZjM1NDkwZTg3ZTJhNmM2NTVkMjkwZGJkZGJiNmMzMWZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzljOWI4NzQ1OWVkNTEzZDRjNzAzZjMyOWFmMjEyMWZhZjJiYjFmMDE0NzgwNzg2MzkwZmRjMGIzM2IxNWQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MGQ4ZWQwNjcyNWQ0MjA1NWQ5Nzg3Zjk5MjgwZjE5MWQ2ZmZmMThlNGYyNmUzZjM3ZWE1MDhhMjE5NzAzNTI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L115-L162",
+          "version": "repo-lines-v1:sha256:419b3331e41633de16d79b04a3b4ba0015f916057b9cdb0313da220e3b100881:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0a1050290a3e4381b6a1ce62bcfb5e2b",
+      "statement": "The dcode offload HTTP boundary strips client transport-routing model parameters and replaces client model, parameters, and summarization-model selection with checkpointed or server launch configuration, preventing a loopback caller from redirecting credentialed provider calls or selecting a provider for server-owned compaction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L491-L567",
+          "version": "repo-lines-v1:sha256:1b3fbdadd420e7928dc6a4d0672db707df75b755765c3ee0ebd0e18378f7a861:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5Y2E4OTFiZmY3YWMxZjdjZWFhZTQwZWYwNTEwNjZiZTllZmU0N2I0ZTQyODFlODZjMzE5YmUyYzU1ZWJjZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OWRjM2I5Yzk5ZTA4OTc3YmI2YjRkOTIwY2ExZGQ3NmI1YTMxNGM4ZTE4MzU3ZDFiMjNkNGY1MmFmMDYxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlY2RlMDA1Y2JjZDQyZjA5ZjM3ZTIyNThiOGM4ZWU5ZmYzNTRkNmE3ZTg3OThhNjY0MTZjM2U5YTlhNWUzMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OTQ4MWQ0ZTU0NTZjOGU2NzlhMjY2ZDIyMjI5YThjOTBmYzE2YTAwMWRlZjJiNzU3Zjc2NDgxZTBkZGE5YzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L699-L738",
+          "version": "repo-lines-v1:sha256:6c474335022ba63de918799d0a62ef7f5871d054d0d13b8f9ab1962894ad638d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYzg3ZDA4NjFkYzc5OTU3MjkzNGNmM2Q3MGQxNmY0YjkwNjRlY2Q3ZGIyNjZlZDQ1M2FkMWFhZWE3YWM1ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMmNhYWEyMmU0ZDFmYmJjMGY1MDYzMDVkZTdlMzhlMzg2NGUwNTkxZGFlN2ViYjNkMzJiZDZjYjVhZjMxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b03e8d8198b4648b818c9ed1106b64f",
+      "statement": "The issue topic classifier confines untrusted issue text and both potential provider credentials to the opened-event classification step; it uses only described allowlisted topic labels, warns without mutation on failure, and adds only previously absent classified topics.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L172-L185",
+          "version": "repo-lines-v1:sha256:0e7edbc8e47d7652f0cd057ee6513c3a8170a76b7201b18d027dab01dcefd7df:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwMDlmMTc1MTM1NTk4OTg2YjIyMzBhMDU1MTQ3YTYwYWRiYjI2OGY5N2U0Nzg1YWViMjg1Mzc3ZTVmZmM4ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMTI3ODBhMTc2NTNkMGIyZWFkMDkwYmRmYjZjMTlhZDU5NTQxNTUzYjdhZDY4Mzk0Y2Y3YWExNmVlODIxZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1ODAxZWQ3NTQ0Yzg4ZDRlMzRkM2M2ODRhYmE4Zjc5ODkzMmU0MGVkMDhlMzk5OTBmY2UzN2I1N2I4ZTk5MTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L62-L116",
+          "version": "repo-lines-v1:sha256:d39bc2dc5c2d93617be0c190bc08d2fa49cad0433893eaaa96b3a36f6a92c146:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1Zjk0ZjM2ODUzZTkzODMyNDFkMGMxMzlkNjQzMGZhNzE3N2Y5NzZhNTg3NDc4Njc5OGExMDA4MjAyMDQ5MDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZmE1MDZhODFjNzU3OTYzNWQzY2VmZjBiNjRjYTM2MTQxNDJjZTI3ZjgxNzA1NzVmMDdkZTc2ZWE1Nzc4YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4YTI1OTFiMDgzZTFjYTdhYjk3NGVjNDEzNjNiYTExOTMyMzc2ZTU4YTE3MTM3MjA5Mzg0ZmYxZGMwNGE0YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiMTc1YjExYmQ5NTZlZDAxZjg5MmRiY2I4ZDU4OWZhOGI0MzNiNTUzODM3ZDZkMGQ2YjcyZGM5YzM0YzY0MWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c52dca4538154623a0f3ceda46eb0b82",
+      "statement": "The Groq and Semif issue topic classifiers truncate inputs, instruct providers to ignore embedded instructions, enforce a 15-second abortable request budget, and constrain returned labels to at most three allowed topics; Semif additionally validates probabilities and selects scores at or above 0.8 across batches of at most 32.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/semif-topic-classifier.js#L5-L58",
+          "version": "repo-lines-v1:sha256:27ccf822904b673f5c6fd0f26bfee722990a0cc0b67c7d37aae6fc5b803bdef4:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNDM0MmQ5ZDczNzgyZTVlNGNhOGI2ZGY1NDY5NzgzNGVmYWM1ZTU3OWI0ZGMxOTNjMjUzZWUyODBiYmI5NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2ZjY4N2FiZDBkMThmNzczNWY3NGRlNDg2MDkxNGEyNThhMDgzZDBjYTQ2ZjUyMDQzN2UxYjU3MmMxZmNhY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NzA3YTJkMjk0ZTIxYWU5OTdmMTQwMWU2NDI5NTA1YzM5OTA2YzY4ZTgxODE0OWM4M2NlMzZiNzlmMGU5OWIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/topic-classifier.js#L12-L70",
+          "version": "repo-lines-v1:sha256:956db579d0234cf328d1087e691ad943b4bf194b1f107704a12464f0216a1aa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTEyNTBhMTg5OWQ0NDllMzcxMDliMmZmMWE1OGZhMjNjYWM3MWE0ZDY5ODMwMThmYmU1MzZhNmQ1YzM1NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxYTUwYjZhYzViNzg5NWIyZDZmNGI3OGM3MDkzNTYwMmRiM2QyYTdjNDUzZTc3ZjA5M2EwNzZkN2JmNmYwZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhN2RjOGI1ZmI4N2Y4MzIyOTU5ZDE0NDIyZDE4NmY1Y2Q0MGM4ZjEwMDdjMWYyZDI5ZjkyMzVkMjUxNTFmYWEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js#L104-L173",
+          "version": "repo-lines-v1:sha256:f9253d73587e457719d8c1fb9c482adbd1ad8627e1cff959c2319a7ad4fb76e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZGZjNDBlNTQzZGVmYTE5OWYwMTg2Yzk0MzZkOWIwNDM0YTZhMDNiYzBlN2JlMmU5ZmQyNGY4OGM1ODk5NjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMWVhMTVhMGY3YjFkNzc0MWMwOTJkZTgwMmQzOWZkYTQ0MzRlY2YwNWY5NDM1OGM2ZjM2OWNhOTExNmUyMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/topic-classifier.test.js#L29-L149",
+          "version": "repo-lines-v1:sha256:5075e24cc7256728be0e9897f41d0c71982e7dfc041f3880ba32a47101b02f2f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhYTJmZWI0MTNjYTIzMTM0M2NjYzk3OGE5YmZlZjEzN2Q5MmRlZjcyMTY1NDhjNDI0MmVhMGJhOTY4NDQ2YmUwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyN2U1Nzg4ZDVkOWQ3M2QyNGE4MWRiYzBhNWE3NGJmYTgyYzljM2IzYWY5OWU1MmFmNzk2ZTkwYjQ2OGE4YTNkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZjBkODgwZGE0NzcwZGE0MzRlNzk2OTk0YWZhYWJiNTEwMzNhYmM3NGY3ZDI5ZTcxOTFjNGMzNWQxZDJiZDJjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmNmY1YjQwYjE1ODQ1N2QxNzg2NGYyMTc5MDc4NmRkNWEyZWNkYjY0YjY2YTY1MWY3ODhkNGUyNWNkMzMwM2QyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_57c164bba2e64277801095a287993018",
+      "statement": "Release-note automation checks out trusted helper code from main without persisted credentials and treats release-PR content as untrusted API data at a validated head SHA; drafting has only the configured provider key and no model tools, while repository mutations use a separately minted GitHub App token in designated helper steps.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L1-L13",
+          "version": "repo-lines-v1:sha256:28f2a8a087b37f7011f2c8264a27fec0f2b88ff62ad7d42675936e4d7c4537f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4ODJhMjI1YzVhYmYyNTQ4NmQyYTMzNTE1NmZlMzljOTUyMGMxMWE0NWE2MWQzM2RmYTU5NGQyOWUwNGEzZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZGI4NDc3NzZlZTA4ZDEzNWJlZTZlYWM3MjllOTc4NTQyNGQ2Yzk0NTQzZGQ4NGZiYTE4MDM1OWRmYTc3MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNDdhZTE4OWE3ODk1ODQ2Y2ZlYTBhNzdiNDIxY2ZkNjM1ZmU5YTYxNjI3ZGY4OWJiZDMzNTU2M2U1MTk2YTAifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L108-L134",
+          "version": "repo-lines-v1:sha256:59569d5eb1397658948b2871266e10de49bfa2c4450e5d9e165e4c4081dd5322:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwM2FmN2UwY2Q1N2ZmNzVkOWFlZWFkMTI4ZWY1Njg1MzA1OTk2NjI5NDM5ODE0YWRmMTNjNDhkMTY1ZjljMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YTM1ZjM0NmE1MzUxNjIyMWI1YmFmNjUxMTY4MzUzMTU2OGEwMmUwOTYxNzc3ZTljOTljZWQ2ZjJiMTRjMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0ZGZhNzM2M2NkMTA5YmEzNWQ4OTkyYzZmYzE5YThhZmFlZDEyY2Q1YWVmZTg3OGMzZjRkOTg2MzE5ZjNjODQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L195-L265",
+          "version": "repo-lines-v1:sha256:6b6dfb7e7d42f3e84b77b32af59d4706297fecc8bf6dfe4c8883763e04e96891:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTgxMDYxNzYxMzUyMGEyNDFlNGYxNjI4MTc0NTU3MTFiOGJhOTJmZmQxMzExN2Y2ZWIyODZmYzc0OGM0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzZDc0MzliOTI0ZGRkYmQ5MmNkZDI3NTM0MjQ1NmRmYWFiNjM5ZTNlMjY3ODM1Y2E1ODRkNjcwYzViNTNiYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4MGRmNDY1MWZhMWQ4YzlmNjFlOWJhODhmNzU4NDcxMTZlM2M3MTU3MGIxMTNhOWJmYTE5OGY4MDA3NGI1ZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZGIzZWUyOWQwMjRkYjliMGMwM2U5NDEyYWY2OTliMTI5MGUyMjQzNTlmNmYzYzEwY2IyOWQwMzU3N2IwZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_56c989ebce6c4b0a889d3454a5224426",
+      "statement": "A manual release-note command runs only for a validated open same-repository release-please PR targeting main and requires its commenter to have write, maintain, or admin repository permission; insider association gates feedback only.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L181-L209",
+          "version": "repo-lines-v1:sha256:010274cf96686e0f27fa8170a2e0d177ab3d4f670a45d16ff6405e5bd88d45b9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhNjVkNWZlYjBiOTk2NjFhYzg2Mzg1NWRmZDgzNjhmNDE2NzVjMTZkMzJmMTI4ZGRjYTE5Y2JhYzQ5ZGE0MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlMzljNjAxNzFiYWFkNDAzMmI0ZjI1OTdhZWRmMDRmYTIyMmQyNGUyZGE4N2JhZjYxNzk5Y2MxMTBjYjY2NWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxNmM3ODQxYzEwMTk4Y2ExODEwNjFlZThlOTRiOTMyNzRmMmE1YjdiOGE4YzAxMzQ2ZWNhYjVmNTJiMGY1ZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwNGE5NDM4NmE5ODRhMWJlMmM1MTYwM2JiNDAwOTZkOGFlNGU1NGI0YTU5MzEwYzA1MTViMGI0MWI1MWNkMmYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L669-L770",
+          "version": "repo-lines-v1:sha256:2d99e11b4ee38fe634f8da76fcda811b964416966c5a26522ccd271f2994d4f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YjNjZWE4ZGExNTA3MDY3NWQwYzQyNjVlZjQ4NmMxNGM4ZDNjNWVhMDRkNmRiYjVlMzJkZmIxZmI1YjcxYWZjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZTJlNzgwYmY2ZjA4YmFkMzM4Yzc3MTk2NmFmMmU3NmVkZmE5ZjA4ZDMwMmIyZTVmMjk3ZDE1NDRiMzQ1MTMwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyZjAwNTNiNDVlYzZhZTRlZThiYzEwNWY0MGQyNWQwNmVkZDk2ZjhmZjBhOTc5MmRlNDE1ZjdkZGJhMTg3MzQwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YTQ2MTY4MTc4YmMxMDcwMTM2ODYxMDkwZTk3NWYwZDM1OWQ3ZmM3YjEzMTc0ODRjZTc1YWMzNWRlNTEwMjI2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_975c9072e5ca4644957c3dffd34cc808",
+      "statement": "Release-note apply revalidates and prepares release state, creates a non-force Git Data API commit using the App token, publishes applied metadata, and explicitly dispatches the release-notes check for the resulting head because an App-token branch update does not emit a pull_request event.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L416-L523",
+          "version": "repo-lines-v1:sha256:8b4abf7e4cdb157781896431b98071a31e01baac3fe8b72d43b6184487c882e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YjlhZWRhOGQyZjBhYjA5ZmMyNWY1MTAwOGU3NmQ2OTc0MDI3Yzg0ZmUxMTY3MzhhYmVhM2I0ZTJhMTJhNzgxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmM2Q3NDM5YjkyNGRkZGJkOTJjZGQyNzUzNDI0NTZkZmFhYjYzOWUzZTI2NzgzNWNhNTg0ZDY3MGM1YjUzYmJiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzgwNWM0MDIzMjg5OGM0OWM1MWRkZDljMGJmODAzMTQ4OGQ3NWU4Zjg2NDM0M2MxOTdlMjI3NDc0ODY1ZDRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiOGRiM2VlMjlkMDI0ZGI5YjBjMDNlOTQxMmFmNjk5YjEyOTBlMjI0MzU5ZjZmM2MxMGNiMjlkMDM1NzdiMGQ3In0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-09T08:05:37.706Z"
+    "at": "2026-09-22T08:05:41.799Z"
   }
 }

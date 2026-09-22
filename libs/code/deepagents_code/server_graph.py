@@ -39,8 +39,15 @@ from deepagents_code.workspace import (
     PROJECT_POLICY_DRIFT_REASON,
     SERVER_CONFIG_DRIFT_REASON,
     WorkspaceConflictError,
+    canonical_fingerprint,
     drifted_project_fields,
+    get_snapshot_for_binding,
     resolve_workspace,
+)
+from deepagents_code.workspace_diagnostics import (
+    WorkspaceDiagnostics,
+    diff_snapshots,
+    snapshot_for_payload,
 )
 
 if TYPE_CHECKING:
@@ -48,6 +55,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from deepagents.backends.composite import CompositeBackend
+    from deepagents.backends.protocol import SandboxBackendProtocol
 
     EnvironmentContext = Callable[
         [Mapping[str, str] | None], AbstractContextManager[None]
@@ -314,6 +322,7 @@ async def _make_graphs(
     *,
     config_override: ServerConfig | None = None,
     project_context_override: ProjectContext | None = None,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Create the agent graph and the backend carrying its shared resources.
 
@@ -381,6 +390,7 @@ async def _make_graphs(
             project_context_override=project_context_override,
             workspace_env=workspace_env,
             workspace_credentials=workspace_credentials,
+            sandbox_backend_override=sandbox_backend_override,
         )
 
 
@@ -390,6 +400,7 @@ async def _make_graphs_in_environment(
     project_context_override: ProjectContext | None,
     workspace_env: Mapping[str, str],
     workspace_credentials: CredentialsSnapshot,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Build one runtime while its immutable workspace environment is active.
 
@@ -465,8 +476,8 @@ async def _make_graphs_in_environment(
     # graph, so this runs once per process despite LangGraph's per-run factory
     # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
-    sandbox_backend = None
-    if sandbox_type := config.sandbox_type:
+    sandbox_backend = sandbox_backend_override
+    if (sandbox_type := config.sandbox_type) and sandbox_backend is None:
         from deepagents_code.integrations.sandbox_factory import create_sandbox
 
         try:
@@ -711,12 +722,51 @@ _workspace_runtime_lock = asyncio.Lock()
 _sandbox_workspace_id: str | None = None
 
 
-def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None:
+def _runtime_cache_key(
+    binding: WorkspaceBinding, *, current_config_fingerprint: str | None = None
+) -> str:
+    """Key the runtime cache on full runtime identity, not just the binding.
+
+    The binding's `resource_key` mixes workspace identity with the policy
+    fingerprint; the runtime cache must *also* change when the full runtime
+    identity (model, model params, prompt, runtime-only fields) changes, so a
+    model switch rebuilds the runtime while the durable binding — and its
+    checkpoints/history — are preserved.
+
+    Args:
+        binding: The durable binding (workspace identity).
+        current_config_fingerprint: The runtime fingerprint of the *current*
+            resolved config, when the caller has resolved one. Falls back to
+            the binding's recorded fingerprint otherwise.
+
+    Returns:
+        The cache key for this binding's current runtime identity.
+    """
+    from deepagents_code.workspace import canonical_fingerprint
+
+    return canonical_fingerprint(
+        {
+            "runtime_fingerprint": (
+                current_config_fingerprint
+                or binding.runtime_fingerprint
+                or binding.config_fingerprint
+            ),
+            "workspace_id": binding.workspace_id,
+        }
+    )
+
+
+def _cached_workspace_runtime(
+    binding: WorkspaceBinding, *, current_config_fingerprint: str | None = None
+) -> ServerRuntime | None:
     """Return and refresh a cached runtime for one workspace binding."""
-    cached = _workspace_runtimes.get(binding.resource_key)
+    key = _runtime_cache_key(
+        binding, current_config_fingerprint=current_config_fingerprint
+    )
+    cached = _workspace_runtimes.get(key)
     if cached is None:
         return None
-    _workspace_runtimes.move_to_end(binding.resource_key)
+    _workspace_runtimes.move_to_end(key)
     return cached
 
 
@@ -739,16 +789,29 @@ def _claim_sandbox_workspace(
     )
     # Built into a local first: `raise X.from_reason(...)` reads as a
     # `from_reason` raise to ruff's DOC501.
-    conflict = WorkspaceConflictError.from_reason(reason)
+    conflict = WorkspaceConflictError.from_reason(
+        reason,
+        diagnostics=WorkspaceDiagnostics(
+            category="policy_drift",
+            reason=reason,
+            snapshot_status="unavailable",
+        ),
+    )
     raise conflict
 
 
 def _remember_workspace_runtime(
     binding: WorkspaceBinding,
     runtime: ServerRuntime,
+    *,
+    current_config_fingerprint: str | None = None,
 ) -> None:
     """Cache one workspace runtime and enforce the bounded LRU size."""
-    _workspace_runtimes[binding.resource_key] = runtime
+    _workspace_runtimes[
+        _runtime_cache_key(
+            binding, current_config_fingerprint=current_config_fingerprint
+        )
+    ] = runtime
     if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
         _workspace_runtimes.popitem(last=False)
 
@@ -778,42 +841,137 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     return await asyncio.to_thread(_bind)
 
 
-def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
+async def _resolve_bound_workspace_config(
+    binding: WorkspaceBinding,
+) -> ServerConfig:
     """Resolve current workspace policy and reject drift from its binding.
 
     Refusals name the fields that drifted. This runs on every request, and it
     reads the extension trust store each time, so a transient read failure
     reports as a policy change; without the field names that refusal is not
-    diagnosable. The values are paths and booleans, never secrets.
+    diagnosable. Only allowlisted, non-path policy values reach the attached
+    diagnostics: paths, model parameters, and prompts are never reported.
 
     Returns:
         The current server configuration resolved for the workspace.
     """
-    config = ServerConfig.from_env()
-    current_config = config.resolve_workspace(binding.cwd, binding.project_root)
+    config = await asyncio.to_thread(ServerConfig.from_env)
+
+    def _resolve_current() -> ServerConfig:
+        resolved = config.resolve_workspace(binding.cwd, binding.project_root)
+        return resolved.preserve_bound_extension_trust(binding.workspace_config())
+
+    current_config = await asyncio.to_thread(_resolve_current)
     bound_policy = binding.workspace_config()
-    current_config = current_config.preserve_bound_extension_trust(bound_policy)
+    snapshot = await get_snapshot_for_binding(binding)
+    snapshot_status = "current" if snapshot is not None else "unavailable"
+    # Fail closed on a disappeared extension-trust grant. A grant recorded at
+    # bind time that the trust store no longer reports is either a genuine
+    # revocation or a transient store-read failure (which fails closed to
+    # `False`). `preserve_bound_extension_trust` only *adds* privilege, so
+    # without this guard a vanished grant would be silently dropped — the policy
+    # payload still matches (it omits nothing) but the runtime fingerprint
+    # changes and the rebuild would run without the grant. Refuse instead.
+    if (
+        bound_policy.get("trust_project_extensions") is True
+        and current_config.trust_project_extensions is not True
+    ):
+        reason = (
+            "the project's extension trust recorded at binding is no longer "
+            "present; re-bind the thread to re-evaluate trust"
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            reason,
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=reason,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s extension trust changed since binding", binding.cwd
+        )
+        raise conflict
+    current_snapshot = snapshot_for_payload(current_config.to_workspace_payload())
     drifted = drifted_project_fields(
         bound_policy, current_config.to_project_workspace_policy()
     )
     if drifted:
         fields = ", ".join(drifted)
+        changes = diff_snapshots(snapshot, current_snapshot, changed_names=drifted)
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})",
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=PROJECT_POLICY_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
         logger.warning(
             "Workspace %s project policy drifted since binding: %s",
             binding.cwd,
-            fields,
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else fields,
+        )
+        raise conflict
+    # Durable access-policy compatibility: only trust/tool/sandbox/approval
+    # policy (and workspace identity) invalidate a binding. Cosmetic model
+    # settings and runtime-only fields are excluded from the policy payload, so
+    # a model switch no longer refuses the thread — it rebuilds the runtime via
+    # the runtime-fingerprint cache key instead.
+    current_policy = current_config.to_workspace_payload()
+    if binding.policy_fingerprint:
+        policy_changed = binding.policy_fingerprint != canonical_fingerprint(
+            {
+                "cwd": binding.cwd,
+                "policy": current_policy,
+                "project_root": binding.project_root,
+            }
+        )
+    else:
+        # Pre-v4 row: no policy fingerprint recorded. Fall back to the strict
+        # full-fingerprint comparison (fail closed on any change).
+        policy_changed = (
+            current_config.workspace_fingerprint() != binding.config_fingerprint
+        )
+    if policy_changed:
+        payload_drift = sorted(
+            key
+            for key in bound_policy
+            if bound_policy.get(key) != current_policy.get(key)
+        )
+        changes = diff_snapshots(
+            snapshot, current_snapshot, changed_names=payload_drift
         )
         conflict = WorkspaceConflictError.from_reason(
-            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})"
+            SERVER_CONFIG_DRIFT_REASON,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason=SERVER_CONFIG_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s access policy changed since binding: %s",
+            binding.cwd,
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else SERVER_CONFIG_DRIFT_REASON,
         )
         raise conflict
-    if current_config.workspace_fingerprint() != binding.config_fingerprint:
-        logger.warning(
-            "Workspace %s server config fingerprint changed since binding",
+    if current_config.runtime_fingerprint() != (
+        binding.runtime_fingerprint or binding.config_fingerprint
+    ):
+        # Runtime identity (model/params/prompt/runtime fields) changed without
+        # any policy drift. Not a refusal: log it and let the cache key rebuild.
+        logger.info(
+            "Workspace %s runtime identity changed since binding; "
+            "rebuilding the runtime (access policy unchanged)",
             binding.cwd,
         )
-        conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
-        raise conflict
     return current_config
 
 
@@ -821,14 +979,19 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     """Build or reuse a runtime from the persisted workspace resource policy.
 
     Returns:
-        The runtime selected by the binding's immutable resource key.
+        The runtime selected by the binding's workspace identity and the
+            current full runtime fingerprint (so a model change rebuilds while
+            the binding and its checkpoints are preserved).
     """
-    current_config = await asyncio.to_thread(_resolve_bound_workspace_config, binding)
-    cached = _cached_workspace_runtime(binding)
+    current_config = await _resolve_bound_workspace_config(binding)
+    runtime_fp = current_config.runtime_fingerprint()
+    cached = _cached_workspace_runtime(binding, current_config_fingerprint=runtime_fp)
     if cached is not None:
         return cached
     async with _workspace_runtime_lock:
-        cached = _cached_workspace_runtime(binding)
+        cached = _cached_workspace_runtime(
+            binding, current_config_fingerprint=runtime_fp
+        )
         if cached is not None:
             return cached
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
@@ -843,8 +1006,13 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         runtime = await _make_graphs(
             config_override=current_config,
             project_context_override=project_context,
+            sandbox_backend_override=(
+                _sandbox_backend if current_config.sandbox_type else None
+            ),
         )
-        _remember_workspace_runtime(binding, runtime)
+        _remember_workspace_runtime(
+            binding, runtime, current_config_fingerprint=runtime_fp
+        )
         return runtime
 
 

@@ -2187,6 +2187,113 @@ class TestModalScreenEscapeDismissal:
             assert app.interrupt_called is False
 
 
+async def test_thread_selector_ctrl_c_copies_highlighted_id() -> None:
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": f"thread-{name}",
+            "initial_prompt": name,
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+        for name in ("first", "second")
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+        patch("deepagents_code.app._monotonic", side_effect=[0.0, 2.0, 4.0]),
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("down", "ctrl+c")
+            copy.assert_called_once_with(app, "thread-second")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "first"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_called_once_with(app, "thread-first")
+            assert app.screen is screen
+
+            copy.reset_mock()
+            screen.query_one("#thread-filter", Input).value = "no-matching-thread"
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            copy.assert_not_called()
+            assert app.screen is screen
+
+
+@pytest.mark.parametrize("filter_text", ["first", "no-matching-thread"])
+async def test_thread_selector_ctrl_c_quit_flow(filter_text: str) -> None:
+    """Rapid Ctrl+C arms quit even when the thread filter has no matches."""
+    from textual.widgets import Input
+
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    threads: list[ThreadInfo] = [
+        {
+            "thread_id": "thread-first",
+            "initial_prompt": "first",
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+        }
+    ]
+    with (
+        patch("deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)),
+        patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy,
+    ):
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            screen = ThreadSelectorScreen(
+                current_thread=None, initial_threads=threads, filter_cwd=None
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.query_one("#thread-filter", Input).value = filter_text
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(app, "notify") as notify,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 1.0, 2.1],
+                ),
+            ):
+                await pilot.press("ctrl+c")
+                assert app._quit_pending is False
+                notify.reset_mock()
+                await pilot.press("ctrl+c")
+                exit_mock.assert_not_called()
+                assert app.screen is screen
+
+                notify.assert_called_once_with(
+                    "Press Ctrl+C again to quit", timeout=3, markup=False
+                )
+                await pilot.press("ctrl+c")
+                exit_mock.assert_called_once()
+
+                if filter_text == "first":
+                    copy.assert_called_once_with(app, "thread-first")
+                else:
+                    copy.assert_not_called()
+
+
 class TestModalScreenCtrlDHandling:
     """Tests for app-level Ctrl+D behavior while modals are open."""
 
@@ -5814,6 +5921,271 @@ class TestClearCommand:
 
 class TestCopyCommand:
     """Tests for `/copy` command behavior."""
+
+
+class TestCacheTiming:
+    """Cache hits renew retention without pretending to be writes."""
+
+    @pytest.mark.parametrize("age_minutes", [2, 6])
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_resume_restores_countdown(
+        self, age_minutes: int, observed_write: bool
+    ) -> None:
+        """A fresh client counts from saved activity, including time spent closed."""
+        now = datetime(2026, 9, 21, 12, tzinfo=UTC)
+        used_at = now - timedelta(minutes=age_minutes)
+        written_at = used_at - timedelta(minutes=1)
+        activity = {
+            "requested_at": used_at.isoformat(),
+            "model_spec": "anthropic:claude-sonnet-4-6",
+            "endpoint": "default",
+            "params": None,
+        }
+        state = {
+            "_last_model_request_at": used_at.isoformat(),
+            "_last_cache_model_spec": activity["model_spec"],
+            "_last_cache_use": activity,
+            "_last_cache_write": (
+                {**activity, "requested_at": written_at.isoformat()}
+                if observed_write
+                else None
+            ),
+        }
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            app._lc_thread_id = "resumed-cache"
+            payload = app._goal_rubric_payload_from_state(
+                state, messages=[], context_tokens=0, model_spec="", model_params=None
+            )
+            with patch(
+                "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+            ) as clock:
+                clock.now.return_value = now
+                await app._load_thread_history(preloaded_payload=payload)
+                await pilot.pause()
+
+                bar = app._status_bar
+                assert bar is not None
+                assert bar.cache_written_at == (written_at if observed_write else None)
+                assert bar.cache_expires_at == used_at + timedelta(minutes=5)
+                display = app.query_one("#cache-display")
+                rendered = str(display.render())
+                assert display.visible
+                assert ("3:00" if age_minutes == 2 else "0:00") in rendered
+                assert ("wrote" in rendered) is observed_write
+                assert "0 read" not in rendered
+                assert "0 write" not in rendered
+
+                app._lc_thread_id = "fresh-thread"
+                await app._load_thread_history(
+                    preloaded_payload=_ThreadHistoryPayload([], 0, "")
+                )
+                await pilot.pause()
+                assert not display.visible
+                assert "Cache" not in str(display.render())
+                assert bar.cache_expires_at is None
+
+    @staticmethod
+    def _record_activity(
+        app: DeepAgentsApp, requested_at: datetime, *, write: bool = False
+    ) -> None:
+        activity = {
+            "requested_at": requested_at.isoformat(),
+            "model_spec": app._last_cache_model_spec,
+            "endpoint": app._last_cache_endpoint,
+            "params": app._last_cache_model_params,
+        }
+        app._sync_cache_state_from_state(
+            {
+                "_last_cache_use": activity,
+                **({"_last_cache_write": activity} if write else {}),
+            }
+        )
+
+    @pytest.mark.parametrize("observed_write", [False, True])
+    async def test_cache_hit_renews_countdown(self, observed_write: bool) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=6)
+            hit_at = datetime.now(UTC)
+            app._lc_thread_id = "cache-timing-test"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if observed_write:
+                app._last_model_request_at = written_at.isoformat()
+                self._record_activity(app, written_at, write=True)
+                await app._refresh_cache_timing()
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                app._last_model_request_at = hit_at.isoformat()
+                self._record_activity(app, hit_at)
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            await pilot.pause()
+
+            assert bar.cache_written_at == (written_at if observed_write else None)
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+            rendered = str(app.query_one("#cache-display").render())
+            assert " 4:" in rendered
+            assert ("wrote" in rendered) is observed_write
+
+            # A turn without cache activity must not renew the countdown.
+            app._last_model_request_at = (hit_at + timedelta(minutes=1)).isoformat()
+            await app._refresh_cache_timing()
+            assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
+
+    @pytest.mark.parametrize(
+        ("endpoint", "base_url", "trusted", "shows_retention"),
+        [
+            ("default", None, False, True),
+            ("https://api.openai.com/v1", "https://api.openai.com/v1", False, True),
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com:443/v1/",
+                False,
+                True,
+            ),
+            ("https://gateway.example.com", "https://gateway.example.com", True, True),
+            (
+                "https://gateway.example.com",
+                "https://gateway.example.com",
+                False,
+                False,
+            ),
+            ("https://gateway.example.com", "https://api.openai.com/v1", True, False),
+            (None, "https://api.openai.com/v1", False, False),
+        ],
+    )
+    async def test_configured_endpoint_retention(
+        self,
+        endpoint: str | None,
+        base_url: str | None,
+        trusted: bool,
+        shows_retention: bool,
+    ) -> None:
+        """Official and trusted endpoints show retention for observed cache hits."""
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            requested_at = datetime.now(UTC)
+            app._last_cache_model_spec = "openai:gpt-6-astra"
+            app._last_cache_endpoint = endpoint
+            app._last_model_request_at = requested_at.isoformat()
+            self._record_activity(app, requested_at)
+            bar.set_cache_tokens(2000, 0, input_tokens=2000)
+            app.query_one("#cache-display").visible = True
+            config = MagicMock()
+            config.get_effective_kwargs.return_value = {"base_url": base_url}
+            with (
+                patch(
+                    "deepagents_code.model_config.ModelConfig.load", return_value=config
+                ),
+                patch(
+                    "deepagents_code.cold_cache.load_trusted_cache_endpoints",
+                    return_value=frozenset({"gateway.example.com"})
+                    if trusted
+                    else frozenset(),
+                ),
+            ):
+                await app._refresh_cache_timing()
+            await pilot.pause()
+
+            rendered = str(app.query_one("#cache-display").render())
+            assert (" 29:" in rendered) is shows_retention
+            assert bar.cache_expires_at == (
+                requested_at + timedelta(minutes=30) if shows_retention else None
+            )
+
+    @pytest.mark.parametrize("activity", ["write_read", "subagent", "new_identity"])
+    async def test_multiple_requests_do_not_misattribute_timing(
+        self, activity: str
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            written_at = datetime.now(UTC) - timedelta(minutes=2)
+            read_at = written_at + timedelta(minutes=1)
+            app._lc_thread_id = "cache-attribution"
+            app._thread_has_completed_turn = True
+            app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+            app._last_cache_endpoint = "default"
+            if activity != "subagent":
+                self._record_activity(app, written_at, write=True)
+                if activity == "new_identity":
+                    app._last_cache_model_spec = "openai:gpt-5.4"
+                    app._last_cache_model_params = {"prompt_cache_retention": "24h"}
+                self._record_activity(app, read_at)
+
+            def execute(
+                *_args: object, turn_stats: SessionStats, **_kwargs: object
+            ) -> None:
+                turn_stats.cache_write_tokens = 2000
+                turn_stats.cache_read_tokens = 2000
+
+            def sync_checkpoint() -> None:
+                # The final call is a different model with no cache activity.
+                app._sync_cache_state_from_state(
+                    {
+                        "_last_model_request_at": datetime.now(UTC).isoformat(),
+                        "_last_cache_model_spec": "openai:gpt-5.6",
+                        "_last_cache_endpoint": "default",
+                    }
+                )
+
+            with (
+                patch.object(app, "_ensure_goal_state_notice", return_value=True),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    side_effect=execute,
+                ),
+                patch.object(
+                    app,
+                    "_sync_session_cost_from_checkpoint",
+                    side_effect=sync_checkpoint,
+                ),
+            ):
+                await app._run_agent_task("continue")
+            assert bar.cache_written_at == (
+                written_at if activity == "write_read" else None
+            )
+            expected_expiry = (
+                None
+                if activity == "subagent"
+                else read_at
+                + (
+                    timedelta(hours=24)
+                    if activity == "new_identity"
+                    else timedelta(minutes=5)
+                )
+            )
+            assert bar.cache_expires_at == expected_expiry
 
 
 class TestRunAgentTaskMediaTracker:
@@ -25745,7 +26117,7 @@ class TestResumeScrollPosition:
                     content=f"message {index}",
                     id=f"resume-message-{index}",
                 )
-                for index in range(50)
+                for index in range(579)
             ],
             context_tokens=0,
             model_spec="",
@@ -25766,14 +26138,14 @@ class TestResumeScrollPosition:
             for _ in range(20):
                 await pilot.pause()
                 if (
-                    app._message_store.visible_count == 51
+                    app._message_store.visible_count == 580
                     and not app._history_prefetch_active
                     and chat.max_scroll_y > 0
                     and chat.scroll_y == chat.max_scroll_y
                 ):
                     break
 
-            assert app._message_store.visible_count == 51
+            assert app._message_store.visible_count == 580
             assert not app._history_prefetch_active
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
@@ -25781,6 +26153,24 @@ class TestResumeScrollPosition:
             # initial tail load and prefetch, not bottom-follow (see
             # `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
+
+    async def test_prefetch_teardown_preserves_new_bottom_follow(self) -> None:
+        """A live bottom-follow request should outlive resumed-history prefetch."""
+        app = DeepAgentsApp()
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            await chat.mount(Static("\n".join(f"line {index}" for index in range(20))))
+            await pilot.pause()
+
+            app._history_prefetch_active = True
+            chat.anchor()
+            app._history_prefetch_anchor_generation = chat._bottom_follow_generation
+            chat.anchor()
+            app._stop_history_prefetch()
+
+            assert chat.is_anchored
+            assert chat._follow_bottom_when_scrollable
 
 
 class TestWelcomeBannerLiveUpdates:
@@ -26300,6 +26690,126 @@ class TestResumeThreadCwdSwitch:
         assert app._cwd == str(current)
         assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
+
+    @pytest.mark.parametrize("with_diagnostics", [False, True])
+    async def test_picker_bind_conflict_preserves_current_session(
+        self,
+        with_diagnostics: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        wait_for_modal: WaitForModal,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.model_config import ThreadConfig
+        from deepagents_code.tui.widgets.cwd_switch import CwdSwitchPromptScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        agent = RemoteAgent("http://test:0")
+        agent.set_workspace(str(current))
+        agent._workspaces["old-thread"] = {"cwd": str(current)}
+        original = agent._snapshot_workspace()
+        reason = "Cannot host this workspace because server configuration changed."
+        body: dict[str, object] = {"detail": reason}
+        if with_diagnostics:
+            body["diagnostics"] = WorkspaceDiagnostics(
+                category="config_drift",
+                reason=reason,
+                snapshot_status="unavailable",
+            ).to_dict()
+        response = httpx.Response(
+            409, request=httpx.Request("POST", "http://test:0/workspace")
+        )
+        switch_workspace = AsyncMock(
+            side_effect=[[], ConflictError(reason, response=response, body=body)]
+        )
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "target-thread",
+                "initial_prompt": "Saved conversation",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "cwd": str(target),
+            }
+        ]
+        monkeypatch.setattr(
+            "deepagents_code.model_config.load_thread_config",
+            lambda: ThreadConfig(
+                columns={}, relative_time=True, sort_order="updated_at", scope="all"
+            ),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.get_cached_threads", lambda **_kwargs: threads
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.get_thread_cwd",
+            AsyncMock(return_value=str(target)),
+        )
+        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            app, "_preview_project_settings_change", AsyncMock(return_value=False)
+        )
+        monkeypatch.setattr(app, "_refresh_project_context_for_cwd_switch", AsyncMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._server_kwargs = {"cwd": str(current)}
+            previous_message = UserMessage("Keep this conversation")
+            await app._mount_message(previous_message)
+            await app._show_thread_selector()
+            await wait_for_modal(pilot, ThreadSelectorScreen, present=True)
+            await pilot.press("enter")
+            await wait_for_modal(pilot, CwdSwitchPromptScreen, present=True)
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            assert app.is_running
+            assert app._lc_thread_id == "old-thread"
+            assert app._session_state is not None
+            assert app._session_state.thread_id == "old-thread"
+            assert app._cwd == str(current)
+            assert Path.cwd() == current
+            assert app._server_kwargs["cwd"] == str(current)
+            assert agent._snapshot_workspace() == original
+            assert previous_message.is_mounted
+            assert not app._thread_switching
+            error = app.query_one(ErrorMessage).render().plain
+            assert "Could not resume thread target-thread" in error
+            assert reason in error
+            assert "Use /threads to try again" in error
+            assert ("Server refusal:" in error) is with_diagnostics
+            assert ("detailed comparison is unavailable" in error) is with_diagnostics
+            assert "Same-agent resume failed for thread target-thread" in caplog.text
+            assert "ConflictError" in caplog.text
+            assert app._chat_input is not None
+            assert app.focused is app._chat_input.input_widget
+            await pilot.press("r", "e", "t", "r", "y")
+            assert app._chat_input.input_widget is not None
+            assert app._chat_input.input_widget.text == "retry"
+
+        assert switch_workspace.await_args_list == [
+            call(
+                {"configurable": {"thread_id": "target-thread"}},
+                str(target),
+                validate_only=True,
+            ),
+            call({"configurable": {"thread_id": "target-thread"}}, str(target)),
+        ]
 
     async def test_refused_switch_restarts_only_after_confirmation(
         self,
@@ -30573,6 +31083,124 @@ class TestPromptClipboard:
                 setattr(app, attribute, None)
 
             assert app._prompt_clipboard_block_reason() is None
+
+
+class TestSessionCostWarning:
+    """Session cost warnings respect thread state and preserve running work."""
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_warning_modal_once_per_thread(self, dismiss_key: str) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(5.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            app._set_session_cost(6.0)
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+            assert app._session_cost_usd == pytest.approx(6.0)
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._reset_thread_usage()
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press(dismiss_key)
+
+    async def test_restored_cost_does_not_stack_with_compaction(self) -> None:
+        from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._reset_thread_usage(6.0)
+            await pilot.pause()
+            assert app.screen is screen
+            assert app._displayed_cost_usd == pytest.approx(6.0)
+
+            app.push_screen(
+                ResumeCompactPromptScreen(
+                    context_tokens=100_000, threshold=50_000, pending_work=False
+                )
+            )
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert app.screen is screen
+            assert app._displayed_cost_usd == pytest.approx(7.0)
+
+    @pytest.mark.parametrize("restored_cost", [4.0, 5.0])
+    async def test_restored_cost_keeps_new_crossing_warning(
+        self, restored_cost: float
+    ) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._reset_thread_usage(6.0)
+            app._reset_thread_usage(restored_cost)
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press("enter")
+            app._set_session_cost(6.0)
+            await pilot.pause()
+            assert app.screen is screen
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_dismiss_preserves_running_agent(self, dismiss_key: str) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_agent_running(True)
+            worker = MagicMock()
+            app._agent_worker = worker
+            screen = app.screen
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert app.screen is not screen
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert app._agent_running is True
+            worker.cancel.assert_not_called()
+
+    async def test_zero_threshold_disables_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 0.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._set_session_cost(100.0)
+            await pilot.pause()
+            assert app.screen is screen
 
 
 class TestProvisionalCostReconciliation:

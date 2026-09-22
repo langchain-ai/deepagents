@@ -2035,7 +2035,8 @@ def test_install_script_lock_is_independent_of_deepagents_home(
     assert not configured.exists()
     assert not (home / ".deepagents").exists()
     assert (tmp_path / ".tools.deepagents-code.deepagents-code-locks").is_dir()
-    assert legacy.exists() is (legacy_entry is not None)
+    assert legacy.is_dir()
+    assert not (legacy / "install.lock.d").exists()
     if legacy_entry == "symlink":
         assert legacy.is_symlink()
         assert target.is_dir()
@@ -2043,12 +2044,13 @@ def test_install_script_lock_is_independent_of_deepagents_home(
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
 @pytest.mark.parametrize("legacy_root", [False, True])
-def test_install_script_leaves_uv_tool_list_clean(
+def test_install_script_only_legacy_root_warns_in_uv_tool_list(
     tmp_path: Path, *, legacy_root: bool
 ) -> None:
-    """Persistent installer locks must not appear in uv's tool enumeration."""
+    """Only the legacy root retained for waiting installers may trigger a warning."""
+    legacy = tmp_path / "tools/.deepagents-code.deepagents-code-locks"
     if legacy_root:
-        (tmp_path / "tools/.deepagents-code.deepagents-code-locks").mkdir(parents=True)
+        legacy.mkdir(parents=True)
     proc, args = _invoke(
         tmp_path,
         {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "1"},
@@ -2066,21 +2068,15 @@ def test_install_script_leaves_uv_tool_list_clean(
         timeout=10,
     )
     assert listing.returncode == 0, listing.stderr
-    assert "warning:" not in listing.stderr
+    assert legacy.is_dir()
+    assert not listing.stdout.strip()
+    for line in listing.stderr.splitlines():
+        if line.startswith("warning:"):
+            assert f"Ignoring tool directory `{legacy}`" in line
 
 
-@pytest.mark.parametrize("older_installer_active", [False, True])
-@pytest.mark.parametrize("interrupt", [False, True])
-def test_installer_serializes_with_legacy_mkdir_protocol(
-    tmp_path: Path, older_installer_active: bool, interrupt: bool
-) -> None:
-    """Both generations exclude each other, and both locks release on exit."""
-    root = tmp_path / "tools" / "deepagents-code"
-    legacy = root.parent / ".deepagents-code.deepagents-code-locks" / "install.lock.d"
-    current = tmp_path / ".tools.deepagents-code.deepagents-code-locks/install.lock.d"
-    if older_installer_active:
-        legacy.mkdir(parents=True)
-        (legacy / "pid").write_text(str(os.getpid()))
+def _installer_lock_harness(root: Path) -> str:
+    """Build an installer process with explicit contention and exit handshakes."""
     functions = "\n".join(
         _extract_shell_function(name)
         for name in (
@@ -2096,7 +2092,7 @@ def test_installer_serializes_with_legacy_mkdir_protocol(
             "release_install_lock",
         )
     )
-    script = (
+    return (
         "set -eu\n"
         "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
         f"resolve_installation_root() {{ printf '%s' {shlex.quote(str(root))}; }}\n"
@@ -2113,6 +2109,21 @@ def test_installer_serializes_with_legacy_mkdir_protocol(
         "printf 'acquired\\n'\n"
         "read -r\n"
     )
+
+
+@pytest.mark.parametrize("older_installer_active", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_installer_serializes_with_legacy_mkdir_protocol(
+    tmp_path: Path, older_installer_active: bool, interrupt: bool
+) -> None:
+    """Both generations exclude each other, and both locks release on exit."""
+    root = tmp_path / "tools" / "deepagents-code"
+    legacy = root.parent / ".deepagents-code.deepagents-code-locks" / "install.lock.d"
+    current = tmp_path / ".tools.deepagents-code.deepagents-code-locks/install.lock.d"
+    if older_installer_active:
+        legacy.mkdir(parents=True)
+        (legacy / "pid").write_text(str(os.getpid()))
+    script = _installer_lock_harness(root)
     with subprocess.Popen(
         ["bash", "-c", script],
         stdin=subprocess.PIPE,
@@ -2153,6 +2164,62 @@ def test_installer_serializes_with_legacy_mkdir_protocol(
     assert not current.exists()
 
 
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_waiting_installer_acquires_lock_after_owner_exits(
+    tmp_path: Path, interrupt: bool
+) -> None:
+    """Releasing a lock must preserve the root a waiting installer references."""
+    root = tmp_path / "tools" / "deepagents-code"
+    script = _installer_lock_harness(root)
+    with (
+        subprocess.Popen(
+            ["bash", "-c", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as owner,
+        subprocess.Popen(
+            ["bash", "-c", "read -r;\n" + script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as waiter,
+    ):
+        assert owner.stdin is not None
+        assert owner.stdout is not None
+        assert waiter.stdin is not None
+        assert waiter.stdout is not None
+        try:
+            assert select.select([owner.stdout], [], [], 10)[0]
+            assert owner.stdout.readline().strip() == "acquired"
+            waiter.stdin.write("\n")
+            waiter.stdin.flush()
+            assert select.select([waiter.stdout], [], [], 10)[0]
+            assert waiter.stdout.readline().strip() == "waiting"
+            if interrupt:
+                owner.terminate()
+            else:
+                owner.stdin.write("\n")
+                owner.stdin.flush()
+            assert owner.wait(timeout=10) == (143 if interrupt else 0)
+            # Resume only after cleanup, with no updater file keeping the root alive.
+            stdout, stderr = waiter.communicate("\n\n", timeout=10)
+            assert waiter.returncode == 0, stderr
+            assert stdout.strip() == "acquired"
+        finally:
+            for proc in (owner, waiter):
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+    legacy = root.parent / ".deepagents-code.deepagents-code-locks"
+    current = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
+    for lock_root in (legacy, current):
+        assert lock_root.is_dir()
+        assert not list(lock_root.iterdir())
+
+
 def test_install_script_releases_legacy_lock_when_current_root_is_unusable(
     tmp_path: Path,
 ) -> None:
@@ -2166,7 +2233,9 @@ def test_install_script_releases_legacy_lock_when_current_root_is_unusable(
     )
     assert proc.returncode == 1, proc.stderr
     assert not args.exists()
-    assert not (tmp_path / "tools/.deepagents-code.deepagents-code-locks").exists()
+    assert not (
+        tmp_path / "tools/.deepagents-code.deepagents-code-locks/install.lock.d"
+    ).exists()
 
 
 @pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root bypasses permission bits")

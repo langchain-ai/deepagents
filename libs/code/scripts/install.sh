@@ -1305,9 +1305,8 @@ release_install_lock() {
   if [ -n "${LEGACY_INSTALL_LOCK_TOKEN:-}" ] && \
     [ "$(cat "$LEGACY_INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$LEGACY_INSTALL_LOCK_TOKEN" ]; then
     rm -rf "$LEGACY_INSTALL_LOCK_DIR" 2>/dev/null || true
-    # Unlike an advisory lock inode, an empty mkdir-lock root can be removed
-    # after release. Preserve any updater lock or racing installer's directory.
-    rmdir "${LEGACY_INSTALL_LOCK_DIR%/*}" 2>/dev/null || true
+    # Keep the root even when empty: waiting installers have already resolved
+    # this path and retry mkdir of the lock directory without recreating its parent.
   fi
   LEGACY_INSTALL_LOCK_DIR=""
   LEGACY_INSTALL_LOCK_TOKEN=""

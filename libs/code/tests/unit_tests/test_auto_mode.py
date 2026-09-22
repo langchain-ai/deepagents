@@ -3997,6 +3997,40 @@ async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
+async def test_receipt_preserves_instructions_before_its_turn(tmp_path: Path) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+        raw_user_text="never delete production data",
+    )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_ask_user_exchange(
+        request,
+        answer="blue",
+        questions=[{"question": "Which color?", "type": "text"}],
+        receipt_turn_id="turn-2",
+    )
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm production.db"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    assert [row["literal_user_text"] for row in payload["authorization_evidence"]] == [
+        "never delete production data",
+        "continue",
+    ]
+    assert payload["same_turn_user_answers"][0]["answer"] == "blue"
+
+
 async def test_receipt_evidence_uses_authorization_message_indices(
     tmp_path: Path,
 ) -> None:

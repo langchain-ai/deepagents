@@ -1602,6 +1602,10 @@ def _classifier_context(
         receipt_evidence, _latest_index = _trusted_prompt_rows(
             authorization_messages[earliest_prompt_index:]
         )
+        # Receipts may extend the instruction window, never shrink it.
+        receipt_evidence = [
+            row for row in evidence if row not in receipt_evidence
+        ] + receipt_evidence
         if len(receipt_evidence) <= _MAX_AUTHORIZATION_EVIDENCE_ROWS:
             evidence = receipt_evidence
         else:

@@ -517,6 +517,7 @@ class OffloadStateUpdate(TypedDict, total=False):
     _summarization_event: dict[str, Any]
     _summarization_session_id: str
     _session_cost_usd: float
+    _session_cost_breakdown: dict[str, Any]
 
 
 class OffloadExecution(NamedTuple):

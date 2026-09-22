@@ -16,6 +16,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -512,6 +513,125 @@ def _coerce_session_cost_usd(value: object) -> float:
         )
         return 0.0
     return cost_usd
+
+
+def _format_cost_breakdown_table(
+    total_usd: float, breakdown: Mapping[str, Any] | None
+) -> str:
+    """Build the copyable entire-thread estimated token/cost table.
+
+    Returns:
+        A plain-text table, or an empty string when historical detail is missing.
+    """
+    if (
+        not isinstance(breakdown, Mapping)
+        or breakdown.get("version") != 1
+        or breakdown.get("historical_complete") is not True
+    ):
+        return ""
+
+    def _number(key: str) -> float | None:
+        value = breakdown.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+
+    def _tokens(key: str, complete_key: str | None = None) -> str:
+        value = breakdown.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return "unavailable"
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{value} (partial)"
+        return str(value)
+
+    def _cost(key: str, complete_key: str | None = None) -> str:
+        value = _number(key)
+        if value is None:
+            return "unavailable"
+        text = repr(value)
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{text} (partial)"
+        return text
+
+    def _percent(key: str) -> str:
+        value = _number(key)
+        if value is None or total_usd <= 0:
+            return "n/a"
+        return f"{value / total_usd * 100:.6g}%"
+
+    rows = [
+        (
+            "Input",
+            _percent("input_cost_usd"),
+            _tokens("input_tokens", "input_tokens_complete"),
+            _cost("input_cost_usd", "input_cost_complete"),
+        ),
+        (
+            "  cache creation",
+            _percent("cache_creation_cost_usd"),
+            _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
+            _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
+        ),
+        (
+            "  cache read",
+            _percent("cache_read_cost_usd"),
+            _tokens("cache_read_tokens", "cache_read_tokens_complete"),
+            _cost("cache_read_cost_usd", "cache_read_cost_complete"),
+        ),
+        (
+            "Output",
+            _percent("output_cost_usd"),
+            _tokens("output_tokens", "output_tokens_complete"),
+            _cost("output_cost_usd", "output_cost_complete"),
+        ),
+        (
+            "  reasoning",
+            _percent("reasoning_cost_usd"),
+            _tokens("reasoning_tokens", "reasoning_tokens_complete"),
+            _cost("reasoning_cost_usd", "reasoning_cost_complete"),
+        ),
+        (
+            "Total",
+            "100%" if total_usd > 0 else "n/a",
+            str(int(_number("input_tokens") or 0) + int(_number("output_tokens") or 0)),
+            repr(total_usd),
+        ),
+    ]
+    widths = [
+        max(
+            len(row[index])
+            for row in [("Category", "% cost", "Tokens", "Cost (USD)"), *rows]
+        )
+        for index in range(4)
+    ]
+    rendered = [
+        "  ".join(
+            value.ljust(widths[index])
+            for index, value in enumerate(
+                ("Category", "% cost", "Tokens", "Cost (USD)")
+            )
+        ).rstrip()
+    ]
+    rendered.append("  ".join("-" * width for width in widths))
+    rendered.extend(
+        "  ".join(
+            value.ljust(widths[index]) for index, value in enumerate(row)
+        ).rstrip()
+        for row in rows
+    )
+    notes: list[str] = ["Parent rows are inclusive; indented rows are subsets."]
+    attributed = (_number("input_cost_usd") or 0.0) + (
+        _number("output_cost_usd") or 0.0
+    )
+    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
+        notes.append(
+            f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
+            "directionless/unattributed."
+        )
+    if breakdown.get("priced_request_count") != breakdown.get("request_count"):
+        notes.append("Some requests were unpriceable; costs are partial.")
+    return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)
 
 
 _PRICING_UNAVAILABLE_MESSAGE = (
@@ -1090,7 +1210,6 @@ if TYPE_CHECKING:
         Callable,
         Coroutine,
         Iterator,
-        Mapping,
         Sequence,
     )
 
@@ -2224,6 +2343,11 @@ class _ThreadHistoryPayload:
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
+
+    session_cost_breakdown: Mapping[str, object] | None = field(
+        default=None, kw_only=True
+    )
+    """Persisted thread-wide cost detail, or `None` when absent."""
 
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
@@ -4424,6 +4548,9 @@ class DeepAgentsApp(App):
         the streamed absolute total during a turn. The client never adds its own
         estimates here.
         """
+
+        self._session_cost_breakdown: Mapping[str, Any] | None = None
+        """Authoritative thread-wide structured detail when checkpoints provide it."""
 
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
@@ -8883,6 +9010,7 @@ class DeepAgentsApp(App):
         *,
         thread_id: str = "",
         pricing_ok: bool | None = None,
+        breakdown: Mapping[str, Any] | None = None,
     ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
@@ -8902,6 +9030,7 @@ class DeepAgentsApp(App):
                 the source reported it. `None` leaves the last known value
                 alone, so a source that cannot speak to pricing health (a
                 restored checkpoint read) does not erase what a stream said.
+            breakdown: Optional authoritative thread-wide structured detail.
         """
         if thread_id and thread_id != self._lc_thread_id:
             logger.debug(
@@ -8913,6 +9042,8 @@ class DeepAgentsApp(App):
         if pricing_ok is not None:
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        if breakdown is not None:
+            self._session_cost_breakdown = breakdown
         self._provisional_cost_usd = 0.0
         self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
         self._provisional_cost_by_request.clear()
@@ -8946,14 +9077,17 @@ class DeepAgentsApp(App):
         cost_usd: float = 0.0,
         *,
         has_restored_model_usage: bool = False,
+        breakdown: Mapping[str, object] | None = None,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
         Args:
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
+            breakdown: Structured cost detail restored from the checkpoint.
         """
         self._thread_stats = SessionStats()
+        self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
@@ -9281,8 +9415,10 @@ class DeepAgentsApp(App):
         """
         if "_session_cost_usd" not in state_values:
             return
+        breakdown = state_values.get("_session_cost_breakdown")
         self._set_session_cost(
-            _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
+            _coerce_session_cost_usd(state_values.get("_session_cost_usd")),
+            breakdown=breakdown if isinstance(breakdown, Mapping) else None,
         )
 
     def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
@@ -14342,6 +14478,7 @@ class DeepAgentsApp(App):
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
         )
+        session_cost_breakdown = state_values.get("_session_cost_breakdown")
         raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
         rubric_model = (
             None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
@@ -14391,6 +14528,11 @@ class DeepAgentsApp(App):
                 else None
             ),
             session_cost_usd=session_cost_usd,
+            session_cost_breakdown=(
+                session_cost_breakdown
+                if isinstance(session_cost_breakdown, Mapping)
+                else None
+            ),
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -19966,6 +20108,7 @@ class DeepAgentsApp(App):
             self._reset_thread_usage(
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
+                breakdown=payload.session_cost_breakdown,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the
@@ -25209,6 +25352,9 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
+                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
+                    self._session_cost_usd, self._session_cost_breakdown
+                ),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,

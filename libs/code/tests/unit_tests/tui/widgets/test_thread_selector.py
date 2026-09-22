@@ -995,12 +995,30 @@ class TestThreadSelectorSearch:
 class TestThreadSelectorCopy:
     """Tests for copying the selected full thread ID."""
 
-    async def test_c_copies_highlighted_full_id(self) -> None:
+    async def test_ctrl_c_copies_highlighted_full_id(self) -> None:
         with (
             _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.copy_text_with_feedback"
-            ) as copy,
+            patch("deepagents_code.clipboard.copy_text_with_feedback") as copy,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+
+                copy.assert_called_once_with(
+                    app,
+                    "abc12345",
+                    failure_noun="selection",
+                    success_message="Thread ID copied to clipboard",
+                )
+                assert app.dismissed is False
+
+    async def test_plain_c_filters_without_copying(self) -> None:
+        with (
+            _patch_list_threads(),
+            patch("deepagents_code.clipboard.copy_text_with_feedback") as copy,
         ):
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:

@@ -9,9 +9,10 @@ import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
+from langgraph.types import Command
 
 from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.authorization import (
@@ -19,7 +20,16 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
-from deepagents_talon.background import _IN_SUBAGENT, BackgroundSubagents
+from deepagents_talon.background import (
+    _FAILED_RESULT,
+    _IN_SUBAGENT,
+    _INSTRUCTIONS,
+    _MAX_RESULT_CHARACTERS,
+    _SCHEDULED_INSTRUCTIONS,
+    _SCHEDULED_TURN,
+    _TIMED_OUT_RESULT,
+    BackgroundSubagents,
+)
 from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
@@ -594,3 +604,425 @@ async def test_host_shutdown_completes_when_a_worker_outlives_cancellation(tmp_p
     assert channel.stopped is True
     assert host._stopped.is_set()
     assert runtime._graph is not None
+
+
+def _scheduled():
+    """Enter a scheduled turn, as the runtime does for a cron run."""
+    return _SCHEDULED_TURN.set(True)
+
+
+async def test_scheduled_delegation_runs_inline_and_creates_no_job():
+    """A scheduled run waits for its subagent instead of detaching it.
+
+    Also guards the middleware order this path depends on: `TaskTools` wraps
+    `BackgroundSubagents`, so `handler` here is the subagent itself. Were that ever
+    inverted, `_IN_SUBAGENT` would make every scheduled delegation refuse instead.
+    """
+    seen = []
+
+    async def handler(request):
+        seen.append(_IN_SUBAGENT.get())
+        return ToolMessage("findings", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        result = await background.awrap_tool_call(
+            _request("job:talon-cron", task, subagent_type="researcher", description="go"),
+            handler,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert result.content == "findings"
+    # The subagent ran with delegation closed to it, and nothing was left behind to
+    # deliver later.
+    assert seen == [True]
+    assert background._jobs == {}
+    assert _IN_SUBAGENT.get() is False
+
+
+async def test_scheduled_fan_out_is_concurrent():
+    """Delegations gathered in one assistant message must not serialize on the lock."""
+    inside = asyncio.Event()
+    both = asyncio.Event()
+    peak = 0
+    running = 0
+
+    async def handler(request):
+        nonlocal peak, running
+        running += 1
+        peak = max(peak, running)
+        inside.set()
+        if peak == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 2)
+        running -= 1
+        return ToolMessage("done", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    background.awrap_tool_call(
+                        _request("job:talon-cron", task, subagent_type="researcher"), handler
+                    )
+                    for _ in range(2)
+                )
+            ),
+            2,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert peak == 2
+    assert [item.content for item in results] == ["done", "done"]
+
+
+async def test_inline_fan_out_queues_beyond_the_slot_limit(monkeypatch):
+    """Inline delegation escapes the job table, so it needs its own ceiling.
+
+    Queued rather than refused: a scheduled run has nobody to retry a refusal, so
+    every delegation must eventually produce a real result.
+    """
+    monkeypatch.setattr("deepagents_talon.background._MAX_INLINE_RUNNING", 2)
+    peak = 0
+    running = 0
+
+    async def handler(request):
+        nonlocal peak, running
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0)
+        running -= 1
+        return ToolMessage("done", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    background.awrap_tool_call(
+                        _request("job:talon-cron", task, subagent_type="researcher"), handler
+                    )
+                    for _ in range(5)
+                )
+            ),
+            5,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert peak == 2
+    assert [item.content for item in results] == ["done"] * 5
+
+
+async def test_inline_timeout_is_reported_separately_from_failure():
+    async def handler(_request):
+        await asyncio.Event().wait()
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents(inline_timeout=0.01)
+    token = _scheduled()
+    try:
+        result = await asyncio.wait_for(
+            background.awrap_tool_call(
+                _request("job:talon-cron", task, subagent_type="researcher"), handler
+            ),
+            2,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert result.content == _TIMED_OUT_RESULT
+    assert result.status == "error"
+
+
+async def test_inline_failure_is_reported_without_arguments(caplog):
+    async def handler(_request):
+        msg = "boom sk-secret-token"
+        raise RuntimeError(msg)
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        with caplog.at_level(logging.ERROR):
+            result = await background.awrap_tool_call(
+                _request(
+                    "job:talon-cron", task, subagent_type="researcher", description="sk-secret-arg"
+                ),
+                handler,
+            )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert result.content == _FAILED_RESULT
+    assert "sk-secret-arg" not in result.content
+    assert "sk-secret-arg" not in caplog.text
+
+
+async def test_inline_result_is_truncated():
+    """The scheduled thread is reused on every fire, so one result cannot fill it."""
+
+    async def handler(request):
+        return Command(
+            update={"messages": [ToolMessage("x" * 100_000, tool_call_id=request.tool_call["id"])]}
+        )
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        result = await background.awrap_tool_call(
+            _request("job:talon-cron", task, subagent_type="researcher"), handler
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert len(result.update["messages"][0].content) == _MAX_RESULT_CHARACTERS
+
+
+async def test_scheduled_run_does_not_consume_background_capacity(monkeypatch):
+    """Cron delegations no longer compete with chat for the worker slots."""
+    monkeypatch.setattr("deepagents_talon.background._MAX_RUNNING", 1)
+
+    async def handler(request):
+        return ToolMessage("findings", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        await asyncio.Event().wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        await background.awrap_tool_call(
+            _request("job:talon-cron", task, subagent_type="researcher"), handler
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    chat = await background.awrap_tool_call(
+        _request("chat", task, subagent_type="researcher"), _unused_handler
+    )
+    assert str(chat.content).startswith("Started background subagent")
+    assert await background.cancel("chat")
+
+
+async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
+    """The SDK tool would hand back a task id this turn has no way to resolve."""
+    created = []
+
+    async def stream(*_args: object, **kwargs: object):
+        assert kwargs["on_disconnect"] == "cancel"
+        yield SimpleNamespace(
+            event="values", data={"messages": [{"role": "assistant", "content": "remote findings"}]}
+        )
+
+    def client(**_kwargs: object):
+        return SimpleNamespace(
+            runs=SimpleNamespace(
+                stream=stream, create=lambda **_k: created.append(_k) or SimpleNamespace()
+            )
+        )
+
+    monkeypatch.setattr("deepagents_talon.background.get_client", client)
+
+    @tool
+    async def start_async_task() -> str:
+        """Start remote work."""
+        return "unused"
+
+    background = BackgroundSubagents().configured(
+        [{"name": "remote", "description": "research", "graph_id": "g", "url": "https://e.example"}]
+    )
+    token = _scheduled()
+    try:
+        result = await asyncio.wait_for(
+            background.awrap_tool_call(
+                _request(
+                    "job:talon-cron", start_async_task, subagent_type="remote", description="w"
+                ),
+                _unused_handler,
+            ),
+            2,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert result.content == "remote findings"
+    assert created == []
+
+
+def _override(**kwargs: object) -> SimpleNamespace:
+    return SimpleNamespace(**kwargs)
+
+
+async def test_scheduled_prompt_replaces_the_background_instructions():
+    captured = {}
+
+    async def handler(request):
+        captured["system"] = request.system_message.text
+        captured["tools"] = [getattr(item, "name", "") for item in request.tools]
+        return "response"
+
+    @tool
+    async def list_subagents() -> str:
+        """Inspect."""
+        return "none"
+
+    @tool
+    async def researcher_tool() -> str:
+        """Work."""
+        return "done"
+
+    request = SimpleNamespace(
+        system_message=None,
+        tools=[list_subagents, researcher_tool],
+        override=_override,
+    )
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        await background.awrap_model_call(request, handler)
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    assert _SCHEDULED_INSTRUCTIONS in captured["system"]
+    assert _INSTRUCTIONS not in captured["system"]
+    # Both could only ever report nothing on a run that owns no jobs.
+    assert captured["tools"] == ["researcher_tool"]
+
+
+async def test_inline_timeout_does_not_escape_the_graph(monkeypatch):
+    """A deadline that raised would be retried, relaunching every sibling delegation.
+
+    The tool node re-raises anything that is not a tool invocation error, and the
+    runtime treats a timeout as retryable, so an escaping deadline re-runs the graph.
+    The proof is that the model is answered: a raise leaves the tool call unanswered,
+    because the tool node writes no message on the way out.
+    """
+
+    async def child(_state):
+        await asyncio.Event().wait()
+        return {"messages": [AIMessage(content="never")]}
+
+    runtime = _runtime(monkeypatch, child, [_delegate(), AIMessage(content="scan complete")])
+    runtime.background = BackgroundSubagents(inline_timeout=0.01)
+    await runtime.start()
+    try:
+        result = await asyncio.wait_for(
+            runtime.invoke(
+                AgentRequest(
+                    conversation_id="job:talon-cron", text="scan", metadata={"trigger": "cron"}
+                )
+            ),
+            10,
+        )
+        state = await runtime._graph.aget_state({"configurable": {"thread_id": "job:talon-cron"}})
+    finally:
+        await runtime.stop()
+
+    assert result.text == "scan complete"
+    answers = [
+        message.content
+        for message in state.values["messages"]
+        if isinstance(message, ToolMessage) and message.tool_call_id == "launch"
+    ]
+    assert answers == [_TIMED_OUT_RESULT]
+
+
+@pytest.mark.parametrize("failing", [False, True])
+async def test_scheduled_flag_does_not_outlive_its_turn(monkeypatch, failing):
+    """A leaked flag would make the next chat turn on this process delegate inline."""
+
+    async def child(_state):
+        return {"messages": [AIMessage(content="findings")]}
+
+    responses = [AIMessage(content="scan complete")]
+    runtime = _runtime(monkeypatch, child, responses)
+    if failing:
+
+        async def explode(*_args: object, **_kwargs: object) -> None:
+            msg = "turn failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(runtime, "_invoke_until_text", explode)
+
+    await runtime.start()
+    try:
+        request = AgentRequest(
+            conversation_id="job:talon-cron", text="scan", metadata={"trigger": "cron"}
+        )
+        if failing:
+            with pytest.raises(RuntimeError):
+                await runtime.invoke(request)
+        else:
+            await runtime.invoke(request)
+    finally:
+        await runtime.stop()
+
+    assert _SCHEDULED_TURN.get() is False
+
+
+async def test_chat_turn_is_not_scheduled(monkeypatch):
+    """Only a cron turn inlines; a chat delivery turn keeps detaching."""
+    seen = []
+
+    async def child(_state):
+        return {"messages": [AIMessage(content="findings")]}
+
+    runtime = _runtime(monkeypatch, child, [AIMessage(content="done")])
+    original = runtime.background.awrap_model_call
+
+    async def spy(request, handler):
+        seen.append(_SCHEDULED_TURN.get())
+        return await original(request, handler)
+
+    monkeypatch.setattr(runtime.background, "awrap_model_call", spy)
+    await runtime.start()
+    try:
+        await runtime.invoke(
+            AgentRequest(
+                conversation_id="chat",
+                text="hello",
+                metadata={"background_delivery": True},
+            )
+        )
+    finally:
+        await runtime.stop()
+
+    assert seen == [False]

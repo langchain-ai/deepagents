@@ -130,6 +130,9 @@ _CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
 _CONFIGURED_MODEL_METADATA_KEY = "deepagents_code_configured_model"
 """Model metadata key preserving the model selected by `create_model`."""
 
+_MODEL_INVOCATION_METADATA_KEY = "deepagents_code_model_invocation_id"
+"""Model run identity carried by the v1 messages stream metadata."""
+
 _CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
 """Callback metadata key identifying the graph node that made a request."""
 
@@ -1595,6 +1598,9 @@ class _ModelCallRecord:
     scope: str = ""
     """Checkpoint namespace of the graph that owns this request."""
 
+    invocation_id: str = ""
+    """LangChain model run ID shared with streamed fallback chunk IDs."""
+
 
 @dataclass(frozen=True, slots=True)
 class _ModelCallContext:
@@ -1643,6 +1649,7 @@ def _emit_model_usage(
                 "provider": record.provider,
                 "thread_id": context.thread_id,
                 "scope": context.scope,
+                "invocation_id": record.invocation_id,
             }
         )
     except Exception:
@@ -1672,6 +1679,30 @@ def _owning_checkpoint_scope(scope: str) -> str:
     while parts and parts[-1].isdigit():
         parts.pop()
     return "|".join(parts)
+
+
+def _set_stream_invocation_id(run_id: UUID) -> None:
+    """Attach identity to the message handler's per-run metadata copy."""
+    from langgraph.pregel._messages import (  # noqa: PLC2701  # Per-run stream metadata has no public accessor.
+        StreamMessagesHandler,
+    )
+
+    callbacks = ensure_config().get("callbacks")
+    if callbacks is None:
+        return
+    handlers = callbacks if isinstance(callbacks, list) else callbacks.handlers
+    for handler in handlers:
+        if not isinstance(handler, StreamMessagesHandler):
+            continue
+        if entry := handler.metadata.get(run_id):
+            namespace, metadata = entry
+            # Configure hooks append our recorder after the stream handler.
+            # Start callbacks share metadata across a batch, so replace only
+            # this run's entry before any response can be streamed.
+            handler.metadata[run_id] = (
+                namespace,
+                {**metadata, _MODEL_INVOCATION_METADATA_KEY: str(run_id)},
+            )
 
 
 class _SessionCostRecorder(BaseCallbackHandler):
@@ -1764,7 +1795,8 @@ class _SessionCostRecorder(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,  # noqa: ARG002  # Callback interface.
     ) -> None:
-        """Remember which thread a starting chat-model request belongs to."""
+        """Retain cost context and share run identity with message-stream callbacks."""
+        _set_stream_invocation_id(run_id)
         self._start(run_id, metadata)
 
     def on_llm_start(
@@ -1815,6 +1847,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
                 configured_model=context.configured_model,
                 configured_provider=context.configured_provider,
                 scope=context.scope,
+                invocation_id=str(run_id),
             )
         except Exception:
             # This is the sole entry point for every priced request, so a
@@ -1928,6 +1961,7 @@ def _record_from_response(
     configured_model: str = "",
     configured_provider: str = "",
     scope: str = "",
+    invocation_id: str = "",
 ) -> _ModelCallRecord | None:
     """Build a pricing record from a completed model response.
 
@@ -1939,6 +1973,7 @@ def _record_from_response(
             for a nested call describes the parent, not this request.
         configured_provider: Provider selected for this specific request.
         scope: Checkpoint namespace of the graph that made the request.
+        invocation_id: LangChain run ID for this model invocation.
 
     Returns:
         The record, or `None` when the response carries no usage to price.
@@ -1968,6 +2003,7 @@ def _record_from_response(
         model_name=model_name,
         provider=provider,
         scope=scope,
+        invocation_id=invocation_id,
     )
 
 

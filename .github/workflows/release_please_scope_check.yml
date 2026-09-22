@@ -23,7 +23,7 @@
 # Escape hatch:
 #   Cross-package releases are occasionally legitimate (e.g. a leaf-package
 #   security bump, or a deliberate coordinated multi-package bump). Apply the
-#   `allow-lockfile-release` label to acknowledge the fan-out and let the PR
+#   `ci:allow-lockfile-release` label to acknowledge the fan-out and let the PR
 #   pass; the `labeled` trigger re-runs the check so the red clears without a
 #   new commit. A companion workflow (`release_fanout_bypass_warn.yml`) posts a
 #   loud sticky listing the components that will still fan out.
@@ -184,7 +184,7 @@ jobs:
         with:
           script: |
             const STICKY_MARKER = '<!-- release-please-scope-check -->';
-            const BYPASS_LABEL = 'allow-lockfile-release';
+            const BYPASS_LABEL = 'ci:allow-lockfile-release';
             const SPLIT_RECIPE = [
               'Split into:',
               '',

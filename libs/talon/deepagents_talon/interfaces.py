@@ -113,7 +113,7 @@ class ToolApprovalRequest:
 
     Args:
         conversation_id: Conversation whose run is waiting for approval.
-        interrupt_id: LangGraph interrupt identifier to resume.
+        interrupt_id: First LangGraph interrupt identifier in this approval batch.
         action_requests: Tool calls awaiting one approve/reject decision.
     """
 
@@ -308,6 +308,23 @@ class BackgroundRuntime(Protocol):
     @property
     def background(self) -> BackgroundSubagents:
         """Workers whose results need a main-agent turn."""
+
+
+@runtime_checkable
+class ConversationDeliveryRuntime(Protocol):
+    """Optional runtime support for indexing acknowledged final replies."""
+
+    async def record_delivered_reply(
+        self, conversation_id: str, channel: str, chat: str, text: str
+    ) -> None:
+        """Record text only after successful channel delivery.
+
+        Args:
+            conversation_id: Agent thread producing the reply.
+            channel: Trusted provider identifier.
+            chat: Destination chat identifier.
+            text: Delivered reply text.
+        """
 
 
 @runtime_checkable

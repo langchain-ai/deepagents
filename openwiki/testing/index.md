@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Route deterministic package-local tests for SDK filesystem mutation safety and Talon approval, runtime-isolation, and host-facing behavior. Use package Makefile targets and keep warnings fatal.
+- [Testing Guide](testing-guide.md) - Select focused, deterministic tests for dcode runtime assembly, durable workspaces, offload, sandboxing, cost accounting, terminal UI, installation, and repository automation. Keep package-runtime and GitHub workflow contracts on separate validation routes.

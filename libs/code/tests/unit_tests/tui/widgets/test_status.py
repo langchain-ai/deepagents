@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from textual import events
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
 
     from rich.style import Style
     from textual.pilot import Pilot
+
+    from deepagents_code.cold_cache import CacheConfidence
 
 
 @pytest.fixture(autouse=True)
@@ -281,6 +285,60 @@ class TestTokenDisplay:
 
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
+
+
+class TestCacheTimingDisplay:
+    """Tests for cache write timing in the status bar."""
+
+    @pytest.mark.parametrize(
+        ("confidence", "before", "after"),
+        [
+            ("may_be_cold", "/ 0:30", "/ uncertain"),
+            ("expired", "/ 0:30", "/ 0:00"),
+        ],
+    )
+    async def test_retention_bound_passes(
+        self, confidence: CacheConfidence, before: str, after: str
+    ) -> None:
+        async with StatusBarApp().run_test(size=(180, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            now = datetime.now(UTC)
+            with patch(
+                "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+            ) as clock:
+                clock.now.return_value = now
+                bar.set_cache_tokens(1000, 2000, input_tokens=3000)
+                written_at = now - timedelta(seconds=30)
+                bar.set_cache_timing(
+                    written_at,
+                    ttl_seconds=60,
+                    retention_confidence=confidence,
+                )
+                await pilot.pause()
+                display = pilot.app.query_one("#cache-display")
+                rendered = str(display.render())
+                assert f"wrote {written_at.astimezone():%H:%M:%S}" in rendered
+                assert before in rendered
+
+                clock.now.return_value = now + timedelta(seconds=30)
+                bar._tick_cache_timer()
+                await pilot.pause()
+                assert after in str(display.render())
+                assert "bust" not in str(display.render())
+                assert bar._cache_timer is None
+
+    async def test_clear_stops_countdown(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(1000, 2000, input_tokens=3000)
+            bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
+            assert bar._cache_timer is not None
+
+            bar.set_cache_timing(None)
+            await pilot.pause()
+
+            assert bar._cache_timer is None
+            assert "wrote" not in str(pilot.app.query_one("#cache-display").render())
 
 
 class TestStatusMessageVisibility:

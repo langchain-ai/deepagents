@@ -924,13 +924,15 @@ class TestWorkspaceRuntime:
         ):
             assert await module._workspace_runtime(binding) is runtime
 
-        # The user revokes trust. Nothing about the environment changes.
+        # The user revokes trust. Nothing about the environment changes. The
+        # refusal fails closed on the disappeared grant (whether a genuine
+        # revocation or a transient trust-store read failure).
         with (
             patch(trust, return_value=False),
             patch.object(ServerConfig, "from_env", return_value=launch_config),
             pytest.raises(
                 WorkspaceConflictError,
-                match=r"project's resolved policy.*\(trust_project_extensions\)",
+                match="extension trust recorded at binding is no longer present",
             ),
         ):
             await module._workspace_runtime(binding)
@@ -1065,17 +1067,66 @@ class TestWorkspaceRuntime:
         assert call is not None
         assert call.kwargs["config_override"].trust_project_extensions is False
 
-    async def test_rejects_server_config_drift(self, tmp_path) -> None:
+    async def test_model_change_rebuilds_runtime_without_refusing(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model-only change is permitted: the runtime rebuilds, the binding holds.
+
+        Durable access-policy compatibility is preserved (policy unchanged), so
+        the thread is not refused; the runtime-fingerprint cache key differs, so
+        a fresh runtime is built rather than reusing the stale one.
+        """
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model", sandbox_type="daytona")
+        binding = _bind(bound_config, tmp_path)
+        first_runtime = module.ServerRuntime(object(), object(), object())
+        second_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(side_effect=[first_runtime, second_runtime])
+        sandbox_backend = object()
+        monkeypatch.setattr(module, "_sandbox_backend", sandbox_backend)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=bound_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is first_runtime
+
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(
+                    model="changed:model", sandbox_type="daytona"
+                ),
+            ),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            rebuilt = await module._workspace_runtime(
+                _bind(
+                    ServerConfig(model="changed:model", sandbox_type="daytona"),
+                    tmp_path,
+                )
+            )
+
+        assert rebuilt is second_runtime
+        assert make.await_count == 2
+        assert all(
+            call.kwargs["sandbox_backend_override"] is sandbox_backend
+            for call in make.await_args_list
+        )
+
+    async def test_rejects_access_policy_drift(self, tmp_path) -> None:
+        """Real policy drift (approval/tool/sandbox/trust) still refuses."""
         from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
-        bound_config = ServerConfig(model="trusted:model")
+        bound_config = ServerConfig(auto_approve=False)
         binding = _bind(bound_config, tmp_path)
         with (
             patch.object(
                 ServerConfig,
                 "from_env",
-                return_value=ServerConfig(model="changed:model"),
+                return_value=ServerConfig(auto_approve=True),
             ),
             patch.object(module, "_make_graphs", new=AsyncMock()) as make,
             pytest.raises(WorkspaceConflictError, match="configuration changed"),
@@ -1083,6 +1134,40 @@ class TestWorkspaceRuntime:
             await module._workspace_runtime(binding)
 
         make.assert_not_awaited()
+
+    async def test_runtime_drift_refusal_carries_diagnostics_and_logs(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The runtime drift refusal names allowlisted changed fields."""
+        import logging
+
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model", auto_approve=False)
+        binding = _bind(bound_config, tmp_path)
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(model="changed:model", auto_approve=True),
+            ),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            caplog.at_level(logging.WARNING),
+            pytest.raises(WorkspaceConflictError) as exc_info,
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
+        diagnostics = exc_info.value.diagnostics
+        assert diagnostics is not None
+        assert diagnostics.category == "config_drift"
+        changed = {change.name for change in diagnostics.changes}
+        # Model identity is fingerprint-only (never snapshotted); the
+        # allowlisted approval change is reported with its values.
+        assert "auto_approve" in changed
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("auto_approve" in message for message in messages)
 
     async def test_unusable_launch_cwd_emits_startup_marker(
         self, tmp_path, capsys: pytest.CaptureFixture[str]

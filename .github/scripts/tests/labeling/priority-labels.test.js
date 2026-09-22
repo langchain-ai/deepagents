@@ -389,7 +389,7 @@ function runTopicStep(globals) {
   return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
     console: { log() {} },
     require: spec => spec.endsWith('topic-classifier.js')
-      ? { classifyTopicLabels: globals.classifyTopicLabels, loadTopicLabels: () => [] }
+      ? { classifyTopicLabels: globals.classifyTopicLabels, loadTopicLabels: () => ['topic:mcp', 'topic:memory', 'topic:subagents', 'topic:async-subagents'] }
       : sandboxRequire(spec),
     ...globals,
   });
@@ -406,8 +406,10 @@ function topicApi({ title = '', body = '', labels = [], topics = [] } = {}) {
                  payload: { issue: { number: 42, title, body, labels: labels.map(name => ({ name })) } } },
       github: { paginate: method => method(), rest: { issues: {
         listLabelsForRepo: async () => [
-          { name: 'topic:mcp' }, { name: 'topic:subagents' },
-          { name: 'topic:async-subagents' },
+          { name: 'topic:mcp', description: 'Model Context Protocol support and behavior.' },
+          { name: 'topic:memory', description: 'Agent memory and persistent context.' },
+          { name: 'topic:subagents', description: 'Subagent creation, routing, and orchestration.' },
+          { name: 'topic:async-subagents', description: 'Async subagent execution and orchestration.' },
         ],
         getLabel: async () => ({}),
         createLabel: async () => ({}),
@@ -435,6 +437,20 @@ test('model topics from the issue text are applied', async () => {
   assert.deepEqual(a.added, ['topic:mcp']);
 });
 
+test('issue 6485 applies both explicitly named topics', async () => {
+  const a = topicApi({
+    title: 'testing issue labeling',
+    body: 'opening an issue related to subagents memory :) hoping the right labels are applied\nthis is for deepagents',
+    topics: ['topic:subagents', 'topic:memory'],
+  });
+  a.globals.classifyTopicLabels = async (text) => {
+    assert.ok(text.includes('subagents memory'));
+    return new Set(['topic:subagents', 'topic:memory']);
+  };
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added.sort(), ['topic:memory', 'topic:subagents']);
+});
+
 test('an empty model classification adds no topic labels', async () => {
   const a = topicApi({
     title: 'SDK call fails',
@@ -454,4 +470,44 @@ test('model classifications are not guessed from common words', async () => {
   const a = topicApi({ title: 'the model is slow', body: 'streams of output look fine' });
   await runTopicStep(a.globals);
   assert.deepEqual(a.added, [], 'only the model classification should apply topics');
+});
+
+test('topic classification uses only cached choices with repository descriptions', async () => {
+  const a = topicApi();
+  const warnings = [];
+  a.globals.core.warning = message => warnings.push(message);
+  a.globals.github.rest.issues.listLabelsForRepo = async () => [
+    { name: 'topic:mcp', description: 'Model Context Protocol support and behavior.' },
+    { name: 'topic:subagents', description: ' ' },
+    { name: 'topic:async-subagents', description: null },
+    { name: 'topic:unlisted', description: 'Not in the cached taxonomy' },
+    { name: 'priority:urgent', description: 'Not a topic' },
+  ];
+  a.globals.classifyTopicLabels = async (_text, labels, options) => {
+    assert.deepEqual([...labels], ['topic:mcp']);
+    assert.deepEqual({ ...options.descriptions }, {
+      'topic:mcp': 'Model Context Protocol support and behavior.',
+    });
+    return new Set(['topic:mcp']);
+  };
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added, ['topic:mcp']);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /topic:subagents, topic:async-subagents/);
+});
+
+test('missing descriptions or a failed label fetch never falls back to names alone', async () => {
+  for (const fail of [false, true]) {
+    const a = topicApi();
+    const warnings = [];
+    a.globals.core.warning = message => warnings.push(message);
+    a.globals.github.rest.issues.listLabelsForRepo = async () => {
+      if (fail) throw new Error('GitHub unavailable');
+      return [];
+    };
+    a.globals.classifyTopicLabels = async () => assert.fail('must not classify without descriptions');
+    await runTopicStep(a.globals);
+    assert.deepEqual(a.added, []);
+    assert.equal(warnings.length, 1);
+  }
 });

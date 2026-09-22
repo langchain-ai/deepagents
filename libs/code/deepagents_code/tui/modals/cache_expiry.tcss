@@ -3,7 +3,7 @@ CacheExpiryScreen {
 }
 
 CacheExpiryScreen > Vertical {
-    width: 76;
+    width: 72;
     max-width: 90%;
     height: auto;
     background: $surface;
@@ -18,13 +18,22 @@ CacheExpiryScreen Static {
 CacheExpiryScreen .title {
     text-style: bold;
     color: $warning;
+    text-align: center;
     margin-bottom: 1;
 }
 
-CacheExpiryScreen .choices {
-    margin: 1 0;
+CacheExpiryScreen .body {
+    color: $text;
+    margin-bottom: 1;
+}
+
+CacheExpiryScreen .choices,
+CacheExpiryScreen .hint {
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
 }
 
 CacheExpiryScreen .hint {
-    color: $text-muted;
+    margin-top: 1;
 }

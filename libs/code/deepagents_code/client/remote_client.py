@@ -419,11 +419,18 @@ class RemoteAgent:
         from langgraph_sdk.errors import NotFoundError
 
         try:
-            response = await self._get_graph().client.http.get(
-                f"/dcode/threads/{thread_id}/btw/cost"
-            )
+            async with asyncio.timeout(2):
+                response = await self._get_graph().client.http.get(
+                    f"/dcode/threads/{thread_id}/btw/cost"
+                )
         except NotFoundError:
             return  # Older servers have no side-question accounting route.
+        except Exception:
+            logger.warning(
+                "Could not refresh side-question costs; retaining the last total",
+                exc_info=True,
+            )
+            return
         cost = cast("CostBreakdown | None", response["cost"])
         current = self._btw_costs.get(thread_id)
         # A read started before a concurrent /btw completed must not erase the

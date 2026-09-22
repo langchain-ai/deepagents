@@ -284,6 +284,41 @@ class TestRemoteAgentAstream:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "error", [RuntimeError("accounting unavailable"), TimeoutError()]
+)
+async def test_accounting_failure_preserves_main_stream_and_state(
+    error: Exception,
+) -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    event = {"type": "session_cost", "total": 1.0}
+    agent = _make_agent([((), "custom", event)])
+    agent._btw_costs[_TEST_THREAD_ID] = side
+    agent._graph.client.http.get.side_effect = error
+    events = [item async for item in agent.astream({}, config=_config())]
+    assert events[0][2]["total"] == pytest.approx(1.5)
+
+    from langgraph.types import StateSnapshot
+
+    snapshot = StateSnapshot(
+        values={"messages": [], "_session_cost_usd": 1.0},
+        next=(),
+        config={"configurable": {"thread_id": _TEST_THREAD_ID}},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+    agent._graph.aget_state = AsyncMock(return_value=snapshot)
+    state = await agent.aget_state(_config())
+    assert state.values["_session_cost_usd"] == pytest.approx(1.5)
+    assert agent._btw_costs[_TEST_THREAD_ID] == side
+
+
 async def test_side_cost_is_included_in_main_stream_but_not_nested_events() -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 

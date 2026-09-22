@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 from collections import deque
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 _PENDING_COSTS: dict[str, deque[tuple[_SessionCostRecorder, CostState]]] = {}
 _SETTLEMENT_LOCK = threading.Lock()
 """Serialize retries and retain failed recorders until their writes succeed."""
+
+logger = logging.getLogger(__name__)
 
 
 def _read_cost(conn: sqlite3.Connection, thread_id: str) -> CostBreakdown | None:
@@ -183,7 +186,14 @@ async def answer_with_cost(
                 asyncio.to_thread(_settle_cost, thread_id, state, recorder)
             )
             cancellation = await _join_task_deferring_cancellation(settlement)
-            total = settlement.result()
+            try:
+                total = settlement.result()
+            except Exception:
+                logger.warning(
+                    "Could not save side-question costs; settlement remains pending",
+                    exc_info=True,
+                )
+                total = None
             if cancellation is not None:
                 raise cancellation
         return text, total

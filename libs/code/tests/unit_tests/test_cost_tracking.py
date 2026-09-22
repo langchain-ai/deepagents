@@ -2473,8 +2473,9 @@ async def test_failed_side_costs_remain_retryable(
             "_read_cost",
             MagicMock(side_effect=sqlite3.OperationalError("database is locked")),
         )
-        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-            await answer()
+        text, cost = await answer()
+        assert text
+        assert cost is None
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             await asyncio.to_thread(btw_cost.load_cost, THREAD_ID)
 

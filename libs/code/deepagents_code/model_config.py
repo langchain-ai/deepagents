@@ -1642,11 +1642,13 @@ def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]
             available["ollama"] = list(
                 dict.fromkeys([*available.get("ollama", []), *discovered])
             )
-        else:
+        elif _ollama_endpoint_key(endpoint) not in _ollama_unreachable_endpoints:
+            # An absent daemon already logged "not detected"; this line would
+            # only restate it. Keep it for a daemon that answered with nothing.
             logger.debug(
                 "Ollama discovery returned no models for %s; "
                 "daemon may be down or have no pulls",
-                endpoint or OLLAMA_DEFAULT_BASE_URL,
+                _ollama_endpoint_key(endpoint),
             )
 
     # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
@@ -1775,7 +1777,7 @@ def get_model_profiles(
     result: dict[str, ModelProfileEntry] = {}
     config = ModelConfig.load()
 
-    # Collect upstream profiles from provider packages.
+    # Assume providers have upstream profiles; skip those whose profiles are missing.
     seen_specs: set[str] = set()
     provider_modules = _get_provider_profile_modules()
     registry_providers: set[str] = set()
@@ -1792,7 +1794,7 @@ def get_model_profiles(
             profiles = _load_provider_profiles(module_path)
         except ImportError:
             logger.debug(
-                "Could not import profiles from %s for provider '%s'",
+                "Model profiles not found in %s for provider '%s'",
                 module_path,
                 provider,
             )
@@ -2001,6 +2003,22 @@ def _ollama_discovery_enabled() -> bool:
     return True
 
 
+def _ollama_endpoint_key(endpoint: str | None) -> str:
+    """Normalize an Ollama endpoint into its cache and log-dedup key.
+
+    Single-sources the normalization so the negative-cache add-site, its
+    lookup, and the "no models" log suppression all agree on one key.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+
+    Returns:
+        The endpoint with any trailing `/` stripped.
+    """
+    return (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+
+
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
@@ -2019,7 +2037,7 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     Returns:
         Sorted list of model names reported by `/api/tags`.
     """
-    key = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    key = _ollama_endpoint_key(endpoint)
     cached = _ollama_installed_models_cache.get(key)
     if cached is not None:
         return list(cached)
@@ -2127,7 +2145,7 @@ def _fetch_ollama_installed_models(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama discovery: %r has no http:// or https:// scheme. "
@@ -2305,7 +2323,7 @@ def _fetch_ollama_installed_model_profiles(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama profile discovery: %r has no http:// or https:// scheme. "

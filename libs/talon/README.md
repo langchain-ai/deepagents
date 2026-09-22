@@ -40,7 +40,9 @@ text, tool-call arguments, and distinct message revisions are retained.
 - `/reset-all-history` stops active work, deletes this chat's archived sessions and
   checkpoints, and starts a fresh context. Other chats are unaffected. Cancellation
   timeouts leave history intact; deletion failures may leave a partial reset that
-  you can retry.
+  you can retry. Because the deletion cannot be undone and Talon does not ask for
+  confirmation, this command is deliberately left out of `/help` and is not
+  registered as a Discord slash command: type it in full to use it.
 
 Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
 Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
@@ -297,7 +299,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 
@@ -357,6 +359,12 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --discord
 ```
 
+Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, and `/mcp-reload` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
+
+Registration needs the **`applications.commands`** scope alongside `bot` in the bot's invite URL. A bot invited with only `bot` still receives messages, but a guild-scoped registration is rejected. Registration runs once per process, the first time the Gateway reports ready; a failure is logged and leaves the channel connected and usable. Because Discord requires a response to every slash command, an invocation that the exposure policy refuses now receives a brief private refusal, where a typed command is silently ignored — slash commands are visible to anyone who can see the bot, so the exposure policy, not their visibility, is what restricts use.
+
+`DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
+
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Tracing
@@ -381,6 +389,11 @@ originating turn finishes or is superseded. Runs without a channel cannot send u
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
 and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
+
+Commands work as ordinary message text on every channel, and are case-insensitive
+with an optional `@bot` suffix. On Discord they are additionally registered as
+native slash commands, so typing `/` offers them with autocomplete and the reply
+arrives as that command's own response; see [Discord](#discord) below.
 
 ## MCP Tools
 
@@ -514,10 +527,10 @@ instructions in `description` or select
 edits; `list_subagents` shows launch-time additions.
 
 `task` launches local subagents and `start_async_task` launches remote subagents.
-Both return immediately. The user can continue chatting while the main agent uses
-`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
-finishes, its result is passed to the main agent for processing on the next idle
-turn, then the main agent replies to the channel.
+In a chat conversation both return immediately. The user can continue chatting while
+the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
+it. When work finishes, its result is passed to the main agent for processing on the
+next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
 `/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
@@ -527,6 +540,23 @@ complete the action. Remote runs cancel when their stream disconnects.
 
 Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
 and limits each run to one hour. Completed results are capped at 64,000 characters.
+
+### Scheduled runs
+
+A scheduled run is already unattended, so it does not delegate in the background.
+Both tools run the subagent to completion and return its result, and the run acts on
+that result in the turn that asked for it; there is no follow-up turn and no separate
+delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+which owns no background work to inspect. Subagents launched in one assistant message
+still run concurrently, and a scheduled run no longer competes with chat for the four
+worker slots.
+
+One delegation may take ten minutes, at most four run at once, and further ones queue
+rather than being refused. Set `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` to change
+the per-delegation bound; because due jobs run one at a time, it caps how long one
+stuck subagent holds up every other job. A delegation that overruns or fails reports
+that to the run, which still writes and delivers its own reply. A whole run is bounded
+at 30 minutes, after which its thread is repaired and the job is recorded as failed.
 
 ## Cron Schedules
 
@@ -580,6 +610,7 @@ Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.
 - `cron.delivery`
 - `cron.delivery_suppressed`
 - `cron.delivery_failure`
+- `cron.run_timeout`
 
 These logs complement the persisted `last_status` and `last_error` fields.
 

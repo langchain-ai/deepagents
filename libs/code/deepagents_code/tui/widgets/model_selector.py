@@ -78,6 +78,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-opus-5": "Claude Opus 5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
+    "baseten:deepseek-ai/DeepSeek-V4.1-Flash": "DeepSeek V4.1 Flash",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
     "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
@@ -87,6 +88,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
         "DeepSeek V4 Flash 0731"
     ),
+    "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": "DeepSeek V4.1 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p3": "GLM 5.3",
@@ -97,6 +99,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
     "meta:muse-spark-1.2": "Muse Spark 1.2",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
+    "ollama:deepseek-v4.1-flash:cloud": "DeepSeek V4.1 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
     "ollama:glm-5.3:cloud": "GLM 5.3",
     "ollama:glm-5.3-flash:cloud": "GLM 5.3 Flash",
@@ -112,6 +115,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
     "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
+    "openrouter:deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "openrouter:google/gemini-3.7-flash": "Gemini 3.7 Flash",

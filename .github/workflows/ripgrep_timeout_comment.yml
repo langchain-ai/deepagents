@@ -2,7 +2,7 @@
 # reviewer can see that the affected legs ran without ripgrep. Two steps produce
 # the marker artifact: the bounded install on an ordinary PR (hit its timeout)
 # and the unbounded strict install on a release PR (failed and was bypassed
-# under `bypass-ripgrep-check`). The comment wording distinguishes the two.
+# under `ci:skip-ripgrep`). The comment wording distinguishes the two.
 #
 # Trigger — `workflow_run` of ci.yml, completed, rather than `pull_request`:
 # a `pull_request` run from a fork gets a read-only token and cannot comment.
@@ -132,12 +132,12 @@ jobs:
                 github.rest.issues.listLabelsOnIssue,
                 { owner, repo, issue_number: prNumber, per_page: 100 },
               );
-              hasBypassLabel = labels.some(label => label.name === 'bypass-ripgrep-check');
+              hasBypassLabel = labels.some(label => label.name === 'ci:skip-ripgrep');
             } catch (error) {
               core.warning(
                 `Could not read labels for PR #${prNumber} ` +
                   `(status ${error.status ?? 'unknown'}: ${error.message}); ` +
-                  'treating bypass-ripgrep-check as unconfirmed.',
+                  'treating ci:skip-ripgrep as unconfirmed.',
               );
             }
 
@@ -192,8 +192,8 @@ jobs:
                   'Those runners continued without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check.',
                   '',
                   hasBypassLabel
-                    ? 'If the `bypass-ripgrep-check` label is still on this PR when it merges, the publish run is dispatched with `dangerous-skip-ripgrep-check=true`. A repeat apt failure there is then tolerated, and the rg-gated artifact tests skip instead of failing the release.'
-                    : 'The `bypass-ripgrep-check` label could not be read on this PR. If it is absent at merge time, the publish run enforces the strict install and an apt failure there fails the release.',
+                    ? 'If the `ci:skip-ripgrep` label is still on this PR when it merges, the publish run is dispatched with `dangerous-skip-ripgrep-check=true`. A repeat apt failure there is then tolerated, and the rg-gated artifact tests skip instead of failing the release.'
+                    : 'The `ci:skip-ripgrep` label could not be read on this PR. If it is absent at merge time, the publish run enforces the strict install and an apt failure there fails the release.',
                   '',
                   `Merge only if the apt failure is transient. Remove the label and re-run CI to restore ripgrep coverage. [View the CI run](${runUrl})`,
                 ].join('\n')

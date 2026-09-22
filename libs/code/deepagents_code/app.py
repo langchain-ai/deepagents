@@ -16,6 +16,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -107,7 +108,7 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_terminal_mapping as _resolve_terminal_mapping,
     resolve_theme_name as _resolve_theme_name,
 )
-from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.formatting import format_duration, format_message_timestamp
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
@@ -512,6 +513,125 @@ def _coerce_session_cost_usd(value: object) -> float:
         )
         return 0.0
     return cost_usd
+
+
+def _format_cost_breakdown_table(
+    total_usd: float, breakdown: Mapping[str, Any] | None
+) -> str:
+    """Build the copyable entire-thread estimated token/cost table.
+
+    Returns:
+        A plain-text table, or an empty string when historical detail is missing.
+    """
+    if (
+        not isinstance(breakdown, Mapping)
+        or breakdown.get("version") != 1
+        or breakdown.get("historical_complete") is not True
+    ):
+        return ""
+
+    def _number(key: str) -> float | None:
+        value = breakdown.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+
+    def _tokens(key: str, complete_key: str | None = None) -> str:
+        value = breakdown.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return "unavailable"
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{value} (partial)"
+        return str(value)
+
+    def _cost(key: str, complete_key: str | None = None) -> str:
+        value = _number(key)
+        if value is None:
+            return "unavailable"
+        text = repr(value)
+        if complete_key and breakdown.get(complete_key) is not True:
+            return f"{text} (partial)"
+        return text
+
+    def _percent(key: str) -> str:
+        value = _number(key)
+        if value is None or total_usd <= 0:
+            return "n/a"
+        return f"{value / total_usd * 100:.6g}%"
+
+    rows = [
+        (
+            "Input",
+            _percent("input_cost_usd"),
+            _tokens("input_tokens", "input_tokens_complete"),
+            _cost("input_cost_usd", "input_cost_complete"),
+        ),
+        (
+            "  cache creation",
+            _percent("cache_creation_cost_usd"),
+            _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
+            _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
+        ),
+        (
+            "  cache read",
+            _percent("cache_read_cost_usd"),
+            _tokens("cache_read_tokens", "cache_read_tokens_complete"),
+            _cost("cache_read_cost_usd", "cache_read_cost_complete"),
+        ),
+        (
+            "Output",
+            _percent("output_cost_usd"),
+            _tokens("output_tokens", "output_tokens_complete"),
+            _cost("output_cost_usd", "output_cost_complete"),
+        ),
+        (
+            "  reasoning",
+            _percent("reasoning_cost_usd"),
+            _tokens("reasoning_tokens", "reasoning_tokens_complete"),
+            _cost("reasoning_cost_usd", "reasoning_cost_complete"),
+        ),
+        (
+            "Total",
+            "100%" if total_usd > 0 else "n/a",
+            str(int(_number("input_tokens") or 0) + int(_number("output_tokens") or 0)),
+            repr(total_usd),
+        ),
+    ]
+    widths = [
+        max(
+            len(row[index])
+            for row in [("Category", "% cost", "Tokens", "Cost (USD)"), *rows]
+        )
+        for index in range(4)
+    ]
+    rendered = [
+        "  ".join(
+            value.ljust(widths[index])
+            for index, value in enumerate(
+                ("Category", "% cost", "Tokens", "Cost (USD)")
+            )
+        ).rstrip()
+    ]
+    rendered.append("  ".join("-" * width for width in widths))
+    rendered.extend(
+        "  ".join(
+            value.ljust(widths[index]) for index, value in enumerate(row)
+        ).rstrip()
+        for row in rows
+    )
+    notes: list[str] = ["Parent rows are inclusive; indented rows are subsets."]
+    attributed = (_number("input_cost_usd") or 0.0) + (
+        _number("output_cost_usd") or 0.0
+    )
+    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
+        notes.append(
+            f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
+            "directionless/unattributed."
+        )
+    if breakdown.get("priced_request_count") != breakdown.get("request_count"):
+        notes.append("Some requests were unpriceable; costs are partial.")
+    return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)
 
 
 _PRICING_UNAVAILABLE_MESSAGE = (
@@ -1090,7 +1210,6 @@ if TYPE_CHECKING:
         Callable,
         Coroutine,
         Iterator,
-        Mapping,
         Sequence,
     )
 
@@ -1112,7 +1231,12 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
+    from deepagents_code.cold_cache import (
+        CacheActivity,
+        ColdCacheReason,
+        ColdCacheWarning,
+        PromptCachePolicy,
+    )
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
@@ -1172,6 +1296,9 @@ Fast local-server startup should not flash a spinner. If startup takes longer,
 or the user queues input while waiting, the status bar reveals the connection
 state as the single app-wide progress indicator.
 """
+
+_HOOK_STATUS_REVEAL_DELAY_SECONDS = 2.0
+"""Seconds to hide hook progress so fast hooks do not flash in the footer."""
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
@@ -2039,6 +2166,8 @@ Shared by every such command -- `/effort`, `/summarization-model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
 
+_UNKNOWN_EFFORT_LABEL = "effort?"
+
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
     """Parse the argument tail of `/mcp reconnect [force]`.
@@ -2214,6 +2343,11 @@ class _ThreadHistoryPayload:
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
+
+    session_cost_breakdown: Mapping[str, object] | None = field(
+        default=None, kw_only=True
+    )
+    """Persisted thread-wide cost detail, or `None` when absent."""
 
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
@@ -2600,8 +2734,10 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    Otherwise a generic "key does not match endpoint" message is shown.
+
+    A workspace refusal that carries server diagnostics gets the allowlisted
+    change summary appended; all other errors return `text` unchanged.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
@@ -2613,9 +2749,23 @@ def _build_agent_error_body(
         A `Content` with a clickable docs link for `PermissionDeniedError`;
             otherwise the plain `text`.
     """
-    from deepagents_code.client.remote_client import agent_error_type
+    from deepagents_code.client.remote_client import (
+        agent_error_type,
+        workspace_conflict_diagnostics,
+    )
 
     if agent_error_type(exc) != "PermissionDeniedError":
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None:
+            from deepagents_code.workspace_diagnostics import (
+                format_diagnostics_content,
+            )
+
+            return Content.assemble(
+                text,
+                "\n\n",
+                format_diagnostics_content(diagnostics),
+            )
         return text
     if key_env:
         detail = (
@@ -2958,6 +3108,7 @@ class _ChatScroll(VerticalScroll):
         """
         super().__init__(*args, **kwargs)
         self._follow_bottom_when_scrollable = False
+        self._bottom_follow_generation = 0
 
     def anchor(self, anchor: bool = True) -> None:
         """Anchor only once the transcript is tall enough to scroll.
@@ -2974,6 +3125,8 @@ class _ChatScroll(VerticalScroll):
                 delegate to the base class.
         """
         self._follow_bottom_when_scrollable = anchor
+        if anchor:
+            self._bottom_follow_generation += 1
         if not anchor:
             super().anchor(False)
             return
@@ -4076,6 +4229,9 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._footer_picker_requests: set[str] = set()
+        """Footer picker commands currently being submitted."""
+
         self._agent_reconciling = False
         """True while turn-end checkpoint state is being synchronized."""
 
@@ -4150,6 +4306,15 @@ class DeepAgentsApp(App):
 
         self._connection_status_reveal_timer: Timer | None = None
         """One-shot timer that reveals deferred status-bar connection progress."""
+
+        self._pending_hook_status_message = ""
+        """Latest hook progress text waiting for its footer reveal delay."""
+
+        self._hook_status_visible = False
+        """Whether hook progress currently owns the visible status-message slot."""
+
+        self._hook_status_reveal_timer: Timer | None = None
+        """One-shot timer that reveals continuously active hook progress."""
 
         self._connection_ready_event = asyncio.Event()
         """Set once the initial server connection has either succeeded or failed."""
@@ -4326,6 +4491,9 @@ class DeepAgentsApp(App):
         self._history_prefetch_active = False
         """Whether resumed history is warming toward the soft window size."""
 
+        self._history_prefetch_anchor_generation: int | None = None
+        """Bottom-follow generation owned by resumed-history prefetch."""
+
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
 
@@ -4344,6 +4512,9 @@ class DeepAgentsApp(App):
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this process."""
+
+        self._first_invocation_at: float | None = None
+        """Monotonic timestamp when the first agent invocation began."""
 
         self._thread_stats: SessionStats = SessionStats()
         """Usage observed since the active thread was loaded or created."""
@@ -4368,6 +4539,9 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._last_cache_write: CacheActivity | None = None
+        self._last_cache_use: CacheActivity | None = None
+
         self._last_model_request_at: str | None = None
         """Latest successful main-model request start restored from graph state."""
 
@@ -4390,6 +4564,9 @@ class DeepAgentsApp(App):
         the streamed absolute total during a turn. The client never adds its own
         estimates here.
         """
+
+        self._session_cost_breakdown: Mapping[str, Any] | None = None
+        """Authoritative thread-wide structured detail when checkpoints provide it."""
 
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
@@ -4448,6 +4625,18 @@ class DeepAgentsApp(App):
         the checkpoint lags behind — nested subagent steps, most visibly — and
         reset whenever a server total arrives.
         """
+
+        self._provisional_cost_by_request: dict[str, float] = {}
+        """Provisional dollars still held, keyed by request.
+
+        A retraction is clamped to its own request's balance, so it cannot
+        subtract spend a concurrent request put in the pool. A request drops
+        out once its balance reaches zero, so the map holds only what is in
+        flight; it is cleared with `_provisional_cost_usd` on every reset.
+        """
+
+        self._settled_provisional_request_ids: set[str] = set()
+        """Requests whose provisional spend was absorbed by a backend total."""
 
         self._server_pricing_ok: bool | None = None
         """Whether price data loaded in the process that does the pricing.
@@ -4794,6 +4983,8 @@ class DeepAgentsApp(App):
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
+        if self._pending_hook_status_message:
+            self._schedule_hook_status_reveal_timer()
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
         model_spec = self._effective_model_spec()
@@ -5301,9 +5492,44 @@ class DeepAgentsApp(App):
         self.notify(message, severity=severity, markup=False)
 
     def _update_hook_status(self, message: str) -> None:
-        """Update the status bar with hook-owned progress text."""
-        if self._status_bar:
-            self._status_bar.set_status_message(message, source="hooks")
+        """Delay hook-owned progress text so fast hooks do not flash."""
+        self._pending_hook_status_message = message
+        if not message:
+            self._hook_status_visible = False
+            self._cancel_hook_status_reveal_timer()
+            if self._status_bar:
+                self._status_bar.set_status_message("", source="hooks")
+            return
+        if self._hook_status_visible:
+            if self._status_bar:
+                self._status_bar.set_status_message(message, source="hooks")
+            return
+        self._schedule_hook_status_reveal_timer()
+
+    def _schedule_hook_status_reveal_timer(self) -> None:
+        """Schedule the one-shot timer that reveals active hook progress."""
+        if self._hook_status_reveal_timer is not None or not self._running:
+            return
+        self._hook_status_reveal_timer = self.set_timer(
+            _HOOK_STATUS_REVEAL_DELAY_SECONDS,
+            self._on_hook_status_reveal_timer,
+        )
+
+    def _cancel_hook_status_reveal_timer(self) -> None:
+        """Cancel and clear the deferred hook-status reveal timer."""
+        if self._hook_status_reveal_timer is None:
+            return
+        self._hook_status_reveal_timer.stop()
+        self._hook_status_reveal_timer = None
+
+    def _on_hook_status_reveal_timer(self) -> None:
+        """Reveal the latest hook progress after continuous activity."""
+        self._hook_status_reveal_timer = None
+        message = self._pending_hook_status_message
+        if not message or self._status_bar is None:
+            return
+        self._hook_status_visible = True
+        self._status_bar.set_status_message(message, source="hooks")
 
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
@@ -8788,7 +9014,9 @@ class DeepAgentsApp(App):
         # repaints.
         with suppress(NoMatches):
             cache_display = self._status_bar.query_one("#cache-display")
-            cache_display.visible = self._thread_has_completed_turn and writes > 0
+            cache_display.visible = self._last_cache_use is not None or (
+                self._thread_has_completed_turn and (reads > 0 or writes > 0)
+            )
             self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
@@ -8798,6 +9026,7 @@ class DeepAgentsApp(App):
         *,
         thread_id: str = "",
         pricing_ok: bool | None = None,
+        breakdown: Mapping[str, Any] | None = None,
     ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
@@ -8817,6 +9046,7 @@ class DeepAgentsApp(App):
                 the source reported it. `None` leaves the last known value
                 alone, so a source that cannot speak to pricing health (a
                 restored checkpoint read) does not erase what a stream said.
+            breakdown: Optional authoritative thread-wide structured detail.
         """
         if thread_id and thread_id != self._lc_thread_id:
             logger.debug(
@@ -8828,22 +9058,24 @@ class DeepAgentsApp(App):
         if pricing_ok is not None:
             self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        if breakdown is not None:
+            self._session_cost_breakdown = breakdown
         self._provisional_cost_usd = 0.0
+        self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
+        self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
         if (
             not self._session_cost_warning_shown
             and 0 < threshold < self._session_cost_usd
         ):
+            from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
             self._session_cost_warning_shown = True
-            self.notify(
-                f"Estimated session cost is {format_cost(self._session_cost_usd)}, "
-                f"above the configured {format_cost(threshold)} threshold. Consider "
-                "/offload to reduce context usage or /clear to start fresh.",
-                title="Session cost warning",
-                severity="warning",
-                timeout=12,
-                markup=False,
+            self.push_screen(
+                SessionCostWarningScreen(
+                    cost_usd=self._session_cost_usd, threshold=threshold
+                )
             )
 
     @property
@@ -8861,25 +9093,37 @@ class DeepAgentsApp(App):
         cost_usd: float = 0.0,
         *,
         has_restored_model_usage: bool = False,
+        breakdown: Mapping[str, object] | None = None,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
         Args:
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
+            breakdown: Structured cost detail restored from the checkpoint.
         """
         self._thread_stats = SessionStats()
-        self._refresh_cache_display()
+        self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._last_cache_write = None
+        self._last_cache_use = None
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
         self._last_cache_endpoint = None
-        self._session_cost_warning_shown = False
+        if self._status_bar is not None:
+            self._status_bar.set_cache_timing(None)
+        self._refresh_cache_display()
+        self._session_cost_warning_shown = (
+            0
+            < self._session_cost_warning_threshold_usd
+            < self._thread_restored_cost_usd
+        )
+        self._settled_provisional_request_ids.clear()
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _mark_thread_turn_completed(self) -> None:
@@ -8887,7 +9131,25 @@ class DeepAgentsApp(App):
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
-    def _add_provisional_cost(self, cost_usd: float, /) -> None:
+    def _apply_provisional_delta(self, delta_usd: float) -> None:
+        """Add a delta the caller has already reconciled, then refresh.
+
+        Floors the running total at zero as a backstop against float drift and
+        the unkeyed path. Callers clamp their own retractions against what the
+        request in hand still holds, so go through `_add_provisional_cost`
+        rather than calling this directly with a keyed delta.
+        """
+        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
+        self._refresh_session_cost_display()
+
+    def _add_provisional_cost(
+        self,
+        cost_usd: float,
+        /,
+        *,
+        request_id: str | None = None,
+        is_correction: bool = False,
+    ) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
 
         The graph checkpoints this same request and streams the total that
@@ -8898,14 +9160,58 @@ class DeepAgentsApp(App):
         Args:
             cost_usd: Estimated cost this message contributed, in US dollars.
                 Negative when a later chunk re-prices its request downward.
+            request_id: Key naming the request the delta belongs to, when
+                known. Retractions are clamped to what this request still
+                holds, so a stale correction cannot subtract another request's
+                spend.
+            is_correction: Whether the delta revises this request's prior spend.
+                A correction is stale when a backend total already absorbed that
+                spend; a first positive price is still applied.
         """
         delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
         if delta_usd is None or delta_usd == 0:
             return
-        # Clamp the running total, not the increment: dropping a negative delta
-        # would strand the display at the estimate the correction supersedes.
-        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
-        self._refresh_session_cost_display()
+        if request_id is None:
+            # A message that carries no usable ID cannot be reconciled -- see
+            # `_provisional_bucket_key`. The running total is all it can adjust.
+            self._apply_provisional_delta(delta_usd)
+            return
+        held = self._provisional_cost_by_request.get(request_id, 0.0)
+        settled = request_id in self._settled_provisional_request_ids
+        if held <= 0 and (delta_usd < 0 or (is_correction and settled)):
+            # The pool holds nothing this delta can adjust. A retraction would
+            # claw back other requests' spend, while a positive correction is
+            # stale only when a backend total already absorbed this request.
+            logger.debug(
+                "Dropping a stale provisional delta for a request the pool no "
+                "longer holds. request_id=%r delta_usd=%r is_correction=%r",
+                request_id,
+                delta_usd,
+                is_correction,
+            )
+            return
+        # Clamp a retraction to what this request still holds. A correction
+        # larger than its own contribution -- a partial reset, or an estimate
+        # that fell further than the pool it is drawn from -- would otherwise
+        # subtract spend that other in-flight children put there.
+        applied_usd = max(delta_usd, -held) if delta_usd < 0 else delta_usd
+        if applied_usd != delta_usd:
+            logger.debug(
+                "Clamping a provisional retraction to its own request's "
+                "holding. request_id=%r delta_usd=%r applied_usd=%r",
+                request_id,
+                delta_usd,
+                applied_usd,
+            )
+        remaining = held + applied_usd
+        if remaining > 0:
+            self._provisional_cost_by_request[request_id] = remaining
+        else:
+            # An absent row and a zero row mean the same thing to the guard
+            # above, so keep only the one representation and let the map track
+            # what is actually in flight.
+            self._provisional_cost_by_request.pop(request_id, None)
+        self._apply_provisional_delta(applied_usd)
 
     def _pricing_is_broken(self) -> bool:
         """Report whether price data failed to load where pricing happens.
@@ -9129,8 +9435,10 @@ class DeepAgentsApp(App):
         """
         if "_session_cost_usd" not in state_values:
             return
+        breakdown = state_values.get("_session_cost_breakdown")
         self._set_session_cost(
-            _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
+            _coerce_session_cost_usd(state_values.get("_session_cost_usd")),
+            breakdown=breakdown if isinstance(breakdown, Mapping) else None,
         )
 
     def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
@@ -9151,6 +9459,11 @@ class DeepAgentsApp(App):
         channels hold the same value on every write since; the fallback exists
         for those older checkpoints, not for a case where they diverge.
         """
+        from deepagents_code.cold_cache import parse_cache_activity
+
+        for key in ("_last_cache_write", "_last_cache_use"):
+            if key in state_values:
+                setattr(self, key, parse_cache_activity(state_values[key]))
         if "_last_model_request_at" not in state_values:
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
@@ -9225,6 +9538,73 @@ class DeepAgentsApp(App):
                 "request records a fresh one",
                 type(raw_endpoint).__name__,
             )
+
+    def _cache_timing_policy(self, activity: CacheActivity) -> PromptCachePolicy | None:
+        """Resolve retention for the recorded endpoint; offload config reads.
+
+        Returns:
+            The endpoint's policy, or `None` if it cannot be established.
+        """
+        from deepagents_code.cold_cache import (
+            endpoint_cache_identity,
+            load_trusted_cache_endpoints,
+            resolve_prompt_cache_policy,
+        )
+        from deepagents_code.model_config import ModelConfig
+
+        endpoint = activity["endpoint"]
+        base_url = None
+        if endpoint != "default":
+            provider, _, model_name = activity["model_spec"].partition(":")
+            kwargs = ModelConfig.load().get_effective_kwargs(
+                provider.strip().lower(),
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            raw_base_url = kwargs.get("base_url")
+            base_url = raw_base_url if isinstance(raw_base_url, str) else None
+            # The checkpoint identity is opaque. Resolve the real URL, and
+            # don't apply a new endpoint's policy to an earlier request.
+            if endpoint_cache_identity(base_url) != endpoint:
+                return None
+        return resolve_prompt_cache_policy(
+            activity["model_spec"],
+            activity["params"],
+            base_url=base_url,
+            trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
+        )
+
+    async def _refresh_cache_timing(self) -> None:
+        """Render checkpointed main-model cache activity with its own policy."""
+        activity = self._last_cache_use
+        if self._status_bar is None or activity is None:
+            return
+        from deepagents_code.cold_cache import parse_cache_timestamp
+
+        thread_id = self._lc_thread_id
+        written = self._last_cache_write
+        try:
+            policy = await asyncio.to_thread(self._cache_timing_policy, activity)
+        except Exception:
+            logger.debug("Could not resolve footer cache retention", exc_info=True)
+            policy = None
+        if self._lc_thread_id != thread_id or self._last_cache_use != activity:
+            return
+        # A write from another model/endpoint/cache configuration cannot label
+        # the current cache's retention window.
+        same_cache = written is not None and all(
+            written[key] == activity[key]
+            for key in ("model_spec", "endpoint", "params")
+        )
+        self._status_bar.set_cache_timing(
+            parse_cache_timestamp(written["requested_at"])
+            if written is not None and same_cache
+            else None,
+            ttl_seconds=policy.window_seconds if policy is not None else None,
+            retention_at=parse_cache_timestamp(activity["requested_at"]),
+            retention_confidence=policy.confidence if policy is not None else "expired",
+        )
+        self._refresh_cache_display()
 
     async def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -9319,7 +9699,7 @@ class DeepAgentsApp(App):
             self._hydration_scheduled = False
 
         if hydrated_count == 0 and direction == "above":
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
         if hydrated_count or self._hydration_requests:
             self.call_after_refresh(lambda: self._continue_hydration(direction))
 
@@ -9339,7 +9719,7 @@ class DeepAgentsApp(App):
             ):
                 self._request_hydration("above")
                 return
-            self._history_prefetch_active = False
+            self._stop_history_prefetch()
             return
 
         if direction == "above":
@@ -9353,8 +9733,26 @@ class DeepAgentsApp(App):
             self._message_store.has_messages_above
             and self._message_store.visible_count < self._message_store.WINDOW_SIZE
         )
-        if self._history_prefetch_active:
-            self._request_hydration("above")
+        if not self._history_prefetch_active:
+            return
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            chat = self.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            self._history_prefetch_anchor_generation = chat._bottom_follow_generation
+        self._request_hydration("above")
+
+    def _stop_history_prefetch(self) -> None:
+        """End resumed-history warming and its temporary bottom anchor."""
+        if not self._history_prefetch_active:
+            return
+        self._history_prefetch_active = False
+        generation = self._history_prefetch_anchor_generation
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            chat = self.query_one("#chat", _ChatScroll)
+            if generation == chat._bottom_follow_generation:
+                chat.anchor(False)
 
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
@@ -9897,7 +10295,9 @@ class DeepAgentsApp(App):
         if self._loading_widget is not None:
             self._loading_widget.resume()
 
-    async def _set_spinner(self, status: SpinnerStatus) -> None:
+    async def _set_spinner(
+        self, status: SpinnerStatus, *, started_at: float | None = None
+    ) -> None:
         """Show, update, or hide the loading spinner.
 
         Also drives the terminal's `OSC 9;4` progress indicator, when
@@ -9906,6 +10306,9 @@ class DeepAgentsApp(App):
 
         Args:
             status: The spinner status to display, or `None` to hide.
+            started_at: Turn start time (`time.time()` epoch seconds) the
+                elapsed counter counts from when a fresh spinner is mounted.
+                Ignored when a spinner is already showing.
         """
         from deepagents_code.terminal_escape import (
             TerminalProgressState,
@@ -9943,7 +10346,7 @@ class DeepAgentsApp(App):
             # Mount once per turn. `_mount_before_queued` keeps new messages
             # *above* the spinner, so it stays pinned at the bottom and never
             # needs repositioning (which flickered) as tools stream in.
-            self._loading_widget = LoadingWidget(status)
+            self._loading_widget = LoadingWidget(status, started_at=started_at)
             await self._mount_before_queued(messages, self._loading_widget)
         else:
             # A fresh status update means the agent is active again, so
@@ -12694,11 +13097,16 @@ class DeepAgentsApp(App):
 
         refresh_started = False
         try:
+            from deepagents_code.config import restore_user_langsmith_env
+
+            shell_env = os.environ.copy()
+            restore_user_langsmith_env(shell_env, start_path=Path(self._cwd))
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
+                env=shell_env,
                 start_new_session=(sys.platform != "win32"),
             )
             self._shell_process = proc
@@ -14090,6 +14498,7 @@ class DeepAgentsApp(App):
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
         )
+        session_cost_breakdown = state_values.get("_session_cost_breakdown")
         raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
         rubric_model = (
             None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
@@ -14130,6 +14539,8 @@ class DeepAgentsApp(App):
                     ),
                     "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
                     "_last_cache_params": state_values.get("_last_cache_params"),
+                    "_last_cache_write": state_values.get("_last_cache_write"),
+                    "_last_cache_use": state_values.get("_last_cache_use"),
                     "_model_spec": model_spec,
                     "_model_params": model_params,
                 }
@@ -14137,6 +14548,11 @@ class DeepAgentsApp(App):
                 else None
             ),
             session_cost_usd=session_cost_usd,
+            session_cost_breakdown=(
+                session_cost_breakdown
+                if isinstance(session_cost_breakdown, Mapping)
+                else None
+            ),
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -16448,6 +16864,7 @@ class DeepAgentsApp(App):
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
+                "  @@query         Search recent conversations by title or ID\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
                 "  !!command       Run shell commands without adding "
@@ -17991,6 +18408,14 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            # Show the spinner before the awaited turn setup (shell flush,
+            # goal-state checkpoint reads/writes, stream-config git reads,
+            # UserPromptSubmit hooks) so feedback is immediate. The stream
+            # loop's own `_set_spinner("Thinking")` call is idempotent, and
+            # `_cleanup_agent_task` hides it on every exit path. Timestamped
+            # here so the elapsed counter includes the whole setup window.
+            turn_started_at = time.time()
+            await self._set_spinner("Thinking", started_at=turn_started_at)
             if not self._plugin_auto_update_started:
                 self._plugin_auto_update_started = True
                 self._start_plugin_auto_update()
@@ -18081,8 +18506,8 @@ class DeepAgentsApp(App):
         cancel and no `finally` to run, so this releases the state instead and
         drains anything queued behind the abandoned turn.
 
-        Deliberately not a full `_cleanup_agent_task`: no turn ran, so there is
-        no spinner, stats, tool group, or goal state to reconcile.
+        Deliberately not a full `_cleanup_agent_task`: no turn ran, so there are
+        no stats, tool group, or goal state to reconcile.
 
         Runs from a `finally`, so every step is best-effort — raising here would
         replace the exception that abandoned the turn with a teardown error.
@@ -18090,6 +18515,8 @@ class DeepAgentsApp(App):
         self._set_agent_running(False)
         self._active_user_message = None
         self._active_turn_visible_output_started = False
+        with suppress(Exception):
+            await self._set_spinner(None)
         if self._chat_input:
             # Widget calls can fail against a torn-down DOM; the running flag is
             # the part that wedges the session, and it is already handed back.
@@ -18208,7 +18635,13 @@ class DeepAgentsApp(App):
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
                 or default_effort_for_model(spec, cli_override=self._profile_override)
-                or ""
+                or (
+                    _UNKNOWN_EFFORT_LABEL
+                    if supported_efforts_for_model(
+                        spec, cli_override=self._profile_override
+                    )
+                    else ""
+                )
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
@@ -18469,6 +18902,8 @@ class DeepAgentsApp(App):
         # this `False` and be mistaken for a worker that never ran. See
         # `_agent_turn_started`.
         self._agent_turn_started = True
+        if self._first_invocation_at is None:
+            self._first_invocation_at = time.monotonic()
 
         from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -18787,6 +19222,7 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+                await self._refresh_cache_timing()
             elif turn_stats.request_count > 0:
                 # An interrupted turn never reads the checkpoint back (its
                 # writes may have been dropped), but the model *was* reached,
@@ -19693,6 +20129,7 @@ class DeepAgentsApp(App):
             self._reset_thread_usage(
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
+                breakdown=payload.session_cost_breakdown,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the
@@ -19700,6 +20137,7 @@ class DeepAgentsApp(App):
                 # discard warning here as it does on the live-sync path. Runs
                 # after `_reset_thread_usage`, which clears these fields.
                 self._sync_cache_state_from_state(payload.cache_state)
+                await self._refresh_cache_timing()
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
@@ -20191,9 +20629,8 @@ class DeepAgentsApp(App):
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
-                # Re-derive groups for any tools mounted outside this path
-                # (resumed history), which carry no live group.
-                await self._regroup_completed_tools()
+                if not isinstance(widget, UserMessage):
+                    await self._regroup_completed_tools()
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached
@@ -20697,6 +21134,9 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         self._hydration_requests.clear()
         self._history_prefetch_active = False
+        self._history_prefetch_anchor_generation = None
+        with suppress(NoMatches):
+            self.query_one("#chat", _ChatScroll).anchor(False)
         if self._transcript_prune_timer is not None:
             self._transcript_prune_timer.stop()
             self._transcript_prune_timer = None
@@ -21182,7 +21622,8 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If a focused input has a non-empty selection, copy it (a failed
+        1. In the thread selector, copy the highlighted thread ID; otherwise,
+            copy a focused input's non-empty selection (a failed selection
             copy falls through to the branches below)
         2. If shell command is running, kill it
         3. If approval menu is active, reject it
@@ -21201,15 +21642,21 @@ class DeepAgentsApp(App):
         further press exits). The interrupt branches (2-5) stay unconditional so
         a repeated press still cancels in-flight work rather than quitting.
         """
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
         now = _monotonic()
         window = _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
         self._ctrl_c_times = [t for t in self._ctrl_c_times if now - t <= window]
         self._ctrl_c_times.append(now)
         rapid = len(self._ctrl_c_times) >= _RAPID_QUIT_CTRL_C_PRESSES
 
-        # If a focused input widget has selected text, copy it instead of
-        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
-        if not rapid and self._copy_focused_selection():
+        # Copy the highlighted thread ID before considering the filter's text.
+        # Share the chat input's rapid-press escape hatch and armed quit path.
+        if isinstance(self.screen, ThreadSelectorScreen):
+            if not rapid and not self._quit_pending:
+                self.screen.action_copy_thread_id()
+                return
+        elif not rapid and self._copy_focused_selection():
             self._quit_pending = False
             return
 
@@ -21630,6 +22077,7 @@ class DeepAgentsApp(App):
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
         self._cancel_connection_status_reveal_timer()
+        self._cancel_hook_status_reveal_timer()
         self._discard_queue()
 
         if self._shell_running and self._shell_worker:
@@ -23193,8 +23641,13 @@ class DeepAgentsApp(App):
         if chat_input is None:
             return
 
+        thread_query = chat_input.active_thread_query()
+        if thread_query is not None:
+            self._open_thread_reference_selector(thread_query)
+            return
+
         tier = chat_input.open_prompt_search()
-        if tier == "inline":
+        if tier in {"inline", "file_picker"}:
             return
         if tier == "noop":
             # The composer is mounted but its text area or search panel is not.
@@ -23412,6 +23865,26 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def _submit_footer_picker(self, command: str) -> None:
+        """Submit a footer picker unless the same request is open or queued."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        screen_type = (
+            ModelSelectorScreen if command == "/model" else EffortSelectorScreen
+        )
+        if (
+            command in self._footer_picker_requests
+            or isinstance(self.screen, screen_type)
+            or any(message.text == command for message in self._pending_messages)
+        ):
+            return
+        self._footer_picker_requests.add(command)
+        try:
+            await self._submit_input(command, "command")
+        finally:
+            self._footer_picker_requests.discard(command)
+
     async def action_open_model_selector(self) -> None:
         """Open the model selector via `/model`.
 
@@ -23421,7 +23894,7 @@ class DeepAgentsApp(App):
         tip is dismissed. The bare form is `IMMEDIATE_UI`, so it still bypasses
         the queue and opens while the agent is busy.
         """
-        await self._submit_input("/model", "command")
+        await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
         """Open the reasoning effort picker via `/effort`.
@@ -23429,7 +23902,7 @@ class DeepAgentsApp(App):
         `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
         place behind any pending input instead of jumping an in-flight turn.
         """
-        await self._submit_input("/effort", "command")
+        await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(
         self,
@@ -24905,6 +25378,9 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
+                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
+                    self._session_cost_usd, self._session_cost_breakdown
+                ),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -25001,6 +25477,12 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _session_length() -> str:
+            started_at = self._first_invocation_at
+            if started_at is None:
+                return "not started"
+            return format_duration(int(max(0.0, time.monotonic() - started_at)))
+
         def _model_field() -> SnapshotField:
             # Built directly (not via `_safe`) so the copyable metadata tracks
             # whether a model is actually configured: the "(not configured)"
@@ -25081,6 +25563,7 @@ class DeepAgentsApp(App):
             _model_field(),
             _thread_field(),
             _safe("Messages", _messages),
+            _safe("Session length", _session_length),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(
@@ -28328,13 +28811,14 @@ class DeepAgentsApp(App):
             await self._resume_thread(thread_id)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Same-agent resume failed for thread %s", thread_id)
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not resume thread {thread_id}. Use /threads to try again."
-                )
+            body = _build_agent_error_body(
+                f"Could not resume thread {thread_id}: {exc}\n"
+                "Use /threads to try again.",
+                exc,
             )
+            await self._mount_message(ErrorMessage(body))
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -28587,6 +29071,39 @@ class DeepAgentsApp(App):
                 )
             )
 
+    def _open_thread_reference_selector(self, initial_query: str) -> None:
+        """Open the full thread picker and insert the selected reference."""
+        from deepagents_code.sessions import get_cached_threads, get_thread_limit
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        thread_limit = get_thread_limit()
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                chat_input = self._chat_input
+                if result is not None and (
+                    chat_input is None or not chat_input.insert_thread_reference(result)
+                ):
+                    self.notify(
+                        "Could not insert the thread reference: the composer changed",
+                        severity="warning",
+                    )
+                if chat_input is not None:
+                    chat_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        self.push_screen(
+            ThreadSelectorScreen(
+                thread_limit=thread_limit,
+                initial_threads=get_cached_threads(limit=thread_limit),
+                initial_query=initial_query,
+                filter_cwd=None,
+                reference_mode=True,
+            ),
+            handle_result,
+        )
+
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
         from functools import partial
@@ -28602,7 +29119,7 @@ class DeepAgentsApp(App):
         async def resume_and_refocus(thread_id: str) -> None:
             """Resume a selected thread, then restore focus to chat input."""
             try:
-                await self._resume_thread(thread_id)
+                await self._resume_same_agent_thread(thread_id)
             finally:
                 if self._chat_input:
                     self._chat_input.focus_input()

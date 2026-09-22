@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -174,30 +175,31 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
             yield
 
 
-def test_system_prompt_snapshot(
+def _capture_system_prompt(
     tmp_path: Path,
-    snapshots_dir: Path,
     *,
-    update_snapshots: bool,
-) -> None:
-    """Snapshot the full interactive local-mode system prompt.
-
-    The agent is created with default features (memory, skills, shell) in
-    interactive local mode. A fake model captures the system message from
-    the first model call. The local-context detection script output is
-    mocked to keep the snapshot machine-independent.
-    """
+    interactive: bool,
+    memory_auto_save: bool = True,
+    memory_content: str = "",
+) -> str:
+    """Capture the composed prompt with real middleware and a fake model."""
     model = _SnapshotChatModel(
         messages=iter([AIMessage(content="hello!") for _ in range(4)])
     )
     model.profile = {"max_input_tokens": _FIXED_CONTEXT_LIMIT}
 
     with _mock_settings(tmp_path):
+        (tmp_path / "agents" / "agent" / "AGENTS.md").write_text(
+            memory_content, encoding="utf-8"
+        )
         agent, _ = create_cli_agent(
             model=model,
             assistant_id="agent",
             checkpointer=InMemorySaver(),
             cwd=_FIXED_CWD,
+            interactive=interactive,
+            enable_ask_user=interactive,
+            memory_auto_save=memory_auto_save,
         )
 
         # Mock the local-context detection script so the local-context
@@ -221,10 +223,70 @@ def test_system_prompt_snapshot(
     # machines and CI checkouts with different repo roots.
     actual = actual.replace(str(tmp_path), "<tmp_path>")
     actual = actual.replace(str(get_built_in_skills_dir()), "<built_in_skills_dir>")
-    actual = actual.replace(str(PATHS.profile.root), "<deepagents_home>")
+    return actual.replace(str(PATHS.profile.root), "<deepagents_home>")
+
+
+@pytest.mark.parametrize(
+    ("interactive", "snapshot_name"),
+    [
+        (True, "system_prompt_interactive_local.md"),
+        (False, "system_prompt_headless_local.md"),
+    ],
+    ids=("interactive", "headless"),
+)
+def test_system_prompt_snapshot(
+    tmp_path: Path,
+    snapshots_dir: Path,
+    interactive: bool,
+    snapshot_name: str,
+    *,
+    update_snapshots: bool,
+) -> None:
+    """Snapshot the full local-mode prompt, including middleware guidance."""
+    actual = _capture_system_prompt(tmp_path, interactive=interactive)
 
     _assert_snapshot(
-        snapshots_dir / "system_prompt_interactive_local.md",
+        snapshots_dir / snapshot_name,
         actual,
         update_snapshots=update_snapshots,
     )
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("memory_auto_save", [True, False])
+def test_composed_prompt_respects_interaction_and_memory_modes(
+    tmp_path: Path, *, interactive: bool, memory_auto_save: bool
+) -> None:
+    """Memory stays available without adding unreachable headless questions."""
+    memory_content = "Project convention: use the existing formatter."
+    prompt = _capture_system_prompt(
+        tmp_path,
+        interactive=interactive,
+        memory_auto_save=memory_auto_save,
+        memory_content=memory_content,
+    )
+
+    assert memory_content in prompt
+    assert "Never store API keys, access tokens, passwords" in prompt
+    assert ("Automatic memory saving is disabled" in prompt) is not memory_auto_save
+    if interactive:
+        assert "ask the user what to do" in prompt
+        assert "rejected by the user" in prompt
+        assert ("explicitly ask the user for this information" in prompt) is (
+            memory_auto_save
+        )
+    else:
+        for instruction in (
+            "explicitly ask the user for this information",
+            "It is preferred for you to ask for information",
+            "Only ask when genuinely blocked",
+            "Don't substitute without asking",
+            "ask the user what to do",
+            "ask the user for help",
+            "what's your google account email?",
+            "rejected by the user",
+        ):
+            assert instruction not in prompt
+        assert "report the blocker and any completed work" in prompt
+        assert ("persist verified preferences" in prompt) is memory_auto_save
+        assert "Do not invent required identifiers or permissions" in prompt

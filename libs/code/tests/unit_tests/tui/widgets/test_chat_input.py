@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from textual import events
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from textual.pilot import Pilot
+
+    from deepagents_code.sessions import ThreadInfo
 
 
 class TestCompletionOption:
@@ -513,10 +517,75 @@ class TestCompletionPopupClickBubbling:
 class TestThreadCompletionIntegration:
     """Tests for `@@` completion inside the mounted chat input."""
 
+    @pytest.mark.parametrize(
+        "state",
+        ["active", "dismissed", "escape", "inactive", "cursor_moved", "changed"],
+    )
+    async def test_background_load_refreshes_only_active_query(
+        self, state: str
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+            }
+        ]
+        loaded = asyncio.Event()
+
+        async def load_threads(*, limit: int) -> list[ThreadInfo]:
+            await loaded.wait()
+            return threads[:limit]
+
+        with (
+            patch(
+                "deepagents_code.sessions.get_cached_threads",
+                return_value=threads if state in {"dismissed", "escape"} else [],
+            ),
+            patch("deepagents_code.sessions.list_threads", side_effect=load_threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new=AsyncMock(),
+            ),
+        ):
+            app = _RecordingApp()
+            async with app.run_test() as pilot:
+                chat = app.query_one(ChatInput)
+                assert chat._text_area is not None
+                chat._text_area.insert("compare @@parser")
+                await pilot.pause()
+                if state == "dismissed":
+                    assert chat.dismiss_completion()
+                elif state == "escape":
+                    await pilot.press("escape")
+                elif state == "inactive":
+                    chat._text_area.text = "plain text"
+                elif state == "cursor_moved":
+                    chat._text_area.move_cursor((0, 0))
+                elif state == "changed":
+                    chat._text_area.insert(" missing")
+                await pilot.pause()
+                assert not chat._current_suggestions
+
+                loaded.set()
+                await chat.workers.wait_for_complete()
+                await pilot.pause()
+                if state == "active":
+                    assert chat._current_suggestions[0][0] == "Fix the parser"
+                    await pilot.press("enter")
+                    assert chat._text_area.text == (
+                        "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+                    )
+                    assert not app.submitted
+                else:
+                    assert not chat._current_suggestions
+
     async def test_thread_completion_click_inserts_durable_token(self) -> None:
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
+            await chat.workers.wait_for_complete()
             assert chat._text_area is not None
             assert chat._thread_controller is not None
             chat._thread_controller.update_threads(

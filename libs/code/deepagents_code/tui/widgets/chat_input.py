@@ -2638,6 +2638,8 @@ class ChatInput(Vertical):
         )
         if self._thread_controller is not None:
             self._thread_controller.update_threads(threads)
+            text, cursor = self._completion_text_and_cursor()
+            self._thread_controller.refresh(text, cursor)
 
     def set_cwd(self, cwd: str | Path) -> None:
         """Update file completion to use a new cwd.

@@ -435,10 +435,21 @@ class ThreadCompletionController:
         self._matches: list[ThreadInfo] = []
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
+        self._query_active = False
 
     def update_threads(self, threads: list[ThreadInfo]) -> None:
-        """Replace cached threads and refresh active suggestions."""
+        """Replace cached threads."""
         self._threads = list(threads)
+
+    def refresh(self, text: str, cursor_index: int) -> None:
+        """Refresh an active query without reopening dismissed completion.
+
+        Args:
+            text: Current composer text in completion space.
+            cursor_index: Current cursor offset in completion space.
+        """
+        if self._query_active:
+            self.on_text_changed(text, cursor_index)
 
     @staticmethod
     def _trigger_is_standalone(text: str, start: int) -> bool:
@@ -509,6 +520,7 @@ class ThreadCompletionController:
 
     def reset(self) -> None:
         """Clear suggestions."""
+        self._query_active = False
         if self._suggestions:
             self._matches.clear()
             self._suggestions.clear()
@@ -517,10 +529,12 @@ class ThreadCompletionController:
 
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Search cached threads and render suggestions."""
+        self.reset()
         start = self._mention_start(text, cursor_index)
         if start is None:
-            self.reset()
             return
+        # An empty cache still has an active query to refresh after loading.
+        self._query_active = True
         query = text[start + len(_THREAD_TRIGGER) : cursor_index].lower()
         query_terms = query.split()
         indexed_threads = [
@@ -532,7 +546,6 @@ class ThreadCompletionController:
             if all(term in search_text for term in query_terms)
         ][:MAX_SUGGESTIONS]
         if not matches:
-            self.reset()
             return
         self._matches = matches
         self._suggestions = [

@@ -1301,7 +1301,7 @@ requires-dist = [
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.1,<2.0.0" },
-    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.6.1,<2.0.0" },
+    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.6.2,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
@@ -2901,7 +2901,7 @@ wheels = [
 
 [[package]]
 name = "langchain-fireworks"
-version = "1.6.1"
+version = "1.6.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2910,9 +2910,9 @@ dependencies = [
     { name = "openai" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/37/62/ad8cc57ad2741cac1c0d460961709cbe430edb99a7595db63fa30526567d/langchain_fireworks-1.6.1.tar.gz", hash = "sha256:fb89ef4c0289b23462ebbcc4442be8fdad60034ce9a9159914792edeed74eebf", size = 228378, upload-time = "2026-08-27T21:56:12.145Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/57/bed65852832119df453d46ef035655db26811bb01a21e2da4299f8a0b551/langchain_fireworks-1.6.2.tar.gz", hash = "sha256:4526e0a706ccff2b1d9cfbddc1889724af69d0507c3aa5eb1196bad62981160c", size = 227841, upload-time = "2026-09-22T04:43:49.043Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/89/73ae783987256f6d37e577bc9da04cee5a97f249df191c7ce248850223b9/langchain_fireworks-1.6.1-py3-none-any.whl", hash = "sha256:e5f8ab3bdb7cf24e83e490fdf6635e1322f0e410a7e259a42cc0d771b5fc5cf3", size = 30141, upload-time = "2026-08-27T21:56:11.062Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/58/9eef7b78704fa05cbb3b51cc4c26d5444a37f284ece9da8e0836cb2f1134/langchain_fireworks-1.6.2-py3-none-any.whl", hash = "sha256:ae65c0ffe90eeb4e8723f60c219e611264649143873830d1ffb4c8979259cf06", size = 30490, upload-time = "2026-09-22T04:43:47.947Z" },
 ]
 
 [[package]]

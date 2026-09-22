@@ -18,10 +18,12 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
 
 logger = logging.getLogger(__name__)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
+_RECOVERY_TRACE_HEADERS = {"x-deepagents-recovery": "interrupt"}
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
 Esc for more than ~10s, while leaving room for an actually-cancelling run to
 finish its in-flight tool call.
@@ -147,6 +149,32 @@ def _validated_offload_result(result: object) -> OffloadResult:
                 )
                 raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
     return cast("OffloadResult", result)
+
+
+def workspace_conflict_diagnostics(
+    exc: BaseException,
+) -> WorkspaceDiagnostics | None:
+    """Extract server workspace diagnostics from a raised HTTP conflict.
+
+    The workspace route answers a refusal with 409 and an additive
+    `diagnostics` payload beside `detail`; the SDK carries that body on
+    `APIStatusError.body`. Older servers omit the field, and any malformed
+    payload must degrade to `None` rather than break error display.
+
+    Args:
+        exc: The exception caught from a workspace request.
+
+    Returns:
+        The parsed `WorkspaceDiagnostics`, or `None` when absent or malformed.
+    """
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
+
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    return WorkspaceDiagnostics.from_dict(
+        cast("dict[str, Any]", body).get("diagnostics")
+    )
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -660,6 +688,7 @@ class RemoteAgent:
         values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
+        recovery: bool = False,
     ) -> None:
         """Update the state of a thread.
 
@@ -680,6 +709,7 @@ class RemoteAgent:
             config: Config with `configurable.thread_id`.
             values: State values to update.
             as_node: Optional graph node to attribute the state update to.
+            recovery: Mark an internal recovery write for server-side tracing policy.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
@@ -689,9 +719,12 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         prepared = _prepare_config(config)
         graph = self._get_graph()
+        update_kwargs = {"headers": _RECOVERY_TRACE_HEADERS} if recovery else {}
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except ConflictError:
             logger.debug(
                 "update_state conflict for thread %s; cancelling active runs "
@@ -709,7 +742,9 @@ class RemoteAgent:
         await _cancel_active_runs(graph, thread_id)
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except Exception:
             logger.debug(
                 "Retry of update_state still failed for thread %s",

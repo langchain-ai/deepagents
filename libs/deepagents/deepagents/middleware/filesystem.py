@@ -65,6 +65,7 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
+    _OPENAI_FILE_MIME_TYPES,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
@@ -93,23 +94,12 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
-# support today, so these providers get a hard-coded pass until profiles can
-# describe support for other office and document formats.
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
 except ImportError:
     _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
 else:
     _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
-except ImportError:
-    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
 
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
@@ -134,6 +124,8 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 }
 """Default mapping from filesystem tool name to its operation category."""
 
+_FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
+
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
@@ -153,6 +145,35 @@ _PDF_MIME_TYPE: Final = "application/pdf"
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
+    """Reject later same-path file mutations in one model response."""
+    tool_call = request.tool_call
+    if tool_call["name"] not in _FILE_MUTATION_TOOLS:
+        return None
+    path = tool_call["args"].get("file_path")
+    if not isinstance(path, str):
+        return None
+    try:
+        file_path = validate_path(path)
+    except ValueError:
+        return None
+    messages = request.state.get("messages") if isinstance(request.state, Mapping) else None
+    ai_message = next((message for message in reversed(messages or []) if isinstance(message, AIMessage)), None)
+    for call in ai_message.tool_calls if ai_message else []:
+        if call["id"] == tool_call["id"]:
+            return None
+        path = call["args"].get("file_path")
+        if call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
+            continue
+        try:
+            duplicate = validate_path(path) == file_path
+        except ValueError:
+            continue
+        if duplicate:
+            return _tool_error(tool_call["name"], tool_call["id"], "Error: parallel file mutations to the same path are not allowed.")
+    return None
 
 
 def _is_read_file_media_result(message: AnyMessage) -> bool:
@@ -191,41 +212,50 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
     return reordered
 
 
-_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
-"""`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via provider class checks."""
+_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs"}
+"""`ModelProfile` field gating each media block type."""
 
-_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
+_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
-def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
-    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
+def _file_block_supported(
+    block: ContentBlock,
+    *,
+    model: "BaseChatModel | None",
+    profile: Mapping[str, Any],
+    in_tool_message: bool,
+) -> bool:
+    """Check whether a file block is supported by the model and endpoint."""
+    if "base64" not in block:
+        return True
+    if block.get("mime_type") == _PDF_MIME_TYPE:
+        if in_tool_message and profile.get("pdf_tool_message") is False:
+            return False
+        return profile.get("pdf_inputs") is not False
+    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
 
 
 def _multimodal_block_supported(
     block: ContentBlock,
     *,
+    model: "BaseChatModel | None",
     profile: Mapping[str, Any],
-    tolerates_non_pdf_files: bool,
     in_tool_message: bool,
 ) -> bool:
-    """Check whether `profile` (plus the hard-coded provider exception) accepts `block`.
+    """Check whether the profile and provider accept the block.
 
     Missing `ModelProfile` fields default to supported, since profile coverage is
     incomplete. Only an explicit `False` rejects a block type.
     """
     block_type = block["type"]
-    if block_type == "file" and "base64" not in block:
-        # URL-/file-ID-backed file references are provider-managed and often don't
-        # include a `mime_type`, so leave them untouched.
-        return True
-    if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
-        # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
-        # by any `ModelProfile` field yet; only the hard-coded tolerant
-        # providers pass.
-        return tolerates_non_pdf_files
+    if block_type == "file":
+        return _file_block_supported(
+            block,
+            model=model,
+            profile=profile,
+            in_tool_message=in_tool_message,
+        )
 
     field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
     if field is None:
@@ -250,7 +280,12 @@ def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage
     )
 
 
-def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], tolerates_non_pdf_files: bool) -> AnyMessage:
+def _scrub_message_multimodal_content(
+    message: AnyMessage,
+    *,
+    model: "BaseChatModel | None",
+    profile: Mapping[str, Any],
+) -> AnyMessage:
     """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
     if not isinstance(message, (ToolMessage, HumanMessage)):
         return message
@@ -260,7 +295,12 @@ def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[s
     new_blocks = [
         block
         if block["type"] not in _MULTIMODAL_BLOCK_TYPES
-        or _multimodal_block_supported(block, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files, in_tool_message=in_tool_message)
+        or _multimodal_block_supported(
+            block,
+            model=model,
+            profile=profile,
+            in_tool_message=in_tool_message,
+        )
         else _unsupported_multimodal_placeholder(block, message)
         for block in blocks
     ]
@@ -282,7 +322,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     treated as an empty profile rather than skipped: `ModelProfile` is often
     absent for models `langchain_anthropic` doesn't have a static entry for
     (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
-    provider-based non-PDF `file` gate doesn't depend on profile data at all —
+    provider-based binary document gate doesn't depend on profile data at all —
     skipping the whole scrub in that case would silently leave the exact
     `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
     profile still defaults every per-field check to "supported."
@@ -290,8 +330,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     profile = model.profile if model is not None else None
     if not isinstance(profile, dict):
         profile = {}
-    tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)
-    return [_scrub_message_multimodal_content(message, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files) for message in messages]
+    return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
 
 
 def _handle_video_read(
@@ -3621,6 +3660,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
@@ -3646,6 +3687,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
+        if error := _parallel_file_mutation_error(request):
+            return error
         tool_result = await handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:

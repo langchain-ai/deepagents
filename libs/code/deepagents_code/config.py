@@ -4817,7 +4817,7 @@ def configure_langsmith_secret_redaction() -> bool:
         _fail_closed_disable_tracing()
         return False
 
-    logger.info("LangSmith secret redaction enabled for agent traces.")
+    logger.debug("LangSmith secret redaction enabled for agent traces.")
     return True
 
 
@@ -5487,7 +5487,7 @@ def get_default_coding_instructions() -> str:
         The default agent instructions as a string.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
-    return default_prompt_path.read_text()
+    return default_prompt_path.read_text(encoding="utf-8")
 
 
 _BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "us-gov.")

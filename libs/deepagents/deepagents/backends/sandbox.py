@@ -1267,8 +1267,9 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 
 
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
-_EXECUTE_CAPTURE_META_FIELDS: Final = 4
 """First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
+
+_EXECUTE_CAPTURE_META_FIELDS: Final = 4
 
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
 _EXECUTE_CAPTURE_TAIL_LINES: Final = 5

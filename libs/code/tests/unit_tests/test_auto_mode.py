@@ -1170,45 +1170,6 @@ async def test_classifier_review_event_writer_failure_does_not_block_the_batch(
     assert len(model.calls) == 1
 
 
-async def test_deterministic_siblings_stay_out_of_the_review_lifecycle(
-    tmp_path: Path,
-) -> None:
-    """Pausing an unreviewed row would freeze it: nothing ever resumes it."""
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=_StructuredModel(_allow_result()),
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    events = _capture_review_events(request)
-
-    plan = await _plan_calls(
-        middleware,
-        request,
-        [
-            {
-                "name": "write_file",
-                "args": {
-                    "file_path": str(tmp_path / "src" / "module.py"),
-                    "content": "x = 1",
-                },
-                "id": "call-deterministic",
-                "type": "tool_call",
-            },
-            {
-                "name": "delete",
-                "args": {"file_path": "old.py"},
-                "id": "call-reviewed",
-                "type": "tool_call",
-            },
-        ],
-    )
-
-    assert plan["review_tool_call_ids"] == ["call-reviewed"]
-    assert [event["tool_call_ids"] for event in events] == [["call-reviewed"]]
-
-
 def _append_ask_user_exchange(
     request: ModelRequest[Any],
     *,
@@ -5081,56 +5042,6 @@ async def test_invoke_failure_evicts_cached_classifier(
     assert second["decisions"][0]["disposition"] == "classifier_allow"
 
 
-async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> None:
-    class _SlowModel(_StructuredModel):
-        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
-            self.calls.append(messages)
-            self.call_kwargs.append(kwargs)
-            await asyncio.sleep(5)
-            return self.result
-
-    model = _SlowModel(model_name="kimi-k3")
-    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
-    middleware = AutoModeHITLMiddleware(
-        {
-            "delete": config,
-        },
-        worktree_root=tmp_path,
-        classifier_timeout_seconds=0.05,
-    )
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    events = _capture_review_events(request)
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    await _route_plan(
-        middleware,
-        request,
-        plan,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == (
-        "classifier model kimi-k3 did not respond within 0.05s"
-    )
-    lifecycle = [event for event in events if event["event"].startswith("review_")]
-    assert [event["event"] for event in lifecycle] == [
-        "review_started",
-        "review_completed",
-    ]
-
-
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
     model = _StructuredModel(
         error=TimeoutError("socket timed out"), model_name="kimi-k3"
@@ -6870,6 +6781,7 @@ async def test_classifier_sees_deterministic_siblings_without_reviewing_them(
 ) -> None:
     model = _StructuredModel(_allow_result())
     request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    events = _capture_review_events(request)
     plan = await _plan_calls(
         _middleware(tmp_path),
         request,
@@ -6884,6 +6796,8 @@ async def test_classifier_sees_deterministic_siblings_without_reviewing_them(
         ],
     )
 
+    assert plan["review_tool_call_ids"] == ["reviewed"]
+    assert [event["tool_call_ids"] for event in events] == [["reviewed"]]
     assert len(model.calls) == 1
     message = cast("HumanMessage", model.calls[0][-1])
     payload = json.loads(cast("str", message.content))
@@ -6994,10 +6908,22 @@ async def test_batch_timeout_cancels_request_without_partial_approval(
             finally:
                 cancelled.set()
 
-    model = _BlockingBatchModel()
+    model = _BlockingBatchModel(model_name="kimi-k3")
     middleware = _middleware(tmp_path, classifier_timeout_seconds=0.05)
     request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
-    plan = await _plan_calls(middleware, request, _delete_calls("first", "second"))
+    events = _capture_review_events(request)
+    calls = _delete_calls("first", "second")
+    plan = await _plan_calls(middleware, request, calls)
+    await middleware.aafter_model(
+        cast(
+            "AgentState[Any]",
+            {
+                "messages": [AIMessage(content="", tool_calls=calls)],
+                "_auto_decision_plan": plan,
+            },
+        ),
+        request.runtime,
+    )
 
     assert cancelled.is_set()
     assert len(model.calls) == 1
@@ -7005,5 +6931,14 @@ async def test_batch_timeout_cancels_request_without_partial_approval(
         "classifier_unavailable",
         "classifier_unavailable",
     ]
-    assert all("within 0.05s" in decision["reason"] for decision in plan["decisions"])
+    assert all(
+        decision["reason"] == "classifier model kimi-k3 did not respond within 0.05s"
+        for decision in plan["decisions"]
+    )
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert lifecycle[1]["approved_tool_call_ids"] == []
     assert "_auto_classifier_conversation" not in request.state

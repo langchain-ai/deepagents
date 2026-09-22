@@ -938,6 +938,38 @@ class TestCostTrackingMiddleware:
 class TestSessionCostRecorder:
     """Tests for the callback handler that collects completed requests."""
 
+    async def test_langgraph_stream_carries_invocation_id_from_first_chunk(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Guard the private LangGraph metadata bridge using real callbacks.
+
+        No handler or metadata mocks: upstream changes to callback ordering or
+        per-run metadata must fail here, even before a usage chunk arrives.
+        """
+        agent = create_agent(model=_ResponsesStyleStreamingModel(), tools=[])
+        invocation_ids: list[str] = []
+        async for message, metadata in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode="messages",
+            config={"configurable": {"thread_id": THREAD_ID}},
+        ):
+            assert isinstance(message, AIMessageChunk)
+            assert isinstance(metadata, dict)
+            if not invocation_ids:
+                assert message.id == "resp_child"
+                assert not message.usage_metadata
+            # Read immediately so later metadata mutation cannot hide a late ID.
+            invocation_id = metadata.get(_MODEL_INVOCATION_METADATA_KEY)
+            assert isinstance(invocation_id, str), (
+                "LangGraph must expose the model invocation ID on every chunk"
+            )
+            invocation_ids.append(invocation_id)
+
+        assert invocation_ids
+        records = recorder.drain(THREAD_ID)
+        assert len(records) == 1
+        assert set(invocation_ids) == {records[0].invocation_id}
+
     @pytest.mark.parametrize("asynchronous", [False, True])
     async def test_batched_responses_keep_separate_usage(
         self, recorder: _SessionCostRecorder, asynchronous: bool

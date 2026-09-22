@@ -1467,6 +1467,42 @@ class TestUpdateInstallLock:
         with update_install_lock() as holding:
             assert holding is True
 
+    @pytest.mark.parametrize("predicate", ["is_symlink", "is_file"])
+    @pytest.mark.parametrize("fallback", [False, True])
+    def test_inaccessible_legacy_lock_preserves_working_lock(
+        self,
+        lock_file: Path,
+        legacy_lock_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        predicate: str,
+        fallback: bool,
+    ) -> None:
+        """Legacy discovery errors do not bypass a usable primary or fallback lock."""
+        from filelock import FileLock, Timeout
+
+        original = getattr(Path, predicate)
+
+        def inspect(path: Path) -> bool:
+            if path == legacy_lock_file:
+                raise PermissionError
+            return original(path)
+
+        monkeypatch.setattr(Path, predicate, inspect)
+        if fallback:
+            blocker = lock_file.parent / "blocker"
+            blocker.parent.mkdir(parents=True, exist_ok=True)
+            blocker.touch()
+            monkeypatch.setattr(
+                update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"
+            )
+            monkeypatch.setattr(update_check, "FALLBACK_UPDATE_LOCK_FILE", lock_file)
+        with update_install_lock() as holding:
+            assert holding is True
+            with pytest.raises(Timeout), FileLock(lock_file, timeout=0):
+                pass
+        with FileLock(lock_file, timeout=0):
+            pass
+
     @pytest.mark.parametrize("raise_in_body", [False, True])
     def test_new_install_holds_and_releases_legacy_lock(
         self, lock_file: Path, legacy_lock_file: Path, raise_in_body: bool

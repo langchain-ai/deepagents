@@ -2328,6 +2328,26 @@ def _resolve_update_lock_file() -> Path | None:
     return chosen
 
 
+def _legacy_update_lock_file() -> Path | None:
+    """Find a legacy lock without letting inaccessible paths disable updates.
+
+    Returns:
+        The legacy path, or `None` when absent, unsafe, or inaccessible.
+    """
+    root = PATHS.installation.root
+    legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+    try:
+        if (
+            not legacy.parent.is_symlink()
+            and not legacy.is_symlink()
+            and legacy.is_file()
+        ):
+            return legacy
+    except OSError:
+        logger.warning("Could not inspect legacy update lock %s", legacy, exc_info=True)
+    return None
+
+
 _WARNED_LOCK_UNAVAILABLE = False
 """Whether the "no update lock" warning already reached stderr this process."""
 
@@ -2421,17 +2441,12 @@ def update_install_lock() -> Iterator[bool]:
         # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
         # abandoning the lock would disable this protection for no reason.
         harden_state_dir(lock_file.parent)
-        root = PATHS.installation.root
-        legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+        legacy = _legacy_update_lock_file()
         lock_files = [lock_file]
         # Keep the legacy inode locked for the entire install so older sessions
         # and new ones exclude each other. Do not recreate obsolete directories
         # on fresh installs or follow symlinks left in the legacy location.
-        if (
-            not legacy.parent.is_symlink()
-            and not legacy.is_symlink()
-            and legacy.is_file()
-        ):
+        if legacy is not None:
             lock_files.append(legacy)
         acquired_locks = []
         try:

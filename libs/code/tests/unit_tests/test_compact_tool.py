@@ -237,7 +237,7 @@ class TestCLICompactionMiddleware:
             is None
         )
         plan = await middleware._aplan_forced_compaction_update(
-            {"messages": messages}, runtime, summarize_all=True
+            {"messages": messages}, runtime, handoff=True
         )
 
         assert plan is not None

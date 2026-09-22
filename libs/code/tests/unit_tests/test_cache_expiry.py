@@ -126,7 +126,7 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "summary", "archive", "seed", "metadata", "queued"]
+    "failure", [None, "summary", "empty", "seed", "metadata", "queued"]
 )
 async def test_handoff_persists_recovery_before_switch(
     failure: str | None, monkeypatch: pytest.MonkeyPatch
@@ -135,7 +135,12 @@ async def test_handoff_persists_recovery_before_switch(
     app._lc_thread_id = "source"
     remote = MagicMock()
     remote.aoffload = AsyncMock(
-        return_value={"status": "failed" if failure == "summary" else "compacted"}
+        return_value={
+            "status": "failed" if failure == "summary" else "summarized",
+            "summary": "  " if failure == "empty" else "LLM summary",
+            "archive_path": "/conversation_history/source.md",
+            "error": "transcript not saved" if failure == "summary" else None,
+        }
     )
     remote.aensure_thread = AsyncMock()
     remote.aswitch_workspace = AsyncMock()
@@ -154,22 +159,6 @@ async def test_handoff_persists_recovery_before_switch(
     monkeypatch.setattr(app, "_set_spinner", AsyncMock())
     monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
     monkeypatch.setattr(app, "_mount_message", AsyncMock())
-    monkeypatch.setattr(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(
-            return_value={
-                "messages": [HumanMessage("original")],
-                "_summarization_event": {
-                    "summary_message": HumanMessage("LLM summary"),
-                    "cutoff_index": 1,
-                    "file_path": None
-                    if failure == "archive"
-                    else "/conversation_history/source.md",
-                },
-            }
-        ),
-    )
     resume = AsyncMock()
     monkeypatch.setattr(app, "_resume_thread", resume)
     if failure == "queued":
@@ -189,7 +178,7 @@ async def test_handoff_persists_recovery_before_switch(
     remote.aoffload.assert_awaited_once()
     assert remote.aoffload.await_args is not None
     assert remote.aupdate_state.await_args is not None
-    assert remote.aoffload.await_args.kwargs["summarize_all"] is True
+    assert remote.aoffload.await_args.kwargs["handoff"] is True
     update = remote.aupdate_state.await_args.args[1]
     content = update["messages"][0].text
     assert "LLM summary" in content
@@ -218,27 +207,19 @@ async def test_handoff_child_is_discoverable_and_resumable(
     owner = assistant_id or DEFAULT_ASSISTANT_ID
     app._lc_thread_id = "source"
     remote = MagicMock()
-    remote.aoffload = AsyncMock(return_value={"status": "compacted"})
+    remote.aoffload = AsyncMock(
+        return_value={
+            "status": "summarized",
+            "summary": "LLM summary",
+            "archive_path": "/conversation_history/source.md",
+        }
+    )
     remote.aensure_thread = AsyncMock()
     remote.aswitch_workspace = AsyncMock()
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_set_spinner", AsyncMock())
     monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
     monkeypatch.setattr(app, "_mount_message", AsyncMock())
-    monkeypatch.setattr(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(
-            return_value={
-                "messages": [HumanMessage("original")],
-                "_summarization_event": {
-                    "summary_message": HumanMessage("LLM summary"),
-                    "cutoff_index": 1,
-                    "file_path": "/conversation_history/source.md",
-                },
-            }
-        ),
-    )
     monkeypatch.setattr(
         DeepAgentsApp,
         "_resume_cutoff",
@@ -357,7 +338,7 @@ async def test_handoff_preserves_shell_context(
             if outcome == "during_save" and config == source_config:
                 app._buffer_shell_for_model_context("echo later", "later result", 0)
 
-        async def summarize(**_kwargs: object) -> dict[str, str]:
+        async def summarize(**_kwargs: object) -> dict[str, object]:
             state = await graph.aget_state(source_config)
             archive[:] = state.values["messages"]
             if outcome == "during_summary":
@@ -365,17 +346,15 @@ async def test_handoff_preserves_shell_context(
             if outcome == "running_shell":
                 app._shell_running = True
             if outcome == "summary_failure":
-                return {"status": "failed", "error": "summary failed"}
-            return {"status": "compacted"}
-
-        def summarized_state(_thread_id: str) -> dict[str, object]:
+                return {
+                    "status": "failed",
+                    "error": "summary failed",
+                    "archive_path": None,
+                }
             return {
-                "messages": archive,
-                "_summarization_event": {
-                    "summary_message": HumanMessage("\n".join(m.text for m in archive)),
-                    "cutoff_index": len(archive),
-                    "file_path": "/conversation_history/source.md",
-                },
+                "status": "summarized",
+                "summary": "\n".join(m.text for m in archive),
+                "archive_path": "/conversation_history/source.md",
             }
 
         def resume(child_id: str) -> None:
@@ -385,9 +364,6 @@ async def test_handoff_preserves_shell_context(
 
         remote.aupdate_state = AsyncMock(side_effect=update_state)
         remote.aoffload = AsyncMock(side_effect=summarize)
-        monkeypatch.setattr(
-            app, "_get_thread_state_values", AsyncMock(side_effect=summarized_state)
-        )
         monkeypatch.setattr(app, "_resume_thread", AsyncMock(side_effect=resume))
 
         if outcome in {"write_failure", "cancel", "lost_response", "summary_failure"}:

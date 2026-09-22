@@ -4654,7 +4654,12 @@ class DeepAgentsApp(App):
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
         self._cache_expiry_seen: dict[str, datetime] = {}
+        """Per-thread expiry already offered as a handoff, so each window
+        prompts at most once."""
+
         self._cache_expiry_bypassed: tuple[str, datetime] | None = None
+        """Thread and window where the user chose to stay. Suppresses the idle
+        send-time warning for that window only; identity changes still warn."""
 
         self._cold_cache_degraded_notified = False
         """Whether this session already reported that the warning failed open.
@@ -9678,7 +9683,11 @@ class DeepAgentsApp(App):
             self._cache_expiry_seen[thread_id] = expires_at
 
     def _check_cache_expiry(self) -> None:
-        """Offer a handoff once per expired cache window, only when idle."""
+        """Offer a handoff once per expired cache window, only when idle.
+
+        Polled every second from `on_mount`. Acts only when
+        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
+        """
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
         thread_id = self._lc_thread_id
         if (
@@ -12670,8 +12679,15 @@ class DeepAgentsApp(App):
     ) -> ColdCacheWarning | None:
         """Build a warning when an interactive turn may miss a material cache.
 
+        Args:
+            message: The turn about to be sent.
+            advisory: Build an estimate for the handoff prompt, which never
+                sends. Ignores suppression and the cost threshold; the caller
+                checks opt-outs itself.
+
         Returns:
-            Validated warning data, or `None` when dispatch should proceed.
+            Validated warning data, or `None` when there is nothing to warn
+                about (for a send, dispatch should proceed).
         """
         from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
 
@@ -12798,7 +12814,8 @@ class DeepAgentsApp(App):
                 return None
             # `debug_forced` bypasses persistent suppression too, so the env
             # var stays a true override rather than silently no-opping for
-            # anyone who once chose "Send and never warn again".
+            # anyone who once chose "Send and never warn again". `advisory`
+            # bypasses it because its caller has already checked opt-outs.
             if (
                 not debug_forced
                 and not advisory
@@ -12898,6 +12915,11 @@ class DeepAgentsApp(App):
                 and self._cache_expiry_bypassed
                 == (self._lc_thread_id, self._status_bar.cache_expires_at)
             ):
+                # The user already chose to stay for this exact window, so the
+                # same idle cause does not warn again at send time.
+                logger.debug(
+                    "Skipping cold-cache warning: handoff declined for this window"
+                )
                 return None
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
@@ -13159,7 +13181,13 @@ class DeepAgentsApp(App):
             )
 
     async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
-        """Dispatch one queue-head message, interposing an advisory warning."""
+        """Dispatch one queue-head message, interposing a cache prompt if needed.
+
+        With `warnings.cache_prompt = "off"` the message is sent directly. If an
+        interactive message arrives after its cache window expired, the handoff
+        prompt opens and the message returns to the composer instead of being
+        sent. Otherwise the send-time cost warning applies.
+        """
         mode = _load_cache_prompt_mode()
         if mode == "off":
             await self._process_message(message.text, message.mode)

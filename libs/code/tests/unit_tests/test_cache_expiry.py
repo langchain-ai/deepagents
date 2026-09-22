@@ -577,6 +577,30 @@ async def test_resumed_thread_with_lapsed_window_does_not_prompt(
         await pilot.press("escape")
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        QueuedMessage("/help", "command"),
+        QueuedMessage("ls", "shell"),
+        QueuedMessage("continue the goal", "normal", origin="external"),
+    ],
+    ids=["command", "shell", "external"],
+)
+async def test_expiry_never_blocks_non_interactive_dispatch(
+    message: QueuedMessage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        await app._dispatch_queued_message(message)
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        process.assert_awaited_once_with(message.text, message.mode)
+
+
 @pytest.mark.parametrize("identity_changed", [False, True])
 async def test_expiry_acknowledgment_does_not_hide_identity_change(
     identity_changed: bool, monkeypatch: pytest.MonkeyPatch

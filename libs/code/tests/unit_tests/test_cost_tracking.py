@@ -254,6 +254,40 @@ def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[A
 class TestEstimateCost:
     """Tests for the shared `genai-prices` adapter."""
 
+    @pytest.mark.parametrize("details_reported", [False, True])
+    def test_category_cost_completeness_requires_usage_details(
+        self, details_reported: bool
+    ) -> None:
+        usage = _usage()
+        if details_reported:
+            usage["input_token_details"] = {}
+            usage["output_token_details"] = {}
+        estimate = cost_tracking._estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        assert estimate is not None
+        breakdown = cost_tracking._breakdown_for_estimate(estimate)
+
+        detailed_usage = _usage(cache_read=200, cache_write=100)
+        detailed_usage["output_token_details"] = {"reasoning": 50}
+        detailed_estimate = cost_tracking._estimate_cost(
+            detailed_usage, KNOWN_MODEL, KNOWN_PROVIDER
+        )
+        assert detailed_estimate is not None
+        detailed_breakdown = cost_tracking._breakdown_for_estimate(detailed_estimate)
+        merged = cost_tracking._merge_cost_breakdowns(breakdown, detailed_breakdown)
+
+        for category in ("cache_read", "cache_creation", "reasoning"):
+            cost = getattr(estimate, f"{category}_cost_usd")
+            if details_reported:
+                assert cost == pytest.approx(0.0)
+            else:
+                assert cost is None
+            assert dict(breakdown)[f"{category}_cost_complete"] is details_reported
+            assert dict(merged)[f"{category}_cost_complete"] is details_reported
+            assert dict(merged)[f"{category}_tokens_complete"] is details_reported
+            assert dict(merged)[f"{category}_cost_usd"] == pytest.approx(
+                dict(detailed_breakdown)[f"{category}_cost_usd"]
+            )
+
     def test_reasoning_cost_inherits_output_rate(self) -> None:
         usage = _usage(output_tokens=1_000)
         usage["output_token_details"] = {"reasoning": 500}

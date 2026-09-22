@@ -1626,9 +1626,17 @@ def _estimate_from_price(
         cache_creation_tokens=cache_creation_tokens,
         cache_read_tokens=cache_read_tokens,
         reasoning_tokens=reasoning_tokens,
-        cache_creation_cost_usd=category_costs["cache_creation"],
-        cache_read_cost_usd=category_costs["cache_read"],
-        reasoning_cost_usd=category_costs["reasoning"],
+        cache_creation_cost_usd=(
+            category_costs["cache_creation"]
+            if cache_creation_tokens is not None
+            else None
+        ),
+        cache_read_cost_usd=(
+            category_costs["cache_read"] if cache_read_tokens is not None else None
+        ),
+        reasoning_cost_usd=(
+            category_costs["reasoning"] if reasoning_tokens is not None else None
+        ),
     )
 
 

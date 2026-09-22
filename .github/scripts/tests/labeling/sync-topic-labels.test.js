@@ -38,6 +38,14 @@ test('preserves choices not yet created in the repository while discovering new 
   assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), ['topic:mcp', 'topic:skills']);
 });
 
+test('does not restore retired topics discovered before repository deletion', async t => {
+  const { github, output } = topicFixture(t, [
+    { name: 'topic:harness' }, { name: 'topic:harness-profiles' },
+  ], ['topic:harness']);
+  await syncTopicLabels(github, 'owner', 'repo', output);
+  assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), ['topic:harness-profiles']);
+});
+
 for (const labels of [[], [{ name: 'priority:high' }]]) {
   test(`rejects a response with no topics (${JSON.stringify(labels)}) without changing the manifest`, async t => {
     const { github, output } = topicFixture(t, labels, ['topic:skills']);

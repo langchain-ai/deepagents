@@ -389,7 +389,7 @@ function runTopicStep(globals) {
   return vm.runInNewContext(`(async () => {\n${body}\n})()`, {
     console: { log() {} },
     require: spec => spec.endsWith('topic-classifier.js')
-      ? { classifyTopicLabels: globals.classifyTopicLabels, loadTopicLabels: () => ['topic:mcp', 'topic:subagents', 'topic:async-subagents'] }
+      ? { classifyTopicLabels: globals.classifyTopicLabels, loadTopicLabels: () => ['topic:mcp', 'topic:memory', 'topic:subagents', 'topic:async-subagents'] }
       : sandboxRequire(spec),
     ...globals,
   });
@@ -407,6 +407,7 @@ function topicApi({ title = '', body = '', labels = [], topics = [] } = {}) {
       github: { paginate: method => method(), rest: { issues: {
         listLabelsForRepo: async () => [
           { name: 'topic:mcp', description: 'Model Context Protocol support and behavior.' },
+          { name: 'topic:memory', description: 'Agent memory and persistent context.' },
           { name: 'topic:subagents', description: 'Subagent creation, routing, and orchestration.' },
           { name: 'topic:async-subagents', description: 'Async subagent execution and orchestration.' },
         ],
@@ -434,6 +435,20 @@ test('model topics from the issue text are applied', async () => {
   });
   await runTopicStep(a.globals);
   assert.deepEqual(a.added, ['topic:mcp']);
+});
+
+test('issue 6485 applies both explicitly named topics', async () => {
+  const a = topicApi({
+    title: 'testing issue labeling',
+    body: 'opening an issue related to subagents memory :) hoping the right labels are applied\nthis is for deepagents',
+    topics: ['topic:subagents', 'topic:memory'],
+  });
+  a.globals.classifyTopicLabels = async (text) => {
+    assert.ok(text.includes('subagents memory'));
+    return new Set(['topic:subagents', 'topic:memory']);
+  };
+  await runTopicStep(a.globals);
+  assert.deepEqual(a.added.sort(), ['topic:memory', 'topic:subagents']);
 });
 
 test('an empty model classification adds no topic labels', async () => {

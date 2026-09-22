@@ -45,10 +45,34 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.equal(body.state, 'MCP authentication fails');
   assert.deepEqual(Object.keys(body.questions), allowed);
   assert.equal(body.questions['topic:mcp'].type, 'noul');
+  assert.ok(body.questions['topic:mcp'].instructions.includes(descriptions['topic:mcp']));
+  assert.ok(!body.questions['topic:mcp'].instructions.includes(descriptions['topic:models']));
+  assert.ok(body.questions['topic:models'].instructions.includes(descriptions['topic:models']));
+  assert.ok(!body.questions['topic:models'].instructions.includes(descriptions['topic:mcp']));
   for (const question of Object.values(body.questions)) {
-    for (const name of allowed) assert.ok(question.instructions.includes(descriptions[name]));
+    assert.ok(question.instructions.includes('directly relevant'));
+    assert.ok(question.instructions.includes('explicit references'));
     assert.ok(!question.instructions.includes(descriptions['priority:urgent']));
   }
+});
+
+test('classifies the issue 6485 body without making topics compete', async () => {
+  const text = 'testing issue labeling\n\nopening an issue related to subagents memory :) hoping the right labels are applied\nthis is for deepagents';
+  let state;
+  const labels = await classifyTopicLabels(text, ['topic:memory', 'topic:subagents', 'topic:models'], {
+    apiKey: 'secret',
+    descriptions: {
+      'topic:memory': 'Agent memory and persistent context.',
+      'topic:subagents': 'Subagent creation, routing, and orchestration.',
+      'topic:models': 'Model providers, model selection, and model configuration.',
+    },
+    fetchImpl: async (_url, options) => {
+      state = JSON.parse(options.body).state;
+      return response({ 'topic:memory': 0.92, 'topic:subagents': 0.97, 'topic:models': 0.12 });
+    },
+  });
+  assert.equal(state, text);
+  assert.deepEqual([...labels], ['topic:subagents', 'topic:memory']);
 });
 
 test('logs only validated diagnostics, including abstentions', async () => {

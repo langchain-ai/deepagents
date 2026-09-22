@@ -30,12 +30,12 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, TaskToolSchema
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -3099,6 +3099,73 @@ class TestSubAgents:
         # Verify skills_metadata is NOT in the subagent state
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    @pytest.mark.parametrize("unknown_args", [{"prompt": "the real instructions"}, {"prompt": "instructions", "context": "details"}])
+    async def test_task_call_with_unknown_key_returns_tool_error_without_dispatching(self, *, use_async: bool, unknown_args: dict[str, str]) -> None:
+        """A `task` call carrying an invented key must not dispatch the label alone.
+
+        Models sometimes leave a short label in `description` and put the real
+        instructions under a key the schema does not define. Silently dropping that
+        key dispatched the subagent without its instructions and reported success.
+        """
+        subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not run.")]))
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "short label",
+                                    "subagent_type": "general-purpose",
+                                    **unknown_args,
+                                },
+                                "id": "call_extra",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="Override agent",
+                    system_prompt="You are the override.",
+                    model=subagent_model,
+                )
+            ],
+        )
+
+        inputs = {"messages": [HumanMessage(content="Do something")]}
+        config = {"configurable": {"thread_id": "test_task_unknown_key"}}
+        result = await agent.ainvoke(inputs, config=config) if use_async else agent.invoke(inputs, config=config)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        for key in unknown_args:
+            assert f"Unexpected argument {key!r}" in tool_messages[0].content
+        assert "put all instructions for the subagent in `description`" in tool_messages[0].content
+        assert "Should not run." not in tool_messages[0].content
+
+    def test_task_tool_schema_rejects_unknown_keys_and_allows_runtime(self) -> None:
+        with pytest.raises(ValidationError, match="prompt"):
+            TaskToolSchema.model_validate({"description": "label", "subagent_type": "worker", "prompt": "instructions"})
+
+        # The tool node validates after injecting `runtime`, which is not a schema field.
+        parsed = TaskToolSchema.model_validate({"description": "do it", "subagent_type": "worker", "runtime": object()})
+        assert parsed.model_dump() == {"description": "do it", "subagent_type": "worker"}
+        assert "additionalProperties" not in TaskToolSchema.model_json_schema()
 
     def test_general_purpose_subagent_override(self) -> None:
         """Test that a general-purpose subagent spec overrides the default."""

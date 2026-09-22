@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -465,8 +466,13 @@ async def list_threads(
     Raises:
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
     """
+    started_at = time.perf_counter()
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
+            logger.debug(
+                "Thread metadata listing completed in %.1f ms: rows=0",
+                (time.perf_counter() - started_at) * 1000,
+            )
             return []
 
         # Ensure the covering index exists before the GROUP BY below, so the
@@ -533,6 +539,12 @@ async def list_threads(
         # doesn't receive branch-/cwd-filtered or differently-sorted data.
         if sort_by == "updated" and branch is None and cwd is None:
             _cache_recent_threads(agent_name, limit, threads)
+        logger.debug(
+            "Thread metadata listing completed in %.1f ms: rows=%d sort=%s",
+            (time.perf_counter() - started_at) * 1000,
+            len(threads),
+            sort_by,
+        )
         return threads
 
 
@@ -558,6 +570,27 @@ async def populate_thread_checkpoint_details(
     if not threads or (not include_message_count and not include_initial_prompt):
         return threads
 
+    return await _enrich_thread_checkpoint_details(
+        threads,
+        include_message_count=include_message_count,
+        include_initial_prompt=include_initial_prompt,
+        source="picker",
+    )
+
+
+async def _enrich_thread_checkpoint_details(
+    threads: list[ThreadInfo],
+    *,
+    include_message_count: bool,
+    include_initial_prompt: bool,
+    source: str,
+) -> list[ThreadInfo]:
+    """Enrich threads and record the caller context for diagnostics.
+
+    Returns:
+        The enriched thread list.
+    """
+    started_at = time.perf_counter()
     async with _connect() as conn:
         await _populate_checkpoint_fields(
             conn,
@@ -565,6 +598,15 @@ async def populate_thread_checkpoint_details(
             include_message_count=include_message_count,
             include_initial_prompt=include_initial_prompt,
         )
+    logger.debug(
+        "Thread enrichment completed in %.1f ms: source=%s rows=%d "
+        "counts=%s prompts=%s",
+        (time.perf_counter() - started_at) * 1000,
+        source,
+        len(threads),
+        include_message_count,
+        include_initial_prompt,
+    )
     return threads
 
 
@@ -594,10 +636,11 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
         cfg = load_thread_config()
         threads = await list_threads(limit=thread_limit, include_message_count=False)
         if threads:
-            await populate_thread_checkpoint_details(
+            await _enrich_thread_checkpoint_details(
                 threads,
                 include_message_count=cfg.columns.get("messages", False),
                 include_initial_prompt=cfg.columns.get("initial_prompt", False),
+                source="startup-prewarm",
             )
         _cache_recent_threads(None, thread_limit, threads)
     except (OSError, sqlite3.Error):
@@ -716,8 +759,13 @@ async def _get_jsonplus_serializer() -> JsonPlusSerializer:
     if _jsonplus_serializer is not None:
         return _jsonplus_serializer
 
+    started_at = time.perf_counter()
     loop = asyncio.get_running_loop()
     _jsonplus_serializer = await loop.run_in_executor(None, _create_jsonplus_serializer)
+    logger.debug(
+        "Thread serializer initialization completed in %.1f ms",
+        (time.perf_counter() - started_at) * 1000,
+    )
     return _jsonplus_serializer
 
 
@@ -831,6 +879,12 @@ async def _populate_checkpoint_fields(
         if needs_count or needs_prompt:
             uncached.append(thread)
 
+    logger.debug(
+        "Thread enrichment cache lookup: rows=%d hits=%d misses=%d",
+        len(threads),
+        len(threads) - len(uncached),
+        len(uncached),
+    )
     if not uncached:
         return
 
@@ -838,8 +892,16 @@ async def _populate_checkpoint_fields(
     uncached_ids = [t["thread_id"] for t in uncached]
     batch_results: dict[str, _CheckpointSummary] = {}
     if include_message_count or include_initial_prompt:
+        phase_started_at = time.perf_counter()
         batch_results = await _load_latest_checkpoint_summaries_batch(
             conn, uncached_ids, serde
+        )
+        logger.debug(
+            "Latest checkpoint loading and decoding completed in %.1f ms: "
+            "requested=%d loaded=%d",
+            (time.perf_counter() - phase_started_at) * 1000,
+            len(uncached_ids),
+            len(batch_results),
         )
     # `initial_prompt` cannot be recovered from the latest checkpoint alone:
     # `after_model` middleware (e.g., `ResumeStateMiddleware`) writes partial
@@ -848,8 +910,15 @@ async def _populate_checkpoint_fields(
     # row holds the user's original input.
     prompt_results: dict[str, str | None] = {}
     if include_initial_prompt:
+        phase_started_at = time.perf_counter()
         prompt_results = await _load_initial_prompts_from_writes_batch(
             conn, uncached_ids, serde
+        )
+        logger.debug(
+            "Initial prompt loading completed in %.1f ms: requested=%d loaded=%d",
+            (time.perf_counter() - phase_started_at) * 1000,
+            len(uncached_ids),
+            len(prompt_results),
         )
 
     # Phase 3: apply inline results, deferring threads whose latest checkpoint
@@ -883,8 +952,16 @@ async def _populate_checkpoint_fields(
     # Phase 4: reconstruct counts for delta-channel threads from the `writes`
     # table by replaying the `messages` writes through the canonical reducer.
     if needs_writes_count:
+        phase_started_at = time.perf_counter()
         writes_counts = await _load_message_counts_from_writes_batch(
             conn, needs_writes_count, serde
+        )
+        logger.debug(
+            "Message write fetching and count reconstruction completed in %.1f ms: "
+            "requested=%d counted=%d",
+            (time.perf_counter() - phase_started_at) * 1000,
+            len(needs_writes_count),
+            len(writes_counts),
         )
         uncached_by_id = {t["thread_id"]: t for t in uncached}
         for thread_id in needs_writes_count:
@@ -931,14 +1008,17 @@ async def _load_latest_checkpoint_summaries_batch(
         chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
         placeholders = ",".join("?" * len(chunk))
         query = f"""
-            SELECT thread_id, type, checkpoint FROM (
-                SELECT thread_id, type, checkpoint,
+            SELECT c.thread_id, c.type, c.checkpoint
+            FROM checkpoints AS c
+            JOIN (
+                SELECT rowid AS rid,
                        ROW_NUMBER() OVER (
                            PARTITION BY thread_id ORDER BY checkpoint_id DESC
                        ) AS rn
                 FROM checkpoints
                 WHERE thread_id IN ({placeholders})
-            ) WHERE rn = 1
+            ) AS ranked ON c.rowid = ranked.rid
+            WHERE ranked.rn = 1
         """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
         async with conn.execute(query, chunk) as cursor:
             rows = await cursor.fetchall()
@@ -1001,15 +1081,18 @@ async def _load_initial_prompts_from_writes_batch(
         chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
         placeholders = ",".join("?" * len(chunk))
         query = f"""
-            SELECT thread_id, type, value FROM (
-                SELECT thread_id, type, value,
+            SELECT w.thread_id, w.type, w.value
+            FROM writes AS w
+            JOIN (
+                SELECT rowid AS rid,
                        ROW_NUMBER() OVER (
                            PARTITION BY thread_id
                            ORDER BY checkpoint_id ASC, idx ASC
                        ) AS rn
                 FROM writes
                 WHERE thread_id IN ({placeholders}) AND channel = 'messages'
-            ) WHERE rn = 1
+            ) AS ranked ON w.rowid = ranked.rid
+            WHERE ranked.rn = 1
         """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
         async with conn.execute(query, chunk) as cursor:
             rows = await cursor.fetchall()

@@ -259,10 +259,6 @@
       "pattern": "(?:^|/)(?:system_prompt\\.md|default_agent_prompt\\.md|_prompt_caching\\.py)$"
     },
     {
-      "label": "topic:harness",
-      "prefix": "libs/deepagents/deepagents/profiles/"
-    },
-    {
       "label": "topic:multimodal",
       "pattern": "(?:^|/)(?:_video|media_utils)\\.py$"
     },

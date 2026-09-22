@@ -570,9 +570,24 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 Defaults to keeping last 20 messages.
             token_counter: Function to count tokens in messages.
             summary_prompt: Prompt template for generating summaries.
-            trim_tokens_to_summarize: Max tokens to include when generating summary.
+            trim_tokens_to_summarize: Token budget for the older history sent to the
+                summarization model, measured by `token_counter`. Applied after
+                setting aside the recent messages selected by `keep`.
 
-                Defaults to 4000.
+                If the older history exceeds this budget, trim it to its most
+                recent messages before summarizing. History excluded by this
+                trimming is not summarized. This does not set the summarization
+                trigger or limit the generated summary's length.
+
+                For example, with `keep=("messages", 20)` and
+                `trim_tokens_to_summarize=4000`, preserve the latest 20 messages
+                and summarize up to 4,000 tokens from the end of the older
+                history. The agent receives that summary followed by the
+                preserved messages.
+
+                Pass `None` to summarize all selected history without this
+                trimming. Unlike `create_summarization_middleware`, which
+                defaults to `None`, this constructor defaults to 4000.
             truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
                 Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
@@ -1803,7 +1818,18 @@ def create_summarization_middleware(
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
-        trim_tokens_to_summarize: Max tokens to include when generating summary.
+        trim_tokens_to_summarize: Token budget for the older history sent to the
+            summarization model, measured by `token_counter`. Applied after
+            setting aside the recent messages selected by the retention policy.
+
+            For example, `4000` summarizes up to 4,000 tokens from the end of
+            that older history; earlier history excluded by trimming is not
+            summarized. This does not set the summarization trigger or limit
+            the generated summary's length.
+
+            `None` skips this trimming and summarizes all selected history.
+            This factory defaults to `None`, unlike constructing
+            `SummarizationMiddleware` directly, which defaults to 4000.
         token_counter: Function to count tokens in messages.
 
     Returns:

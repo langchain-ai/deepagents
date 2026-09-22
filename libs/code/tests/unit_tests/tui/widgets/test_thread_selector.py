@@ -969,10 +969,6 @@ class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
 
 
-class TestThreadSelectorSearch:
-    """Tests for fuzzy search filtering."""
-
-
 class TestThreadSelectorDelete:
     """Tests for ctrl+d delete functionality."""
 

@@ -26691,6 +26691,126 @@ class TestResumeThreadCwdSwitch:
         assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
 
+    @pytest.mark.parametrize("with_diagnostics", [False, True])
+    async def test_picker_bind_conflict_preserves_current_session(
+        self,
+        with_diagnostics: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        wait_for_modal: WaitForModal,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.model_config import ThreadConfig
+        from deepagents_code.tui.widgets.cwd_switch import CwdSwitchPromptScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        agent = RemoteAgent("http://test:0")
+        agent.set_workspace(str(current))
+        agent._workspaces["old-thread"] = {"cwd": str(current)}
+        original = agent._snapshot_workspace()
+        reason = "Cannot host this workspace because server configuration changed."
+        body: dict[str, object] = {"detail": reason}
+        if with_diagnostics:
+            body["diagnostics"] = WorkspaceDiagnostics(
+                category="config_drift",
+                reason=reason,
+                snapshot_status="unavailable",
+            ).to_dict()
+        response = httpx.Response(
+            409, request=httpx.Request("POST", "http://test:0/workspace")
+        )
+        switch_workspace = AsyncMock(
+            side_effect=[[], ConflictError(reason, response=response, body=body)]
+        )
+        monkeypatch.setattr(agent, "aswitch_workspace", switch_workspace)
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "target-thread",
+                "initial_prompt": "Saved conversation",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "cwd": str(target),
+            }
+        ]
+        monkeypatch.setattr(
+            "deepagents_code.model_config.load_thread_config",
+            lambda: ThreadConfig(
+                columns={}, relative_time=True, sort_order="updated_at", scope="all"
+            ),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.get_cached_threads", lambda **_kwargs: threads
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.list_threads", AsyncMock(return_value=threads)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.sessions.get_thread_cwd",
+            AsyncMock(return_value=str(target)),
+        )
+        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            app, "_preview_project_settings_change", AsyncMock(return_value=False)
+        )
+        monkeypatch.setattr(app, "_refresh_project_context_for_cwd_switch", AsyncMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._server_kwargs = {"cwd": str(current)}
+            previous_message = UserMessage("Keep this conversation")
+            await app._mount_message(previous_message)
+            await app._show_thread_selector()
+            await wait_for_modal(pilot, ThreadSelectorScreen, present=True)
+            await pilot.press("enter")
+            await wait_for_modal(pilot, CwdSwitchPromptScreen, present=True)
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            assert app.is_running
+            assert app._lc_thread_id == "old-thread"
+            assert app._session_state is not None
+            assert app._session_state.thread_id == "old-thread"
+            assert app._cwd == str(current)
+            assert Path.cwd() == current
+            assert app._server_kwargs["cwd"] == str(current)
+            assert agent._snapshot_workspace() == original
+            assert previous_message.is_mounted
+            assert not app._thread_switching
+            error = app.query_one(ErrorMessage).render().plain
+            assert "Could not resume thread target-thread" in error
+            assert reason in error
+            assert "Use /threads to try again" in error
+            assert ("Server refusal:" in error) is with_diagnostics
+            assert ("detailed comparison is unavailable" in error) is with_diagnostics
+            assert "Same-agent resume failed for thread target-thread" in caplog.text
+            assert "ConflictError" in caplog.text
+            assert app._chat_input is not None
+            assert app.focused is app._chat_input.input_widget
+            await pilot.press("r", "e", "t", "r", "y")
+            assert app._chat_input.input_widget is not None
+            assert app._chat_input.input_widget.text == "retry"
+
+        assert switch_workspace.await_args_list == [
+            call(
+                {"configurable": {"thread_id": "target-thread"}},
+                str(target),
+                validate_only=True,
+            ),
+            call({"configurable": {"thread_id": "target-thread"}}, str(target)),
+        ]
+
     async def test_refused_switch_restarts_only_after_confirmation(
         self,
         tmp_path: Path,
@@ -30829,6 +30949,55 @@ class TestPromptClipboard:
             assert app.screen is not screen
             assert chat_input.value == "oldest"
 
+    async def test_ctrl_r_keeps_file_picker_open(self) -> None:
+        """Prompt recall must not replace an active `@` file picker."""
+        from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            assert chat_input._file_controller is not None
+            assert chat_input._text_area is not None
+            chat_input._file_controller._file_cache = ["README.md"]
+            chat_input._text_area.insert("@")
+            await pilot.pause()
+            assert chat_input._current_suggestions == [("@README.md", "md")]
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert not isinstance(app.screen, PromptClipboardScreen)
+            assert chat_input._current_suggestions == [("@README.md", "md")]
+            assert chat_input._prompt_search_active is False
+
+    @pytest.mark.parametrize("draft", ["@zzzzzzzzzz", "contact alice@example.com"])
+    async def test_ctrl_r_opens_prompt_recall_without_file_matches(
+        self, draft: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched `@` query must not block prompt recall."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            assert chat_input._file_controller is not None
+            assert chat_input._text_area is not None
+            chat_input._file_controller._file_cache = []
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: (draft,))
+            chat_input._text_area.insert(draft)
+            await pilot.pause()
+            assert not chat_input._current_suggestions
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert chat_input._prompt_search_active
+            await pilot.press("escape")
+            await pilot.pause()
+            assert chat_input.value == draft
+
     async def test_escape_preserves_draft_and_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -30910,6 +31079,53 @@ class TestPromptClipboard:
             toggle.assert_awaited_once()
             assert chat_input._prompt_search_active is True
             assert chat_input._prompt_search_index == 1
+
+    async def test_thread_reference_picker_preserves_other_directory_results(
+        self,
+    ) -> None:
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+                "cwd": "/another/project",
+            }
+        ]
+        with (
+            patch.object(ChatInput, "_initialize_thread_cache"),
+            patch("deepagents_code.sessions.get_cached_threads", return_value=threads),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new=AsyncMock(
+                    side_effect=lambda *, cwd=None, **_kwargs: (
+                        threads if cwd is None else []
+                    )
+                ),
+            ),
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                chat = app._chat_input
+                assert chat is not None
+                assert chat._thread_controller is not None
+                assert chat._text_area is not None
+                chat._thread_controller.update_threads(threads)
+                chat._text_area.insert("compare @@parser")
+                await pilot.pause()
+                assert chat._current_suggestions[0][0] == "Fix the parser"
+
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                assert isinstance(app.screen, ThreadSelectorScreen)
+                assert app.screen._filtered_threads == threads
+                await pilot.press("enter")
+                await pilot.pause()
+                assert chat._text_area.text == (
+                    "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+                )
 
     async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
         app = DeepAgentsApp()

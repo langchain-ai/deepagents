@@ -16887,6 +16887,7 @@ class DeepAgentsApp(App):
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
+                "  @@query         Search recent conversations by title or ID\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
                 "  !!command       Run shell commands without adding "
@@ -23705,8 +23706,13 @@ class DeepAgentsApp(App):
         if chat_input is None:
             return
 
+        thread_query = chat_input.active_thread_query()
+        if thread_query is not None:
+            self._open_thread_reference_selector(thread_query)
+            return
+
         tier = chat_input.open_prompt_search()
-        if tier == "inline":
+        if tier in {"inline", "file_picker"}:
             return
         if tier == "noop":
             # The composer is mounted but its text area or search panel is not.
@@ -28870,13 +28876,14 @@ class DeepAgentsApp(App):
             await self._resume_thread(thread_id)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Same-agent resume failed for thread %s", thread_id)
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not resume thread {thread_id}. Use /threads to try again."
-                )
+            body = _build_agent_error_body(
+                f"Could not resume thread {thread_id}: {exc}\n"
+                "Use /threads to try again.",
+                exc,
             )
+            await self._mount_message(ErrorMessage(body))
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -29129,6 +29136,39 @@ class DeepAgentsApp(App):
                 )
             )
 
+    def _open_thread_reference_selector(self, initial_query: str) -> None:
+        """Open the full thread picker and insert the selected reference."""
+        from deepagents_code.sessions import get_cached_threads, get_thread_limit
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        thread_limit = get_thread_limit()
+
+        def handle_result(result: str | None) -> None:
+            def apply_result() -> None:
+                chat_input = self._chat_input
+                if result is not None and (
+                    chat_input is None or not chat_input.insert_thread_reference(result)
+                ):
+                    self.notify(
+                        "Could not insert the thread reference: the composer changed",
+                        severity="warning",
+                    )
+                if chat_input is not None:
+                    chat_input.focus_input()
+
+            self.call_after_refresh(apply_result)
+
+        self.push_screen(
+            ThreadSelectorScreen(
+                thread_limit=thread_limit,
+                initial_threads=get_cached_threads(limit=thread_limit),
+                initial_query=initial_query,
+                filter_cwd=None,
+                reference_mode=True,
+            ),
+            handle_result,
+        )
+
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
         from functools import partial
@@ -29144,7 +29184,7 @@ class DeepAgentsApp(App):
         async def resume_and_refocus(thread_id: str) -> None:
             """Resume a selected thread, then restore focus to chat input."""
             try:
-                await self._resume_thread(thread_id)
+                await self._resume_same_agent_thread(thread_id)
             finally:
                 if self._chat_input:
                     self._chat_input.focus_input()

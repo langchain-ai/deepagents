@@ -9664,6 +9664,19 @@ class DeepAgentsApp(App):
         )
         self._refresh_cache_display()
 
+    def _skip_lapsed_cache_expiry(self) -> None:
+        """Do not offer a handoff for a window that expired before loading.
+
+        A resumed thread's window usually lapsed long ago. Prompting a second
+        after resume, often right after the resume-compact prompt, interrupts
+        a user who has not sent anything yet. The send-time cost warning still
+        applies.
+        """
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if thread_id and expires_at is not None and datetime.now(UTC) >= expires_at:
+            self._cache_expiry_seen[thread_id] = expires_at
+
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle."""
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
@@ -20550,6 +20563,7 @@ class DeepAgentsApp(App):
                 # after `_reset_thread_usage`, which clears these fields.
                 self._sync_cache_state_from_state(payload.cache_state)
                 await self._refresh_cache_timing()
+                self._skip_lapsed_cache_expiry()
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 

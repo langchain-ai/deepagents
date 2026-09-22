@@ -544,6 +544,39 @@ async def test_cold_cache_opt_out_suppresses_handoff(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
+async def test_resumed_thread_with_lapsed_window_does_not_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+
+    async def restore_timing() -> None:  # noqa: RUF029  # mock contract
+        # The checkpoint's last request is well past its retention window.
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(hours=2)
+
+    monkeypatch.setattr(app, "_refresh_cache_timing", restore_timing)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        payload = app._goal_rubric_payload_from_state(
+            {"_last_model_request_at": "2026-01-01T00:00:00+00:00"},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        await app._load_thread_history(preloaded_payload=payload)
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        # A window that lapses during the session still prompts.
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert isinstance(app.screen, ColdCacheWarningScreen)
+        await pilot.press("escape")
+
+
 @pytest.mark.parametrize("identity_changed", [False, True])
 async def test_expiry_acknowledgment_does_not_hide_identity_change(
     identity_changed: bool, monkeypatch: pytest.MonkeyPatch

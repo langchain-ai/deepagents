@@ -2319,17 +2319,22 @@ def _resolve_update_lock_file() -> Path | None:
 
 
 def _legacy_update_lock_file() -> Path | None:
-    """Prepare the lock path shared with sessions launched before migration.
+    """Find the lock path in a pre-existing legacy installation lock directory.
+
+    Never create the directory: fresh installs must not add an invalid tool
+    entry for uv. Existing roots remain available to older sessions, including
+    those that have not yet attempted their first update.
 
     Returns:
-        The legacy path, or `None` when unsafe or inaccessible.
+        The legacy path, or `None` when its root is absent, unsafe or inaccessible.
     """
     root = PATHS.installation.root
     legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
     try:
         if legacy.parent.is_symlink() or legacy.is_symlink():
             return None
-        legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not legacy.parent.is_dir():
+            return None
         if not legacy.exists() or legacy.is_file():
             return legacy
     except OSError:
@@ -2364,10 +2369,11 @@ def update_install_lock() -> Iterator[bool]:
     Non-blocking by design: a loser returns immediately rather than stalling
     startup behind an install it does not need.
 
-    Hold the pre-migration lock alongside the current lock for the entire
-    install, creating it if necessary: older sessions may attempt their first
-    update after we acquire the current lock. Keep its inode after release so
-    those sessions always contend on the same file.
+    If a legacy directory exists, hold its lock alongside the current lock for
+    the entire install, creating the file if necessary: older sessions may
+    attempt their first update after we acquire the current lock. Keep its inode
+    after release so those sessions always contend on the same file. An older
+    process that creates a legacy directory later cannot share this protection.
 
     The locking itself never raises; exceptions from the caller's own body
     propagate as usual. When the lock is unusable — an unwritable state
@@ -2433,7 +2439,7 @@ def update_install_lock() -> Iterator[bool]:
         harden_state_dir(lock_file.parent)
         legacy = _legacy_update_lock_file()
         lock_files = [lock_file]
-        # Keep the legacy inode locked even if no older session has used it yet.
+        # Existing legacy roots also cover older sessions' first update attempts.
         if legacy is not None:
             lock_files.append(legacy)
         acquired_locks = []

@@ -1537,17 +1537,13 @@ class TestUpdateInstallLock:
             with FileLock(path, timeout=0):
                 pass
 
-    @pytest.mark.parametrize("missing_directory", [False, True])
     def test_older_session_first_update_is_excluded(
         self,
         lock_file: Path,
         legacy_lock_file: Path,
-        missing_directory: bool,
     ) -> None:
-        """A late old process cannot acquire even an initially absent legacy lock."""
+        """An existing legacy root reserves even an initially absent update lock."""
         legacy_lock_file.unlink()
-        if missing_directory:
-            legacy_lock_file.parent.rmdir()
         script = (
             "import sys\n"
             "from filelock import FileLock, Timeout\n"
@@ -3601,6 +3597,37 @@ class TestUpdateLockLocationFallback:
     would be skipped on every single launch, reinstating the concurrent
     double-upgrade race it exists to prevent.
     """
+
+    @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
+    @pytest.mark.parametrize("existing_tool_dir", [False, True])
+    def test_fresh_update_keeps_uv_tool_list_clean(
+        self, monkeypatch: pytest.MonkeyPatch, existing_tool_dir: bool
+    ) -> None:
+        """Repeated updates must not introduce legacy state into a fresh install."""
+        installation = update_check.PATHS.installation
+        tool_dir = installation.root.parent
+        if existing_tool_dir:
+            tool_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            update_check, "UPDATE_LOCK_FILE", installation.locks_dir / "update.lock"
+        )
+        legacy = tool_dir / ".deepagents-code.deepagents-code-locks"
+        for _ in range(2):
+            with update_install_lock() as acquired:
+                assert acquired
+                assert not legacy.exists()
+            assert not legacy.exists()
+            listing = subprocess.run(
+                ["uv", "--no-cache", "--no-config", "tool", "list"],
+                env={**os.environ, "UV_TOOL_DIR": str(tool_dir)},
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            assert listing.returncode == 0, listing.stderr
+            assert not listing.stdout.strip()
+            assert "warning:" not in listing.stderr
 
     def test_prefers_the_installation_lock(self, tmp_path: Path) -> None:
         shared = tmp_path / "shared" / "update.lock"

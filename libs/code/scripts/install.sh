@@ -1160,6 +1160,7 @@ acquire_install_lock() {
   local installation_name
   local lock_parent
   local lock_root
+  local legacy_root
   local resolution
   local guessed
   # Keep this a command substitution: `set -e` must still abort if resolution
@@ -1181,13 +1182,18 @@ acquire_install_lock() {
     log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
     log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
   fi
-  # Reserve the legacy mkdir lock even when absent: an older installer can
-  # start after us. Keep it until exit, including while waiting for the new lock.
-  acquire_install_lock_root "${installation_parent}/.${installation_name}.deepagents-code-locks"
-  LEGACY_INSTALL_LOCK_DIR="$INSTALL_LOCK_DIR"
-  LEGACY_INSTALL_LOCK_TOKEN="$INSTALL_LOCK_TOKEN"
-  INSTALL_LOCK_KIND=""
-  INSTALL_LOCK_TOKEN=""
+  # Coordinate through existing legacy roots, without creating an invalid uv
+  # tool entry on fresh installs. An older installer that creates a legacy root
+  # after this check cannot share this protection. Preserve existing roots for
+  # waiters and keep their lock until exit, including while waiting for the new one.
+  legacy_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -e "$legacy_root" ] || [ -L "$legacy_root" ]; then
+    acquire_install_lock_root "$legacy_root"
+    LEGACY_INSTALL_LOCK_DIR="$INSTALL_LOCK_DIR"
+    LEGACY_INSTALL_LOCK_TOKEN="$INSTALL_LOCK_TOKEN"
+    INSTALL_LOCK_KIND=""
+    INSTALL_LOCK_TOKEN=""
+  fi
   acquire_install_lock_root "$lock_root"
 }
 

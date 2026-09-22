@@ -2068,10 +2068,11 @@ def test_install_script_only_legacy_root_warns_in_uv_tool_list(
         timeout=10,
     )
     assert listing.returncode == 0, listing.stderr
-    assert legacy.is_dir()
+    assert legacy.is_dir() is legacy_root
     assert not listing.stdout.strip()
     for line in listing.stderr.splitlines():
         if line.startswith("warning:"):
+            assert legacy_root, listing.stderr
             assert f"Ignoring tool directory `{legacy}`" in line
 
 
@@ -2120,8 +2121,9 @@ def test_installer_serializes_with_legacy_mkdir_protocol(
     root = tmp_path / "tools" / "deepagents-code"
     legacy = root.parent / ".deepagents-code.deepagents-code-locks" / "install.lock.d"
     current = tmp_path / ".tools.deepagents-code.deepagents-code-locks/install.lock.d"
+    legacy.parent.mkdir(parents=True)
     if older_installer_active:
-        legacy.mkdir(parents=True)
+        legacy.mkdir()
         (legacy / "pid").write_text(str(os.getpid()))
     script = _installer_lock_harness(root)
     with subprocess.Popen(
@@ -2165,11 +2167,15 @@ def test_installer_serializes_with_legacy_mkdir_protocol(
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
+@pytest.mark.parametrize("legacy_root", [False, True])
 def test_waiting_installer_acquires_lock_after_owner_exits(
-    tmp_path: Path, interrupt: bool
+    tmp_path: Path, interrupt: bool, legacy_root: bool
 ) -> None:
     """Releasing a lock must preserve the root a waiting installer references."""
     root = tmp_path / "tools" / "deepagents-code"
+    legacy = root.parent / ".deepagents-code.deepagents-code-locks"
+    if legacy_root:
+        legacy.mkdir(parents=True)
     script = _installer_lock_harness(root)
     with (
         subprocess.Popen(
@@ -2213,9 +2219,9 @@ def test_waiting_installer_acquires_lock_after_owner_exits(
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=10)
-    legacy = root.parent / ".deepagents-code.deepagents-code-locks"
     current = tmp_path / ".tools.deepagents-code.deepagents-code-locks"
-    for lock_root in (legacy, current):
+    assert legacy.exists() is legacy_root
+    for lock_root in (legacy, current) if legacy_root else (current,):
         assert lock_root.is_dir()
         assert not list(lock_root.iterdir())
 
@@ -2224,6 +2230,7 @@ def test_install_script_releases_legacy_lock_when_current_root_is_unusable(
     tmp_path: Path,
 ) -> None:
     """Failure to acquire the second lock must not strand the first one."""
+    (tmp_path / "tools/.deepagents-code.deepagents-code-locks").mkdir(parents=True)
     (tmp_path / ".tools.deepagents-code.deepagents-code-locks").touch()
     proc, args = _invoke(
         tmp_path,

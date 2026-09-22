@@ -80,12 +80,14 @@ from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from decimal import Decimal
     from pathlib import Path
     from uuid import UUID
 
     from genai_prices import UpdatePrices, Usage
     from genai_prices.data_snapshot import DataSnapshot
-    from genai_prices.types import ModelInfo, PriceCalculation, Provider
+    from genai_prices.types import ModelInfo, PriceCalculation, Provider, TieredPrices
+    from genai_prices.units import UnitDef, UnitRegistry
     from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
 
@@ -1508,6 +1510,40 @@ def _override_price(
     return estimate
 
 
+def _category_prices(
+    resolved: Sequence[tuple[UnitDef, Decimal | TieredPrices]],
+    usage: Usage,
+    registry: UnitRegistry,
+) -> list[tuple[UnitDef, Decimal | TieredPrices]]:
+    """Resolve child rates, including usage billed at the closest ancestor rate.
+
+    Returns:
+        Category units paired with their explicit or inherited rates.
+    """
+    categories = {"cache_write", "cache_read", "reasoning"}
+    prices = [
+        (unit, rate)
+        for unit, rate in resolved
+        if unit.dimensions.get("token_type") in categories
+    ]
+    for key in ("cache_write_tokens", "cache_read_tokens", "output_reasoning_tokens"):
+        if getattr(usage, key, None) is None or any(
+            unit.usage_key == key for unit, _ in prices
+        ):
+            continue
+        ancestors = [
+            (unit, rate)
+            for unit, rate in resolved
+            if unit.usage_key in registry.ancestor_usage_keys(key)
+        ]
+        if ancestors:
+            parent, rate = max(ancestors, key=lambda entry: len(entry[0].dimensions))
+            prices.append(
+                (dataclasses.replace(registry.units[key], per=parent.per), rate)
+            )
+    return prices
+
+
 def _category_costs(price: PriceCalculation, usage: Usage) -> dict[str, float | None]:
     """Attribute requested child costs from one resolved pricing calculation.
 
@@ -1523,7 +1559,10 @@ def _category_costs(price: PriceCalculation, usage: Usage) -> dict[str, float | 
 
     registry = _get_registry()
     resolved = _collect_resolved_model_prices(price.model_price, registry)
-    counts = _compute_registry_priced_counts(resolved, usage)
+    category_prices = _category_prices(resolved, usage, registry)
+    # Decompose only the child categories: they are subsets of the already
+    # priced parents, and explicit descendant rates must still win.
+    counts = _compute_registry_priced_counts(category_prices, usage)
     total_input_tokens = (
         getattr(usage, "input_tokens", 0)
         if any(type(rate).__name__ == "TieredPrices" for _, rate in resolved)
@@ -1535,7 +1574,7 @@ def _category_costs(price: PriceCalculation, usage: Usage) -> dict[str, float | 
         "reasoning": 0.0,
     }
     seen = dict.fromkeys(costs, False)
-    for unit, rate in resolved:
+    for unit, rate in category_prices:
         token_type = unit.dimensions.get("token_type")
         category = {
             "cache_write": "cache_creation",

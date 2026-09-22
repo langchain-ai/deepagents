@@ -254,6 +254,19 @@ def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[A
 class TestEstimateCost:
     """Tests for the shared `genai-prices` adapter."""
 
+    def test_reasoning_cost_inherits_output_rate(self) -> None:
+        usage = _usage(output_tokens=1_000)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        estimate = cost_tracking._estimate_cost(usage, "gpt-5", "openai")
+
+        assert estimate is not None
+        assert estimate.output_cost_usd == pytest.approx(0.01)
+        assert estimate.reasoning_cost_usd == pytest.approx(0.005)
+        breakdown = cost_tracking._breakdown_for_estimate(estimate)
+        assert breakdown["reasoning_cost_complete"] is True
+        assert breakdown["reasoning_cost_usd"] == pytest.approx(0.005)
+
     def test_structured_estimate_has_inclusive_parents_and_child_subsets(self) -> None:
         usage = _usage()
         usage["input_token_details"] = {
@@ -318,6 +331,77 @@ def _override_model(
 
 class TestPriceOverrides:
     """Local pricing catalogs consulted after a primary `LookupError`."""
+
+    @pytest.mark.parametrize("reasoning_rate", [None, 20.0, 0.0])
+    def test_reasoning_cost_preserves_explicit_override_rates(
+        self, monkeypatch: pytest.MonkeyPatch, reasoning_rate: float | None
+    ) -> None:
+        prices = {"input_mtok": 2.0, "output_mtok": 10.0}
+        if reasoning_rate is not None:
+            prices["output_reasoning_mtok"] = reasoning_rate
+        self._install_built_ins(monkeypatch, [_override_model(_OVERRIDE_MODEL, prices)])
+        usage = _usage(output_tokens=1_000)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        expected = 500 * (10 if reasoning_rate is None else reasoning_rate) / 1_000_000
+        assert estimate.reasoning_cost_usd == pytest.approx(expected)
+        assert estimate.output_cost_usd == pytest.approx(0.005 + expected)
+        assert estimate.total_cost_usd == pytest.approx(0.007 + expected)
+
+    @pytest.mark.parametrize(
+        ("input_tokens", "reasoning_cost"), [(1_000, 0.005), (3_000, 0.01)]
+    )
+    def test_inherited_reasoning_cost_uses_parent_pricing_tier(
+        self, monkeypatch: pytest.MonkeyPatch, input_tokens: int, reasoning_cost: float
+    ) -> None:
+        model = _override_model(_OVERRIDE_MODEL, {"input_mtok": 2.0})
+        model["prices"]["output_mtok"] = {
+            "base": 10.0,
+            "tiers": [{"start": 2_000, "price": 20.0}],
+        }
+        self._install_built_ins(monkeypatch, [model])
+        usage = _usage(input_tokens=input_tokens, output_tokens=1_000)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        assert estimate.reasoning_cost_usd == pytest.approx(reasoning_cost)
+        assert estimate.output_cost_usd == pytest.approx(reasoning_cost * 2)
+
+    def test_inherited_cache_cost_preserves_explicit_rates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {
+                        "input_mtok": 2.0,
+                        "output_mtok": 10.0,
+                        "cache_write_mtok": 3.0,
+                        "cache_write_1h_mtok": 4.0,
+                    },
+                )
+            ],
+        )
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_read": 100,
+            "ephemeral_5m_input_tokens": 200,
+            "ephemeral_1h_input_tokens": 300,
+        }
+
+        estimate = cost_tracking._estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert estimate is not None
+        assert estimate.cache_read_cost_usd == pytest.approx(0.0002)
+        assert estimate.cache_creation_cost_usd == pytest.approx(0.0018)
+        assert estimate.input_cost_usd == pytest.approx(0.0028)
 
     def _install_raw_built_ins(
         self, monkeypatch: pytest.MonkeyPatch, raw: list[dict[str, Any]]

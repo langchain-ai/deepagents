@@ -931,14 +931,17 @@ async def _load_latest_checkpoint_summaries_batch(
         chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
         placeholders = ",".join("?" * len(chunk))
         query = f"""
-            SELECT thread_id, type, checkpoint FROM (
-                SELECT thread_id, type, checkpoint,
+            SELECT c.thread_id, c.type, c.checkpoint
+            FROM checkpoints AS c
+            JOIN (
+                SELECT rowid AS rid,
                        ROW_NUMBER() OVER (
                            PARTITION BY thread_id ORDER BY checkpoint_id DESC
                        ) AS rn
                 FROM checkpoints
                 WHERE thread_id IN ({placeholders})
-            ) WHERE rn = 1
+            ) AS ranked ON c.rowid = ranked.rid
+            WHERE ranked.rn = 1
         """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
         async with conn.execute(query, chunk) as cursor:
             rows = await cursor.fetchall()

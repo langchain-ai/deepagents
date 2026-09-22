@@ -29098,6 +29098,7 @@ class DeepAgentsApp(App):
                 thread_limit=thread_limit,
                 initial_threads=get_cached_threads(limit=thread_limit),
                 initial_query=initial_query,
+                filter_cwd=None,
                 reference_mode=True,
             ),
             handle_result,

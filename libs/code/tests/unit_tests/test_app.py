@@ -31069,6 +31069,53 @@ class TestPromptClipboard:
         open_selector.assert_called_once_with("fix parser")
         chat_input.open_prompt_search.assert_not_called()
 
+    async def test_thread_reference_picker_preserves_other_directory_results(
+        self,
+    ) -> None:
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+                "cwd": "/another/project",
+            }
+        ]
+        with (
+            patch.object(ChatInput, "_initialize_thread_cache"),
+            patch("deepagents_code.sessions.get_cached_threads", return_value=threads),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new=AsyncMock(
+                    side_effect=lambda *, cwd=None, **_kwargs: (
+                        threads if cwd is None else []
+                    )
+                ),
+            ),
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                chat = app._chat_input
+                assert chat is not None
+                assert chat._thread_controller is not None
+                assert chat._text_area is not None
+                chat._thread_controller.update_threads(threads)
+                chat._text_area.insert("compare @@parser")
+                await pilot.pause()
+                assert chat._current_suggestions[0][0] == "Fix the parser"
+
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                assert isinstance(app.screen, ThreadSelectorScreen)
+                assert app.screen._filtered_threads == threads
+                await pilot.press("enter")
+                await pilot.pause()
+                assert chat._text_area.text == (
+                    "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+                )
+
     async def test_prompts_command_opens_without_awaiting_modal(self) -> None:
         app = DeepAgentsApp()
         with (

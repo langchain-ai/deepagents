@@ -3,9 +3,6 @@ type: integration-guide
 title: Sandbox and Partner Backends
 description: How deepagents shell backends and partner adapters expose filesystem operations, and how dcode discovers, provisions, owns, and safely configures sandbox providers. Distinguishes provider lifecycle and capability boundaries from isolation guarantees.
 tags: [sandbox, backends, integrations, deepagents, dcode, partners, quickjs]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -17,6 +14,8 @@ sources:
     resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-ea49272aef6bfc33d634a15c
     resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
   - id: openwiki-source-ba6aa10dca5a8aea05030887
@@ -27,6 +26,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-478a579b56d29c6928ec2320
+    resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-7c1cff57fb2b25a4a7848547
@@ -59,7 +60,10 @@ sources:
     resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-1176ea0659c06327fcdf25b1
     resource: repo://libs/partners/vercel/tests/integration_tests/test_integration.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-21T08:06:25.442Z
 ---
 
 # Sandbox and Partner Backends
@@ -144,6 +148,10 @@ The curated set is `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and 
 ## Partner adapters and current packages
 
 Partner packages under `libs/partners/` are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. The current package metadata is: `langchain-daytona` 0.0.8, `langchain-modal` 0.0.6, `langchain-runloop` 0.0.7, `langchain-vercel-sandbox` 0.0.2, and `langchain-quickjs` 0.3.7. All require Python `>=3.11,<4.0`, but they do **not** offer interchangeable execution or isolation properties.
+
+### QuickJS compatibility constraints
+
+`langchain-quickjs` 0.3.7 requires `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.2,<2.0.0`, `langchain-core>=1.6.3,<2.0.0`, `langgraph>=1.2.11,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`. The package itself supports Python 3.11+, but `deepagents-code` supports Python 3.12+ and pins `deepagents==0.7.15`; that pin is inside QuickJS's declared Deep Agents range. `deepagents` exposes QuickJS as an optional dependency at `langchain-quickjs>=0.3.7`, while dcode accepts `langchain-quickjs>=0.3.4,<0.4.0`. Consequently, a dcode installation on a supported interpreter can resolve the repository's 0.3.7 QuickJS package, whereas a standalone QuickJS integration may run on Python 3.11. Keep these constraints aligned when upgrading either side of the middleware boundary.
 
 | Package | Boundary | Key behavior |
 | --- | --- | --- |

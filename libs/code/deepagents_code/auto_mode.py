@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
-import pydantic
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
     Decision,
@@ -79,8 +78,8 @@ from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFA
 from deepagents_code.goal_state_notice import project_goal_state
 
 if TYPE_CHECKING:
-    from langchain_core.language_models import BaseChatModel
-    from langchain_core.runnables import RunnableConfig
+    from langchain_core.language_models import BaseChatModel, LanguageModelInput
+    from langchain_core.runnables import Runnable, RunnableConfig
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -183,7 +182,7 @@ _MAX_PENDING_EVENT_SCOPES = 32
 # a session creates by switching specs with `/auto model`.
 _MAX_CLASSIFIER_MODEL_CACHE = 4
 _MAX_CLASSIFIER_CONVERSATION_TURNS = 8
-_CLASSIFIER_CONVERSATION_VERSION = 1
+_CLASSIFIER_CONVERSATION_VERSION = 2
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -296,15 +295,27 @@ class AutoDecisionCategory(StrEnum):
     OTHER_POLICY = "other_policy"
 
 
-class AutoDecision(BaseModel):
-    """One structured classifier decision for a proposed tool call."""
+class _ClassifierVerdict(BaseModel):
+    """Stable provider-facing response for one action, without model-copied IDs."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tool_call_id: str
     decision: Literal["allow", "deny"]
     category: AutoDecisionCategory
     reason: str
+
+    @model_validator(mode="after")
+    def _denial_has_reason(self) -> _ClassifierVerdict:
+        if self.decision == "deny" and not self.reason.strip():
+            msg = "deny decisions require a reason"
+            raise ValueError(msg)
+        return self
+
+
+class AutoDecision(_ClassifierVerdict):
+    """One validated verdict bound by the server to its proposed tool call."""
+
+    tool_call_id: str
 
     @field_validator("tool_call_id")
     @classmethod
@@ -314,16 +325,9 @@ class AutoDecision(BaseModel):
             raise ValueError(msg)
         return value
 
-    @model_validator(mode="after")
-    def _denial_has_reason(self) -> AutoDecision:
-        if self.decision == "deny" and not self.reason.strip():
-            msg = "deny decisions require a reason"
-            raise ValueError(msg)
-        return self
-
 
 class AutoDecisionBatch(BaseModel):
-    """Validated classifier response for one unresolved action batch."""
+    """Server-assembled verdicts for one unresolved action batch."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -385,49 +389,6 @@ def _merge_classifier_conversation(
     if current_valid is None or update_valid["revision"] >= current_valid["revision"]:
         return update_valid
     return current_valid
-
-
-def _batch_decision_model(
-    allowed_ids: Sequence[str],
-) -> type[AutoDecision]:
-    """Build the per-batch decision model with an exact `tool_call_id` enum.
-
-    Returns:
-        A fresh `AutoDecision` subclass whose IDs enumerate `allowed_ids`.
-    """
-    # A runtime-constructed `Literal` subscript is not a valid static type
-    # expression, so build it through the dunder to keep `ty` quiet; the
-    # dunder avoids the ruff `Literal[...]`-subscript rewrite.
-    tool_call_id_type: Any = Literal.__getitem__(tuple(allowed_ids))  # noqa: PLC2801
-    return pydantic.create_model(  # type: ignore[return-value]
-        "_BatchDecision",
-        __base__=AutoDecision,
-        tool_call_id=tool_call_id_type,
-    )
-
-
-def _classifier_response_model(allowed_ids: Sequence[str]) -> type[AutoDecisionBatch]:
-    """Build a per-batch response model whose `tool_call_id` is an enum.
-
-    Each batch gets a fresh model restricting `tool_call_id` to the exact
-    original IDs requiring review, so the provider — not just downstream
-    validation — rejects mistyped IDs. Never mutate the shared
-    `AutoDecisionBatch` classes: successive and concurrent batches must stay
-    isolated from each other.
-
-    Args:
-        allowed_ids: Original tool-call IDs requiring classifier review.
-
-    Returns:
-        A fresh `AutoDecisionBatch` subclass with the batch's ID enum.
-    """
-    decision_model: Any = _batch_decision_model(allowed_ids)
-    decisions_type: Any = (list[decision_model], ...)  # type: ignore[invalid-type-form]
-    return pydantic.create_model(
-        AutoDecisionBatch.__name__,
-        __base__=AutoDecisionBatch,
-        decisions=decisions_type,
-    )
 
 
 class AutoModeCounters(TypedDict):
@@ -1641,7 +1602,7 @@ def _user_answer_evidence(
 
 def _classifier_context(
     request: ModelRequest,
-    current_calls: Sequence[ToolCall],
+    current_call: ToolCall,
     receipt_current_calls: Sequence[ToolCall],
     dispositions: Mapping[str, str],
     tools: Mapping[str, BaseTool],
@@ -1665,7 +1626,7 @@ def _classifier_context(
                 }
             )
     actions: list[dict[str, object]] = []
-    for call in current_calls:
+    for call in receipt_current_calls:
         tool = tools.get(call["name"])
         metadata = dict(tool.metadata or {}) if tool is not None else {}
         actions.append(
@@ -1739,15 +1700,26 @@ def _classifier_context(
             )
         ],
         "prior_tool_calls_for_current_request": prior_calls[-30:],
-        "current_actions": actions,
+        "current_actions": [
+            action
+            for action in actions
+            if action["tool_call_id"] == _tool_call_id(current_call)
+        ],
+        "other_actions": [
+            action
+            for action in actions
+            if action["tool_call_id"] != _tool_call_id(current_call)
+        ],
     }
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 _CLASSIFIER_POLICY = (
     "You are dcode's action authorization classifier.\n"
-    "Return exactly one decision for every action whose deterministic_disposition "
-    "is review, and no decisions for other actions. Match tool_call_id exactly. "
+    "Return one verdict for the single action in current_actions, without a "
+    "tool_call_id. other_actions contains sibling actions from the same batch: "
+    "consider their combined effects as context, but do not return verdicts for "
+    "them or treat their presence as authorization. "
     "This request is a fresh authorization boundary: prior classifier requests, "
     "decisions, explanations, and evidence grant nothing now. Decide only from the "
     "current request payload.\n\n"
@@ -2980,7 +2952,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "policy": sha256(_CLASSIFIER_POLICY.encode()).hexdigest(),
             "schema": sha256(
                 json.dumps(
-                    AutoDecisionBatch.model_json_schema(),
+                    _ClassifierVerdict.model_json_schema(),
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode()
@@ -2991,7 +2963,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
     @staticmethod
     def _classifier_messages(
-        request: ModelRequest,
+        conversation: AutoClassifierConversation | None,
         identity: str,
         current: str,
     ) -> tuple[
@@ -2999,14 +2971,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         list[AutoClassifierTurn],
         int,
     ]:
-        conversation = _validate_classifier_conversation(
-            request.state.get(AUTO_CLASSIFIER_CONVERSATION_STATE_KEY)
-        )
         turns = (
             conversation["turns"]
             if conversation is not None and conversation["identity"] == identity
             else []
         )
+        # Sliding the window changes the message prefix on every request after
+        # it fills. Reset periodically so each new window can share a prefix.
+        if len(turns) >= _MAX_CLASSIFIER_CONVERSATION_TURNS:
+            turns = []
         messages: list[SystemMessage | HumanMessage | AIMessage] = [
             SystemMessage(content=_CLASSIFIER_POLICY)
         ]
@@ -3047,6 +3020,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _ClassifierDeadlineExceededError: If the classifier did not answer
                 within its budget.
             TimeoutError: If the provider raised a timeout of its own.
+            ValueError: If no actions were supplied for review.
         """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two
@@ -3068,9 +3042,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                response_model = _classifier_response_model(
-                    [_tool_call_id(call) for call in calls]
-                )
                 thinking = getattr(model, "thinking", None)
                 if (
                     spec is None
@@ -3079,68 +3050,45 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     and thinking.get("type") in {"adaptive", "enabled"}
                 ):
                     structured = model.with_structured_output(
-                        response_model, method="json_schema"
+                        _ClassifierVerdict, method="json_schema"
                     )
                 else:
-                    structured = model.with_structured_output(response_model)
-                current = _classifier_context(
-                    request,
-                    calls,
-                    all_calls,
-                    dispositions,
-                    tools,
-                    self._trusted_environment,
-                    self._trusted_ask_user_tool,
-                )
+                    structured = model.with_structured_output(_ClassifierVerdict)
                 identity = self._classifier_conversation_identity(model, spec)
-                messages, turns, revision = self._classifier_messages(
-                    request, identity, current
+                conversation = _validate_classifier_conversation(
+                    request.state.get(AUTO_CLASSIFIER_CONVERSATION_STATE_KEY)
                 )
-                # Primary-model settings are provider- and model-specific
-                # (Anthropic `cache_control`, OpenAI `prompt_cache_key`,
-                # reasoning budgets, `--model-params`), so they only travel
-                # with the primary model. A distinct classifier runs on its
-                # own defaults.
-                settings = request.model_settings if spec is None else {}
-                from deepagents_code.model_retry import aretry_model_call
-
-                async def invoke() -> object:
-                    nonlocal messages, turns
-                    config: RunnableConfig = {
-                        "run_name": "dcode_auto_classifier",
-                        "tags": ["dcode:auto"],
-                        "metadata": {
-                            "lc_source": "auto_mode_classifier",
-                            "classifier_model": spec or "inherited",
-                        },
-                    }
-                    try:
-                        return await structured.ainvoke(
-                            messages, config=config, **settings
+                decisions: list[AutoDecision] = []
+                # Keep one linear history and one deadline for the whole batch.
+                # Only the complete batch is checkpointed; any failed review
+                # discards these local verdicts and history updates.
+                for call in calls:
+                    current = _classifier_context(
+                        request,
+                        call,
+                        all_calls,
+                        dispositions,
+                        tools,
+                        self._trusted_environment,
+                        self._trusted_ask_user_tool,
+                    )
+                    verdict, conversation = await self._review_action(
+                        request,
+                        model,
+                        spec,
+                        structured,
+                        identity,
+                        conversation,
+                        current,
+                    )
+                    decisions.append(
+                        AutoDecision(
+                            tool_call_id=_tool_call_id(call),
+                            decision=verdict.decision,
+                            category=verdict.category,
+                            reason=verdict.reason,
                         )
-                    except Exception as exc:
-                        if not turns or not _is_classifier_context_overflow(exc):
-                            raise
-                    # Retry once within the same deadline, retaining the full
-                    # policy and current authorization evidence. Checkpoint only
-                    # the shortened conversation if the review succeeds.
-                    messages = [messages[0], messages[-1]]
-                    turns = []
-                    return await structured.ainvoke(messages, config=config, **settings)
-
-                # The retry backoff sleeps inside this deadline, so an
-                # honoured `Retry-After` would be cancelled mid-wait and
-                # resurface as a classifier timeout -- a diagnosis pointing at
-                # the wrong subsystem. Cap the total retry sleep at a fraction
-                # of the budget so a rate limit surfaces as itself.
-                result = await aretry_model_call(
-                    model,
-                    max_total_delay=(
-                        self._classifier_timeout_seconds
-                        * _CLASSIFIER_RETRY_DELAY_FRACTION
-                    ),
-                    call=invoke,
-                )
+                    )
         except TimeoutError:
             # `asyncio.timeout(...).expired()` distinguishes our wait budget
             # from a provider that raises `TimeoutError` itself. `wait_for`
@@ -3150,21 +3098,74 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     self._classifier_timeout_seconds
                 ) from None
             raise
-        batch = (
-            result
-            if isinstance(result, AutoDecisionBatch)
-            else AutoDecisionBatch.model_validate(result)
+        if conversation is None:
+            msg = "Classifier review requires at least one action"
+            raise ValueError(msg)
+        return AutoDecisionBatch(decisions=decisions), conversation
+
+    async def _review_action(
+        self,
+        request: ModelRequest,
+        model: BaseChatModel,
+        spec: str | None,
+        structured: Runnable[LanguageModelInput, object],
+        identity: str,
+        conversation: AutoClassifierConversation | None,
+        current: str,
+    ) -> tuple[_ClassifierVerdict, AutoClassifierConversation]:
+        """Review one action and extend only the local, uncommitted history.
+
+        Returns:
+            The validated verdict and the updated conversation.
+        """
+        from deepagents_code.model_retry import aretry_model_call
+
+        messages, turns, revision = self._classifier_messages(
+            conversation, identity, current
         )
-        response = batch.model_dump_json()
+        # Primary-model settings are provider- and model-specific, so they only
+        # travel with that model. A distinct classifier runs on its own defaults.
+        settings = request.model_settings if spec is None else {}
+        config: RunnableConfig = {
+            "run_name": "dcode_auto_classifier",
+            "tags": ["dcode:auto"],
+            "metadata": {
+                "lc_source": "auto_mode_classifier",
+                "classifier_model": spec or "inherited",
+            },
+        }
+
+        async def invoke() -> object:
+            nonlocal messages, turns
+            try:
+                return await structured.ainvoke(messages, config=config, **settings)
+            except Exception as exc:
+                if not turns or not _is_classifier_context_overflow(exc):
+                    raise
+            # Retry once inside the batch deadline with the complete policy and
+            # current evidence, including sibling actions, but without history.
+            messages = [messages[0], messages[-1]]
+            turns = []
+            return await structured.ainvoke(messages, config=config, **settings)
+
+        # Bound retry sleeps so rate limits do not consume the whole deadline.
+        result = await aretry_model_call(
+            model,
+            max_total_delay=(
+                self._classifier_timeout_seconds * _CLASSIFIER_RETRY_DELAY_FRACTION
+            ),
+            call=invoke,
+        )
+        verdict = _ClassifierVerdict.model_validate(result)
         conversation = AutoClassifierConversation(
             identity=identity,
             turns=[
-                *turns[-(_MAX_CLASSIFIER_CONVERSATION_TURNS - 1) :],
-                {"request": current, "response": response},
+                *turns,
+                {"request": current, "response": verdict.model_dump_json()},
             ],
             revision=revision + 1,
         )
-        return batch, conversation
+        return verdict, conversation
 
     async def awrap_model_call(
         self,

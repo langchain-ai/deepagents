@@ -68,10 +68,8 @@ from deepagents_code.auto_mode import (
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
     _ClassifierModelUnavailableError,
-    _credential_fingerprint,
     _default_counters,
     _fixed_repo_command_allowed,
-    _merge_classifier_conversation,
     _merge_temp_artifacts,
     _routine_write_allowed,
     _unresolvable_write_path_reason,
@@ -196,7 +194,7 @@ class _StructuredModel:
 
     async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
         self.calls.append(messages)
-        self.call_kwargs.append({**getattr(self, "model_kwargs", {}), **kwargs})
+        self.call_kwargs.append(kwargs)
         if self.error is not None:
             raise self.error
         return self.result
@@ -210,70 +208,18 @@ class _ThinkingAnthropicModel(_StructuredModel):
         self.thinking = {"type": "adaptive"}
 
 
-class _OpenAIConversationModel(_StructuredModel):
-    __module__ = "langchain_openai.chat_models.base"
-    __qualname__ = "ChatOpenAI"
-
-    def __init__(
-        self,
-        results: list[AutoDecisionBatch | Exception],
-        *,
-        model_name: str = "gpt-test",
-        base_url: str = "https://api.openai.com/v1",
-        organization: str | None = None,
-        project: str | None = None,
-    ) -> None:
-        super().__init__(model_name=model_name)
+class _ConversationModel(_StructuredModel):
+    def __init__(self, results: list[AutoDecisionBatch | Exception]) -> None:
+        super().__init__()
         self.results = results
-        self.model_kwargs: dict[str, object] = {}
-        self.root_async_client = SimpleNamespace(project=project)
-        self.openai_api_base = base_url
-        self.openai_organization = organization
-        self.use_responses_api: bool | None = None
-        self.use_previous_response_id: bool | None = None
-        self.store: bool | None = None
-        self._deepagents_model_retries = 0
-        self.include_raw: list[bool] = []
-        self._next = 0
-
-    def model_copy(self, *, update: dict[str, object]) -> _OpenAIConversationModel:
-        if "use_responses_api" in update:
-            self.use_responses_api = cast("bool", update["use_responses_api"])
-        if "use_previous_response_id" in update:
-            self.use_previous_response_id = cast(
-                "bool", update["use_previous_response_id"]
-            )
-        if "store" in update:
-            self.store = cast("bool", update["store"])
-        if "model_kwargs" in update:
-            self.model_kwargs = cast("dict[str, object]", update["model_kwargs"])
-        return self
-
-    def with_structured_output(
-        self, schema: object, *, include_raw: bool = False, **kwargs: object
-    ) -> _OpenAIConversationModel:
-        super().with_structured_output(schema, include_raw=include_raw, **kwargs)
-        self.include_raw.append(include_raw)
-        return self
 
     async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
         self.calls.append(messages)
-        self.call_kwargs.append({**getattr(self, "model_kwargs", {}), **kwargs})
-        result = self.results[self._next]
-        self._next += 1
+        self.call_kwargs.append(kwargs)
+        result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
-        payload = json.loads(cast("str", cast("HumanMessage", messages[1]).content))
-        call_id = payload["current_actions"][0]["tool_call_id"]
-        decision = result.decisions[0].model_copy(update={"tool_call_id": call_id})
-        result = AutoDecisionBatch(decisions=[decision])
-        return {
-            "raw": AIMessage(
-                content="", response_metadata={"id": f"resp_{self._next}"}
-            ),
-            "parsed": result,
-            "parsing_error": None,
-        }
+        return result
 
 
 class _FailIfClassifiedModel(_StructuredModel):
@@ -409,7 +355,7 @@ def _middleware(
 def _request(
     tmp_path: Path,
     *,
-    model: _StructuredModel | BaseChatModel,
+    model: _StructuredModel,
     tool_name: str,
     args: dict[str, object],
     tools: list[BaseTool] | None = None,
@@ -417,10 +363,10 @@ def _request(
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
     classifier_model: str | None = None,
-    thread_id: str = "thread-1",
     turn_id: str = "turn-1",
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
+    thread_id = "thread-1"
     key = approval_mode_key(thread_id)
     active_store = store or _Store()
     active_store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
@@ -468,15 +414,13 @@ async def _plan_calls(
     assert response.command is not None
     update = response.command.update
     assert update is not None
-    state = cast("dict[str, Any]", request.state)
-    updates = dict(cast("dict[str, Any]", update))
+    updates = cast("dict[str, Any]", update)
     conversation_key = "_auto_classifier_conversation"
     if conversation_key in updates:
-        updates[conversation_key] = _merge_classifier_conversation(
-            state.get(conversation_key), updates[conversation_key]
-        )
-    state.update(updates)
-    return cast("dict[str, Any]", update)["_auto_decision_plan"]
+        cast("dict[str, Any]", request.state)[conversation_key] = updates[
+            conversation_key
+        ]
+    return updates["_auto_decision_plan"]
 
 
 async def _plan(
@@ -612,11 +556,10 @@ def _deny_result(
     )
 
 
-async def test_openai_classifier_continues_one_provider_conversation(
+async def test_classifier_history_is_provider_neutral_and_checkpointed(
     tmp_path: Path,
 ) -> None:
-    model = _OpenAIConversationModel([_allow_result(), _deny_result(call_id="call-2")])
-    middleware = _middleware(tmp_path)
+    model = _ConversationModel([_allow_result(), _deny_result(call_id="call-2")])
     request, _store, _key = _request(
         tmp_path,
         model=model,
@@ -625,15 +568,14 @@ async def test_openai_classifier_continues_one_provider_conversation(
     )
 
     first = await _plan(
-        middleware,
+        _middleware(tmp_path),
         request,
         tool_name="delete",
         args={"file_path": "old.py"},
     )
-    assert _schema_allowed_ids(model.schema) == ["call-1"]
     request.runtime.context["turn_id"] = "turn-2"
     second = await _plan(
-        middleware,
+        _middleware(tmp_path),
         request,
         tool_name="delete",
         args={"file_path": "older.py"},
@@ -642,744 +584,101 @@ async def test_openai_classifier_continues_one_provider_conversation(
 
     assert first["decisions"][0]["disposition"] == "classifier_allow"
     assert second["decisions"][0]["disposition"] == "policy_deny"
-    assert model.call_kwargs[0].get("previous_response_id") is None
-    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
-    assert model.include_raw == [True, True]
-    assert _schema_allowed_ids(model.schema) == ["call-2"]
+    assert [type(message) for message in model.calls[0]] == [
+        SystemMessage,
+        HumanMessage,
+    ]
+    assert [type(message) for message in model.calls[1]] == [
+        SystemMessage,
+        HumanMessage,
+        AIMessage,
+        HumanMessage,
+    ]
     state = cast("dict[str, Any]", request.state)
-    assert state["_auto_classifier_conversation"]["response_id"] == "resp_2"
-    assert model.use_responses_api is True
-    assert model.store is True
-    # Continuation must come from the explicit `previous_response_id` above.
-    # `use_previous_response_id` would make langchain truncate the payload to
-    # the messages after the last `AIMessage`, dropping the policy prompt.
-    assert model.use_previous_response_id is None
+    assert len(state["_auto_classifier_conversation"]["turns"]) == 2
+    assert "call-1" in cast("AIMessage", model.calls[1][2]).content
 
 
-@pytest.mark.parametrize("legacy_checkpoint", [False, True])
-async def test_openai_classifier_rotates_bounded_history_after_resume(
-    tmp_path: Path, legacy_checkpoint: bool
+async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
+    tmp_path: Path,
 ) -> None:
     limit = _MAX_CLASSIFIER_CONVERSATION_TURNS
-    model = _OpenAIConversationModel([_allow_result()] * (2 * limit + 1))
-    request, _store, _key = _request(
-        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    model = _ConversationModel(
+        [_allow_result(f"call-{index}") for index in range(limit + 1)]
     )
-    for index in range(2 * limit + 1):
-        # Restarting the middleware on every review proves the bound survives
-        # cache eviction and checkpoint restoration.
-        plan = await _plan(
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    for index in range(limit + 1):
+        await _plan(
             _middleware(tmp_path),
             request,
             tool_name="delete",
             args={"file_path": f"old-{index}.py"},
             call_id=f"call-{index}",
         )
-        assert plan["decisions"][0]["disposition"] == "classifier_allow"
-        expected = None if legacy_checkpoint or index % limit == 0 else f"resp_{index}"
-        assert model.call_kwargs[-1].get("previous_response_id") == expected
-        state = cast("dict[str, Any]", request.state)
-        assert state["_auto_classifier_conversation"]["revision"] == index + 1
-        if legacy_checkpoint:
-            state["_auto_classifier_conversation"].pop("turns")
 
+    state = cast("dict[str, Any]", request.state)
+    assert len(state["_auto_classifier_conversation"]["turns"]) == limit
 
-async def test_openai_classifier_conversations_are_thread_scoped(
-    tmp_path: Path,
-) -> None:
-    model = _OpenAIConversationModel([_allow_result(), _allow_result()])
-    middleware = _middleware(tmp_path)
-    first, store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-        thread_id="thread-1",
-    )
-    second, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-        store=store,
-        thread_id="thread-2",
-    )
-
-    await _plan(middleware, first, tool_name="delete", args={"file_path": "old.py"})
-    await _plan(middleware, second, tool_name="delete", args={"file_path": "old.py"})
-
-    assert [call.get("previous_response_id") for call in model.call_kwargs] == [
-        None,
-        None,
-    ]
-
-
-async def test_openai_classifier_resume_restores_and_identity_changes_reset(
-    tmp_path: Path,
-) -> None:
-    first_model = _OpenAIConversationModel([_allow_result()])
-    first_middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=first_model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
+    replacement = _ConversationModel([_allow_result("call-new")])
+    replacement.model_name = "replacement"
+    request = request.override(model=cast("BaseChatModel", replacement))
     await _plan(
-        first_middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    resumed_model = _OpenAIConversationModel(
-        [_allow_result(), _allow_result()], model_name="gpt-test"
-    )
-    resumed = _middleware(tmp_path)
-    request = request.override(model=cast("BaseChatModel", resumed_model))
-    await _plan(
-        resumed,
+        _middleware(tmp_path),
         request,
         tool_name="delete",
         args={"file_path": "new.py"},
-        call_id="call-2",
+        call_id="call-new",
     )
-    resumed_model.model_name = "gpt-other"
+
+    assert [type(message) for message in replacement.calls[0]] == [
+        SystemMessage,
+        HumanMessage,
+    ]
+    assert len(state["_auto_classifier_conversation"]["turns"]) == 1
+
+
+async def test_failed_classifier_review_does_not_advance_history(
+    tmp_path: Path,
+) -> None:
+    model = _ConversationModel(
+        [_allow_result(), RuntimeError("provider unavailable"), _allow_result("call-3")]
+    )
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
     await _plan(
-        resumed,
+        middleware,
         request,
         tool_name="delete",
-        args={"file_path": "other.py"},
+        args={"file_path": "older.py"},
+        call_id="call-2",
+    )
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "oldest.py"},
         call_id="call-3",
     )
 
-    assert resumed_model.call_kwargs[0]["previous_response_id"] == "resp_1"
-    assert resumed_model.call_kwargs[1].get("previous_response_id") is None
-
-
-@pytest.mark.parametrize("restart_on_switch", [False, True])
-async def test_openai_identity_switch_checkpoints_monotonic_revisions(
-    tmp_path: Path, restart_on_switch: bool
-) -> None:
-    model = _OpenAIConversationModel([_allow_result()] * 7)
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
-    )
-    for index, name in enumerate(["a", "a", "a", "b", "b", "a", "a"]):
-        model.model_name = name
-        if restart_on_switch and index in {3, 5}:
-            middleware = _middleware(tmp_path)
-        state = cast("dict[str, Any]", request.state)
-        previous = state.get("_auto_classifier_conversation")
-        await _plan(
-            middleware,
-            request,
-            tool_name="delete",
-            args={"file_path": f"old-{index}.py"},
-            call_id=f"call-{index}",
-        )
-        state = cast("dict[str, Any]", request.state)
-        checkpoint = state["_auto_classifier_conversation"]
-        assert checkpoint["revision"] == index + 1
-        assert checkpoint["response_id"] == f"resp_{index + 1}"
-        # An older update arriving after the identity switch cannot undo it.
-        if index == 3:
-            assert _merge_classifier_conversation(checkpoint, previous) == checkpoint
-            middleware = _middleware(tmp_path)
-
-    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
-        None,
-        "resp_1",
-        "resp_2",
-        None,
-        "resp_4",
-        None,
-        "resp_6",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("attribute", "initial", "changed"),
-    [
-        ("openai_organization", "org-a", "org-b"),
-        (
-            "root_async_client",
-            SimpleNamespace(project="project-a"),
-            SimpleNamespace(project="project-b"),
-        ),
-    ],
-)
-async def test_openai_classifier_account_changes_reset_conversation(
-    tmp_path: Path,
-    attribute: str,
-    initial: str | SimpleNamespace,
-    changed: str | SimpleNamespace,
-) -> None:
-    model = _OpenAIConversationModel([_allow_result(), _allow_result()])
-    setattr(model, attribute, initial)
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
-    setattr(model, attribute, changed)
-    await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "new.py"},
-        call_id="call-2",
-    )
-
-    assert model.call_kwargs[0].get("previous_response_id") is None
-    assert model.call_kwargs[1].get("previous_response_id") is None
-
-
-async def test_real_openai_client_project_changes_reset_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import httpx
-    from langchain_openai import ChatOpenAI
-    from pydantic import SecretStr
-
-    requests: list[httpx.Request] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        index = len(requests)
-        return httpx.Response(
-            200,
-            json={
-                "id": f"resp_{index}",
-                "object": "response",
-                "created_at": 0,
-                "model": "gpt-test",
-                "status": "completed",
-                "output": [
-                    {
-                        "id": f"msg_{index}",
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "annotations": [],
-                                "text": _allow_result(
-                                    call_id=f"call-{index}"
-                                ).model_dump_json(),
-                            }
-                        ],
-                    }
-                ],
-            },
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(respond)) as sync_client:
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(respond)
-        ) as async_client:
-            for index, project in enumerate(
-                ["project-a", "project-a", "project-b", "project-b"], 1
-            ):
-                monkeypatch.setenv("OPENAI_PROJECT_ID", project)
-                model = ChatOpenAI(
-                    model="gpt-test",
-                    api_key=SecretStr("<FILL_IN>"),
-                    base_url="https://api.openai.com/v1",
-                    organization="org-test",
-                    openai_proxy="",
-                    http_client=sync_client,
-                    http_async_client=async_client,
-                )
-                # Prove the async client's resolved project wins over a different
-                # sync client and over later changes to the process environment.
-                model.root_client.project = "sync-project"
-                monkeypatch.setenv("OPENAI_PROJECT_ID", "later-project")
-                if index == 1:
-                    request, _store, _key = _request(
-                        tmp_path,
-                        model=model,
-                        tool_name="delete",
-                        args={"file_path": "old.py"},
-                    )
-                else:
-                    request = request.override(model=model)
-                plan = await _plan(
-                    _middleware(tmp_path),
-                    request,
-                    tool_name="delete",
-                    args={"file_path": f"old-{index}.py"},
-                    call_id=f"call-{index}",
-                )
-                assert plan["decisions"][0]["disposition"] == "classifier_allow"
-                assert requests[-1].headers["OpenAI-Project"] == project
-                state = cast("dict[str, Any]", request.state)
-                assert state["_auto_classifier_conversation"]["revision"] == index
-
-    assert [
-        json.loads(request.content).get("previous_response_id") for request in requests
-    ] == [
-        None,
-        "resp_1",
-        None,
-        "resp_3",
-    ]
-
-
-def test_classifier_identity_covers_credential_and_extra_headers() -> None:
-    from langchain_openai import ChatOpenAI
-    from pydantic import SecretStr
-
-    def identity_for(api_key: str, settings: dict[str, Any]) -> str:
-        model = ChatOpenAI(model="gpt-test", api_key=SecretStr(api_key))
-        support = AutoModeHITLMiddleware._openai_classifier_identity(model, settings)
-        assert support is not None
-        return support[1]
-
-    baseline = identity_for("key-a", {})
-
-    # A rotated key and an account-redirecting header both point at a place the
-    # captured response id may not exist, so each must start a new conversation.
-    assert identity_for("key-b", {}) != baseline
-    assert (
-        identity_for("key-a", {"extra_headers": {"OpenAI-Project": "proj-b"}})
-        != baseline
-    )
-    assert identity_for("key-a", {}) == baseline
-
-
-def test_credential_fingerprint_never_returns_the_secret() -> None:
-    from pydantic import SecretStr
-
-    assert _credential_fingerprint(None) is None
-    assert _credential_fingerprint("") is None
-    assert _credential_fingerprint(lambda: "rotating") == "callable"
-
-    secret = "sk-not-a-real-key-000000000000000000"
-    for value in (secret, SecretStr(secret)):
-        fingerprint = _credential_fingerprint(value)
-        assert fingerprint is not None
-        assert secret not in fingerprint
-        assert fingerprint == _credential_fingerprint(secret)
-
-
-def test_classifier_schema_failure_names_non_exception_detail(tmp_path: Path) -> None:
-    middleware = _middleware(tmp_path)
-
-    with pytest.raises(ValueError, match="did not match its schema") as excinfo:
-        middleware._parse_classifier_response(
-            {"parsed": None, "parsing_error": {"refusal": "cannot comply"}, "raw": None}
-        )
-
-    # A non-exception `parsing_error` leaves no `__cause__`, so the detail has
-    # to survive in the message or schema drift becomes undiagnosable.
-    assert excinfo.value.__cause__ is None
-    assert "cannot comply" in str(excinfo.value)
-
-
-def test_classifier_missing_response_id_names_what_it_found(tmp_path: Path) -> None:
-    middleware = _middleware(tmp_path)
-    raw = AIMessage(content="", response_metadata={"id": "chatcmpl-123"})
-
-    with pytest.raises(ValueError, match="did not include a Responses API ID") as info:
-        middleware._parse_classifier_response(
-            {"parsed": _allow_result(), "parsing_error": None, "raw": raw}
-        )
-
-    assert "chatcmpl-123" in str(info.value)
-
-
-@pytest.mark.parametrize("base_url_env", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
-def test_stored_custom_endpoint_stays_stateless(
-    monkeypatch: pytest.MonkeyPatch, base_url_env: str
-) -> None:
-    from langchain_openai import ChatOpenAI
-    from pydantic import SecretStr
-
-    # `apply_stored_credentials` writes a `/auth` endpoint to the canonical
-    # OPENAI_BASE_URL and clears the alternate, and only the openai SDK reads
-    # that name. Either spelling must keep reuse and `store` off the endpoint.
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
-    monkeypatch.setenv(base_url_env, "https://gateway.internal.example/v1")
-    model = ChatOpenAI(model="gpt-test", api_key=SecretStr("<FILL_IN>"))
-
-    assert AutoModeHITLMiddleware._openai_classifier_identity(model, {}) is None
-
-
-async def test_concurrent_openai_reviews_serialize_continuation(
-    tmp_path: Path,
-) -> None:
-    model = _OpenAIConversationModel(
-        [_allow_result(call_id="call-1"), _allow_result(call_id="call-2")]
-    )
-    middleware = _middleware(tmp_path)
-    first, store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "one.py"},
-    )
-    second, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "two.py"},
-        store=store,
-    )
-
-    await asyncio.gather(
-        _plan(
-            middleware,
-            first,
-            tool_name="delete",
-            args={"file_path": "one.py"},
-            call_id="call-1",
-        ),
-        _plan(
-            middleware,
-            second,
-            tool_name="delete",
-            args={"file_path": "two.py"},
-            call_id="call-2",
-        ),
-    )
-
-    assert model.call_kwargs[0].get("previous_response_id") is None
-    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
-
-
-async def test_openai_classifier_retries_from_verified_head(tmp_path: Path) -> None:
-    model = _OpenAIConversationModel(
-        [
-            _allow_result(call_id="call-1"),
-            ConnectionError("provider connection dropped"),
-            _allow_result(call_id="call-2"),
-        ]
-    )
-    model._deepagents_model_retries = 1
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "one.py"},
-    )
-
-    await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "one.py"},
-        call_id="call-1",
-    )
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "two.py"},
-        call_id="call-2",
-    )
-
-    assert plan["decisions"][0]["disposition"] == "classifier_allow"
-    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
-        None,
-        "resp_1",
-        "resp_1",
-    ]
+    assert len(model.calls[1]) == 4
+    assert len(model.calls[2]) == 4
     state = cast("dict[str, Any]", request.state)
-    assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
-
-
-def _openai_status_error(
-    status: int, code: str | None, param: str | None, message: str
-) -> Exception:
-    import httpx
-    from openai import APIStatusError
-
-    return APIStatusError(
-        message,
-        response=httpx.Response(
-            status, request=httpx.Request("POST", "https://api.openai.com/v1/responses")
-        ),
-        body={"code": code, "param": param, "message": message},
-    )
-
-
-@pytest.mark.parametrize(
-    ("status", "code", "param", "message"),
-    [
-        (400, "previous_response_not_found", None, "Missing response"),
-        (
-            400,
-            None,
-            "previous_response_id",
-            "Previous response with id 'resp_1' not found.",
-        ),
-        (404, "resource_not_found", "previous_response_id", "Missing resource"),
-    ],
-)
-async def test_missing_openai_response_restarts_and_checkpoints(
-    tmp_path: Path, status: int, code: str | None, param: str | None, message: str
-) -> None:
-    model = _OpenAIConversationModel(
-        [
-            _allow_result(),
-            _openai_status_error(status, code, param, message),
-            _allow_result(),
-            _allow_result(),
-        ]
-    )
-    request, _store, _key = _request(
-        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
-    )
-    for index in range(3):
-        plan = await _plan(
-            _middleware(tmp_path),
-            request,
-            tool_name="delete",
-            args={"file_path": f"old-{index}.py"},
-            call_id=f"call-{index}",
-        )
-        assert plan["decisions"][0]["disposition"] == "classifier_allow"
-        if index == 1:
-            state = cast("dict[str, Any]", request.state)
-            assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
-            assert state["_auto_classifier_conversation"]["revision"] == 2
-            assert state["_auto_classifier_conversation"]["turns"] == 1
-    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
-        None,
-        "resp_1",
-        None,
-        "resp_3",
-    ]
-    assert model.calls[1] == model.calls[2]
-
-
-@pytest.mark.parametrize(
-    ("status", "code", "param", "message"),
-    [
-        (401, "invalid_api_key", None, "Authentication failed"),
-        (404, "model_not_found", "model", "Model not found"),
-        (400, "invalid_value", "previous_response_id", "Invalid response ID"),
-        (500, "server_error", "previous_response_id", "Response not found"),
-    ],
-)
-async def test_unrelated_openai_errors_do_not_restart_conversation(
-    tmp_path: Path, status: int, code: str | None, param: str | None, message: str
-) -> None:
-    model = _OpenAIConversationModel(
-        [
-            _allow_result(),
-            _openai_status_error(status, code, param, message),
-        ]
-    )
-    request, _store, _key = _request(
-        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
-    )
-    middleware = _middleware(tmp_path)
-    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "new.py"},
-        call_id="call-2",
-    )
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert len(model.calls) == 2
-    state = cast("dict[str, Any]", request.state)
-    assert state["_auto_classifier_conversation"]["response_id"] == "resp_1"
-
-
-@pytest.mark.parametrize("has_head", [False, True])
-async def test_missing_openai_response_recovery_is_bounded(
-    tmp_path: Path, has_head: bool
-) -> None:
-    missing = _openai_status_error(
-        400, "previous_response_not_found", None, "Missing response"
-    )
-    model = _OpenAIConversationModel(
-        [_allow_result(), missing, missing] if has_head else [missing]
-    )
-    request, _store, _key = _request(
-        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
-    )
-    middleware = _middleware(tmp_path)
-    if has_head:
-        await _plan(
-            middleware, request, tool_name="delete", args={"file_path": "old.py"}
-        )
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "new.py"},
-        call_id="call-2",
-    )
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert len(model.calls) == (3 if has_head else 1)
-    state = cast("dict[str, Any]", request.state)
-    if has_head:
-        assert state["_auto_classifier_conversation"]["response_id"] == "resp_1"
-    else:
-        assert "_auto_classifier_conversation" not in state
-
-
-async def test_failed_openai_review_does_not_advance_continuation(
-    tmp_path: Path,
-) -> None:
-    model = _OpenAIConversationModel(
-        [
-            _allow_result(call_id="call-1"),
-            RuntimeError("provider failed"),
-            _allow_result(call_id="call-3"),
-        ]
-    )
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "one.py"},
-    )
-
-    for call_id in ("call-1", "call-2", "call-3"):
-        await _plan(
-            middleware,
-            request,
-            tool_name="delete",
-            args={"file_path": f"{call_id}.py"},
-            call_id=call_id,
-        )
-
-    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
-    assert model.call_kwargs[2]["previous_response_id"] == "resp_1"
-    state = cast("dict[str, Any]", request.state)
-    assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
-
-
-async def test_timed_out_openai_review_does_not_advance_continuation(
-    tmp_path: Path,
-) -> None:
-    class _TimeoutModel(_OpenAIConversationModel):
-        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
-            self.calls.append(messages)
-            self.call_kwargs.append({**self.model_kwargs, **kwargs})
-            self._next += 1
-            if self._next == 2:
-                await asyncio.Future()
-            result = self.results[self._next - 1]
-            assert not isinstance(result, Exception)
-            payload = json.loads(cast("str", cast("HumanMessage", messages[1]).content))
-            call_id = payload["current_actions"][0]["tool_call_id"]
-            decision = result.decisions[0].model_copy(update={"tool_call_id": call_id})
-            result = AutoDecisionBatch(decisions=[decision])
-            return {
-                "raw": AIMessage(
-                    content="", response_metadata={"id": f"resp_{self._next}"}
-                ),
-                "parsed": result,
-                "parsing_error": None,
-            }
-
-    model = _TimeoutModel(
-        [
-            _allow_result(call_id="call-1"),
-            _allow_result(call_id="call-2"),
-            _allow_result(call_id="call-3"),
-        ]
-    )
-    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.01)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "one.py"},
-    )
-
-    for call_id in ("call-1", "call-2", "call-3"):
-        await _plan(
-            middleware,
-            request,
-            tool_name="delete",
-            args={"file_path": f"{call_id}.py"},
-            call_id=call_id,
-        )
-
-    assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
-    assert model.call_kwargs[2]["previous_response_id"] == "resp_1"
-
-
-async def test_unsupported_classifier_remains_stateless(tmp_path: Path) -> None:
-    model = _StructuredModel(_allow_result())
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
-    await _plan(middleware, request, tool_name="delete", args={"file_path": "new.py"})
-
-    assert all("previous_response_id" not in call for call in model.call_kwargs)
-    assert "_auto_classifier_conversation" not in request.state
-
-
-@pytest.mark.parametrize(
-    ("attribute", "value"),
-    [
-        ("openai_api_base", "https://api.openai.com/v2"),
-        ("openai_api_base", "https://api.openai.com.evil.example/v1"),
-        ("openai_api_base", "http://api.openai.com/v1"),
-        ("model_name", ""),
-        ("store", False),
-        ("use_responses_api", False),
-    ],
-)
-def test_classifier_model_opt_outs_refuse_conversation_reuse(
-    attribute: str, value: object
-) -> None:
-    model = _OpenAIConversationModel([_allow_result()])
-    setattr(model, attribute, value)
-
-    assert (
-        AutoModeHITLMiddleware._openai_classifier_identity(
-            cast("BaseChatModel", model), {}
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"store": False},
-        {"use_responses_api": False},
-        {"previous_response_id": "resp_caller"},
-        {"conversation": "conv_caller"},
-        {"base_url": "https://gateway.internal.example/v1"},
-    ],
-)
-def test_classifier_setting_opt_outs_refuse_conversation_reuse(
-    settings: dict[str, Any],
-) -> None:
-    model = _OpenAIConversationModel([_allow_result()])
-
-    assert (
-        AutoModeHITLMiddleware._openai_classifier_identity(
-            cast("BaseChatModel", model), settings
-        )
-        is None
-    )
+    turns = state["_auto_classifier_conversation"]["turns"]
+    assert len(turns) == 2
+    assert "call-2" not in json.dumps(turns)
 
 
 async def test_classifier_review_lifecycle_reports_only_opaque_ids(

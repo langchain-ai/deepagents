@@ -2,6 +2,8 @@
 
 The sessions database owns this subtotal. Readers add it to the graph's total;
 it is never fed back into the graph's cost recorder or checkpoint channels.
+Failed writes remain owned in memory until a later settlement or cost read
+retries them. Only successfully persisted charges survive a server restart.
 """
 
 from __future__ import annotations
@@ -9,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
+from collections import deque
 from contextlib import closing
 from typing import TYPE_CHECKING, Any, cast
 
@@ -26,6 +30,11 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
 
+_PENDING_COSTS: dict[str, deque[tuple[_SessionCostRecorder, CostState]]] = {}
+_SETTLEMENT_LOCK = threading.Lock()
+"""Serialize retries and retain failed recorders until their writes succeed."""
+
+
 def _read_cost(conn: sqlite3.Connection, thread_id: str) -> CostBreakdown | None:
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dcode_btw_costs'"
@@ -39,7 +48,7 @@ def _read_cost(conn: sqlite3.Connection, thread_id: str) -> CostBreakdown | None
 
 
 def load_cost(thread_id: str) -> CostBreakdown | None:
-    """Read the durable subtotal, including after a server restart.
+    """Retry pending settlements and read the durable subtotal.
 
     Args:
         thread_id: Thread whose side questions were charged.
@@ -47,11 +56,13 @@ def load_cost(thread_id: str) -> CostBreakdown | None:
     Returns:
         The saved breakdown, or `None` when no side usage has been saved.
     """
-    path = _database_path()
-    if not path.exists():
-        return None
-    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as conn:
-        return _read_cost(conn, thread_id)
+    with _SETTLEMENT_LOCK:
+        _retry_pending_costs(thread_id)
+        path = _database_path()
+        if not path.exists():
+            return None
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as conn:
+            return _read_cost(conn, thread_id)
 
 
 def include_cost(
@@ -107,6 +118,41 @@ def _persist_cost(thread_id: str, state: CostState) -> CostBreakdown | None:
         return total
 
 
+def _retry_pending_costs(thread_id: str) -> CostBreakdown | None:
+    """Drain a thread's queue under `_SETTLEMENT_LOCK`, keeping failures owned.
+
+    Returns:
+        The latest persisted subtotal, or `None` when no usage was written.
+    """
+    pending = _PENDING_COSTS.get(thread_id)
+    total = None
+    while pending:
+        recorder, state = pending[0]
+        token = _RECORDER_VAR.set(recorder)
+        try:
+            persisted = _persist_cost(thread_id, state)
+        finally:
+            _RECORDER_VAR.reset(token)
+        pending.popleft()
+        if persisted is not None:
+            total = persisted
+    _PENDING_COSTS.pop(thread_id, None)
+    return total
+
+
+def _settle_cost(
+    thread_id: str, state: CostState, recorder: _SessionCostRecorder
+) -> CostBreakdown | None:
+    """Transfer ownership before writing so a failed request remains retryable.
+
+    Returns:
+        The latest persisted subtotal, or `None` when no usage was written.
+    """
+    with _SETTLEMENT_LOCK:
+        _PENDING_COSTS.setdefault(thread_id, deque()).append((recorder, state))
+        return _retry_pending_costs(thread_id)
+
+
 async def answer_with_cost(
     answer: Awaitable[str],
     *,
@@ -125,7 +171,8 @@ async def answer_with_cost(
     """
     from deepagents_code.offload_api import _join_task_deferring_cancellation
 
-    token = _RECORDER_VAR.set(_SessionCostRecorder())
+    recorder = _SessionCostRecorder()
+    token = _RECORDER_VAR.set(recorder)
     try:
         try:
             text = await answer
@@ -133,7 +180,7 @@ async def answer_with_cost(
             # A disconnect can arrive after the provider completed. Finish the
             # database write even then, but allow cancellation during generation.
             settlement = asyncio.create_task(
-                asyncio.to_thread(_persist_cost, thread_id, state)
+                asyncio.to_thread(_settle_cost, thread_id, state, recorder)
             )
             cancellation = await _join_task_deferring_cancellation(settlement)
             total = settlement.result()

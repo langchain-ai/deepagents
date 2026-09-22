@@ -6,6 +6,7 @@ import asyncio
 import gc
 import json
 import logging
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -2436,7 +2437,66 @@ def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     path = tmp_path / "sessions.db"
     monkeypatch.setattr(btw_cost, "_database_path", lambda: path)
+    monkeypatch.setattr(btw_cost, "_PENDING_COSTS", {})
     return path
+
+
+@pytest.mark.parametrize("retry_with_answer", [False, True])
+async def test_failed_side_costs_remain_retryable(
+    recorder: _SessionCostRecorder,
+    side_cost_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    retry_with_answer: bool,
+) -> None:
+    from deepagents_code import btw_cost
+    from deepagents_code.btw import BtwOperation
+
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    operation = BtwOperation(
+        _fake_model(_message(_usage()), _message(_usage())), "system", None
+    )
+
+    async def answer() -> tuple[str, cost_tracking.CostBreakdown | None]:
+        return await btw_cost.answer_with_cost(
+            operation.answer(THREAD_ID, {}, "aside"),
+            thread_id=THREAD_ID,
+            state={"messages": []},
+        )
+
+    # Fail inside the transaction, after usage has been drained for pricing.
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            btw_cost,
+            "_read_cost",
+            MagicMock(side_effect=sqlite3.OperationalError("database is locked")),
+        )
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await answer()
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await asyncio.to_thread(btw_cost.load_cost, THREAD_ID)
+
+    if retry_with_answer:
+        _, cost = await answer()
+    else:
+        # Concurrent readers must persist the recovered charge exactly once.
+        costs = await asyncio.gather(
+            *(asyncio.to_thread(btw_cost.load_cost, THREAD_ID) for _ in range(2))
+        )
+        cost = costs[0]
+        assert costs[1] == cost
+    assert await asyncio.to_thread(side_cost_db.exists)
+    assert cost is not None
+    count = 2 if retry_with_answer else 1
+    assert cost["request_count"] == count
+    estimate = estimate_cost(_usage(), KNOWN_MODEL, provider=KNOWN_PROVIDER)
+    assert estimate is not None
+    assert cost["total_cost_usd"] == pytest.approx(count * estimate)
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) == cost
+    assert await asyncio.to_thread(btw_cost.load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
 
 
 async def test_concurrent_side_costs_do_not_claim_main_run_usage(

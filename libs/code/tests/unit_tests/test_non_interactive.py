@@ -4495,8 +4495,8 @@ class TestAttemptLifecycle:
         assert "Retrying model request 1/5" in output.getvalue()
         assert () in state.active_attempts  # scope untouched
 
-    def test_unscoped_usage_remains_legacy(self) -> None:
-        """Without a lifecycle scope, message usage keys stay bare IDs."""
+    def test_unscoped_usage_deduplicates_replayed_messages(self) -> None:
+        """Without a lifecycle scope, replayed messages still count only once."""
         console = Console(quiet=True)
         state = StreamState(thread_id="thread-1")
         tracker = FileOpTracker(assistant_id="assistant")
@@ -4509,7 +4509,11 @@ class TestAttemptLifecycle:
 
         _process_stream_chunk(((), "messages", (msg, {})), state, console, tracker)
 
-        assert list(state.recorded_usage_requests) == ["msg-1"]
+        _process_stream_chunk(((), "messages", (msg, {})), state, console, tracker)
+
+        assert state.stats.request_count == 1
+        assert state.stats.input_tokens == 1
+        assert state.stats.output_tokens == 1
 
     def test_usage_is_scoped_per_attempt(self) -> None:
         """A retry reusing the provider message ID records both attempts."""

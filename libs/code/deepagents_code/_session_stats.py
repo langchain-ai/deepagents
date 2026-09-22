@@ -181,11 +181,19 @@ class RecordedUsage:
 class ModelInvocationKey:
     """Stable identity of one model invocation in the usage ledger."""
 
-    value: Hashable
+    invocation_id: str
 
 
-UsageLedgerKey = str | ModelInvocationKey
-"""Model run identities and scoped message aliases for recorded requests."""
+@dataclass(frozen=True, slots=True)
+class MessageUsageKey:
+    """Message identity, optionally scoped to one model attempt."""
+
+    message_id: str
+    attempt_scope: Hashable | None = None
+
+
+UsageLedgerKey = ModelInvocationKey | MessageUsageKey
+"""Model run identities and message aliases for recorded requests."""
 
 
 ModelStatsKey = tuple[str, str]
@@ -476,7 +484,7 @@ def finalize_recorded_requests(
             if recorded_requests.get(alias) is recorded:
                 recorded_requests[alias] = closed
         for message_id in closed.message_ids:
-            recorded_requests[message_id] = closed
+            recorded_requests[MessageUsageKey(message_id)] = closed
 
 
 def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
@@ -484,8 +492,10 @@ def _provisional_bucket_key(request_id: UsageLedgerKey | None) -> str | None:
     if request_id is None:
         return None
     if isinstance(request_id, ModelInvocationKey):
-        return repr(request_id.value)
-    return request_id
+        return repr(request_id.invocation_id)
+    if request_id.attempt_scope is not None:
+        return repr((request_id.attempt_scope, request_id.message_id))
+    return request_id.message_id
 
 
 def _usage_ledger_key(
@@ -495,11 +505,7 @@ def _usage_ledger_key(
     invocation_id: str | None,
 ) -> tuple[UsageLedgerKey | None, frozenset[UsageLedgerKey]]:
     """Return a canonical key and compatible scoped aliases, never across runs."""
-    message_key = (
-        ModelInvocationKey((attempt_scope, message_id))
-        if attempt_scope is not None and message_id
-        else message_id
-    )
+    message_key = MessageUsageKey(message_id, attempt_scope) if message_id else None
     run_key = ModelInvocationKey(invocation_id) if invocation_id else None
     aliases = frozenset(key for key in (run_key, message_key) if key is not None)
     for key in (run_key, message_key):

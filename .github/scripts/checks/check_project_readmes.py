@@ -7,7 +7,7 @@ Why this exists:
     or fix PR change that public face without anyone reviewing it as a
     documentation change. `.github/workflows/project_readme_check.yml` blocks
     such a PR until the author retitles it `docs:` or a maintainer applies the
-    `readme: acknowledged` label.
+    `ci:ack-readme` label.
 
 What it does NOT do:
     This reads the PR title's Conventional Commit *type*, not the PR's
@@ -35,7 +35,7 @@ import sys
 # Duplicated as a JS literal in `.github/scripts/checks/readme-gate.js`, which
 # is where the label is actually read; exported here only so the test suite can
 # pin the two spellings together. Nothing in this module consumes it.
-ACKNOWLEDGMENT_LABEL = "readme: acknowledged"
+ACKNOWLEDGMENT_LABEL = "ci:ack-readme"
 
 # The root README plus the `readme = "README.md"` of every distributed
 # package. Hardcoded rather than derived so the detector needs no repo

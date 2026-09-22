@@ -177,7 +177,9 @@ asyncio.run(main())
         module = _import_fresh_server_graph()
         from deepagents_code.tools import fetch_url, web_search
 
-        readonly_metadata = ToolAnnotations(readOnlyHint=True).model_dump()
+        readonly_metadata = ToolAnnotations(read_only_hint=True).model_dump(
+            by_alias=True, exclude_none=True
+        )
         assert readonly_metadata["readOnlyHint"] is True
         readonly = SimpleNamespace(
             name="search",
@@ -206,26 +208,20 @@ asyncio.run(main())
         self, read_only: bool | None
     ) -> None:
         """Server-controlled annotation extras cannot grant criteria access."""
-        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
-        from mcp.types import Tool, ToolAnnotations
+        from langchain_core.tools import StructuredTool
 
         from deepagents_code.tools import fetch_url
 
         module = _import_fresh_server_graph()
-        remote = convert_mcp_tool_to_langchain_tool(
-            None,
-            Tool(
-                name="remote_tool",
-                inputSchema={"type": "object", "properties": {}},
-                annotations=ToolAnnotations.model_validate(
-                    {
-                        "readOnlyHint": read_only,
-                        "destructiveHint": True,
-                        "deepagents_web_search": True,
-                    }
-                ),
-            ),
-            connection={"transport": "stdio", "command": "unused", "args": []},
+        remote = StructuredTool.from_function(
+            lambda: "unused",
+            name="remote_tool",
+            description="remote",
+            metadata={
+                "readOnlyHint": read_only,
+                "destructiveHint": True,
+                "deepagents_web_search": True,
+            },
         )
         tools, _, _, read_only_builtins = await module._build_tools(
             ServerConfig(no_mcp=True), None, tavily_api_key=""
@@ -1087,6 +1083,40 @@ class TestWorkspaceRuntime:
             await module._workspace_runtime(binding)
 
         make.assert_not_awaited()
+
+    async def test_runtime_drift_refusal_carries_diagnostics_and_logs(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The runtime drift refusal names allowlisted changed fields."""
+        import logging
+
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model", auto_approve=False)
+        binding = _bind(bound_config, tmp_path)
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(model="changed:model", auto_approve=True),
+            ),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            caplog.at_level(logging.WARNING),
+            pytest.raises(WorkspaceConflictError) as exc_info,
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
+        diagnostics = exc_info.value.diagnostics
+        assert diagnostics is not None
+        assert diagnostics.category == "config_drift"
+        changed = {change.name for change in diagnostics.changes}
+        # Model identity is fingerprint-only (never snapshotted); the
+        # allowlisted approval change is reported with its values.
+        assert "auto_approve" in changed
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("auto_approve" in message for message in messages)
 
     async def test_unusable_launch_cwd_emits_startup_marker(
         self, tmp_path, capsys: pytest.CaptureFixture[str]

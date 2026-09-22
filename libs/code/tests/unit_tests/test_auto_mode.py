@@ -3907,6 +3907,47 @@ def _append_trusted_user_prompt(
     )
 
 
+async def test_unanswered_questions_do_not_evict_valid_receipt(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    questions = [
+        {"question": f"Optional question {index}?", "type": "text"}
+        for index in range(21)
+    ]
+    answers = [""] * 20 + ["Delete build/old.log"]
+    _append_ask_user_exchange(request, questions=questions, answers=answers)
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": "Optional question 20?",
+            "answer": "Delete build/old.log",
+        }
+    ]
+
+
 async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
     tmp_path: Path,
 ) -> None:
@@ -3954,6 +3995,59 @@ async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
         for row in payload["authorization_evidence"]
     )
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_receipt_evidence_uses_authorization_message_indices(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="unrelated turn 1",
+    )
+    for turn in range(2, 11):
+        _append_history_message(request, AIMessage(content="status"))
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn}", turn_id=f"turn-{turn}"
+        )
+    question = "Delete the stale build/old.log scratch file?"
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-10",
+    )
+    _append_trusted_user_prompt(
+        request, "do NOT delete build/old.log after all", turn_id="turn-11"
+    )
+    for turn in range(12, 41):
+        _append_trusted_user_prompt(request, "continue", turn_id=f"turn-{turn}")
+    request.runtime.context["turn_id"] = "turn-40"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    evidence_texts = [
+        row.get("literal_user_text") for row in payload["authorization_evidence"]
+    ]
+    assert evidence_texts[0] == "unrelated turn 10"
+    assert "do NOT delete build/old.log after all" in evidence_texts
+    assert len(evidence_texts) == 31
 
 
 async def test_prior_turn_receipt_evidence_includes_all_intervening_instructions(
@@ -4297,7 +4391,13 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    assert payload["authorization_evidence"] == []
+    assert payload["authorization_evidence"] == [
+        {
+            "literal_user_text": "perform the requested task",
+            "referenced_paths": [str(tmp_path / "mentioned.py")],
+            "turn_id": "turn-1",
+        }
+    ]
     assert payload["active_user_directives"] == {}
     assert payload["same_turn_user_answers"] == [
         {

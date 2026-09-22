@@ -1502,33 +1502,33 @@ def _same_turn_user_answers(
             )
 
     current_call_ids = {_tool_call_id(call) for call in current_calls}
-    attributed = [
-        (call, message, turn_id_of_exchange, prompt_index)
-        for call, message, turn_id_of_exchange, prompt_index in exchanges
-        if call_id_counts.get(_tool_call_id(call)) == 1
-        and _tool_call_id(call) not in current_call_ids
-    ]
-    row_count = 0
-    kept_start = len(attributed)
-    for position in range(len(attributed) - 1, -1, -1):
-        row_count += _ask_user_question_count(attributed[position][0]) or 0
-        if row_count > _MAX_ASK_USER_ANSWER_ROWS:
-            break
-        kept_start = position
-    rows: list[dict[str, str]] = []
-    earliest_prompt_index: int | None = None
-    for call, message, turn_id_of_exchange, prompt_index in attributed[kept_start:]:
+    validated: list[tuple[list[dict[str, str]], int]] = []
+    for call, message, turn_id_of_exchange, prompt_index in exchanges:
+        tool_call_id = _tool_call_id(call)
+        if call_id_counts.get(tool_call_id) != 1 or tool_call_id in current_call_ids:
+            continue
         exchange_rows = _ask_user_exchange_rows(
             call,
             message,
             thread_id=execution_thread_id,
             turn_id=turn_id_of_exchange,
         )
-        if not exchange_rows:
-            continue
-        rows.extend(exchange_rows)
-        if earliest_prompt_index is None or prompt_index < earliest_prompt_index:
-            earliest_prompt_index = prompt_index
+        if exchange_rows:
+            validated.append((exchange_rows, prompt_index))
+
+    kept_start = len(validated)
+    row_count = 0
+    for position in range(len(validated) - 1, -1, -1):
+        exchange_rows, _prompt_index = validated[position]
+        if row_count + len(exchange_rows) > _MAX_ASK_USER_ANSWER_ROWS:
+            break
+        row_count += len(exchange_rows)
+        kept_start = position
+    kept = validated[kept_start:]
+    rows = [row for exchange_rows, _prompt_index in kept for row in exchange_rows]
+    earliest_prompt_index = min(
+        (prompt_index for _exchange_rows, prompt_index in kept), default=None
+    )
     return rows, earliest_prompt_index
 
 
@@ -1599,8 +1599,12 @@ def _classifier_context(
     )
     evidence = trusted_rows[-20:]
     if receipt_rows and earliest_prompt_index is not None:
-        evidence = trusted_rows[-max(20, len(trusted_rows) - earliest_prompt_index) :]
-        if len(evidence) > _MAX_AUTHORIZATION_EVIDENCE_ROWS:
+        receipt_evidence, _latest_index = _trusted_prompt_rows(
+            authorization_messages[earliest_prompt_index:]
+        )
+        if len(receipt_evidence) <= _MAX_AUTHORIZATION_EVIDENCE_ROWS:
+            evidence = receipt_evidence
+        else:
             logger.warning(
                 "Withholding ask_user authorization evidence: the trusted user "
                 "instruction history since the earliest receipt's turn exceeds "
@@ -1608,7 +1612,6 @@ def _classifier_context(
                 "instruction",
                 _MAX_AUTHORIZATION_EVIDENCE_ROWS,
             )
-            evidence = trusted_rows[-20:]
             receipt_rows = []
     payload = {
         "authorization_evidence": evidence,

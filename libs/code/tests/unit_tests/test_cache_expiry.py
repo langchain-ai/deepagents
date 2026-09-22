@@ -1,6 +1,9 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,6 +11,16 @@ from langchain_core.messages import HumanMessage
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
+
+
+@pytest.fixture(autouse=True)
+def checkpoint_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.sessions.get_db_path", lambda: tmp_path / "sessions.db"
+    )
 
 
 def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,7 +122,9 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
         await pilot.press("escape")
 
 
-@pytest.mark.parametrize("failure", [None, "summary", "archive", "seed", "queued"])
+@pytest.mark.parametrize(
+    "failure", [None, "summary", "archive", "seed", "metadata", "queued"]
+)
 async def test_handoff_persists_recovery_before_switch(
     failure: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -123,6 +138,14 @@ async def test_handoff_persists_recovery_before_switch(
     remote.aswitch_workspace = AsyncMock()
     remote.aupdate_state = AsyncMock(
         side_effect=RuntimeError("write failed") if failure == "seed" else None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.sessions.set_thread_metadata",
+        AsyncMock(
+            side_effect=RuntimeError("metadata failed")
+            if failure == "metadata"
+            else None
+        ),
     )
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_set_spinner", AsyncMock())
@@ -172,6 +195,94 @@ async def test_handoff_persists_recovery_before_switch(
     child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
     assert child_id != "source"
     resume.assert_awaited_once_with(child_id)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("assistant_id", [None, "researcher"])
+async def test_handoff_child_is_discoverable_and_resumable(
+    queued: bool, assistant_id: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langgraph.graph import END, StateGraph
+
+    from deepagents_code import sessions
+    from deepagents_code.app import DEFAULT_ASSISTANT_ID
+
+    @dataclass
+    class State:
+        messages: list[HumanMessage]
+
+    app = DeepAgentsApp(assistant_id=assistant_id)
+    owner = assistant_id or DEFAULT_ASSISTANT_ID
+    app._lc_thread_id = "source"
+    remote = MagicMock()
+    remote.aoffload = AsyncMock(return_value={"status": "compacted"})
+    remote.aensure_thread = AsyncMock()
+    remote.aswitch_workspace = AsyncMock()
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(
+            return_value={
+                "messages": [HumanMessage("original")],
+                "_summarization_event": {
+                    "summary_message": HumanMessage("LLM summary"),
+                    "cutoff_index": 1,
+                    "file_path": "/conversation_history/source.md",
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        DeepAgentsApp,
+        "_resume_cutoff",
+        lambda: (datetime.now(UTC) - timedelta(days=7), "user config", True),
+    )
+
+    async def check_resume(child_id: str) -> None:
+        assert await sessions.get_thread_agent(child_id) == owner
+        assert await app._thread_resume_block(child_id) is None
+
+    resume = AsyncMock(side_effect=check_resume)
+    monkeypatch.setattr(app, "_resume_thread", resume)
+    if queued:
+        app._pending_messages.append(QueuedMessage("arrived", "normal"))
+
+    async with sessions.get_checkpointer() as checkpointer:
+        builder = StateGraph(State)
+        builder.add_node("model", lambda state: {"messages": state.messages})
+        builder.set_entry_point("model")
+        builder.add_edge("model", END)
+        graph = builder.compile(checkpointer=checkpointer)
+
+        async def update_state(
+            config: "RunnableConfig", values: dict[str, object], *, as_node: str
+        ) -> None:
+            # The HTTP state API forwards the thread ID, but drops config metadata.
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": config["configurable"]["thread_id"]}},
+                values,
+                as_node=as_node,
+            )
+
+        remote.aupdate_state = AsyncMock(side_effect=update_state)
+        await app._handoff_expired_cache("source")
+        assert remote.aupdate_state.await_args is not None
+        child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
+        state = await graph.aget_state({"configurable": {"thread_id": child_id}})
+        assert "LLM summary" in state.values["messages"][0].text
+
+    threads = await sessions.list_threads(agent_name=owner, cwd=app._cwd)
+    assert [thread["thread_id"] for thread in threads] == [child_id]
+    assert await sessions.get_thread_agent(child_id) == owner
+    assert await app._thread_resume_block(child_id) is None
+    if queued:
+        resume.assert_not_awaited()
+    else:
+        resume.assert_awaited_once_with(child_id)
 
 
 @pytest.mark.parametrize("mode", ["expiry", "send", "off"])

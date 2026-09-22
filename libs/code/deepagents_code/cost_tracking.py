@@ -2565,12 +2565,16 @@ def _has_legacy_cost_history(state: CostState) -> bool:
         `True` when a legacy checkpoint has positive cost but no breakdown.
     """
     cost_usd = state.get("_session_cost_usd")
+    breakdown = state.get("_session_cost_breakdown")
     return (
         isinstance(cost_usd, int | float)
         and not isinstance(cost_usd, bool)
         and math.isfinite(cost_usd)
         and cost_usd > 0
-        and not isinstance(state.get("_session_cost_breakdown"), Mapping)
+        and (
+            not isinstance(breakdown, Mapping)
+            or breakdown.get("version") != COST_BREAKDOWN_VERSION
+        )
     )
 
 
@@ -3143,7 +3147,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         try:
             prior_breakdown = state.get("_session_cost_breakdown")
             absolute_breakdown = _merge_cost_breakdowns(prior_breakdown, breakdown)
-            if prior_usd > 0 and not isinstance(prior_breakdown, Mapping):
+            if _has_legacy_cost_history(state):
                 absolute_breakdown["historical_complete"] = False
             writer(
                 {

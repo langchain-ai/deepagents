@@ -521,14 +521,14 @@ def _format_cost_breakdown_table(
     """Build the copyable entire-thread estimated token/cost table.
 
     Returns:
-        A plain-text table and any completeness notes.
+        A plain-text table, or an empty string when historical detail is missing.
     """
-    if not isinstance(breakdown, Mapping) or breakdown.get("version") != 1:
-        return (
-            "Entire-thread estimated breakdown unavailable\n"
-            "Historical token/category detail was not persisted; existing cost "
-            "was not repriced."
-        )
+    if (
+        not isinstance(breakdown, Mapping)
+        or breakdown.get("version") != 1
+        or breakdown.get("historical_complete") is not True
+    ):
+        return ""
 
     def _number(key: str) -> float | None:
         value = breakdown.get(key)
@@ -629,8 +629,6 @@ def _format_cost_breakdown_table(
             f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
             "directionless/unattributed."
         )
-    if breakdown.get("historical_complete") is not True:
-        notes.append("Historical detail is incomplete; existing cost was not repriced.")
     if breakdown.get("priced_request_count") != breakdown.get("request_count"):
         notes.append("Some requests were unpriceable; costs are partial.")
     return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)

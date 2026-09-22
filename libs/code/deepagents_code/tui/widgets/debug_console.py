@@ -840,7 +840,8 @@ class DebugConsoleScreen(ModalScreen[None]):
                 tick as the log tail whenever the provider returns a different
                 row list. Omit for a freeze-frame header (e.g. unit tests).
             cost_breakdown_provider: Optional callable that builds the detailed
-                token and cost breakdown shown in a dedicated modal.
+                token and cost breakdown shown in a dedicated modal. An empty
+                string hides the breakdown button.
             cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
@@ -952,7 +953,19 @@ class DebugConsoleScreen(ModalScreen[None]):
     def _on_refresh_tick(self) -> None:
         """Rebuild the snapshot header (when live) and append new log records."""
         self._poll_snapshot()
+        self._refresh_cost_breakdown_button()
         self._poll_logs()
+
+    def _refresh_cost_breakdown_button(self) -> None:
+        """Show cost detail only when the provider has historical coverage."""
+        if self._cost_breakdown_provider is None:
+            return
+        try:
+            available = bool(self._cost_breakdown_provider())
+        except Exception:
+            logger.debug("Cost breakdown build failed", exc_info=True)
+            available = False
+        self.query_one(f"#{_COST_BREAKDOWN_ID}", Button).display = available
 
     def _poll_snapshot(self) -> None:
         """Rebuild the snapshot header from the host provider, if configured.
@@ -1139,7 +1152,8 @@ class DebugConsoleScreen(ModalScreen[None]):
                 markup=False,
             )
             return
-        self.app.push_screen(CostBreakdownScreen(breakdown))
+        if breakdown:
+            self.app.push_screen(CostBreakdownScreen(breakdown))
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""

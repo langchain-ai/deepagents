@@ -619,9 +619,11 @@ class TestCostTrackingMiddleware:
         assert retried.update["_session_cost_usd"] == pytest.approx(one_call)
         assert retried.update["_session_cost_breakdown"]["request_count"] == 1
 
+    @pytest.mark.parametrize("saved_breakdown", [None, {}, {"version": 999}])
     def test_prepared_operation_preserves_legacy_history_gap(
         self,
         recorder: _SessionCostRecorder,
+        saved_breakdown: object,
     ) -> None:
         """The first post-upgrade offload must not erase missing historical detail."""
         _collect(
@@ -635,6 +637,7 @@ class TestCostTrackingMiddleware:
                 "messages": [],
                 "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
                 "_session_cost_usd": 1.25,
+                "_session_cost_breakdown": saved_breakdown,
             },
         )
 
@@ -643,6 +646,31 @@ class TestCostTrackingMiddleware:
         assert (
             prepared.update["_session_cost_breakdown"]["historical_complete"] is False
         )
+
+    @pytest.mark.parametrize("saved_breakdown", [None, {}, {"version": 999}])
+    def test_new_request_preserves_legacy_history_gap(
+        self, saved_breakdown: object
+    ) -> None:
+        """Checkpoint and stream retain the gap after an old thread continues."""
+        state = cast(
+            "CostState",
+            {
+                "messages": [_message(_usage(), message_id="new-request")],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+                "_session_cost_usd": 1.25,
+                "_session_cost_breakdown": saved_breakdown,
+            },
+        )
+        events: list[dict[str, Any]] = []
+
+        result = CostTrackingMiddleware().after_model(
+            state, _runtime(thread_id=THREAD_ID, events=events)
+        )
+
+        assert result is not None
+        assert result["_session_cost_breakdown"]["historical_complete"] is False
+        assert events[0]["breakdown"]["historical_complete"] is False
+        assert events[0]["total"] == pytest.approx(1.25 + result["_session_cost_usd"])
 
     def test_committed_prepare_does_not_restore_records(
         self,

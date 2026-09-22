@@ -91,7 +91,7 @@ class BtwOperation(AgentMiddleware):
     def _remember_model(self, request: ModelRequest) -> None:
         """Snapshot resolved settings before either kind of main model call."""
         info = request.runtime.execution_info
-        if info is not None and info.thread_id:
+        if info is not None and info.thread_id and "|" not in info.checkpoint_ns:
             self._snapshots[info.thread_id] = (
                 request.model,
                 (request.system_message or self._system).model_copy(deep=True),

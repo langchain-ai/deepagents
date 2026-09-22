@@ -131,7 +131,10 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
         },
         runtime=Runtime(
             execution_info=ExecutionInfo(
-                thread_id="thread", checkpoint_id="c", checkpoint_ns="", task_id="t"
+                thread_id="thread",
+                checkpoint_id="c",
+                checkpoint_ns="model:t",
+                task_id="t",
             )
         ),
     )
@@ -146,9 +149,29 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation(
             await operation.awrap_model_call(request, AsyncMock(return_value=response))
             is response
         )
+    fork_model = FakeMessagesListChatModel(responses=[AIMessage(content="fork")])
+    fork_request = request.override(
+        model=fork_model,
+        system_message=SystemMessage(content="Fork instructions"),
+        model_settings={"temperature": 0.8},
+        runtime=Runtime(
+            execution_info=ExecutionInfo(
+                thread_id="thread",
+                checkpoint_id="fork-checkpoint",
+                checkpoint_ns="tools:task|model:fork-task",
+                task_id="fork-task",
+            )
+        ),
+    )
+    if synchronous:
+        operation.wrap_model_call(fork_request, MagicMock(return_value=response))
+    else:
+        await operation.awrap_model_call(fork_request, AsyncMock(return_value=response))
+    assert await operation.answer("thread", {}, "why") == "answer"
     request.model_settings["reasoning"]["effort"] = "low"
 
-    def invoke(_messages: object, **kwargs: object) -> AIMessage:
+    def invoke(messages: list[SystemMessage], **kwargs: object) -> AIMessage:
+        assert messages[0].text.startswith("system\n\n")
         assert kwargs == {
             "config": {"callbacks": []},
             "temperature": 0.2,

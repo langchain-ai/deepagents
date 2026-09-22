@@ -30700,6 +30700,72 @@ class TestPromptClipboard:
             assert app._prompt_clipboard_block_reason() is None
 
 
+class TestSessionCostWarning:
+    """Session cost warnings respect thread state and preserve running work."""
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_warning_modal_once_per_thread(self, dismiss_key: str) -> None:
+        from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_session_cost(5.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            app._set_session_cost(6.0)
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+            assert app._session_cost_usd == pytest.approx(6.0)
+
+            app._set_session_cost(7.0)
+            await pilot.pause()
+            assert not isinstance(app.screen, SessionCostWarningScreen)
+
+            app._reset_thread_usage()
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert isinstance(app.screen, SessionCostWarningScreen)
+            await pilot.press(dismiss_key)
+
+    @pytest.mark.parametrize("dismiss_key", ["enter", "escape"])
+    async def test_dismiss_preserves_running_agent(self, dismiss_key: str) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 5.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_agent_running(True)
+            worker = MagicMock()
+            app._agent_worker = worker
+            screen = app.screen
+
+            app._set_session_cost(5.25)
+            await pilot.pause()
+            assert app.screen is not screen
+            await pilot.press(dismiss_key)
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert app._agent_running is True
+            worker.cancel.assert_not_called()
+
+    async def test_zero_threshold_disables_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_warning_threshold_usd = 0.0
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            app._set_session_cost(100.0)
+            await pilot.pause()
+            assert app.screen is screen
+
+
 class TestProvisionalCostReconciliation:
     """Request-keyed provisional deltas survive backend resets correctly."""
 

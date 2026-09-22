@@ -42,6 +42,21 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+### Cache-expiry handoff
+
+When the footer's cache retention timer expires, dcode offers a blocking prompt once the agent is idle. **Enter** uses the configured compaction model to summarize the conversation into a new thread; **Esc** keeps the current thread and bypasses the cold-cache cost warning for that cache window. The draft is not submitted by either choice. Retention is provider-dependent, so an expired timer does not guarantee a cache miss.
+
+The new thread contains the summary, previous thread ID, and agent-filesystem transcript path for recovering omitted details. The original thread and its full checkpoint history remain available through `/threads`. Archives follow the existing history-retention policy and may be ephemeral when persistent storage is unavailable. A failed summary or archive write leaves you on the original thread.
+
+Disable the prompt in `/config` with `warnings.cache_expiry_prompt`, or in `config.toml`:
+
+```toml
+[warnings]
+cache_expiry_prompt = false
+```
+
+This defaults to `true` and does not affect headless mode or disable the separate cold-cache cost warning.
+
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

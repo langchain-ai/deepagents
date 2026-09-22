@@ -1431,7 +1431,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         return summarization
 
     async def _aplan_forced_compaction_update(
-        self, state: _OffloadState, runtime: _HasRunContext
+        self,
+        state: _OffloadState,
+        runtime: _HasRunContext,
+        *,
+        summarize_all: bool = False,
     ) -> _ForcedCompactionPlan | None:
         """Summarize forced-compaction history without writing its archive.
 
@@ -1444,6 +1448,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Args:
             state: Checkpointed conversation and prior summarization event.
             runtime: Run context carrier used to select the summarizer model.
+            summarize_all: Include the recent tail in the handoff summary.
 
         Returns:
             The checkpoint/archive plan, or `None` when nothing can be compacted.
@@ -1461,7 +1466,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             msg = "Offload compaction requires checkpointed conversation messages."
             raise ValueError(msg)
         effective = summarization._apply_event_to_messages(messages, event)
-        cutoff = summarization._determine_cutoff_index(effective)
+        cutoff = (
+            len(effective)
+            if summarize_all
+            else summarization._determine_cutoff_index(effective)
+        )
         if cutoff == 0:
             return None
         # Resolved once and threaded into the update below: the SDK call is the
@@ -1780,6 +1789,8 @@ class OffloadOperation:
         self,
         state: _OffloadState,
         runtime: Runtime[CLIContextSchema],
+        *,
+        summarize_all: bool = False,
     ) -> OffloadExecution:
         """Run one offload against server-read checkpoint state.
 
@@ -1814,7 +1825,7 @@ class OffloadOperation:
 
         try:
             plan = await self._compaction._aplan_forced_compaction_update(
-                state, runtime
+                state, runtime, summarize_all=summarize_all
             )
         except HookTransportInterruptError:
             raise

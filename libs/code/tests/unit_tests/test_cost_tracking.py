@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -2345,10 +2345,16 @@ class TestGraphCostOwnership:
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
 
 
-async def test_side_question_cost_is_charged_on_next_turn(
+async def test_side_question_cost_is_durable_without_another_turn(
     recorder: _SessionCostRecorder,
+    side_cost_db: Path,
 ) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from deepagents_code import offload_api
     from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import include_cost, load_cost
+    from deepagents_code.client.remote_client import RemoteAgent
 
     agent = create_agent(
         model=_fake_model(
@@ -2361,19 +2367,149 @@ async def test_side_question_cost_is_charged_on_next_turn(
     )
     config: RunnableConfig = {"configurable": {"thread_id": THREAD_ID}}
     await agent.ainvoke({"messages": [HumanMessage("main")]}, config)
-    before = (await agent.aget_state(config)).values
+    checkpoint = await agent.aget_state(config)
+    before = cast("CostState", checkpoint.values)
     one_call = before["_session_cost_usd"]
     assert one_call > 0
     operation = BtwOperation(
         _fake_model(_message(_usage(), message_id="side")), "system", None
     )
-    await operation.answer(THREAD_ID, before, "side question")
+    server = SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+    threads = SimpleNamespace(get_state=AsyncMock(return_value={"values": before}))
+    with (
+        patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
+        patch.object(offload_api, "get_server_runtime", AsyncMock(return_value=server)),
+        patch.object(
+            offload_api, "_thread_client", return_value=SimpleNamespace(threads=threads)
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/dcode/threads/{THREAD_ID}/btw",
+                json={"question": "side question", "workspace": {}},
+            )
+    assert response.status_code == 200
+    cost = response.json()["cost"]
     assert (await agent.aget_state(config)).values == before
-    assert recorder.drain("other-thread") == []
+    assert recorder.drain(THREAD_ID) == []
+    assert cost is not None
+    assert cost["total_cost_usd"] == pytest.approx(one_call)
+
+    # Recreate the reader with no process-local accounting state. It must show
+    # the persisted side spend even though no subsequent graph turn occurred.
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved == cost
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=checkpoint)
+
+    async def read_cost(path: str) -> dict[str, object]:
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            response = await client.get(path)
+        assert response.status_code == 200
+        return response.json()
+
+    graph.client.http.get = read_cost
+    remote._graph = graph
+    restored = await remote.aget_state(dict(config))
+    assert restored.values["_session_cost_usd"] == pytest.approx(2 * one_call)
+    assert restored.values["_session_cost_breakdown"]["request_count"] == 2
+    assert restored.values["messages"] == before["messages"]
 
     await agent.ainvoke({"messages": [HumanMessage("continue")]}, config)
-    after = (await agent.aget_state(config)).values
+    after = include_cost((await agent.aget_state(config)).values, cost)
     assert after["_session_cost_usd"] == pytest.approx(3 * one_call)
     assert after["_session_cost_breakdown"]["request_count"] == 3
     assert len(after["messages"]) == 4
+    assert recorder.drain(THREAD_ID) == []
+
+
+@pytest.fixture
+def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Use a real, isolated sessions database for side-question accounting."""
+    from deepagents_code import btw_cost
+
+    path = tmp_path / "sessions.db"
+    monkeypatch.setattr(btw_cost, "_database_path", lambda: path)
+    return path
+
+
+async def test_concurrent_side_costs_do_not_claim_main_run_usage(
+    recorder: _SessionCostRecorder, side_cost_db: Path
+) -> None:
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import answer_with_cost, load_cost
+
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    operation = BtwOperation(
+        _fake_model(_message(_usage()), _message(_usage())), "system", None
+    )
+    await asyncio.gather(
+        *(
+            answer_with_cost(
+                operation.answer(THREAD_ID, {}, "aside"),
+                thread_id=THREAD_ID,
+                state={"messages": []},
+            )
+            for _ in range(2)
+        )
+    )
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    assert saved["request_count"] == 2
+    assert saved["total_cost_usd"] > 0
+    assert await asyncio.to_thread(load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
+
+
+async def test_cancelling_side_answer_finishes_started_cost_write(
+    recorder: _SessionCostRecorder, side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code import btw_cost
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import answer_with_cost, load_cost
+
+    started = threading.Event()
+    release = threading.Event()
+    write = btw_cost._persist_cost
+
+    def blocked_write(
+        thread_id: str, state: CostState
+    ) -> cost_tracking.CostBreakdown | None:
+        started.set()
+        assert release.wait(5)
+        return write(thread_id, state)
+
+    monkeypatch.setattr(btw_cost, "_persist_cost", blocked_write)
+    operation = BtwOperation(_fake_model(_message(_usage())), "system", None)
+    task = asyncio.create_task(
+        answer_with_cost(
+            operation.answer(THREAD_ID, {}, "aside"),
+            thread_id=THREAD_ID,
+            state={"messages": []},
+        )
+    )
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    assert saved["request_count"] == 1
     assert recorder.drain(THREAD_ID) == []

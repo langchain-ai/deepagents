@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import OrderedDict
 from collections.abc import Mapping
 from copy import deepcopy
@@ -19,6 +20,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
     convert_to_messages,
 )
 from langchain_core.runnables import RunnableBinding
@@ -97,11 +99,21 @@ def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
     transcript: list[BaseMessage] = []
     for message in messages:
         text = message.text
+        if isinstance(message, AIMessage):
+            calls = [
+                f"[tool call {call['id']}: {call['name']}]\n"
+                + json.dumps(call["args"], ensure_ascii=False)
+                for call in message.tool_calls
+            ]
+            text = "\n\n".join(part for part in [text, *calls] if part)
+        elif isinstance(message, ToolMessage):
+            label = f"{message.tool_call_id}: {message.name or 'tool'}"
+            text = f"[tool result {label}]\n{text}"
         if not text:
             continue
         if isinstance(message, AIMessage):
             transcript.append(AIMessage(content=text))
-        elif isinstance(message, HumanMessage):
+        elif isinstance(message, HumanMessage | ToolMessage):
             transcript.append(HumanMessage(content=text))
         else:
             transcript.append(HumanMessage(content=f"[{message.type} context]\n{text}"))

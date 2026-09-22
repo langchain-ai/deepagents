@@ -38,9 +38,11 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
             HumanMessage(content="Current request"),
             AIMessage(
                 content="Looking",
-                tool_calls=[{"name": "execute", "args": {}, "id": "1"}],
+                tool_calls=[
+                    {"name": "execute", "args": {"command": "git status"}, "id": "1"}
+                ],
             ),
-            ToolMessage(content="Tool context", tool_call_id="1"),
+            ToolMessage(content="Tool context", tool_call_id="1", name="execute"),
             AIMessage(
                 content="", tool_calls=[{"name": "execute", "args": {}, "id": "2"}]
             ),
@@ -61,8 +63,9 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
     assert [m.text for m in messages[1:-1]] == [
         "Earlier summary",
         "Current request",
-        "Looking",
-        "[tool context]\nTool context",
+        'Looking\n\n[tool call 1: execute]\n{"command": "git status"}',
+        "[tool result 1: execute]\nTool context",
+        "[tool call 2: execute]\n{}",
     ]
     assert all(not isinstance(m, ToolMessage) for m in messages)
     assert all(not m.tool_calls for m in messages if isinstance(m, AIMessage))
@@ -364,7 +367,9 @@ async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> No
             ),
         ),
         patch.object(
-            offload_api, "_thread_client", return_value=SimpleNamespace(threads=threads)
+            offload_api,
+            "_thread_client",
+            return_value=SimpleNamespace(threads=threads),
         ),
     ):
         async with AsyncClient(
@@ -572,6 +577,32 @@ async def test_modal_error_is_plain_text() -> None:
         app.push_screen(BtwScreen(answer, "why"))
         await pilot.pause()
         assert app.screen.query_one("#btw-error", Static).content == "bad [/tmp/file]"
+        await pilot.press("escape")
+
+
+async def test_idle_side_answer_refreshes_displayed_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-cost")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    remote = MagicMock(spec=RemoteAgent)
+    remote.abtw = AsyncMock(return_value="Side answer")
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"_session_cost_usd": 1.5}),
+    )
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        app._connecting = False
+        await app._submit_input("/btw why", "command")
+        await pilot.pause()
+        assert app.screen.query_one(Markdown)._markdown == "Side answer"
+        assert app._displayed_cost_usd == pytest.approx(1.5)
+        assert not app._agent_running
         await pilot.press("escape")
 
 

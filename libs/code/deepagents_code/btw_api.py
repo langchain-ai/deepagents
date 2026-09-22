@@ -1,20 +1,23 @@
-"""Read-only HTTP boundary for side questions."""
+"""Side-question generation and durable usage without conversation writes."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from starlette.responses import JSONResponse
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
+from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from starlette.requests import Request
+
+    from deepagents_code.cost_tracking import CostBreakdown, CostState
 
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
@@ -26,9 +29,9 @@ async def _wait_for_disconnect(request: Request) -> None:
         pass
 
 
-async def _answer_while_connected(
-    request: Request, answer: Coroutine[object, object, str]
-) -> str | None:
+async def _answer_while_connected[T](
+    request: Request, answer: Coroutine[object, object, T]
+) -> T | None:
     """Keep generation scoped to this HTTP connection.
 
     Returns:
@@ -87,15 +90,24 @@ async def btw(request: Request) -> JSONResponse:
                 return JSONResponse(
                     {"detail": "This server does not support /btw."}, status_code=503
                 )
-            snapshot = await _thread_client().threads.get_state(thread_id)
+            client = _thread_client()
+            snapshot = await client.threads.get_state(thread_id)
             state = snapshot.get("values") or {}
-            text = await _answer_while_connected(
+            result = await _answer_while_connected(
                 request,
-                operation.answer(thread_id, state, question.strip()),
+                answer_with_cost(
+                    operation.answer(thread_id, state, question.strip()),
+                    thread_id=thread_id,
+                    state=cast("CostState", state),
+                ),
             )
-        if text is None:
+        if result is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)
-        return JSONResponse({"text": text})
+        text, cost = result
+        response: dict[str, str | CostBreakdown] = {"text": text}
+        if cost is not None:
+            response["cost"] = cost
+        return JSONResponse(response)
     except TimeoutError:
         return JSONResponse(
             {"detail": "Side question timed out. Try again."}, status_code=504
@@ -106,3 +118,13 @@ async def btw(request: Request) -> JSONResponse:
             {"detail": "Side question failed on the server; see the server log."},
             status_code=500,
         )
+
+
+async def btw_cost(request: Request) -> JSONResponse:
+    """Read the side-question subtotal without accessing or changing a graph.
+
+    Returns:
+        Persisted usage, or `null` if the thread has no side-question charges.
+    """
+    cost = await asyncio.to_thread(load_cost, request.path_params["thread_id"])
+    return JSONResponse({"cost": cost})

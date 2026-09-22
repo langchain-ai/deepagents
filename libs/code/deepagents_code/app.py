@@ -9425,8 +9425,8 @@ class DeepAgentsApp(App):
     def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
         """Adopt the checkpoint's cumulative cost as the displayed total.
 
-        The graph is the only writer, so a committed value always supersedes the
-        provisional figure the message stream produced. State that carries no
+        Server-owned totals include separately persisted side-question usage and
+        supersede the provisional figure the message stream produced. State with no
         cost channel at all (a read that failed or a graph without the
         middleware) is left alone rather than treated as zero spend.
 
@@ -16882,8 +16882,6 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._handle_version_command()
         elif cmd.split(maxsplit=1)[0] == "/btw":
-            from functools import partial
-
             from deepagents_code.tui.modals.btw import BtwScreen
 
             remote = self._remote_agent()
@@ -16892,10 +16890,16 @@ class DeepAgentsApp(App):
                 return
             parts = command.strip().split(maxsplit=1)
             question = parts[1].strip() if len(parts) > 1 else ""
-            answer = partial(
-                remote.abtw,
-                config={"configurable": {"thread_id": self._lc_thread_id}},
-            )
+            thread_id = self._lc_thread_id
+
+            async def answer(question: str) -> str:
+                text = await remote.abtw(
+                    question, config={"configurable": {"thread_id": thread_id}}
+                )
+                if not self._agent_running and thread_id == self._lc_thread_id:
+                    await self._sync_session_cost_from_checkpoint()
+                return text
+
             self.push_screen(
                 BtwScreen(answer, question),
                 lambda _result: self._focus_chat_input_after_refresh(),

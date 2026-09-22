@@ -188,6 +188,7 @@ def _make_agent(
             yield ev
 
     mock_graph.astream = fake_astream
+    mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
     agent._graph = mock_graph
     agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent
@@ -212,6 +213,7 @@ def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
             yield ev
 
     mock_graph.astream = fake_astream
+    mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
     agent._graph = mock_graph
     agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent, captured
@@ -280,6 +282,40 @@ class TestRemoteAgentAstream:
 # ---------------------------------------------------------------------------
 # RemoteAgent — aget_state
 # ---------------------------------------------------------------------------
+
+
+async def test_side_cost_is_included_in_main_stream_but_not_nested_events() -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1, priced_request_count=1)
+    main = {"type": "session_cost", "total": 1.0, "thread_id": _TEST_THREAD_ID}
+    nested = {"type": "session_cost", "total": 0.2}
+    agent = _make_agent([((), "custom", main), (("tools:child",), "custom", nested)])
+    agent._graph.client.http.get.return_value = {"cost": side}
+    events = [event async for event in agent.astream({}, config=_config())]
+    assert events[0][2]["total"] == pytest.approx(1.5)
+    assert events[1][2] == nested
+    assert main["total"] == pytest.approx(1.0)
+
+
+async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1, priced_request_count=1)
+    agent = RemoteAgent("http://test")
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(
+        side_effect=TypeError("'NoneType' object is not subscriptable")
+    )
+    graph.client.http.get = AsyncMock(return_value={"cost": side})
+    agent._graph = graph
+    state = await agent.aget_state(_config())
+    assert state.values["_session_cost_usd"] == pytest.approx(0.5)
+    assert state.values["_session_cost_breakdown"]["request_count"] == 1
+    assert state.values.get("messages", []) == []
+    assert state.next == ()
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +677,7 @@ class TestRemoteAgentAbandonPendingWork:
         mock_graph._validate_client.return_value = mock_client
         mock_graph.aupdate_state = AsyncMock()
         mock_graph.aget_state = AsyncMock(side_effect=list(states))
+        mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
         agent._graph = mock_graph
         return agent, mock_graph
 

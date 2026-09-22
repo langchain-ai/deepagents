@@ -6,14 +6,14 @@ import asyncio
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from starlette.requests import Request
 
-from deepagents_code import btw_api, offload_api
+from deepagents_code import btw_api, config, offload_api
 from deepagents_code.btw import BtwOperation
 
 if TYPE_CHECKING:
@@ -111,6 +111,60 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
     finally:
         handler.cancel()
         await asyncio.gather(handler, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    ("model", "params"),
+    [
+        ("google_genai:model", {"thinking_level": "high"}),
+        (
+            "google_genai:model",
+            {"thinking_config": {"thinking_level": "high", "include_thoughts": True}},
+        ),
+        ("anthropic:model", {"output_config": {"effort": "high"}}),
+    ],
+)
+async def test_provider_generation_overrides_reach_side_answer(
+    model: str, params: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    chat = FakeMessagesListChatModel(responses=[AIMessage(content="side answer")])
+    create_model = Mock(return_value=SimpleNamespace(model=chat))
+    monkeypatch.setattr(config, "create_model", create_model)
+    operation = BtwOperation(chat, "", None)
+    monkeypatch.setattr(btw_api, "require_thread_workspace", AsyncMock())
+    monkeypatch.setattr(
+        offload_api,
+        "get_server_runtime",
+        AsyncMock(
+            return_value=SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+        ),
+    )
+    monkeypatch.setattr(
+        offload_api,
+        "_thread_client",
+        lambda: SimpleNamespace(
+            threads=SimpleNamespace(get_state=AsyncMock(return_value={"values": {}}))
+        ),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=offload_api.app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/dcode/threads/thread/btw",
+            json={
+                "question": "why",
+                "workspace": {},
+                "model": model,
+                "model_params": params,
+            },
+        )
+    assert response.status_code == 200
+    assert response.json() == {"text": "side answer"}
+    create_model.assert_called_once_with(
+        model, extra_kwargs=params, bind_preserved_thinking=False
+    )
 
 
 @pytest.mark.parametrize(

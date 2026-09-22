@@ -66,9 +66,23 @@ class TestSnapshotAllowlist:
         assert "ext.py" not in snapshot.to_json()
         assert "mcp.json" not in snapshot.to_json()
 
-    def test_snapshot_refuses_unbounded_values(self) -> None:
-        with pytest.raises(ValueError, match="length limit"):
-            snapshot_for_payload({"sandbox_type": "x" * 4096})
+    def test_snapshot_omits_unbounded_values(self) -> None:
+        snapshot = snapshot_for_payload(
+            {"sandbox_type": "x" * 4096, "shell_allow_list": ["y" * 257]}
+        )
+
+        assert snapshot.fields == {}
+
+    def test_snapshot_truncation_never_rejects_large_policies(self) -> None:
+        snapshot = snapshot_for_payload(
+            {
+                "auto_approve": True,
+                "shell_allow_list": [str(index) * 256 for index in range(100)],
+            }
+        )
+
+        assert snapshot.fields["auto_approve"] is True
+        assert len(snapshot.to_json()) < 16_100
 
     def test_snapshot_round_trip(self) -> None:
         snapshot = snapshot_for_payload(
@@ -239,6 +253,12 @@ class TestDiagnosticsWireFormat:
         assert (
             WorkspaceDiagnostics.from_dict(
                 {"category": 1, "reason": "x", "snapshot_status": "current"}
+            )
+            is None
+        )
+        assert (
+            WorkspaceDiagnostics.from_dict(
+                {"category": "config_drift", "reason": "x", "snapshot_status": []}
             )
             is None
         )

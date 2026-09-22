@@ -73,29 +73,21 @@ def _safe_value(value: object) -> object:
 
     Lists are reported as sorted scalar lists (order is not significant in the
     allowlists the payload carries, and sorting keeps snapshots stable).
-    Anything outside the expected scalar shapes — or too long — is refused, so
-    an unexpected value degrades to "changed" at diff time rather than being
-    persisted.
+    Anything outside the expected scalar shapes — or too long — is omitted so
+    diagnostics never change whether a workspace configuration is accepted.
 
     Returns:
         The reportable value, or `None` when the value must not be recorded.
-
-    Raises:
-        ValueError: If the value is a recognized shape but unsafe to persist.
     """
     if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, str):
-        if len(value) > _MAX_VALUE_LENGTH:
-            msg = "workspace snapshot string value exceeds the length limit"
-            raise ValueError(msg)
-        return value
+        return value if len(value) <= _MAX_VALUE_LENGTH else None
     if isinstance(value, list | tuple) and all(
         isinstance(item, str) and len(item) <= _MAX_VALUE_LENGTH for item in value
     ):
         return sorted(cast("list[str]", value))
-    msg = f"workspace snapshot cannot record {type(value).__name__} values"
-    raise ValueError(msg)
+    return None
 
 
 def build_snapshot(workspace_payload: Mapping[str, Any]) -> dict[str, object]:
@@ -108,19 +100,16 @@ def build_snapshot(workspace_payload: Mapping[str, Any]) -> dict[str, object]:
     Returns:
         Canonical snapshot mapping restricted to `SAFE_SNAPSHOT_FIELDS`.
 
-    Raises:
-        ValueError: If an allowlisted field carries an unsafe value or the
-            serialized snapshot exceeds the size limit.
     """
     snapshot: dict[str, object] = {}
     for key in sorted(SAFE_SNAPSHOT_FIELDS):
         value = _safe_value(workspace_payload.get(key))
-        if value is not None:
-            snapshot[key] = value
-    serialized = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-    if len(serialized) > _MAX_SNAPSHOT_LENGTH:
-        msg = "workspace snapshot exceeds the size limit"
-        raise ValueError(msg)
+        if value is None:
+            continue
+        candidate = {**snapshot, key: value}
+        serialized = json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+        if len(serialized) <= _MAX_SNAPSHOT_LENGTH:
+            snapshot = candidate
     return snapshot
 
 
@@ -269,6 +258,7 @@ class WorkspaceDiagnostics:
         if (
             not isinstance(category, str)
             or not isinstance(reason, str)
+            or not isinstance(snapshot_status, str)
             or snapshot_status not in {"current", "unavailable"}
         ):
             return None

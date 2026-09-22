@@ -2635,23 +2635,32 @@ class PreparedOperationCost:
             )
 
 
-def _has_legacy_cost_history(state: CostState) -> bool:
-    """Return whether scalar cost exists without structured historical detail.
+def _has_legacy_cost_history(
+    state: CostState, *, current_message: AIMessage | None = None
+) -> bool:
+    """Detect prior model activity without structured historical detail.
+
+    Exclude the response being charged now so a thread's first request does
+    not count as missing history. Prior responses count even when unpriceable.
 
     Returns:
-        `True` when a legacy checkpoint has positive cost but no breakdown.
+        `True` when prior responses or spend have no supported breakdown.
     """
-    cost_usd = state.get("_session_cost_usd")
     breakdown = state.get("_session_cost_breakdown")
+    if (
+        isinstance(breakdown, Mapping)
+        and breakdown.get("version") == COST_BREAKDOWN_VERSION
+    ):
+        return False
+    cost_usd = state.get("_session_cost_usd")
     return (
         isinstance(cost_usd, int | float)
         and not isinstance(cost_usd, bool)
         and math.isfinite(cost_usd)
         and cost_usd > 0
-        and (
-            not isinstance(breakdown, Mapping)
-            or breakdown.get("version") != COST_BREAKDOWN_VERSION
-        )
+    ) or any(
+        isinstance(message, AIMessage) and message is not current_message
+        for message in state.get("messages", [])
     )
 
 
@@ -3034,7 +3043,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         main_message_id = message.id if message is not None else None
         delta_usd = 0.0
         breakdown = _empty_cost_breakdown(
-            historical_complete=not _has_legacy_cost_history(state)
+            historical_complete=not _has_legacy_cost_history(
+                state, current_message=message
+            )
         )
         transfers = state.get("_session_cost_transfers") or {}
         remaining_transfers = dict(transfers)
@@ -3243,8 +3254,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         try:
             prior_breakdown = state.get("_session_cost_breakdown")
             absolute_breakdown = _merge_cost_breakdowns(prior_breakdown, breakdown)
-            if _has_legacy_cost_history(state):
-                absolute_breakdown["historical_complete"] = False
             writer(
                 {
                     "type": SESSION_COST_EVENT_TYPE,

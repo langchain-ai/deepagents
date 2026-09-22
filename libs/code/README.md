@@ -42,23 +42,6 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
-### Cache warning and thread handoff
-
-When the footer's cache retention timer expires, dcode offers one blocking, cost-aware prompt once the agent is idle. It shows the existing estimate of cold input cost and the extra cost over a warm cache hit when pricing is available; otherwise it says the estimate is unavailable. Retention is provider-dependent, so an elapsed timer does not guarantee a cache miss.
-
-**Enter** uses the configured compaction model to summarize the conversation into a new thread. **Esc** stays on the current thread and acknowledges that cache window, avoiding a second cost warning on the next send. Neither choice submits the draft; submit it explicitly when ready. Summarization itself costs money and does not guarantee savings.
-
-The new thread contains the summary, previous thread ID, and agent-filesystem transcript path for recovering omitted details. The original thread and its full checkpoint history remain available through `/threads`. Archives follow the existing history-retention policy and may be ephemeral when persistent storage is unavailable. A failed summary or archive write leaves you on the original thread.
-
-Configure `warnings.cache_prompt` in `/config` or `config.toml`:
-
-```toml
-[warnings]
-cache_prompt = "expiry"
-```
-
-Choose `"expiry"` (default), `"send"` to defer the same prompt until you submit a message, or `"off"` to disable cache prompts. In send mode, Esc restores the submitted draft without sending; submit again to continue. The former `cache_expiry_prompt = false` maps to `"send"` unless the new option is set. Model, endpoint, and cache-setting changes still use the existing cost-threshold send confirmation when prompts are enabled; acknowledging expiry does not authorize a different cache identity. These preferences do not affect headless mode.
-
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

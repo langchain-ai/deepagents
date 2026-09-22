@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2e129c3a1770f21ce37f1250efee2a0b5412a6109823418d60c8ad927d9fff1e",
+  "pageVersion": "sha256:f20b3a008398de34ad5930b8a50366ac6280f7617bb04f2a590394381fa8b2f1",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -18,17 +18,17 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
     {
       "id": "claim_40b27e72b5c8466491476f2b545b4c2e",
-      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries that reject configuration-policy drift and prevent a process-wide sandbox from being shared by different workspaces.",
+      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries keyed by workspace and runtime identity, reject configuration-policy drift, and prevent a process-wide sandbox from being shared by different workspaces.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -68,7 +68,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
+          "version": "repo-file-v1:sha256:382336636929637ef6fdbb837ebcacb9709ef53de4c4c97b225137aafbd5c6a7"
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_retry.py",
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -116,7 +116,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -134,11 +134,11 @@
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py",
-          "version": "repo-file-v1:sha256:42b784f6ef15656744dd10f8f057c87b4cf196db1ed723f311f5b9674295c27e"
+          "version": "repo-file-v1:sha256:2798d8213dc0da5808612a7a74592057efc88c7ceb04eb7d0533b02f4a3e11ac"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:3e5eca2384a16e9ce3c483f97a42a5b24221b671bc95263e0d378ee69bb01649"
+          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_manager.py",
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/_server_config.py",
-          "version": "repo-file-v1:sha256:50b93c4306c0a4162ad9112ba68dd87a1da4ddf86b713be8abf33585fcf6be0c"
+          "version": "repo-file-v1:sha256:def2cecf5deef444d845dce9c15be64480c2d305ef7b4e6fd288896f813b8be4"
         },
         {
           "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
@@ -196,7 +196,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -278,17 +278,17 @@
       "evidence": [
         {
           "resource": "repo://libs/code/tests/unit_tests/test_non_interactive.py",
-          "version": "repo-file-v1:sha256:51dd86d8e7c882165406a0976504a5a6209ee7acfcd86cee006325d4a1548b80"
+          "version": "repo-file-v1:sha256:592a14a312a1e1e759d689a2cb56d7a1784468313c9837c1a01033ad48f54aeb"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py",
-          "version": "repo-file-v1:sha256:853b9a4fa988c59d13ccb896b845ffb0b12ea7ba156ca04f4974ba3b47499527"
+          "version": "repo-file-v1:sha256:5915a62816377190910aa0f751e2347241cc27172305d69d800adbc1b908db9a"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-22T08:05:41.799Z"
   }
 }

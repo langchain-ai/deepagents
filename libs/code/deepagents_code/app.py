@@ -28805,13 +28805,14 @@ class DeepAgentsApp(App):
             await self._resume_thread(thread_id)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Same-agent resume failed for thread %s", thread_id)
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not resume thread {thread_id}. Use /threads to try again."
-                )
+            body = _build_agent_error_body(
+                f"Could not resume thread {thread_id}: {exc}\n"
+                "Use /threads to try again.",
+                exc,
             )
+            await self._mount_message(ErrorMessage(body))
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -29079,7 +29080,7 @@ class DeepAgentsApp(App):
         async def resume_and_refocus(thread_id: str) -> None:
             """Resume a selected thread, then restore focus to chat input."""
             try:
-                await self._resume_thread(thread_id)
+                await self._resume_same_agent_thread(thread_id)
             finally:
                 if self._chat_input:
                     self._chat_input.focus_input()

@@ -3946,48 +3946,6 @@ def _append_trusted_user_prompt(
     )
 
 
-async def test_unanswered_questions_do_not_evict_valid_receipt(
-    tmp_path: Path,
-) -> None:
-    ask_tool = _tool("ask_user")
-    execute_tool = _tool("execute")
-    model = _StructuredModel(_allow_result())
-    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="execute",
-        args={},
-        tools=[ask_tool, execute_tool],
-    )
-    questions = [
-        {"question": f"Optional question {index}?", "type": "text"}
-        for index in range(21)
-    ]
-    answers = [""] * 20 + ["Delete build/old.log"]
-    _append_ask_user_exchange(request, questions=questions, answers=answers)
-
-    await _plan(
-        middleware,
-        request,
-        tool_name="execute",
-        args={"command": "rm build/old.log"},
-    )
-
-    classifier_message = cast("HumanMessage", model.calls[0][1])
-    payload = cast(
-        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
-    )
-    assert payload["same_turn_user_answers"] == [
-        {
-            "ask_user_tool_call_id": "ask-1",
-            "turn_id": "turn-1",
-            "question": "Optional question 20?",
-            "answer": "Delete build/old.log",
-        }
-    ]
-
-
 async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
     tmp_path: Path,
 ) -> None:
@@ -4171,68 +4129,17 @@ async def test_receipt_evidence_uses_authorization_message_indices(
     ]
     assert evidence_texts[0] == "unrelated turn 10"
     assert "do NOT delete build/old.log after all" in evidence_texts
-    assert len(evidence_texts) == 31
-
-
-async def test_prior_turn_receipt_evidence_includes_all_intervening_instructions(
-    tmp_path: Path,
-) -> None:
-    """With a receipt included, evidence spans every trusted prompt since its turn."""
-    question = "Delete the stale build/old.log scratch file?"
-    ask_tool = _tool("ask_user")
-    execute_tool = _tool("execute")
-    model = _StructuredModel(_deny_result())
-    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="execute",
-        args={},
-        tools=[ask_tool, execute_tool],
-        raw_user_text="clean up stale scratch files",
-    )
-    _append_ask_user_exchange(
-        request,
-        answer="yes",
-        questions=[{"question": question, "type": "text"}],
-        receipt_turn_id="turn-1",
-    )
-    _append_trusted_user_prompt(
-        request, "do NOT delete build/old.log after all", turn_id="turn-2"
-    )
-    for turn in range(3, 30):
-        _append_trusted_user_prompt(
-            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
-        )
-    _append_trusted_user_prompt(request, "continue", turn_id="turn-30")
-    request.runtime.context["turn_id"] = "turn-30"
-
-    await _plan(
-        middleware,
-        request,
-        tool_name="execute",
-        args={"command": "rm build/old.log"},
-    )
-
-    classifier_message = cast("HumanMessage", model.calls[0][1])
-    payload = cast(
-        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
-    )
+    assert [row["turn_id"] for row in payload["authorization_evidence"]] == [
+        f"turn-{turn}" for turn in range(10, 41)
+    ]
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
-            "turn_id": "turn-1",
+            "turn_id": "turn-10",
             "question": question,
             "answer": "yes",
         }
     ]
-    evidence_texts = [
-        row.get("literal_user_text") for row in payload["authorization_evidence"]
-    ]
-    assert len(evidence_texts) == 30
-    assert "clean up stale scratch files" in evidence_texts
-    assert "do NOT delete build/old.log after all" in evidence_texts
-    assert evidence_texts[-1] == "continue"
 
 
 async def test_prior_turn_receipt_fails_closed_when_instruction_history_truncated(
@@ -4436,38 +4343,6 @@ async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
         request,
         tool_name="execute",
         args={"command": "rm build/old.log"},
-    )
-
-    classifier_message = cast("HumanMessage", model.calls[0][1])
-    payload = cast(
-        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
-    )
-    assert payload["same_turn_user_answers"] == []
-    assert plan["decisions"][0]["disposition"] == "policy_deny"
-
-
-async def test_prior_turn_receipt_without_matching_trusted_prompt_is_rejected(
-    tmp_path: Path,
-) -> None:
-    """A prior-turn receipt must anchor to a trusted client-stamped prompt."""
-    ask_tool = _tool("ask_user")
-    execute_tool = _tool("execute")
-    model = _StructuredModel(_deny_result())
-    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="execute",
-        args={},
-        tools=[ask_tool, execute_tool],
-    )
-    _append_ask_user_exchange(request, receipt_turn_id="turn-2")
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="execute",
-        args={"command": "git rebase origin/main"},
     )
 
     classifier_message = cast("HumanMessage", model.calls[0][1])

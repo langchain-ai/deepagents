@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -1536,36 +1537,41 @@ def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     return load_bool_display_preference(key, fallback=fallback)
 
 
-def _load_cache_prompt_mode() -> str:
-    """Resolve cache prompt timing.
+type CachePromptMode = Literal["expiry", "send", "off"]
+"""When to prompt about an expired prompt cache (`warnings.cache_prompt`)."""
+
+
+def _load_cache_prompt_mode() -> CachePromptMode:
+    """Resolve `warnings.cache_prompt`, case-insensitively.
+
+    An unrecognized value falls back to `send`, the pre-handoff behavior, and
+    is logged once so the fallback is visible.
 
     Returns:
-        The configured mode, with legacy booleans mapped to expiry/send.
+        The configured prompt timing.
     """
-    from deepagents_code.config_manifest import ConfigOption, OptionKind, get_option
-    from deepagents_code.configuration.resolver import (
-        DEFAULT_RANK,
-        get_config_resolver,
-    )
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    resolver = get_config_resolver()
     option = get_option("warnings.cache_prompt")
     if option is None:
         return "expiry"
-    resolved = resolver.get(option)
-    if resolved.value in {"expiry", "send", "off"} and any(
-        rank != DEFAULT_RANK for rank in resolved.ranks
-    ):
-        return str(resolved.value)
-    legacy = ConfigOption(
-        key="warnings.cache_expiry_prompt",
-        group="Warnings",
-        summary="Legacy cache expiry preference",
-        kind=OptionKind.BOOL,
-        default=True,
-        toml_keys=("warnings", "cache_expiry_prompt"),
+    value = get_config_resolver().get(option).value
+    mode = value.strip().lower() if isinstance(value, str) else value
+    if mode in {"expiry", "send", "off"}:
+        return cast("CachePromptMode", mode)
+    _warn_invalid_cache_prompt(repr(value))
+    return "send"
+
+
+@functools.cache
+def _warn_invalid_cache_prompt(value: str) -> None:
+    """Log an unrecognized `warnings.cache_prompt` value once per value."""
+    logger.warning(
+        "Ignoring warnings.cache_prompt = %s; expected 'expiry', 'send', or "
+        "'off'. Using 'send'.",
+        value,
     )
-    return "expiry" if resolver.get(legacy).value else "send"
 
 
 def _handoff_seed_text(summary: str, thread_id: str, archive_path: str) -> str:
@@ -9686,7 +9692,10 @@ class DeepAgentsApp(App):
             or isinstance(self.screen, ModalScreen)
         ):
             return
-        if _load_cache_prompt_mode() != "expiry":
+        if (
+            _load_cache_prompt_mode() != "expiry"
+            or self._cold_cache_suppressed_for_session
+        ):
             return
         task = self._schedule_off_message_pump(
             self._confirm_cache_expiry(thread_id, expires_at), context="cache-expiry"
@@ -9714,6 +9723,8 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
 
+        if message is None and await self._cold_cache_opted_out():
+            return
         draft = message.text if message else None
         handed_off = False
         try:
@@ -9728,6 +9739,23 @@ class DeepAgentsApp(App):
         finally:
             self._restore_handoff_draft(draft, thread_id, handed_off=handed_off)
             await self._set_spinner(None)
+
+    async def _cold_cache_opted_out(self) -> bool:
+        """Check whether the user asked not to be warned about cold caches.
+
+        Honors "don't warn again this session" and "never warn again" from the
+        send-time prompt, so the handoff prompt does not replace a warning the
+        user already turned off.
+
+        Returns:
+            Whether cold-cache prompts are suppressed.
+        """
+        if self._cold_cache_suppressed_for_session:
+            return True
+        from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        return await asyncio.to_thread(is_warning_suppressed, COLD_CACHE_WARNING_KEY)
 
     async def _ask_cache_handoff(self, thread_id: str) -> ColdCacheChoice | None:
         """Show the handoff prompt and wait for the user's choice.
@@ -13132,6 +13160,7 @@ class DeepAgentsApp(App):
             and expires_at is not None
             and datetime.now(UTC) >= expires_at
             and self._cache_expiry_seen.get(thread_id) != expires_at
+            and not await self._cold_cache_opted_out()
         ):
             task = self._schedule_off_message_pump(
                 self._confirm_cache_expiry(thread_id, expires_at, message=message),

@@ -518,6 +518,32 @@ async def test_unanswered_prompt_stays_without_error(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
+@pytest.mark.parametrize("scope", ["session", "persistent"])
+async def test_cold_cache_opt_out_suppresses_handoff(
+    scope: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
+    from deepagents_code.model_config import suppress_warning
+
+    app = DeepAgentsApp()
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_cold_cache_warning_for", AsyncMock(return_value=None))
+    if scope == "persistent":
+        suppress_warning(COLD_CACHE_WARNING_KEY)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._cold_cache_suppressed_for_session = scope == "session"
+        await app._dispatch_queued_message(QueuedMessage("send it", "normal"))
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        process.assert_awaited_once_with("send it", "normal")
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+
+
 @pytest.mark.parametrize("identity_changed", [False, True])
 async def test_expiry_acknowledgment_does_not_hide_identity_change(
     identity_changed: bool, monkeypatch: pytest.MonkeyPatch
@@ -561,32 +587,26 @@ async def test_expiry_acknowledgment_does_not_hide_identity_change(
 
 
 @pytest.mark.parametrize(
-    ("mode", "legacy", "expected"),
+    ("line", "expected"),
     [
-        (None, True, "expiry"),
-        (None, False, "send"),
-        ("off", True, "off"),
-        ("expiry", False, "expiry"),
-        ("send", True, "send"),
-        ("invalid", True, "expiry"),
+        (None, "expiry"),
+        ('cache_prompt = "send"', "send"),
+        ('cache_prompt = "Off"', "off"),
+        ('cache_prompt = "never"', "send"),
     ],
 )
-def test_mode_resolution_preserves_legacy_preference(
-    mode: str | None, legacy: bool, expected: str, monkeypatch: pytest.MonkeyPatch
+def test_mode_resolution_rejects_unknown_values(
+    line: str | None, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from types import SimpleNamespace
-
     from deepagents_code.app import _load_cache_prompt_mode
+    from deepagents_code.configuration.resolver import reset_config_resolver
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    resolver = MagicMock()
-    resolver.get.side_effect = lambda option: (
-        SimpleNamespace(
-            value=mode or "expiry", ranks=(1000,) if mode is None else (500,)
-        )
-        if option.key == "warnings.cache_prompt"
-        else SimpleNamespace(value=legacy)
-    )
-    monkeypatch.setattr(
-        "deepagents_code.configuration.resolver.get_config_resolver", lambda: resolver
-    )
-    assert _load_cache_prompt_mode() == expected
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_CONFIG_PATH.write_text(f"[warnings]\n{line or ''}\n")
+    reset_config_resolver()
+    monkeypatch.setattr("deepagents_code.app._warn_invalid_cache_prompt", MagicMock())
+    try:
+        assert _load_cache_prompt_mode() == expected
+    finally:
+        reset_config_resolver()

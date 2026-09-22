@@ -43,7 +43,6 @@ class BtwScreen(ModalScreen[None]):
     CSS_PATH = "btw.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Dismiss", show=False),
-        Binding("shift+tab", "insert_newline", "New Line", show=False),
     ]
 
     def __init__(
@@ -83,7 +82,7 @@ class BtwScreen(ModalScreen[None]):
                 yield Static("", id="btw-error", markup=False)
             yield Static(
                 f" {get_glyphs().bullet} ".join(
-                    ("Enter ask", newline_hint(), "Shift+Tab newline", "Esc dismiss")
+                    ("Enter ask", newline_hint(), "Esc dismiss")
                 ),
                 id="btw-help",
             )
@@ -108,12 +107,6 @@ class BtwScreen(ModalScreen[None]):
                 )
                 return
             self._start(question)
-
-    def action_insert_newline(self) -> None:
-        """Insert a newline only while the question editor has focus."""
-        editor = self.query_one(BtwTextArea)
-        if editor.has_focus and editor.display:
-            editor.action_insert_newline()
 
     def _start(self, question: str) -> None:
         self.query_one(BtwTextArea).display = False

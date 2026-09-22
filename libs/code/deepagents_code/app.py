@@ -22676,7 +22676,6 @@ class DeepAgentsApp(App):
         first Shift+Tab into YOLO prompts for the same install-local
         acknowledgement used by `--yolo` before unrestricted mode becomes active.
         """
-        from deepagents_code.tui.modals.btw import BtwScreen
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
@@ -22689,9 +22688,6 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
-        if isinstance(self.screen, BtwScreen):
-            self.screen.action_insert_newline()
-            return
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return

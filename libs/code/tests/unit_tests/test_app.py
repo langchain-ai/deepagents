@@ -2444,7 +2444,7 @@ class TestModalScreenShiftTabHandling:
     """Tests for app-level Shift+Tab behavior while modals are open."""
 
     @pytest.mark.parametrize(
-        "newline_key", ["shift+tab", "shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"]
+        "newline_key", ["shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"]
     )
     async def test_btw_multiline_editing(
         self, newline_key: str, monkeypatch: pytest.MonkeyPatch
@@ -2473,7 +2473,11 @@ class TestModalScreenShiftTabHandling:
             assert editor.has_focus
             await pilot.press("enter")
             answer.assert_not_awaited()
-            await pilot.press(*"first", newline_key, *"second")
+            await pilot.press(*"first", "shift+tab")
+            assert editor.text == "first"
+            assert editor.has_focus
+            assert app._approval_mode is mode
+            await pilot.press(newline_key, *"second")
             assert editor.text == "first\nsecond"
             assert editor.has_focus
             assert app._approval_mode is mode

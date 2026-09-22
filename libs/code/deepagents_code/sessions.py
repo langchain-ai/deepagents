@@ -1004,15 +1004,18 @@ async def _load_initial_prompts_from_writes_batch(
         chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
         placeholders = ",".join("?" * len(chunk))
         query = f"""
-            SELECT thread_id, type, value FROM (
-                SELECT thread_id, type, value,
+            SELECT w.thread_id, w.type, w.value
+            FROM writes AS w
+            JOIN (
+                SELECT rowid AS rid,
                        ROW_NUMBER() OVER (
                            PARTITION BY thread_id
                            ORDER BY checkpoint_id ASC, idx ASC
                        ) AS rn
                 FROM writes
                 WHERE thread_id IN ({placeholders}) AND channel = 'messages'
-            ) WHERE rn = 1
+            ) AS ranked ON w.rowid = ranked.rid
+            WHERE ranked.rn = 1
         """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
         async with conn.execute(query, chunk) as cursor:
             rows = await cursor.fetchall()

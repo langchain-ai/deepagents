@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.71"
+version = "0.1.72"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,8 +27,8 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.15",
-    "langchain>=1.4.1,<2.0.0",
+    "deepagents==0.7.16",
+    "langchain>=1.4.2,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
@@ -58,7 +58,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.12.6",
+    "langsmith[sandbox]>=0.13.0",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",

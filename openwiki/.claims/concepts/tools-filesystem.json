@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:171a9dfc95446c6be979f9b9093cf9e07d8478da8666c82ed912b2ae3d6bc737",
+  "pageVersion": "sha256:9e0548069c3f3e024ccc61bcf51d12dad5a65816b967b0912aa670231d9baa2b",
   "claims": [
     {
       "id": "claim_4018009140e341f487f6f52cdcbd1a24",
@@ -312,19 +312,19 @@
     },
     {
       "id": "claim_1aaa4b1a19ca4319aa834d69121116d6",
-      "statement": "Filesystem integration tests verify that parallel writes merge StateBackend file updates and that invalid paths become ToolMessage errors, while concurrent edits of the same file are deliberately marked xfail because reducers and backends can race.",
+      "statement": "Filesystem integration tests verify that parallel writes to different StateBackend paths merge file updates and that invalid paths become ToolMessage errors; the same-path parallel-edit regression uses /multi.txt and its canonical equivalent /./multi.txt, expects the first edit to succeed and the second to error, and preserves only the first edit in state.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L16-L71",
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L15-L70",
           "version": "repo-lines-v1:sha256:59f4175b1732a49959cfb3df3d44e951fdf932c364cb90f856051363cdb1c49b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5NzJmYWUyNmY4OWJmNDhmYWJiZDhjNmQxMTQ1NDAwYzc4NWI4ZmQ5NDNjZjU4MTgxNDZmOGIwN2NiMDNhMWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzNjBhM2ViZDcxOGVkZTIzMjExYmNiYzE1MWRkZDRkN2MwY2NjYzdhNTQxNjkyNmZmZjBjZGZmMjgyNjVjYjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4ZDZiZmM1ODYzOTg2MzgyNDc0MTkxYzI1YjNiMDQ3MjU0OTE5YTM2N2U3NThiNDc4YTE1MTIwM2MzNTRiNzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2MzZlODA2NzA2MmNkZTY3NDNlM2Y2ZmRiMTI3NDE5ZjAyZGRhNjc0OTFlY2YyN2NmNGYxYTAwZTRjNzZiOWMifQ"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L355-L419",
-          "version": "repo-lines-v1:sha256:f18a03f2da52281b066b0f770d32ed7bc2dfe3ea3ccc3f0cc3b893c4cbc2e964:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZTNjZDUwMzk3OWJlMjZmNmM2MGQzNWFhN2Y3MTRmNTMwNjQ5OWQ2YzczYzczNjQzZTRhODZhOGJiMTViMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxMmU0ZWM2MjZhYWZmMGY4MGVkMGU4ZTIzNjczNGM3M2UzM2IwZmNkMGFiMTI3ZDQzY2M3MjI2MTUwMWE1ZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhMTFkYTc1ZmQ3MDExMGY0MTY5MTA3OTEzOTljMGVkNGU1NTY3OTczNjlhNzg1M2EyNGJjMzgzZDlkNzRiY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5ZTFhYzQ4ODAxYzc1YmI5ODE5NzNlOGIxN2NlMmIwYzU1YmZlMWUyYjIzMDc1ZWQ0ZTVhNTc2YmVmNDdjNWQifQ"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L354-L415",
+          "version": "repo-lines-v1:sha256:69eb553f956f88f002bdff978a191f1d917b39c4257924864914474e3b51c7c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5NTBjMmJmZjllNGY4MWU1ODE5MDI1M2IzMTZhMmI3OWJmZjNkMzk4ZDg1YWY4ZTA0OGQ5NGE0ODJjMzQ2ZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3YWVjMmM0YThkNmM0NjlmYjYyNDg4MTMwM2IxZGYyOGFhNWVjMTIzMGZmNTQzY2EzYjU2ZDhjODExOTc5OWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhMTFkYTc1ZmQ3MDExMGY0MTY5MTA3OTEzOTljMGVkNGU1NTY3OTczNjlhNzg1M2EyNGJjMzgzZDlkNzRiY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5ZTFhYzQ4ODAxYzc1YmI5ODE5NzNlOGIxN2NlMmIwYzU1YmZlMWUyYjIzMDc1ZWQ0ZTVhNTc2YmVmNDdjNWQifQ"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L422-L464",
-          "version": "repo-lines-v1:sha256:44735f0766df91732f42273f1b06304d9c4d3c0226a8580b14857bf2fde58982:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOThmMTQ1OTZlOGIyMTNhM2E3ODc1YzdhMjU5MTA5M2Y4OTMyZTZkZTk1MzFiMTQyMWE2MmZkZTVlYjE2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjOTgyOGIxMmNlMjllNWQzZWJhZjczZWE3OTEzNGJhZDhiYjU5OWQzZDcwYzZiNzM4YjAxZDlkMTVhMWI5MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwODVhZTI2ZmE4NGE5NWI5YjZkNTRlODY2MDQyZGQwMmFhODI3YTJhNzM2ODdjMWU2NDA0MjkzNzVkZTZmMzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0Njg4MGY2ZGEzMmQ0OTZlMjljNTRjOTY0YTg5MTIzNDc4NzYwNDFiZDE5MTY3MGJlYjIzNzAyN2Y5OGExMGYifQ"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py#L418-L460",
+          "version": "repo-lines-v1:sha256:44735f0766df91732f42273f1b06304d9c4d3c0226a8580b14857bf2fde58982:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOThmMTQ1OTZlOGIyMTNhM2E3ODc1YzdhMjU5MTA5M2Y4OTMyZTZkZTk1MzFiMTQyMWE2MmZkZTVlYjE2OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjOTgyOGIxMmNlMjllNWQzZWJhZjczZWE3OTEzNGJhZDhiYjU5OWQzZDcwYzZiNzM4YjAxZDlkMTVhMWI5MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YjJmYzE5ODFiYjg3ZDc0YWE2YTUzZDJiNjc2OGE0ZmQyZTllY2QzZTMwNjBhNjJlZWYwYjE5ZmRkODk4YWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0Njg4MGY2ZGEzMmQ0OTZlMjljNTRjOTY0YTg5MTIzNDc4NzYwNDFiZDE5MTY3MGJlYjIzNzAyN2Y5OGExMGYifQ"
         }
       ]
     },
@@ -369,10 +369,24 @@
           "version": "repo-lines-v1:sha256:dd3a4d49e6ea55a97fd04befd99ebac38349f378f635b546f92bc231ea5e79da:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZjkzZTRhNTdjM2FhMjZlN2EzMTM2NGI1ODhkMGYxZjI3MWIwMzBlMWI4YzRhOTUxNTcxNzZhNzdjYTE5MmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkMzZlZjQ5Nzk5YjQyMzQ0NzU4OGZiM2JmMzFmMzUzZDdmMTg3ODFmMTM4OWIyMTAzMWU1MTU3YzI1NzQyNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNTUyMjQxZTY3MzM3ODhkMjdkN2QyYTFmNWIyYmRlNGVjYTBiMWFlYWEyZjdiZGJmNzg2OTUwMDQ2OTc3YjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGVkYjkwNzFlZDQ2M2YwZjRlOTdiZTRiZjhkMGJkOWZkNDAwNTc0OWUxNDcxNThkMDk5MzJiODViMjBkYTgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_f9bbede7da354c8b90ec86ab072e6b51",
+      "statement": "Filesystem tool paths are validated and canonicalized before permission enforcement: traversal and Windows absolute paths are rejected, while redundant separators are normalized, preventing equivalent spellings from bypassing path rules.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/utils.py#L692-L755",
+          "version": "repo-lines-v1:sha256:ea1284198bed315b14b65f5681d00cb343eea96047ea5a3720ee456063407425:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmYzU2MjBlNDcxMzg0ZTJlM2IxODk1ZGMyNzk0NDE0YTA1NDY1MGYzZTMyYjA2ZjBlNmNiZjZiYjZiODBlNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyMTI3MTViZWM1OWE0NDFmMTY4MmZmYjUyZTg5YmZhZDk5NzdmNTBmZmY3YWQzZjhhMWQxOTFkZGMzMDhkNDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2ODMzYTc3MDNmYTBiOTA1OWM2ODhkYmViNzhlM2MzMjA1NDAxMDFjNzFiMDM1ZTIyZWI1NTgzNmU0MzZkNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3MzQ5ZGJiM2E2MWVkZjk1YjNjYzJhMzdjNzA2NGIzZDZiNjM4ZDFmNTUxMjdiMzZmMzRlOThjNzNkNDRhZWYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py#L1185-L1223",
+          "version": "repo-lines-v1:sha256:3469794d5dfce11e437396752a83aa953653efd77b3cc32cf2f04490662f5ee6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjNjVkYWZkMTMwZWNhNjJhNzJiYjZmOGU2YmQ1NGY3OTU0MTg2ZDU1ZjQ1NWYzYjVjNmY4ZWI5YmFkMDA5ZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ODhiMGY0MGZmOGFjODFkYWRlMWJjMDZlZGQwMDgzMWYyMGNkMzNmZjY0ZDVlZTdkNjlmYzcwOTMxYTgwMTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3NGVjMDUyMmQzNWVlM2NhYjQ0NGZhOGU3ODA5MDY1ZjYzZDEyMDg5MDMwNjhiZDUzZWM4MzA1NzBmMDUzZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjZjEwOGVmZWQ5ZWVkNzhjMTlmNGZiNzBhNmE5ZWNkMWY0M2ZkMmY5MzJjNTE0NDgzZmRkZTNhNWVkNzkyZDIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-21T08:06:25.442Z"
   }
 }

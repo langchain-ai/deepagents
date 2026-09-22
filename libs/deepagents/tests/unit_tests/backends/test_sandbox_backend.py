@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from unittest.mock import Mock
 
 import pytest
 
@@ -142,6 +143,48 @@ class MockSandbox(BaseSandbox):
 
 
 # -- template formatting tests -----------------------------------------------
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    ("output", "truncated"),
+    [
+        ("", False),
+        ("Command timed out", False),
+        ("__DEEPAGENTS_EXEC_META__ 124\npartial output", True),
+        ("__DEEPAGENTS_EXEC_META__ invalid 0 0\npartial output", True),
+    ],
+)
+async def test_capture_offload_preserves_backend_failure(output: str, monkeypatch: pytest.MonkeyPatch, *, truncated: bool, use_async: bool) -> None:
+    sandbox = MockSandbox()
+    sandbox.enable_capture_offload = True
+    response = ExecuteResponse(output=output, exit_code=124, truncated=truncated)
+    monkeypatch.setattr(sandbox, "execute", Mock(return_value=response))
+
+    if use_async:
+        result = await sandbox.aexecute_with_offload("sleep 10", "/capture", max_inline_bytes=100)
+    else:
+        result = sandbox.execute_with_offload("sleep 10", "/capture", max_inline_bytes=100)
+
+    assert result.offloaded is False
+    assert result.response == response
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("offloaded", [False, True])
+async def test_capture_offload_preserves_child_failure(monkeypatch: pytest.MonkeyPatch, *, offloaded: bool, use_async: bool) -> None:
+    sandbox = MockSandbox()
+    sandbox.enable_capture_offload = True
+    response = ExecuteResponse(output=f"__DEEPAGENTS_EXEC_META__ 3 {int(offloaded)} 0\noops", exit_code=0)
+    monkeypatch.setattr(sandbox, "execute", Mock(return_value=response))
+
+    if use_async:
+        result = await sandbox.aexecute_with_offload("echo oops; exit 3", "/capture", max_inline_bytes=100)
+    else:
+        result = sandbox.execute_with_offload("echo oops; exit 3", "/capture", max_inline_bytes=100)
+
+    assert result.offloaded is offloaded
+    assert result.response == ExecuteResponse(output="oops", exit_code=3, truncated=False)
 
 
 def test_write_check_template_format() -> None:

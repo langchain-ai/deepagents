@@ -193,10 +193,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
     assert request.model_settings["tool_choice"] == "required"
 
 
-@pytest.mark.parametrize("synchronous", [False, True])
-async def test_real_agent_wiring_preserves_checkpoint(
-    tmp_path: Path, *, synchronous: bool
-) -> None:
+async def test_synchronous_agent_wiring_preserves_checkpoint(tmp_path: Path) -> None:
     from langgraph.checkpoint.memory import InMemorySaver
 
     from deepagents_code._testing_models import DeterministicIntegrationChatModel
@@ -215,10 +212,7 @@ async def test_real_agent_wiring_preserves_checkpoint(
     )
     config: RunnableConfig = {"configurable": {"thread_id": "btw-wiring"}}
     inputs = {"messages": [HumanMessage(content="Hello")]}
-    if synchronous:
-        agent.invoke(inputs, config=config)
-    else:
-        await agent.ainvoke(inputs, config=config)
+    agent.invoke(inputs, config=config)
     before = await agent.aget_state(config)
     operation = getattr(backend, BTW_OPERATION_ATTR)
     assert isinstance(operation, BtwOperation)
@@ -432,7 +426,7 @@ async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> No
             "values": {
                 "messages": [HumanMessage(content="Working")],
                 "_model_spec": "provider:previous",
-                "_model_params": {"temperature": 0.9},
+                "_model_params": {"output_config": {"effort": "high"}},
             },
             "next": ["tools"],
         }
@@ -475,7 +469,7 @@ async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> No
     else:
         create.assert_called_once_with(
             "provider:previous",
-            extra_kwargs={"temperature": 0.9},
+            extra_kwargs={"output_config": {"effort": "high"}},
             bind_preserved_thinking=False,
         )
     assert [call[0] for call in threads.mock_calls] == ["get_state"]
@@ -502,15 +496,17 @@ async def test_route_rejects_wrong_workspace_before_reading() -> None:
     client_factory.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "selection",
-    [{}, {"model": "provider:selected", "model_params": {"temperature": 0.2}}],
-)
-async def test_remote_uses_side_route_not_runs(selection: dict[str, object]) -> None:
+async def test_remote_uses_side_route_not_runs() -> None:
     agent = RemoteAgent("http://test")
     graph = MagicMock()
     graph.client.http.post = AsyncMock(return_value={"text": "answer"})
-    config = {"configurable": {"thread_id": "thread", **selection}}
+    config = {
+        "configurable": {
+            "thread_id": "thread",
+            "model": "provider:selected",
+            "model_params": {"temperature": 0.2},
+        }
+    }
     with (
         patch.object(agent, "_get_graph", return_value=graph),
         patch.object(

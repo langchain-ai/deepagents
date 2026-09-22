@@ -452,7 +452,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
-    { name = "langchain", specifier = ">=1.4.2,<2.0.0" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=cc%2Fmultimodal-filter-middleware" },
     { name = "langchain-anthropic", specifier = ">=1.7.3,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.9,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.4,<2.0.0" },
@@ -769,15 +769,11 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.4.2"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=cc%2Fmultimodal-filter-middleware#8ae7c313fa5c99f1c06f7e433978ba3f2f83ec2d" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/ff/670036674e669b81c0ddba77e1f012c099eda7b7d1251b973e5367d2824e/langchain-1.4.2.tar.gz", hash = "sha256:5b476418cacbfb8f0da6e63b3b263eefdcec13b48abd6117565a25728ec10b77", size = 735715, upload-time = "2026-09-18T17:31:11.42Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/85/86/cc13651cfda820d96ca8c612538166334935e8cf4331a31f5dd369d27760/langchain-1.4.2-py3-none-any.whl", hash = "sha256:30a27c34cfa0004bf659dcdef488b99a9b90acb08bcc514a5a74264755da536c", size = 163740, upload-time = "2026-09-18T17:31:10.056Z" },
 ]
 
 [[package]]
@@ -797,7 +793,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.6.4"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Fcore&branch=cc%2Fmultimodal-filter-middleware#8ae7c313fa5c99f1c06f7e433978ba3f2f83ec2d" }
 dependencies = [
     { name = "httpx" },
     { name = "jsonpatch" },
@@ -809,10 +805,6 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/ed/a9c3711721031d3ed8cbd681f90a856538965d1036dc5dd6ed1e48dcc569/langchain_core-1.6.4.tar.gz", hash = "sha256:c1caae770d991bb6f2376bad791970bf77bb29abd1f15823fa9ea7dbac080fa0", size = 1006637, upload-time = "2026-09-21T15:51:08.174Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/f2/41435d9a5448c52a0388f75741edb979fde7415eaa820d6a42878cad7e38/langchain_core-1.6.4-py3-none-any.whl", hash = "sha256:2f940c83f787676ad4dc651d49d053c7ec34bda5a6afcd224da2863ff53a0b84", size = 571970, upload-time = "2026-09-21T15:51:06.555Z" },
 ]
 
 [[package]]
@@ -1941,11 +1933,11 @@ name = "vercel-workers"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "vercel" },
+    { name = "anyio", marker = "python_full_version >= '3.12'" },
+    { name = "httpx", marker = "python_full_version >= '3.12'" },
+    { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
+    { name = "vercel", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/90/07/3befa3d3f0fb6e1e603ac0919414d732720bba4661c10b8069b49b276634/vercel_workers-0.0.24.tar.gz", hash = "sha256:d21deb13b02ccaf57c3a0f9ac898df5473dc3e617723366b4bdffd53f161a6aa", size = 63095, upload-time = "2026-05-21T15:18:03.359Z" }
 wheels = [

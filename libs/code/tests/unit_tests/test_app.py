@@ -5819,6 +5819,41 @@ class TestCopyCommand:
 class TestCacheTiming:
     """Cache hits renew retention without pretending to be writes."""
 
+    @pytest.mark.parametrize(
+        ("model", "endpoint", "retention", "expected"),
+        [
+            ("openai:gpt-5.6", "default", None, "retention min 29:"),
+            ("openai:gpt-5.4", "default", "in_memory", "retention max 59:"),
+            ("openai:gpt-5.4", "default", "24h", "retention max 1439:"),
+            ("anthropic:claude-sonnet-4-6", "default", None, "retention max 4:"),
+            ("openai:gpt-5.6", "https://gateway.example.com", None, None),
+        ],
+    )
+    async def test_retention_policy_reaches_footer(
+        self, model: str, endpoint: str, retention: str | None, expected: str | None
+    ) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test(size=(180, 24)) as pilot:
+            await pilot.pause()
+            bar = app._status_bar
+            assert bar is not None
+            app._last_cache_model_spec = model
+            app._last_cache_endpoint = endpoint
+            app._last_cache_model_params = {"prompt_cache_retention": retention}
+            app._last_model_request_at = datetime.now(UTC).isoformat()
+            bar.set_cache_tokens(0, 2000, input_tokens=2000)
+            app.query_one("#cache-display").visible = True
+            app._refresh_cache_timing(SessionStats(cache_write_tokens=2000))
+            await pilot.pause()
+
+            rendered = str(app.query_one("#cache-display").render())
+            assert "wrote" in rendered
+            assert "bust" not in rendered
+            if expected is None:
+                assert "retention" not in rendered
+            else:
+                assert expected in rendered
+
     @pytest.mark.parametrize("observed_write", [False, True])
     async def test_cache_hit_renews_countdown(self, observed_write: bool) -> None:
         app = DeepAgentsApp(agent=MagicMock())
@@ -5863,7 +5898,7 @@ class TestCacheTiming:
             assert bar.cache_written_at == (written_at if observed_write else None)
             assert bar.cache_expires_at == hit_at + timedelta(minutes=5)
             rendered = str(app.query_one("#cache-display").render())
-            assert "bust 4:" in rendered
+            assert "retention max 4:" in rendered
             assert ("wrote" in rendered) is observed_write
 
             # A turn without cache activity must not renew the countdown.

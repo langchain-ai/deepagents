@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from textual.message import Message
     from textual.timer import Timer
 
+    from deepagents_code.cold_cache import CacheConfidence
+
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
     "fireworks": FIREWORKS_MODEL_ID_PREFIXES,
 }
@@ -691,6 +693,7 @@ class StatusBar(Vertical):
         self.cache_write_tokens = 0
         self.cache_written_at: datetime | None = None
         self.cache_expires_at: datetime | None = None
+        self.cache_retention_confidence: CacheConfidence = "expired"
         self._cache_timer: Timer | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
             "agent": "",
@@ -1140,7 +1143,7 @@ class StatusBar(Vertical):
         """Format the last cache write and remaining retention window.
 
         Returns:
-            Compact local timestamp and cache-bust countdown.
+            Compact local timestamp and remaining minimum or maximum retention.
         """
         written = (
             f"wrote {self.cache_written_at.astimezone():%H:%M:%S}"
@@ -1153,7 +1156,12 @@ class StatusBar(Vertical):
             0, int((self.cache_expires_at - datetime.now(UTC)).total_seconds())
         )
         minutes, seconds = divmod(remaining, 60)
-        countdown = f"bust {minutes}:{seconds:02d}"
+        bound = "min" if self.cache_retention_confidence == "may_be_cold" else "max"
+        countdown = (
+            "retention uncertain"
+            if remaining == 0 and bound == "min"
+            else f"retention {bound} {minutes}:{seconds:02d}"
+        )
         return f"{written} / {countdown}" if written else countdown
 
     def _stop_cache_timer(self) -> None:
@@ -1266,6 +1274,7 @@ class StatusBar(Vertical):
         *,
         ttl_seconds: int | None = None,
         retention_at: datetime | None = None,
+        retention_confidence: CacheConfidence = "expired",
     ) -> None:
         """Set the last cache write time and optional retention countdown.
 
@@ -1273,9 +1282,12 @@ class StatusBar(Vertical):
             written_at: Last observed write, or `None` if none is known.
             ttl_seconds: Provider retention window, if known.
             retention_at: Latest cache hit or write; falls back to `written_at`.
+            retention_confidence: Whether the window is a maximum (`expired`)
+                or a minimum (`may_be_cold`), rather than an exact lifetime.
         """
         self._stop_cache_timer()
         self.cache_written_at = written_at
+        self.cache_retention_confidence = retention_confidence
         retention_at = retention_at or written_at
         self.cache_expires_at = (
             datetime.fromtimestamp(retention_at.timestamp() + ttl_seconds, UTC)

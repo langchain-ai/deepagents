@@ -9397,6 +9397,7 @@ class DeepAgentsApp(App):
             else self._status_bar.cache_written_at,
             ttl_seconds=policy.window_seconds if policy is not None else None,
             retention_at=timestamp,
+            retention_confidence=policy.confidence if policy is not None else "expired",
         )
 
     async def _stamp_cache_identity_locally(self) -> None:

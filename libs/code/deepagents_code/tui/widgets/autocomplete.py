@@ -520,7 +520,6 @@ class ThreadCompletionController:
                     filter(
                         None,
                         (
-                            "thread",
                             thread.get("agent_name"),
                             format_relative_timestamp(thread.get("updated_at")),
                             thread["thread_id"][:8],

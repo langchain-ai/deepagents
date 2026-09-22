@@ -1,11 +1,11 @@
 ---
-type: architecture-overview
+type: architecture
 title: Deep Agents Code Architecture
-description: Architecture of dcode's terminal and headless clients, local LangGraph server boundary, workspace-scoped runtimes, streaming, persistence, configuration bootstrap, and separate ACP stdio mode.
-tags: [deepagents-code, dcode, architecture, client-server, langgraph, acp, streaming]
+description: Architecture of dcode's split terminal client and agent server, including workspace runtimes, ACP, diagnostics, secure debug logs, and multimodal input and display boundaries.
+tags: [deepagents-code, dcode, architecture, client-server, langgraph, acp, diagnostics, media]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-09-19T08:04:56.519Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -13,37 +13,29 @@ sources:
     resource: repo://libs/code/deepagents_code/__init__.py
   - id: openwiki-source-5e41cb15122d503b08dad541
     resource: repo://libs/code/deepagents_code/__main__.py
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-4d4186e9d62fb4abe495cdd0
-    resource: repo://libs/code/deepagents_code/acp.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
+  - id: openwiki-source-ed5df6c6ec52b9c4fa585076
+    resource: repo://libs/code/deepagents_code/_debug_buffer.py
+  - id: openwiki-source-b64c485d8d3cdc25e7b4db1a
+    resource: repo://libs/code/deepagents_code/_debug.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
-  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
-    resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-52d96f61bc4737f02a18cf79
-    resource: repo://libs/code/deepagents_code/configuration/resolver.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
-  - id: openwiki-source-5dc287d30945406e0821cb29
-    resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-  - id: openwiki-source-439d3e6c6f1b62e6d282df3f
-    resource: repo://libs/code/tests/unit_tests/test_remote_client.py
-  - id: openwiki-source-784e764f7f5eb5169220c3d2
-    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-877b53371bf970f1b38a1809
-    resource: repo://libs/code/tests/unit_tests/test_workspace.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-9ac188fbacf7d1a2acf3a388
+    resource: repo://libs/code/deepagents_code/input.py
+  - id: openwiki-source-d20383f3921e2947ae0115a4
+    resource: repo://libs/code/deepagents_code/media_utils.py
+  - id: openwiki-source-5591528eb639f4f37e8bd77a
+    resource: repo://libs/code/deepagents_code/tui/widgets/chat_input.py
+  - id: openwiki-source-851e33831638e46febf30b1d
+    resource: repo://libs/code/deepagents_code/tui/widgets/debug_console.py
+  - id: openwiki-source-757c2a7976ead67a5fbe1e5c
+    resource: repo://libs/code/deepagents_code/tui/widgets/messages.py
+  - id: openwiki-source-e930bbb03b92760cf9d657ce
+    resource: repo://libs/code/tests/unit_tests/test_debug.py
+  - id: openwiki-source-4867e6796ae92799ffe28be2
+    resource: repo://libs/code/tests/unit_tests/test_media_utils.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
 ---
 
 # Deep Agents Code Architecture
@@ -98,6 +90,8 @@ sequenceDiagram
     end
 ```
 
+*This sequence shows the normal local request, approval, and resume path; ACP is separate.*
+
 This sequence shows the normal local path, including the client-owned approval/resume interaction. Workspace binding and execution context make runtime selection server-authoritative; ACP has its own boundary below.
 
 ### Startup and configuration handoff
@@ -135,6 +129,36 @@ Criteria creation and rubric grading receive built-in external-context tools and
 The process runtime is constructed once under a lock. That cache is correctness-critical: it prevents repeated MCP discovery, sandbox creation, and duplicate `atexit` registration, and ensures the graph and offload route share compatible resources. Workspace runtimes live in a shared-lock LRU keyed by the durable resource key and capped at 32 entries. Runtime construction uses the workspace's immutable environment snapshot, including its dotenv-derived credentials, without mutating the server process environment.
 
 Some resources constrain what one server process may host. A configured sandbox is process-wide and the first workspace claims it; another workspace is rejected even if the first build failed. LangSmith tracing settings are also process-lifetime: a workspace with different tracing/redaction settings is rejected rather than rerouting cached or concurrent runtime traces. Run a separate normal server when either constraint prevents co-hosting.
+
+## Diagnostics: live console and secure file traces
+
+Diagnostics have two intentionally separate retention paths. Importing `deepagents_code` installs an always-on `InMemoryLogBuffer` on the package logger *before* normal debug logging is configured. Child loggers propagate into this handler, giving the Textual `Ctrl+\\` Debug Console a live tail even when opt-in file logging is disabled. The handler retains structured records in bounded deques per recognized level (with one shared bucket for custom levels), tags emissions with a monotonic sequence, and merges snapshots back into chronological order. Consequently, a flood of `DEBUG` messages cannot evict the rarer `INFO`, `WARNING`, or `ERROR` records needed by the console filter.
+
+```mermaid
+flowchart TD
+    Import["Package import"] --> Buffer["Install in-memory log buffer"]
+    Buffer --> Configure["Configure package logger"]
+    Configure --> Emit["Child logger emits record"]
+    Emit --> Memory["Per-level bounded retention"]
+    Memory --> Console["Debug Console poll and filter"]
+    Configure -->|"debug enabled and thread bound"| File["Secure per-thread file handler"]
+```
+
+*The in-memory console tail is always available after package import, while file tracing is opt-in and bound to the active thread.*
+
+The console polls by absolute emission index, appends only retained records it has not rendered, and bounds its own display with the same per-level policy. Clearing the console advances only its render cursor: it does not erase the process buffer, so later records continue to accrue. Console polling is diagnostic-only—widget-race and unexpected polling failures are converted to a notice/log record rather than crashing the app.
+
+File logging is enabled only when `DEEPAGENTS_CODE_DEBUG` is truthy. Its level is `DEEPAGENTS_CODE_LOG_LEVEL` when valid, otherwise `DEBUG` with file debugging enabled or `INFO` without it; an invalid level warns and falls back. Binding a TUI or headless thread selects a filename in the configured debug directory, swaps stale tagged handlers rather than stacking them, and leaves unrelated handlers alone. `installed_debug_log_path()` reports an actually attached tagged handler rather than inferring a path from the environment, which prevents a misleading error hint when `.env` made the variable truthy after import.
+
+The debug directory is selected from `DEEPAGENTS_CODE_DEBUG_DIRECTORY`, then the legacy `DEEPAGENTS_CODE_DEBUG_FILE` parent, then config, then the default. It is a security boundary because trace output can include remote/MCP diagnostics: POSIX requires a current-user-owned real directory tightened to `0o700`, refuses symlinks where supported, and opens files with `O_NOFOLLOW` and mode `0o600`; Windows replaces the DACL with read/write access for the current user. Unsafe or overlong thread IDs become a SHA-256-derived filename, preventing traversal. If directory or file hardening fails, dcode removes its stale tagged handlers, warns to stderr and the memory buffer, and does not write the file.
+
+## Media input and transcript boundaries
+
+The interactive composer owns attachment capture; it renders attached media as `[image N]` or `[video N]` placeholders while `MediaTracker` owns the corresponding encoded objects. Dragged/pasted paths are loaded as images first and then as videos. Images are decoded by Pillow, while videos must have an allowed extension *and* a recognized magic-byte signature; both reject empty or greater-than-20-MB files. macOS clipboard image support uses `pngpaste` when available and otherwise `osascript`; other platforms warn rather than pretending an attachment was added.
+
+Placeholders are display metadata, not prompt text. The tracker allocates IDs that do not collide with existing literal tokens, maintains exact placeholder spans across edits and submit-time text transformations, and synchronizes/removes attachments when their bound tokens disappear. The composer treats only placeholders backed by a current attachment as atomic deletions, leaving user-typed lookalikes as ordinary text. At submission it preserves a snapshot for the transcript, clears the draft only after the receiving layer can consume the attachments, and resets tracking for the next message.
+
+`create_multimodal_content` removes only the display placeholders bound to the supplied media before creating the canonical content blocks: a non-empty text block comes first, followed by `image_url` blocks and then video blocks. Span tracking preserves a user-authored duplicate placeholder; if a span is unavailable, token-count fallback removes one occurrence per attachment. This keeps placeholders out of model-facing messages and traces while still preserving the media payload. The `UserMessage` widget retains the submission snapshot so the UI can render the original turn independently of the now-reset composer.
 
 ## Failure handling and teardown
 

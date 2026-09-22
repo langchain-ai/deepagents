@@ -1269,6 +1269,8 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
 """First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
 
+_EXECUTE_CAPTURE_META_FIELDS: Final = 4
+
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
 _EXECUTE_CAPTURE_TAIL_LINES: Final = 5
 _EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
@@ -1393,10 +1395,17 @@ def _parse_capture_execute_output(response: ExecuteResponse) -> ExecuteOffloadRe
     or the underlying `execute` response was truncated.
     """
     first, _, body = response.output.partition("\n")
+    if not first.startswith(_EXECUTE_CAPTURE_SENTINEL):
+        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded")
+        return ExecuteOffloadResult(offloaded=False, response=response)
+
     parts = first.split(" ")
-    # Expect exactly the four meta fields described above; anything else is not
-    # our wrapper's output, so fall back to returning it verbatim.
-    if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+    if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:
+        logger.warning(
+            "Capture wrapper meta line absent or malformed (%d fields, expected %d); returning output unoffloaded",
+            len(parts),
+            _EXECUTE_CAPTURE_META_FIELDS,
+        )
         return ExecuteOffloadResult(offloaded=False, response=response)
     try:
         exit_code = int(parts[1])

@@ -48,6 +48,26 @@ async def test_modal_keys_preserve_draft_and_prompt_once(
             assert app._cache_expiry_bypassed is not None
 
 
+@pytest.mark.parametrize(
+    ("key", "action"),
+    [("ctrl+c", "action_quit_or_interrupt"), ("ctrl+d", "action_quit_app")],
+)
+async def test_modal_preserves_app_quit_keys(
+    key: str, action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    quit_action = MagicMock()
+    monkeypatch.setattr(app, action, quit_action)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert isinstance(app.screen, CacheExpiryScreen)
+        await pilot.press(key)
+        quit_action.assert_called_once()
+
+
 async def test_defers_busy_and_disabled_then_rearms_new_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

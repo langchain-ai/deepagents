@@ -9,6 +9,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -21,6 +23,10 @@ class CacheExpiryScreen(ModalScreen[bool]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "handoff", "New thread", show=False, priority=True),
         Binding("escape", "bypass", "Continue", show=False, priority=True),
+        Binding(
+            "ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False, priority=True
+        ),
+        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     @override
@@ -33,10 +39,13 @@ class CacheExpiryScreen(ModalScreen[bool]):
                 "thread with an LLM-generated summary? This uses a model call. "
                 "The summary includes the previous thread ID and a transcript "
                 "path for recovering details; the original thread is preserved.",
+                classes="body",
                 markup=False,
             )
             yield Static(
-                "Enter: summarize into a new thread\nEsc: continue this thread",
+                f" {get_glyphs().bullet} ".join(
+                    ("Enter: summarize into a new thread", "Esc: continue this thread")
+                ),
                 classes="choices",
                 markup=False,
             )

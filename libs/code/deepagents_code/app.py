@@ -16894,7 +16894,13 @@ class DeepAgentsApp(App):
             question = parts[1].strip() if len(parts) > 1 else ""
             answer = partial(
                 remote.abtw,
-                config={"configurable": {"thread_id": self._lc_thread_id}},
+                config={
+                    "configurable": {
+                        "thread_id": self._lc_thread_id,
+                        "model": self._effective_model_spec(),
+                        "model_params": self._model_params_override or {},
+                    }
+                },
             )
             self.push_screen(
                 BtwScreen(answer, question),

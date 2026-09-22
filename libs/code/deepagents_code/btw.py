@@ -173,9 +173,22 @@ class BtwOperation(AgentMiddleware):
         return await handler(request)
 
     async def answer(
-        self, thread_id: str, state: Mapping[str, object], question: str
+        self,
+        thread_id: str,
+        state: Mapping[str, object],
+        question: str,
+        *,
+        model_spec: str | None = None,
+        model_params: Mapping[str, object] | None = None,
     ) -> str:
         """Generate without tools or checkpoint writes.
+
+        Args:
+            thread_id: Thread whose conversation supplies context.
+            state: Read-only conversation snapshot.
+            question: Side question to answer.
+            model_spec: Current client selection, validated at the HTTP boundary.
+            model_params: Validated generation overrides for that selection.
 
         Returns:
             The ephemeral answer text.
@@ -190,18 +203,23 @@ class BtwOperation(AgentMiddleware):
         )
         settings = deepcopy(settings)
         with use_environment(self._environ):
-            spec = state.get("_model_spec")
+            spec = model_spec or state.get("_model_spec")
             if (
-                thread_id not in self._snapshots and isinstance(spec, str) and spec
-            ) or isinstance(model, str):
-                params = state.get("_model_params")
+                model_spec
+                or (thread_id not in self._snapshots and isinstance(spec, str) and spec)
+                or isinstance(model, str)
+            ):
+                params = model_params if model_spec else state.get("_model_params")
                 result = await asyncio.to_thread(
                     create_model,
                     spec if isinstance(spec, str) and spec else str(model),
-                    extra_kwargs=dict(params) if isinstance(params, dict) else None,
+                    extra_kwargs=dict(params) if isinstance(params, Mapping) else None,
                     bind_preserved_thinking=False,
                 )
                 model = result.model
+                # Settings captured from the old model must not override a
+                # fresh selection (including clearing same-model overrides).
+                settings = {}
             while isinstance(model, RunnableBinding):
                 settings = {**deepcopy(model.kwargs), **settings}
                 model = model.bound

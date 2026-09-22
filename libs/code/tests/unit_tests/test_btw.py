@@ -260,7 +260,7 @@ async def test_resumed_model_comes_only_from_checkpoint() -> None:
     )
 
 
-@pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint"])
+@pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint", "selected"])
 @pytest.mark.parametrize("container", ["model_kwargs", "extra_body"])
 async def test_constructor_tools_are_absent_from_provider_request(
     source: str, container: str
@@ -310,11 +310,11 @@ async def test_constructor_tools_are_absent_from_provider_request(
         )
         operation = BtwOperation(model, "system", None)
         state: dict[str, object] = {}
-        if source == "snapshot":
+        if source in {"snapshot", "selected"}:
             operation._snapshots["thread"] = (
                 model,
                 SystemMessage(content="system"),
-                {},
+                {"temperature": 0.9} if source == "selected" else {},
             )
         elif source == "checkpoint":
             state = {"_model_spec": "openai:test-model", "_model_params": params}
@@ -322,7 +322,16 @@ async def test_constructor_tools_are_absent_from_provider_request(
             "deepagents_code.config.create_model",
             return_value=SimpleNamespace(model=model),
         ):
-            assert await operation.answer("thread", state, "why") == "answer"
+            assert (
+                await operation.answer(
+                    "thread",
+                    state,
+                    "why",
+                    model_spec="openai:test-model" if source == "selected" else None,
+                    model_params={"temperature": 0.2},
+                )
+                == "answer"
+            )
         assert params == original
         defaults = model._get_request_payload([HumanMessage(content="main")])
         assert (defaults.get("extra_body") or defaults)["tools"] == options["tools"]
@@ -358,7 +367,8 @@ async def test_route_rejects_untrusted_model_and_invalid_question(
     workspace.assert_not_awaited()
 
 
-async def test_route_reads_busy_thread_without_writes() -> None:
+@pytest.mark.parametrize("selection", [None, "provider:previous", "provider:selected"])
+async def test_route_reads_busy_thread_without_writes(selection: str | None) -> None:
     from deepagents_code import offload_api
 
     operation = BtwOperation(
@@ -366,14 +376,29 @@ async def test_route_reads_busy_thread_without_writes() -> None:
         "system",
         None,
     )
+    operation._snapshots["thread"] = (
+        FakeMessagesListChatModel(responses=[AIMessage(content="stale answer")]),
+        SystemMessage(content="system"),
+        {"temperature": 0.9},
+    )
+    selected = FakeMessagesListChatModel(responses=[AIMessage(content="side answer")])
+    params = {"temperature": 0.2} if selection == "provider:selected" else {}
     threads = MagicMock()
     threads.get_state = AsyncMock(
         return_value={
-            "values": {"messages": [HumanMessage(content="Working")]},
+            "values": {
+                "messages": [HumanMessage(content="Working")],
+                "_model_spec": "provider:previous",
+                "_model_params": {"temperature": 0.9},
+            },
             "next": ["tools"],
         }
     )
     with (
+        patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=selected),
+        ) as create,
         patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
         patch.object(
             offload_api,
@@ -393,10 +418,21 @@ async def test_route_reads_busy_thread_without_writes() -> None:
         ) as client:
             result = await client.post(
                 "/dcode/threads/thread/btw",
-                json={"question": "why", "workspace": {"workspace_id": "1"}},
+                json={
+                    "question": "why",
+                    "workspace": {"workspace_id": "1"},
+                    "model": selection,
+                    "model_params": params,
+                },
             )
     assert result.status_code == 200
-    assert result.json() == {"text": "side answer"}
+    assert result.json() == {"text": "side answer" if selection else "stale answer"}
+    if selection:
+        create.assert_called_once_with(
+            selection, extra_kwargs=params, bind_preserved_thinking=False
+        )
+    else:
+        create.assert_not_called()
     assert [call[0] for call in threads.mock_calls] == ["get_state"]
 
 
@@ -421,11 +457,15 @@ async def test_route_rejects_wrong_workspace_before_reading() -> None:
     client_factory.assert_not_called()
 
 
-async def test_remote_uses_side_route_not_runs() -> None:
+@pytest.mark.parametrize(
+    "selection",
+    [{}, {"model": "provider:selected", "model_params": {"temperature": 0.2}}],
+)
+async def test_remote_uses_side_route_not_runs(selection: dict[str, object]) -> None:
     agent = RemoteAgent("http://test")
     graph = MagicMock()
     graph.client.http.post = AsyncMock(return_value={"text": "answer"})
-    config = {"configurable": {"thread_id": "thread"}}
+    config = {"configurable": {"thread_id": "thread", **selection}}
     with (
         patch.object(agent, "_get_graph", return_value=graph),
         patch.object(
@@ -438,7 +478,7 @@ async def test_remote_uses_side_route_not_runs() -> None:
         assert await agent.abtw("why", config=config) == "answer"
     graph.client.http.post.assert_awaited_once_with(
         "/dcode/threads/thread/btw",
-        json={"question": "why", "workspace": {"workspace_id": "1"}},
+        json={"question": "why", "workspace": {"workspace_id": "1"}, **selection},
     )
     graph.client.runs.assert_not_called()
 
@@ -455,9 +495,11 @@ async def test_app_modal_while_main_run_continues(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def answer(question: str, *, config: object) -> str:
+    async def answer(question: str, *, config: dict[str, dict[str, object]]) -> str:
         assert question == "Why this approach?"
         assert isinstance(config, dict)
+        assert config["configurable"]["model"] == "provider:selected"
+        assert config["configurable"]["model_params"] == {"temperature": 0.2}
         started.set()
         await release.wait()
         return "**Side answer**"
@@ -469,6 +511,8 @@ async def test_app_modal_while_main_run_continues(
         app._agent_running = True
         app._connecting = False
         before = app._message_store.get_all_messages()
+        app._model_override = "provider:selected"
+        app._model_params_override = {"temperature": 0.2}
         assert app._can_bypass_queue("/btw why")
         await app._submit_input(f"/btw {question}".strip(), "command")
         await pilot.pause()

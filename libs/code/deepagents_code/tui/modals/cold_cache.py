@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 class ColdCacheChoice(Enum):
     """How to resolve a cold prompt-cache warning."""
 
+    HANDOFF = "handoff"
+
     SEND = "send"
     """Send this turn; keep warning on future cold-cache turns."""
 
@@ -133,6 +135,10 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Binding("tab", "move_down", "Next", show=False, priority=True),
         Binding("shift+tab", "move_up", "Previous", show=False, priority=True),
         Binding("enter", "activate", "Select", show=False, priority=True),
+        Binding(
+            "ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False, priority=True
+        ),
+        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -181,7 +187,9 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     }
     """
 
-    def __init__(self, warning: ColdCacheWarning) -> None:
+    def __init__(
+        self, warning: ColdCacheWarning | None, *, handoff: bool = False
+    ) -> None:
         """Initialize the warning from validated policy and pricing data.
 
         Takes the whole `ColdCacheWarning` rather than its fields separately so
@@ -192,8 +200,10 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
 
         Args:
             warning: Validated policy, pricing, and cause for this turn.
+            handoff: Offer a summarized thread instead of authorizing a send.
         """
         super().__init__()
+        self._handoff = handoff
         self._warning = warning
         self._options: list[_ChoiceOption] = []
         self._selected = 0
@@ -204,6 +214,11 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Returns:
             Plain-text warning body.
         """
+        if self._warning is None:
+            return (
+                "The cache retention timer has elapsed; the provider may still "
+                "retain the cache. A reliable re-warm cost estimate is unavailable."
+            )
         policy = self._warning.policy
         window = format_cache_window(policy.window_seconds)
         expires = policy.confidence == "expired"
@@ -286,6 +301,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
 
         Yields:
             Title, warning copy, one row per choice, and keyboard help.
+
         """
         glyphs = get_glyphs()
         with Vertical():
@@ -295,27 +311,47 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 markup=False,
             )
             yield Static(self._body(), classes="cold-cache-body", markup=False)
-            for choice, label in (
-                (ColdCacheChoice.SEND, "Send anyway"),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_SESSION,
-                    "Send and don't warn again this session",
-                ),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
-                    "Send and never warn again",
-                ),
-                (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
-            ):
-                option = _ChoiceOption(choice, label)
-                self._options.append(option)
-                yield option
-            help_text = (
-                f"{modal_navigation_hint(glyphs)} "
-                f"{glyphs.bullet} Enter select "
-                f"{glyphs.bullet} Esc cancel"
-            )
-            yield Static(help_text, classes="cold-cache-help", markup=False)
+            if self._handoff:
+                yield Static(
+                    "Enter starts a new thread with an LLM summary, the previous "
+                    "thread ID, and a transcript path for recovering details. "
+                    "The original thread is preserved. Summarization costs money "
+                    "and does not guarantee savings. Neither choice sends your draft.",
+                    classes="cold-cache-body",
+                    markup=False,
+                )
+                yield Static(
+                    "Enter: new summarized thread | Esc: stay (keep draft)",
+                    classes="cold-cache-body",
+                    markup=False,
+                )
+                yield Static(
+                    "Configure warnings.cache_prompt in /config",
+                    classes="cold-cache-help",
+                    markup=False,
+                )
+            else:
+                for choice, label in (
+                    (ColdCacheChoice.SEND, "Send anyway"),
+                    (
+                        ColdCacheChoice.SEND_SUPPRESS_SESSION,
+                        "Send and don't warn again this session",
+                    ),
+                    (
+                        ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
+                        "Send and never warn again",
+                    ),
+                    (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
+                ):
+                    option = _ChoiceOption(choice, label)
+                    self._options.append(option)
+                    yield option
+                help_text = (
+                    f"{modal_navigation_hint(glyphs)} "
+                    f"{glyphs.bullet} Enter select "
+                    f"{glyphs.bullet} Esc cancel"
+                )
+                yield Static(help_text, classes="cold-cache-help", markup=False)
 
     def on_mount(self) -> None:
         """Focus the modal and default the cursor to the send row."""
@@ -345,6 +381,9 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
 
     def action_activate(self) -> None:
         """Resolve with the highlighted choice."""
+        if self._handoff:
+            self.dismiss(ColdCacheChoice.HANDOFF)
+            return
         if not self._options:
             self.dismiss(None)
             return

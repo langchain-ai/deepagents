@@ -2811,12 +2811,12 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
-        key="warnings.cache_expiry_prompt",
+        key="warnings.cache_prompt",
         group="Warnings",
-        summary="Offer a summarized new thread when the cache timer expires.",
-        kind=OptionKind.BOOL,
-        default=True,
-        toml_keys=("warnings", "cache_expiry_prompt"),
+        summary="Cache warning timing: expiry (default), send, or off.",
+        kind=OptionKind.STR,
+        default="expiry",
+        toml_keys=("warnings", "cache_prompt"),
     ),
     ConfigOption(
         key="warnings.cold_cache_min_delta_usd",

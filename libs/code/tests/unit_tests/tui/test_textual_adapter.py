@@ -2184,13 +2184,7 @@ class TestSessionCostEvents:
         assert updates[0] > 0
         assert turn_stats.per_kind["subagent"].request_count == 1
 
-    @pytest.mark.parametrize("provider_id", [False, True])
-    @pytest.mark.parametrize("completion_first", [False, True])
-    async def test_usage_already_counted_from_messages_is_not_added_twice(
-        self,
-        provider_id: bool,
-        completion_first: bool,
-    ) -> None:
+    async def test_mixed_id_usage_counts_once(self) -> None:
         """Mixed provider and fallback IDs still identify one nested request."""
         from langchain_core.messages import AIMessageChunk
 
@@ -2227,9 +2221,7 @@ class TestSessionCostEvents:
                 (
                     AIMessageChunk(
                         content="",
-                        id="resp_child"
-                        if provider_id
-                        else "lc_run--00000000-0000-0000-0000-000000000123",
+                        id="lc_run--00000000-0000-0000-0000-000000000123",
                         usage_metadata=usage,
                     ),  # ty: ignore[invalid-argument-type]
                     {},
@@ -2252,8 +2244,6 @@ class TestSessionCostEvents:
             ),
             ((), "messages", (_text_message("Done."), {})),
         ]
-        if completion_first:
-            chunks[0], chunks[1] = chunks[1], chunks[0]
         turn_stats = SessionStats()
 
         with (

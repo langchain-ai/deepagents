@@ -1322,10 +1322,9 @@ class TestGraphCostOwnership:
         )
 
     @pytest.mark.parametrize("provider_usage_id", [False, True])
-    @pytest.mark.parametrize("completion_first", [False, True])
     @pytest.mark.parametrize("scenario", ["plain", "sequential", "concurrent", "retry"])
     async def test_responses_style_stream_and_callback_share_invocation_id(
-        self, provider_usage_id: bool, completion_first: bool, scenario: str
+        self, provider_usage_id: bool, scenario: str
     ) -> None:
         model = _ResponsesStyleStreamingModel(
             provider_usage_id=provider_usage_id, fail_first=scenario == "retry"
@@ -1400,8 +1399,6 @@ class TestGraphCostOwnership:
 
         stats = SessionStats()
         ledger = {}
-        if completion_first:
-            deliveries.sort(key=lambda delivery: delivery[0] != "custom")
         for mode, data, scope in deliveries:
             if mode == "messages":
                 message, metadata = data

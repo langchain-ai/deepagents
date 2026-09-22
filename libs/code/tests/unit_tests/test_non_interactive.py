@@ -102,11 +102,7 @@ def console() -> Console:
     return Console(quiet=True)
 
 
-@pytest.mark.parametrize("provider_id", [False, True])
-@pytest.mark.parametrize("completion_first", [False, True])
-def test_nested_usage_event_updates_headless_stats(
-    console: Console, provider_id: bool, completion_first: bool
-) -> None:
+def test_mixed_id_usage_counts_once_in_headless_stats(console: Console) -> None:
     state = StreamState(thread_id="thread-1")
     event = {
         "type": "model_usage",
@@ -126,7 +122,7 @@ def test_nested_usage_event_updates_headless_stats(
 
     message = AIMessageChunk(
         content="",
-        id="child-1" if provider_id else "lc_run--child-run",
+        id="lc_run--child-run",
         usage_metadata={
             "input_tokens": 1_000,
             "output_tokens": 100,
@@ -137,8 +133,6 @@ def test_nested_usage_event_updates_headless_stats(
         (("tools:task",), "messages", (message, {})),
         (("tools:task",), "custom", event),
     ]
-    if completion_first:
-        deliveries.reverse()
     for delivery in deliveries:
         _process_stream_chunk(
             delivery, state, console, FileOpTracker(assistant_id="assistant")

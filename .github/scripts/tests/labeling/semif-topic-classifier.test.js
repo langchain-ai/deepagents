@@ -6,6 +6,11 @@ const { ENDPOINT, MODEL } = require('../../labeling/semif-topic-classifier.js');
 const classifyTopicLabels = (text, labels, options) => classify(text, labels, { ...options, provider: 'semif' });
 
 const allowed = ['topic:mcp', 'topic:models'];
+const descriptions = {
+  'topic:mcp': 'Model Context Protocol support and behavior.',
+  'topic:models': 'Model providers, model selection, and model configuration.',
+  'priority:urgent': 'Not a topic description',
+};
 
 function response(scores, status = 200) {
   return {
@@ -26,7 +31,7 @@ test('loads classifier choices from the cached manifest', () => {
 test('uses the gateway System One contract and ignores unsolicited labels', async () => {
   let request;
   const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
-    apiKey: 'secret',
+    apiKey: 'secret', descriptions,
     fetchImpl: async (url, options) => {
       request = { url, options };
       return response({ 'topic:mcp': 0.95, 'topic:models': 0.3, 'priority:urgent': 1 });
@@ -40,6 +45,10 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.equal(body.state, 'MCP authentication fails');
   assert.deepEqual(Object.keys(body.questions), allowed);
   assert.equal(body.questions['topic:mcp'].type, 'noul');
+  for (const question of Object.values(body.questions)) {
+    for (const name of allowed) assert.ok(question.instructions.includes(descriptions[name]));
+    assert.ok(!question.instructions.includes(descriptions['priority:urgent']));
+  }
 });
 
 test('logs only validated diagnostics, including abstentions', async () => {

@@ -12,10 +12,42 @@ from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
+
+
+async def _wait_for_disconnect(request: Request) -> None:
+    """Listen after the request body has been fully consumed."""
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+async def _answer_while_connected(
+    request: Request, answer: Coroutine[object, object, str]
+) -> str | None:
+    """Keep generation scoped to this HTTP connection.
+
+    Returns:
+        The answer, or `None` if the client disconnected.
+    """
+    generation = asyncio.create_task(answer)
+    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            (generation, disconnect), return_when=asyncio.FIRST_COMPLETED
+        )
+        if disconnect in done:
+            disconnect.result()
+            return None
+        return generation.result()
+    finally:
+        generation.cancel()
+        disconnect.cancel()
+        await asyncio.gather(generation, disconnect, return_exceptions=True)
 
 
 async def btw(request: Request) -> JSONResponse:
@@ -57,7 +89,11 @@ async def btw(request: Request) -> JSONResponse:
                 )
             snapshot = await _thread_client().threads.get_state(thread_id)
             state = snapshot.get("values") or {}
-            text = await operation.answer(thread_id, state, question.strip())
+            text = await _answer_while_connected(
+                request, operation.answer(thread_id, state, question.strip())
+            )
+        if text is None:
+            return JSONResponse({"detail": "Client disconnected."}, status_code=499)
         return JSONResponse({"text": text})
     except TimeoutError:
         return JSONResponse(

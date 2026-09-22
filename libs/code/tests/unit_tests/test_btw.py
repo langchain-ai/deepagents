@@ -15,8 +15,9 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.runtime import ExecutionInfo, Runtime
+from textual import events
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static, TextArea
 
 from deepagents_code.btw import BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
@@ -712,7 +713,7 @@ async def test_app_modal_while_main_run_continues(
         await pilot.pause()
         assert isinstance(app.screen, BtwScreen)
         if not question:
-            app.screen.query_one(Input).value = "Why this approach?"
+            app.screen.query_one(TextArea).load_text("Why this approach?")
             await pilot.press("enter")
         await asyncio.wait_for(started.wait(), 2)
         loading = app.screen.query_one("#btw-loading", Static)
@@ -815,6 +816,76 @@ async def test_modal_error_is_plain_text() -> None:
         await pilot.pause()
         assert app.screen.query_one("#btw-error", Static).content == "bad [/tmp/file]"
         await pilot.press("escape")
+
+
+@pytest.mark.parametrize("question", ["First line\nSecond line", "Pasted line\n" * 100])
+async def test_modal_submits_complete_paste(question: str) -> None:
+    """Pasted newlines stay in the editor and collapsed text expands on submit."""
+    from textual.app import App
+
+    app = App()
+    answer = AsyncMock(return_value="Side answer")
+    async with app.run_test() as pilot:
+        app.push_screen(BtwScreen(answer))
+        await pilot.pause()
+        app.post_message(events.Paste(question))
+        await pilot.pause()
+        answer.assert_not_awaited()
+        await pilot.press("enter")
+        await pilot.pause()
+        answer.assert_awaited_once_with(question.strip())
+        assert app.screen.query_one("#btw-question", Static).content == question.strip()
+
+
+async def test_modal_rejects_oversized_expanded_paste() -> None:
+    """The size limit uses the full pasted text and leaves it editable."""
+    from textual.app import App
+
+    from deepagents_code.tui.modals.btw import BtwTextArea
+
+    app = App()
+    answer = AsyncMock(return_value="Side answer")
+    question = "x" * 16_001
+    async with app.run_test() as pilot:
+        app.push_screen(BtwScreen(answer))
+        await pilot.pause()
+        editor = app.screen.query_one(BtwTextArea)
+        app.post_message(events.Paste(question))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        answer.assert_not_awaited()
+        assert editor.has_focus
+        assert editor.submitted_value == question
+        editor.load_text("x" * 16_000)
+        await pilot.press("enter")
+        await pilot.pause()
+        answer.assert_awaited_once_with("x" * 16_000)
+
+
+@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
+async def test_multiline_editor_keeps_help_visible(size: tuple[int, int]) -> None:
+    """A long draft scrolls inside its editor without hiding modal controls."""
+    from textual.app import App
+
+    app = App()
+    answer = AsyncMock()
+    async with app.run_test(size=size) as pilot:
+        app.push_screen(BtwScreen(answer))
+        await pilot.pause()
+        editor = app.screen.query_one(TextArea)
+        editor.load_text("Draft line\n" * 30)
+        await pilot.pause()
+        dialog = app.screen.query_one("#btw-dialog")
+        hint = app.screen.query_one("#btw-help", Static)
+        assert editor.region in dialog.content_region
+        assert hint.region in dialog.content_region
+        assert hint.region in app.screen.region
+        assert "newline" in str(hint.content)
+        assert editor.max_scroll_y > 0
+        await pilot.press("escape")
+        assert not isinstance(app.screen, BtwScreen)
+        answer.assert_not_awaited()
 
 
 @pytest.mark.parametrize("size", [(110, 36), (80, 24)])

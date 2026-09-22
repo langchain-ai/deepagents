@@ -27,6 +27,12 @@ BtwScreen #btw-question {
     margin: 1 0;
 }
 
+BtwScreen #btw-input {
+    height: auto;
+    min-height: 3;
+    max-height: 8;
+}
+
 BtwScreen #btw-loading {
     height: auto;
     color: $primary;

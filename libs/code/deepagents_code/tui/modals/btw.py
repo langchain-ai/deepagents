@@ -10,8 +10,13 @@ from textual import work
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
 
+from deepagents_code.config import get_glyphs
+from deepagents_code.tui.widgets._inline_prompt import (
+    InlinePromptTextArea,
+    newline_hint,
+)
 from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
@@ -22,6 +27,14 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+_MAX_QUESTION_LENGTH = 16_000
+
+
+class BtwTextArea(InlinePromptTextArea):
+    """Side-question editor with the shared multiline and paste conventions."""
+
+    class Submitted(InlinePromptTextArea.Submitted):
+        """Posted when Enter submits the complete side question."""
 
 
 class BtwScreen(ModalScreen[None]):
@@ -30,6 +43,7 @@ class BtwScreen(ModalScreen[None]):
     CSS_PATH = "btw.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Dismiss", show=False),
+        Binding("shift+tab", "insert_newline", "New Line", show=False),
     ]
 
     def __init__(
@@ -54,17 +68,21 @@ class BtwScreen(ModalScreen[None]):
                 "A side question. No tools. Not added to the conversation.",
                 id="btw-subtitle",
             )
-            yield Input(
+            yield BtwTextArea(
                 placeholder="Ask anything about this conversation",
                 id="btw-input",
-                max_length=16_000,
             )
             yield Static(id="btw-loading")
             with VerticalScroll(id="btw-scroll"):
                 yield Static(self._question, id="btw-question", markup=False)
                 yield Markdown("", id="btw-answer", open_links=False)
                 yield Static("", id="btw-error", markup=False)
-            yield Static("Esc dismiss · Up/Down scroll", id="btw-help")
+            yield Static(
+                f" {get_glyphs().bullet} ".join(
+                    ("Enter ask", newline_hint(), "Shift+Tab newline", "Esc dismiss")
+                ),
+                id="btw-help",
+            )
 
     def on_mount(self) -> None:
         """Start an independent worker only after the modal is mounted."""
@@ -73,16 +91,31 @@ class BtwScreen(ModalScreen[None]):
         if self._question:
             self._start(self._question)
         else:
-            self.query_one(Input).focus()
+            self.query_one(BtwTextArea).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Submit the modal field without sending a chat message."""
+    def on_btw_text_area_submitted(self, event: BtwTextArea.Submitted) -> None:
+        """Submit the expanded modal text without sending a chat message."""
         event.stop()
         if question := event.value.strip():
+            if len(question) > _MAX_QUESTION_LENGTH:
+                self.notify(
+                    "Question must contain at most 16,000 characters.",
+                    severity="warning",
+                )
+                return
             self._start(question)
 
+    def action_insert_newline(self) -> None:
+        """Insert a newline only while the question editor has focus."""
+        editor = self.query_one(BtwTextArea)
+        if editor.has_focus and editor.display:
+            editor.action_insert_newline()
+
     def _start(self, question: str) -> None:
-        self.query_one(Input).display = False
+        self.query_one(BtwTextArea).display = False
+        self.query_one("#btw-help", Static).update(
+            f"Esc dismiss {get_glyphs().bullet} Up/Down scroll"
+        )
         scroll = self.query_one("#btw-scroll", VerticalScroll)
         scroll.display = True
         scroll.focus()

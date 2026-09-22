@@ -442,14 +442,23 @@ class ThreadCompletionController:
         self._threads = list(threads)
 
     def refresh(self, text: str, cursor_index: int) -> None:
-        """Refresh an active query without reopening dismissed completion.
+        """Refresh an active query while preserving the selected thread.
 
         Args:
             text: Current composer text in completion space.
             cursor_index: Current cursor offset in completion space.
         """
-        if self._query_active:
-            self.on_text_changed(text, cursor_index)
+        if not self._query_active:
+            return
+        selected_id = (
+            self._matches[self._selected_index]["thread_id"] if self._matches else None
+        )
+        self.on_text_changed(text, cursor_index)
+        for index, thread in enumerate(self._matches):
+            if thread["thread_id"] == selected_id:
+                self._selected_index = index
+                self._view.render_completion_suggestions(self._suggestions, index)
+                break
 
     @staticmethod
     def _trigger_is_standalone(text: str, start: int) -> bool:

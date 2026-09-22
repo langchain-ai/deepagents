@@ -518,6 +518,63 @@ class TestThreadCompletionIntegration:
     """Tests for `@@` completion inside the mounted chat input."""
 
     @pytest.mark.parametrize(
+        ("order", "expected"),
+        [((0, 1), 1), ((1, 0), 1), ((0,), 0), ((), None)],
+        ids=["unchanged", "reordered", "selected_removed", "empty"],
+    )
+    async def test_background_load_preserves_selected_thread(
+        self, order: tuple[int, ...], expected: int | None
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+            },
+            {
+                "thread_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Research caching",
+            },
+        ]
+        loaded = asyncio.Event()
+
+        async def load_threads(*, limit: int) -> list[ThreadInfo]:
+            await loaded.wait()
+            return [threads[index] for index in order][:limit]
+
+        with (
+            patch("deepagents_code.sessions.get_cached_threads", return_value=threads),
+            patch("deepagents_code.sessions.list_threads", side_effect=load_threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new=AsyncMock(),
+            ),
+        ):
+            app = _RecordingApp()
+            async with app.run_test() as pilot:
+                chat = app.query_one(ChatInput)
+                assert chat._text_area is not None
+                chat._text_area.insert("compare @@")
+                await pilot.pause()
+                await pilot.press("down")
+
+                loaded.set()
+                await chat.workers.wait_for_complete()
+                await pilot.pause()
+                if expected is None:
+                    assert not chat._current_suggestions
+                    assert chat._text_area.text == "compare @@"
+                else:
+                    await pilot.press("enter")
+                    assert chat._text_area.text == (
+                        f"compare @@(thread:{threads[expected]['thread_id']}) "
+                    )
+                assert not app.submitted
+
+    @pytest.mark.parametrize(
         "state",
         ["active", "dismissed", "escape", "inactive", "cursor_moved", "changed"],
     )

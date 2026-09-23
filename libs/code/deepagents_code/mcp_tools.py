@@ -1527,9 +1527,24 @@ async def _build_mcp_tool(
         from deepagents_code.mcp_middleware import normalize_mcp_arguments
 
         async def normalized_call(**arguments: Any) -> Any:  # noqa: ANN401
-            return await call(
-                **normalize_mcp_arguments(arguments, mcp_tool.input_schema)
-            )
+            try:
+                return await call(
+                    **normalize_mcp_arguments(arguments, mcp_tool.input_schema)
+                )
+            except Exception as exc:
+                if not any(
+                    cls.__name__ == "BlockingError" for cls in type(exc).__mro__
+                ):
+                    raise
+                from langchain_core.tools import ToolException
+
+                msg = (
+                    f"MCP server '{server_name}' tool '{mcp_tool.name}' was "
+                    "blocked by the event-loop guard"
+                )
+                logger.warning(msg, exc_info=True)
+                tool.handle_tool_error = True
+                raise ToolException(msg) from exc
 
         tool.coroutine = normalized_call
 
@@ -1707,29 +1722,25 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP modules whose first import may block.
-
-    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
-    blocking side effect of a first import happens off the server event loop
-    rather than where Blockbuster would reject it. The known offender is
-    `mcp_auth`, which imports `httpx`, which transitively imports `rich`;
-    `rich` calls `os.getcwd()` in its module body (verified against the pinned
-    versions — the exact culprit may shift as dependencies change, but the
-    general risk of import-time I/O in this subtree does not).
-
-    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
-    (remote-server preflight and the per-tool call path), where an import
-    failure is captured and reported per server. A failure to warm it must not
-    abort loading for every server — notably stdio-only configs, which never
-    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
-    at the real use site. Runs only when at least one active MCP server exists.
-    """
+    """Warm MCP imports; `validate_tool_result`'s deferred `jsonschema` import trips Blockbuster."""  # noqa: E501  # names the lazy validation import and its event-loop guard failure
     from langchain_core._api import (  # noqa: PLC2701
         suppress_langchain_beta_warning,
     )
 
     with suppress_langchain_beta_warning():
         from langchain import mcp as _langchain_mcp  # noqa: F401
+
+    try:
+        import jsonschema as _jsonschema  # noqa: F401
+        import jsonschema_specifications as _jsonschema_specifications  # noqa: F401
+        import mcp.client.session as _mcp_client_session  # noqa: F401
+        import referencing as _referencing  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm MCP tool-result validation imports off the event loop; "
+            "deferring to per-tool use",
+            exc_info=True,
+        )
 
     try:
         from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401

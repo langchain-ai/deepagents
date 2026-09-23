@@ -45,6 +45,7 @@ from deepagents_code.mcp_tools import (
     MCPSessionManager,
     MCPToolInfo,
     _apply_tool_filter,
+    _build_mcp_tool,
     _build_transport,
     _check_remote_server,
     _check_stdio_server,
@@ -2646,7 +2647,11 @@ class TestLoadToolsConcurrency:
         # `_warm_mcp_adapter_imports` actually imports.
         module_names = {
             "deepagents_code.mcp_auth",
+            "jsonschema",
+            "jsonschema_specifications",
             "langchain.mcp",
+            "mcp.client.session",
+            "referencing",
         }
         for module_name in module_names:
             monkeypatch.delitem(sys.modules, module_name, raising=False)
@@ -2704,6 +2709,59 @@ class TestLoadToolsConcurrency:
             "Failed to warm mcp_auth import" in record.getMessage()
             for record in caplog.records
         )
+
+    async def test_blocking_mcp_call_returns_failed_tool_result(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A blocking guard trip becomes a failed MCP tool result."""
+        from langchain_core.tools import StructuredTool
+        from mcp.types import Tool
+
+        class BlockingError(Exception):
+            pass
+
+        async def _call(**_arguments: Any) -> tuple[list[dict[str, str]], None]:
+            msg = "simulated event-loop blocking"
+            raise BlockingError(msg)
+
+        adapted_tool = StructuredTool.from_function(
+            coroutine=_call,
+            name="read",
+            description="read",
+            response_format="content_and_artifact",
+            handle_tool_error=True,
+        )
+        mcp_tool = Tool(
+            name="read",
+            inputSchema={"type": "object", "properties": {}},
+        )
+
+        async def _adapt(_tool: Any, _client: Any) -> StructuredTool:  # noqa: ANN401
+            return adapted_tool
+
+        with (
+            patch("langchain.mcp.as_langchain_tool", _adapt),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+        ):
+            wrapped = await _build_mcp_tool(
+                mcp_tool=mcp_tool,
+                server_name="server",
+                client=MagicMock(),
+            )
+            result = await wrapped.ainvoke(
+                {
+                    "name": wrapped.name,
+                    "args": {},
+                    "id": "call-1",
+                    "type": "tool_call",
+                }
+            )
+
+        assert result.status == "error"
+        assert "server" in str(result.content)
+        assert "read" in str(result.content)
+        assert any("event-loop guard" in r.getMessage() for r in caplog.records)
 
     async def test_warmup_runs_off_loop_before_discovery(
         self,

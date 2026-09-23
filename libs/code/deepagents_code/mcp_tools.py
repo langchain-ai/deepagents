@@ -1707,7 +1707,7 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP modules whose first import may block.
+    """Warm MCP imports and lazy filesystem-backed caches off the event loop.
 
     Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
     blocking side effect of a first import happens off the server event loop
@@ -1724,9 +1724,15 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
+    from importlib import import_module
+
+    from fastmcp.server.dependencies import is_docket_available
     from langchain_core._api import (  # noqa: PLC2701
         suppress_langchain_beta_warning,
     )
+
+    import_module("jsonschema")
+    is_docket_available()
 
     with suppress_langchain_beta_warning():
         from langchain import mcp as _langchain_mcp  # noqa: F401

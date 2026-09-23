@@ -1689,6 +1689,16 @@ class TestExecuteCaptureOffload:
     def _capture_path(tool_call_id: str) -> str:
         return f"{VIRTUAL_SANDBOX_ROOT}/large_tool_results/{tool_call_id}"
 
+    async def test_large_output_truncates_visible_tool_call_id(self, tools: tuple, invoke: Callable) -> None:
+        execute_tool, _ = tools
+        tool_call_id = "c_" + "thought_signature" * 100
+        result = await invoke(execute_tool, {"command": _BIG_OUTPUT_CMD, "runtime": self._runtime(tool_call_id)})
+
+        assert result.tool_call_id == tool_call_id
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        assert "large_tool_results/call-" in result.content
+
     async def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox, invoke: Callable) -> None:
         execute_tool, _ = tools
         result = await invoke(execute_tool, {"command": "echo hello", "runtime": self._runtime("c_small")})

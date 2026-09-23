@@ -22368,6 +22368,10 @@ class DeepAgentsApp(App):
         # restores the draft and spinner, and its done callback releases the slot.
         handoff = self._modal_command_tasks.get("cache-expiry")
         if handoff is not None and not handoff.done():
+            # Once the transcript switch starts, let it finish. Repeated Esc
+            # presses must not interrupt either the switch or its rollback.
+            if self._thread_switching:
+                return
             self._warn_dropped_mcp_reconnect()
             self._discard_queue()
             handoff.cancel()
@@ -30528,6 +30532,10 @@ class DeepAgentsApp(App):
 
         Args:
             thread_id: The thread ID to resume.
+
+        Raises:
+            asyncio.CancelledError: If cancelled, after restoring the outgoing
+                session when the transcript switch has started.
         """
         if not self._agent:
             await self._mount_message(
@@ -30708,12 +30716,16 @@ class DeepAgentsApp(App):
                     await self._remount_pending_goal_rubric_review()
                 except Exception:
                     logger.exception("Failed to restore pending goal review")
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
+                # Detached handoffs are also cancelled at app exit. Restore the
+                # outgoing session before allowing cancellation to propagate.
                 if prefetched_payload is None:
                     logger.exception(
                         "Failed to prefetch history for thread %s", thread_id
                     )
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
                     await self._mount_message(
                         AppMessage(
                             f"Failed to switch to thread {thread_id}: {exc}. "
@@ -30755,6 +30767,8 @@ class DeepAgentsApp(App):
                     logger.warning(msg, thread_id, exc_info=True)
                 if outgoing_ended:
                     await self._run_session_start_hook(SessionStartCause.RESUME)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 error_message = f"Failed to switch to thread {thread_id}: {exc}."
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."

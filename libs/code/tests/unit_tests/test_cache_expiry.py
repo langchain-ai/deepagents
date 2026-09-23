@@ -593,6 +593,89 @@ async def test_handoff_keeps_submitted_draft_without_sending(
             assert errors == []
 
 
+@pytest.mark.parametrize("cancel", ["escape", "shutdown"])
+@pytest.mark.parametrize("pause_at", ["prefetch", "history"])
+async def test_handoff_switch_cancellation_preserves_conversation(
+    cancel: str, pause_at: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.app import _ThreadHistoryPayload
+    from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+    app = DeepAgentsApp()
+    paused = asyncio.Event()
+    release = asyncio.Event()
+    source = MessageData(type=MessageType.USER, content="original conversation")
+    child = MessageData(type=MessageType.USER, content="summarized conversation")
+    payloads = {
+        "source": _ThreadHistoryPayload([source], 100, "", session_cost_usd=1.25),
+        "child": _ThreadHistoryPayload([child], 10, ""),
+    }
+    load = app._load_thread_history
+
+    async def fetch(thread_id: str) -> _ThreadHistoryPayload:
+        if thread_id == "child" and pause_at == "prefetch":
+            paused.set()
+            await release.wait()
+        return payloads[thread_id]
+
+    async def load_history(
+        *,
+        thread_id: str | None = None,
+        preloaded_payload: _ThreadHistoryPayload | None = None,
+        resolve_pending_goal: bool = True,
+    ) -> None:
+        if thread_id == "child" and pause_at == "history":
+            paused.set()
+            await release.wait()
+        await load(
+            thread_id=thread_id,
+            preloaded_payload=preloaded_payload,
+            resolve_pending_goal=resolve_pending_goal,
+        )
+
+    monkeypatch.setattr(app, "_fetch_thread_history_data", fetch)
+    monkeypatch.setattr(app, "_load_thread_history", load_history)
+    monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        app, "_offer_thread_cwd_switch", AsyncMock(return_value="continue")
+    )
+    monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+    monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=False))
+    monkeypatch.setattr(type(app._hooks), "on_session_end", AsyncMock())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._session_state is not None
+        app._session_state.previous_thread_id = "earlier"
+        await load(thread_id="source")
+        task = app._schedule_off_message_pump(
+            app._switch_to_handoff("source", "child"), context="cache-expiry"
+        )
+        assert task is not None
+        await asyncio.wait_for(paused.wait(), timeout=5)
+        if cancel == "escape":
+            await pilot.press("escape", "escape")
+            release.set()
+            await task
+            expected, previous, cost = child, "source", 0.0
+        else:
+            app._cancel_modal_command_tasks()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            expected, previous, cost = source, "earlier", 1.25
+        await pilot.pause()
+        assert (
+            app._lc_thread_id
+            == app._session_state.thread_id
+            == ("child" if cancel == "escape" else "source")
+        )
+        assert app._session_state.previous_thread_id == previous
+        assert app._message_store.get_message(expected.id) is not None
+        assert app._session_cost_usd == cost
+        assert not app._thread_switching
+        assert not app._modal_command_running()
+
+
 async def test_unanswered_prompt_stays_without_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

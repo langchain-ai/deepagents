@@ -5,12 +5,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
-from langgraph.graph.message import add_messages
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
@@ -286,13 +285,11 @@ async def test_handoff_child_is_discoverable_and_resumable(
 async def test_handoff_preserves_shell_context(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from langgraph.graph import END, StateGraph
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     from deepagents_code import sessions
-
-    @dataclass
-    class State:
-        messages: Annotated[list[BaseMessage], add_messages]
+    from deepagents_code.resume_state import ResumeStateMiddleware
 
     app = DeepAgentsApp()
     app._lc_thread_id = "source"
@@ -308,20 +305,18 @@ async def test_handoff_preserves_shell_context(
     archive: list[BaseMessage] = []
 
     async with sessions.get_checkpointer() as checkpointer:
-        builder = StateGraph(State)
-        builder.add_node("model", lambda state: {"messages": state.messages})
-        builder.set_entry_point("model")
-        builder.add_edge("model", END)
-        graph = builder.compile(checkpointer=checkpointer)
-        await graph.aupdate_state(
-            source_config, {"messages": [HumanMessage("original")]}, as_node="model"
+        graph = create_agent(
+            FakeListChatModel(responses=["original reply"]),
+            middleware=[ResumeStateMiddleware()],
+            checkpointer=checkpointer,
         )
+        await graph.ainvoke({"messages": [HumanMessage("original")]}, source_config)
 
         async def update_state(
             config: "RunnableConfig",
             values: dict[str, object],
             *,
-            as_node: str,
+            as_node: str | None = None,
             recovery: bool = False,
         ) -> None:
             del recovery
@@ -341,6 +336,9 @@ async def test_handoff_preserves_shell_context(
 
         async def summarize(**_kwargs: object) -> dict[str, object]:
             state = await graph.aget_state(source_config)
+            # The offload endpoint rejects any checkpoint with pending work.
+            assert not state.next
+            assert not state.tasks
             archive[:] = state.values["messages"]
             if outcome == "during_summary":
                 app._buffer_shell_for_model_context("echo later", "later result", 0)
@@ -383,9 +381,11 @@ async def test_handoff_preserves_shell_context(
         assert remote.aupdate_state.await_args is not None
         child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
         child = await graph.aget_state({"configurable": {"thread_id": child_id}})
-        assert len(original.values["messages"]) == 2
-        assert "important result" in original.values["messages"][1].text
-        assert "important result" in archive[1].text
+        assert not original.next
+        assert not original.tasks
+        assert len(original.values["messages"]) == 3
+        assert "important result" in original.values["messages"][2].text
+        assert "important result" in archive[2].text
         assert "important result" in child.values["messages"][0].text
         if outcome in {"during_save", "during_summary", "running_shell"}:
             assert app._lc_thread_id == "source"

@@ -10006,9 +10006,10 @@ class DeepAgentsApp(App):
                 message.id = str(uuid4())
         config = {"configurable": {"thread_id": thread_id}}
         await remote.aensure_thread(config)
-        await remote.aupdate_state(
-            config, {"messages": messages}, as_node="model", recovery=True
-        )
+        # Infer the completed turn's final node. Attributing this write to
+        # "model" schedules after-model middleware and makes offload reject
+        # an otherwise idle thread for having pending graph work.
+        await remote.aupdate_state(config, {"messages": messages}, recovery=True)
         saved_ids = {message.id for message in messages}
         self._pending_shell_messages = [
             message

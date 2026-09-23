@@ -2,13 +2,15 @@
 
 import base64
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import AgentState
+from langchain.agents.middleware.types import AgentState, ModelRequest, ModelResponse
 from langchain_anthropic import ChatAnthropic
+from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.store.memory import InMemoryStore
@@ -108,6 +110,66 @@ def test_pdf_tool_message_profile_is_enforced() -> None:
         profile={"pdf_inputs": True, "pdf_tool_message": False},
         in_tool_message=True,
     )
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("retry_fails", [False, True])
+async def test_rejected_read_file_media_falls_back_once(*, async_mode: bool, retry_fails: bool) -> None:
+    media = ToolMessage(
+        content=[{"type": "image", "base64": "invalid", "mime_type": "image/png"}],
+        name="read_file",
+        tool_call_id="read-1",
+        id="message-1",
+    )
+    text = ToolMessage(content="file text", name="read_file", tool_call_id="read-2")
+    human = HumanMessage(content=media.content)
+    other_tool = media.model_copy(update={"name": "other_tool", "tool_call_id": "other"})
+    request = ModelRequest(model=ChatOpenAI.model_construct(profile={}), messages=[human, media, text, other_tool])
+    response = ModelResponse(result=[AIMessage(content="Recovered")])
+    error = ModelInvalidRequestError("Invalid image")
+    handler = (AsyncMock if async_mode else Mock)(side_effect=[error, error if retry_fails else response])
+    middleware = FilesystemMiddleware(backend=StateBackend())
+
+    async def invoke() -> object:
+        if async_mode:
+            return await middleware.awrap_model_call(request, handler)
+        return middleware.wrap_model_call(request, handler)
+
+    if retry_fails:
+        with pytest.raises(ModelInvalidRequestError, match="Invalid image"):
+            await invoke()
+    else:
+        assert await invoke() is response
+    assert handler.call_count == 2
+    retried = handler.call_args.args[0].messages
+    assert retried[1].content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    assert retried[1].tool_call_id == media.tool_call_id
+    assert retried[1].id == media.id
+    assert retried[0] is human
+    assert retried[2] is text
+    assert retried[3] is other_tool
+    assert request.messages[1] is media
+    assert isinstance(media.content, list)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("error_type", [ModelInvalidRequestError, RuntimeError])
+@pytest.mark.parametrize("name", ["read_file", "other_tool"])
+async def test_invalid_requests_without_eligible_media_propagate(*, async_mode: bool, error_type: type[Exception], name: str) -> None:
+    message = ToolMessage(content="text only", name=name, tool_call_id="tool-1")
+    if name == "other_tool":
+        message = message.model_copy(update={"content": [{"type": "image", "base64": "invalid", "mime_type": "image/png"}]})
+    request = ModelRequest(model=ChatOpenAI.model_construct(profile={}), messages=[message])
+    handler = (AsyncMock if async_mode else Mock)(side_effect=error_type("Rejected"))
+    middleware = FilesystemMiddleware(backend=StateBackend())
+
+    if async_mode:
+        with pytest.raises(error_type, match="Rejected"):
+            await middleware.awrap_model_call(request, handler)
+    else:
+        with pytest.raises(error_type, match="Rejected"):
+            middleware.wrap_model_call(request, handler)
+    assert handler.call_count == 1
 
 
 class TestLargeToolResultGuidanceInToolDescriptions:

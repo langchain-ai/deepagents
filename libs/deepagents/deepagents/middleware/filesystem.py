@@ -29,6 +29,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
@@ -383,6 +384,18 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     if not isinstance(profile, dict):
         profile = {}
     return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
+
+
+def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Replace multimodal `read_file` results with a text-only fallback."""
+    return [
+        message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
+        if isinstance(message, ToolMessage)
+        and message.name == "read_file"
+        and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
+        else message
+        for message in messages
+    ]
 
 
 def _handle_video_read(
@@ -3336,12 +3349,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = handler(request.override(messages=messages))
+        if eviction_result is not None and state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     async def awrap_model_call(
         self,
@@ -3372,12 +3389,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = await handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return await handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = await handler(request.override(messages=messages))
+        if eviction_result is not None and state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     def _process_large_message(
         self,

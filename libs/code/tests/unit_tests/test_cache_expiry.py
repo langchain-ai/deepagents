@@ -189,6 +189,74 @@ async def test_handoff_persists_recovery_before_switch(
     resume.assert_awaited_once_with(child_id)
 
 
+@pytest.mark.parametrize("switch_during", ["spinner", "summary", "seed"])
+async def test_handoff_preserves_source_configuration_after_thread_switch(
+    switch_during: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_cwd = str(tmp_path / "source-project")
+    app = DeepAgentsApp(cwd=source_cwd, assistant_id="source-agent")
+    app._lc_thread_id = "source"
+    app._model_override = "test:source-model"
+    app._model_params_override = {"reasoning": {"effort": "high"}}
+
+    def switch_thread(*_args: object, **_kwargs: object) -> None:
+        app._lc_thread_id = "other"
+        app._cwd = str(tmp_path / "other-project")
+        app._assistant_id = "other-agent"
+        app._model_override = "test:other-model"
+        assert app._model_params_override is not None
+        app._model_params_override["reasoning"]["effort"] = "low"
+
+    remote = MagicMock()
+    remote.aoffload = AsyncMock(
+        return_value={
+            "status": "summarized",
+            "summary": "Source conversation",
+            "archive_path": "/conversation_history/source.md",
+        },
+    )
+
+    async def summarize(**_kwargs: object) -> dict[str, object]:  # noqa: RUF029  # mock contract
+        switch_thread()
+        return remote.aoffload.return_value
+
+    if switch_during == "summary":
+        remote.aoffload.side_effect = summarize
+    remote.aensure_thread = AsyncMock()
+    remote.aswitch_workspace = AsyncMock(
+        side_effect=switch_thread if switch_during == "seed" else None
+    )
+    remote.aupdate_state = AsyncMock()
+    metadata = AsyncMock()
+    monkeypatch.setattr("deepagents_code.sessions.set_thread_metadata", metadata)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(
+        app,
+        "_set_spinner",
+        AsyncMock(side_effect=switch_thread if switch_during == "spinner" else None),
+    )
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    resume = AsyncMock()
+    monkeypatch.setattr(app, "_resume_thread", resume)
+
+    await app._handoff_expired_cache("source")
+
+    assert remote.aupdate_state.await_args is not None
+    assert remote.aoffload.await_args is not None
+    config, values = remote.aupdate_state.await_args.args
+    child_id = config["configurable"]["thread_id"]
+    remote.aswitch_workspace.assert_awaited_once_with(config, source_cwd)
+    assert values["_model_spec"] == "test:source-model"
+    assert values["_model_params"] == {"reasoning": {"effort": "high"}}
+    metadata.assert_awaited_once_with(
+        child_id, agent_name="source-agent", cwd=source_cwd
+    )
+    assert remote.aoffload.await_args.kwargs["context"]["model"] == "test:source-model"
+    assert app._lc_thread_id == "other"
+    resume.assert_not_awaited()
+
+
 @pytest.mark.parametrize("queued", [False, True])
 @pytest.mark.parametrize("assistant_id", [None, "researcher"])
 async def test_handoff_child_is_discoverable_and_resumable(

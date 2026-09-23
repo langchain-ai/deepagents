@@ -9880,15 +9880,22 @@ class DeepAgentsApp(App):
             RuntimeError: If no server is connected, or the summary or recovery
                 transcript is unavailable.
         """
+        from copy import deepcopy
+
         remote = self._remote_agent()
         if remote is None:
             msg = "No dcode server is connected"
             raise RuntimeError(msg)
+        # Thread switches can happen at any await, including while the summary
+        # is running. Keep the child tied to the source's configuration.
+        cwd = self._cwd
+        agent_name = self._assistant_id or DEFAULT_ASSISTANT_ID
+        context = deepcopy(self._offload_context(thread_id))
         await self._set_spinner("Summarizing for a new thread")
         await self._persist_shell_for_handoff(remote, thread_id)
         result = await remote.aoffload(
             config={"configurable": {"thread_id": thread_id}},
-            context=self._offload_context(thread_id),
+            context=context,
             fulfill_hook=self._hooks.fulfill_interrupt,
             handoff=True,
         )
@@ -9906,14 +9913,26 @@ class DeepAgentsApp(App):
                 )
             )
         child_id = await self._seed_handoff_thread(
-            remote, _handoff_seed_text(summary, thread_id, archive_path)
+            remote,
+            _handoff_seed_text(summary, thread_id, archive_path),
+            cwd=cwd,
+            agent_name=agent_name,
+            context=context,
         )
         await self._mount_message(
             AppMessage(f"Summary saved in new thread: {child_id}")
         )
         await self._switch_to_handoff(thread_id, child_id)
 
-    async def _seed_handoff_thread(self, remote: RemoteAgent, text: str) -> str:
+    @staticmethod
+    async def _seed_handoff_thread(
+        remote: RemoteAgent,
+        text: str,
+        *,
+        cwd: str,
+        agent_name: str,
+        context: CLIContext,
+    ) -> str:
         """Create a thread whose only message is the handoff summary.
 
         Returns:
@@ -9928,20 +9947,20 @@ class DeepAgentsApp(App):
         child_id = str(uuid4())
         config = {"configurable": {"thread_id": child_id}}
         await remote.aensure_thread(config)
-        await remote.aswitch_workspace(config, self._cwd)
+        await remote.aswitch_workspace(config, cwd)
         await remote.aupdate_state(
             config,
             {
                 "messages": [HumanMessage(content=text)],
-                "_model_spec": self._effective_model_spec(),
-                "_model_params": self._model_params_override or {},
+                "_model_spec": context.get("model"),
+                "_model_params": context.get("model_params", {}),
             },
             as_node="model",
         )
         await set_thread_metadata(
             child_id,
-            agent_name=self._assistant_id or DEFAULT_ASSISTANT_ID,
-            cwd=self._cwd,
+            agent_name=agent_name,
+            cwd=cwd,
         )
         return child_id
 

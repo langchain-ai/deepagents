@@ -18984,7 +18984,9 @@ class DeepAgentsApp(App):
                 (message_kwargs or {}).get("additional_kwargs", {}).get("lc_source")
                 != GOAL_CONTROL_MESSAGE_SOURCE
             ):
-                turn_stats.invocation_count = 1
+                spec = self._effective_model_spec() or ""
+                provider, _, model_name = spec.partition(":")
+                turn_stats.record_invocation(model_name, provider)
             self._inflight_turn_stats = turn_stats
             self._inflight_turn_start = time.monotonic()
             self._inflight_thread_id = self._lc_thread_id

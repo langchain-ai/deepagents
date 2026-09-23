@@ -1075,32 +1075,47 @@ class TestClassifyUsageKind:
 class TestPrintUsageTable:
     """Tests for `print_usage_table` output."""
 
-    def test_invocations_are_session_level_not_per_model(self) -> None:
+    def test_invocations_are_attributed_to_starting_model(self) -> None:
         from rich.console import Console
 
-        stats = SessionStats(invocation_count=1)
-        stats.record_request("model-a", 12, 4)
-        stats.record_request("model-b", 8, 2)
-        stats.merge(SessionStats(invocation_count=1))
+        stats = SessionStats()
+        for _ in range(3):
+            turn = SessionStats()
+            turn.record_invocation("model-a")
+            turn.record_request("model-a", 12, 4)
+            turn.record_request("model-b", 8, 2, kind="subagent")
+            stats.merge(turn)
+        turn = SessionStats()
+        turn.record_invocation("model-b")
+        stats.merge(turn)
         console = Console(force_terminal=False, width=100)
 
         with console.capture() as capture:
             print_usage_table(stats, 0, console)
 
         output = capture.get()
-        assert "Reqs" in output
-        assert "Invocations  2" in output
-        assert output.count("Invocations") == 1
-        assert stats.request_count == 2
+        assert "Invocations" in output
+        assert "model-a     3            3" in output
+        assert "model-b     3            1" in output
+        assert "Total       6            4" in output
+        assert stats.invocation_count == 4
 
     def test_invocation_without_model_requests_is_visible(self) -> None:
         from rich.console import Console
 
+        stats = SessionStats()
+        stats.record_invocation("model-a")
         console = Console(force_terminal=False)
         with console.capture() as capture:
-            print_usage_table(SessionStats(invocation_count=1), 0, console)
+            print_usage_table(stats, 0, console)
 
-        assert "Invocations  1" in capture.get()
+        assert "model-a" in capture.get()
+        assert stats.per_model["", "model-a"].invocation_count == 1
+
+    def test_unknown_starting_model_has_an_attributed_row(self) -> None:
+        stats = SessionStats()
+        stats.record_invocation("")
+        assert stats.per_model["", "Unknown"].invocation_count == 1
 
 
 class TestUsageTableEnabled:

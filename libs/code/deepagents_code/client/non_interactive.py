@@ -2144,7 +2144,9 @@ async def _run_agent_loop(
         spinner=spinner,
         show_rubric_iterations=show_rubric_iterations,
     )
-    state.stats.invocation_count = 1
+    state.stats.record_invocation(
+        runtime_state.model_name or "", runtime_state.model_provider or ""
+    )
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)

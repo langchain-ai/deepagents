@@ -218,6 +218,9 @@ class SessionStats:
     recording each chunk separately.
     """
 
+    invocation_count: int = 0
+    """Human-submitted agent turns, excluding internal requests and model fan-out."""
+
     input_tokens: int = 0
     """Cumulative input tokens across all LLM requests."""
 
@@ -381,6 +384,7 @@ class SessionStats:
             other: The stats to fold in.
         """
         self.request_count += other.request_count
+        self.invocation_count += other.invocation_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.cache_read_tokens += other.cache_read_tokens
@@ -1489,7 +1493,9 @@ def print_usage_table(
     from rich.table import Table
 
     has_time = wall_time >= 0.1  # noqa: PLR2004
-    if not (stats.request_count or stats.input_tokens or has_time):
+    if not (
+        stats.request_count or stats.input_tokens or stats.invocation_count or has_time
+    ):
         return
 
     if stats.per_model:
@@ -1541,6 +1547,11 @@ def print_usage_table(
         console.print()
         console.print("[bold]Usage Stats[/bold]")
         console.print(table)
+    if stats.invocation_count:
+        console.print()
+        console.print(
+            f"Invocations  {stats.invocation_count}", style="dim", highlight=False
+        )
     if has_time:
         console.print()
         console.print(

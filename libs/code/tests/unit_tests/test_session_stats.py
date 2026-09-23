@@ -15,6 +15,7 @@ from deepagents_code._session_stats import (
     SessionStats,
     UsageLedgerKey,
     finalize_recorded_requests,
+    print_usage_table,
     record_message_usage,
     record_model_usage_event,
     usage_table_enabled,
@@ -1073,6 +1074,33 @@ class TestClassifyUsageKind:
 
 class TestPrintUsageTable:
     """Tests for `print_usage_table` output."""
+
+    def test_invocations_are_session_level_not_per_model(self) -> None:
+        from rich.console import Console
+
+        stats = SessionStats(invocation_count=1)
+        stats.record_request("model-a", 12, 4)
+        stats.record_request("model-b", 8, 2)
+        stats.merge(SessionStats(invocation_count=1))
+        console = Console(force_terminal=False, width=100)
+
+        with console.capture() as capture:
+            print_usage_table(stats, 0, console)
+
+        output = capture.get()
+        assert "Reqs" in output
+        assert "Invocations  2" in output
+        assert output.count("Invocations") == 1
+        assert stats.request_count == 2
+
+    def test_invocation_without_model_requests_is_visible(self) -> None:
+        from rich.console import Console
+
+        console = Console(force_terminal=False)
+        with console.capture() as capture:
+            print_usage_table(SessionStats(invocation_count=1), 0, console)
+
+        assert "Invocations  1" in capture.get()
 
 
 class TestUsageTableEnabled:

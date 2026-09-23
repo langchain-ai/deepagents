@@ -18979,6 +18979,8 @@ class DeepAgentsApp(App):
             # Published on the app so exit() can merge the stats synchronously
             # if the worker is cancelled before this method can return (e.g.
             # Ctrl+D during HITL).
+            if graph_input is None:
+                turn_stats.invocation_count = 1
             self._inflight_turn_stats = turn_stats
             self._inflight_turn_start = time.monotonic()
             self._inflight_thread_id = self._lc_thread_id

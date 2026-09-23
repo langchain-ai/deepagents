@@ -9947,7 +9947,7 @@ class DeepAgentsApp(App):
         child_id = str(uuid4())
         config = {"configurable": {"thread_id": child_id}}
         await remote.aensure_thread(config)
-        await remote.aswitch_workspace(config, cwd)
+        await remote.abind_workspace(config, cwd)
         await remote.aupdate_state(
             config,
             {

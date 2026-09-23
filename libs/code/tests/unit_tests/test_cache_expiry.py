@@ -560,7 +560,7 @@ async def test_handoff_keeps_submitted_draft_without_sending(
     app = DeepAgentsApp()
     process = AsyncMock()
 
-    async def handoff(_thread_id: str) -> None:  # noqa: RUF029  # mock contract
+    async def handoff(_thread_id: str) -> str:  # noqa: RUF029  # mock contract
         if failure:
             msg = "summary failed"
             raise RuntimeError(msg)
@@ -568,6 +568,7 @@ async def test_handoff_keeps_submitted_draft_without_sending(
         app._lc_thread_id = "child"
         assert app._chat_input is not None
         app._chat_input.value = ""
+        return "child"
 
     monkeypatch.setattr(app, "_process_message", process)
     monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
@@ -591,6 +592,51 @@ async def test_handoff_keeps_submitted_draft_without_sending(
             assert "original thread is unchanged" in errors[0]
         else:
             assert errors == []
+
+
+@pytest.mark.parametrize("other_draft", ["", "unrelated draft"])
+async def test_handoff_does_not_restore_draft_into_unrelated_thread(
+    other_draft: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+
+    def summarize(**_kwargs: object) -> dict[str, str]:
+        # The user leaves the source while its summary is being generated.
+        app._lc_thread_id = "other"
+        assert app._chat_input is not None
+        app._chat_input.value = other_draft
+        return {
+            "status": "summarized",
+            "summary": "source summary",
+            "archive_path": "/conversation_history/source.md",
+        }
+
+    remote = MagicMock()
+    remote.aoffload = AsyncMock(side_effect=summarize)
+    remote.aensure_thread = AsyncMock()
+    remote.abind_workspace = AsyncMock()
+    remote.aupdate_state = AsyncMock()
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr("deepagents_code.sessions.set_thread_metadata", AsyncMock())
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        await app._dispatch_queued_message(QueuedMessage("source draft", "normal"))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert remote.aupdate_state.await_args is not None
+        child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
+        assert child_id not in {"source", "other"}
+        assert app._lc_thread_id == "other"
+        assert app._chat_input is not None
+        assert app._chat_input.value == other_draft
+        process.assert_not_awaited()
+        assert not app._modal_command_running()
 
 
 @pytest.mark.parametrize("cancel", ["escape", "shutdown"])

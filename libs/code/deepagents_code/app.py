@@ -9748,18 +9748,18 @@ class DeepAgentsApp(App):
         if message is None and await self._cold_cache_opted_out():
             return
         draft = message.text if message else None
-        handed_off = False
+        child_id = None
         try:
             choice = await self._ask_cache_handoff(thread_id)
             if choice is ColdCacheChoice.HANDOFF:
                 if draft is None and self._chat_input:
                     draft = self._chat_input.value
-                handed_off = await self._run_cache_handoff(thread_id)
+                child_id = await self._run_cache_handoff(thread_id)
             elif choice is ColdCacheChoice.CANCEL and expires_at is not None:
                 self._cache_expiry_bypassed = (thread_id, expires_at)
                 self._cache_expiry_seen[thread_id] = expires_at
         finally:
-            self._restore_handoff_draft(draft, thread_id, handed_off=handed_off)
+            self._restore_handoff_draft(draft, thread_id, child_id=child_id)
             await self._set_spinner(None)
 
     async def _cold_cache_opted_out(self) -> bool:
@@ -9827,17 +9827,17 @@ class DeepAgentsApp(App):
             return None
         return choice
 
-    async def _run_cache_handoff(self, thread_id: str) -> bool:
+    async def _run_cache_handoff(self, thread_id: str) -> str | None:
         """Run the handoff and report a failure to the user.
 
         Returns:
-            Whether the summarized thread was created.
+            The summarized child thread ID, or `None` if handoff failed.
 
         Raises:
             asyncio.CancelledError: If the task is cancelled, such as on exit.
         """
         try:
-            await self._handoff_expired_cache(thread_id)
+            return await self._handoff_expired_cache(thread_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -9848,16 +9848,15 @@ class DeepAgentsApp(App):
                     "The original thread is unchanged."
                 )
             )
-            return False
-        return True
+            return None
 
     def _restore_handoff_draft(
-        self, draft: str | None, thread_id: str, *, handed_off: bool
+        self, draft: str | None, thread_id: str, *, child_id: str | None
     ) -> None:
         """Put the draft back in the input, or say where to find it."""
         if not draft or self._exiting or not self._chat_input:
             return
-        if self._lc_thread_id != thread_id and not handed_off:
+        if self._lc_thread_id not in {thread_id, child_id}:
             self.notify(
                 "The active thread changed, so your draft was not restored. "
                 "Press Up to recall it.",
@@ -9869,12 +9868,15 @@ class DeepAgentsApp(App):
         if self._chat_input.value != draft:
             self._restore_cold_cache_draft(draft)
 
-    async def _handoff_expired_cache(self, thread_id: str) -> None:
+    async def _handoff_expired_cache(self, thread_id: str) -> str:
         """Seed a summarized child thread, then switch to it unless work arrived.
 
         The server returns the summary and saves the transcript without
         compacting the source thread, so resuming the source restores its full
         context.
+
+        Returns:
+            The child thread ID, whether or not it became active.
 
         Raises:
             RuntimeError: If no server is connected, or the summary or recovery
@@ -9923,6 +9925,7 @@ class DeepAgentsApp(App):
             AppMessage(f"Summary saved in new thread: {child_id}")
         )
         await self._switch_to_handoff(thread_id, child_id)
+        return child_id
 
     @staticmethod
     async def _seed_handoff_thread(

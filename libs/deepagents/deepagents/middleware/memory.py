@@ -89,11 +89,11 @@ class MemoryState(AgentState):
     """State schema for `MemoryMiddleware`.
 
     Attributes:
-        memory_contents: Dict mapping source paths to their loaded content.
+        memory_contents: Cached source contents, or `None` to reload on the next run.
             Marked as private so it's not included in the final agent state.
     """
 
-    memory_contents: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
+    memory_contents: NotRequired[Annotated[dict[str, str] | None, PrivateStateAttr]]
 
 
 class MemoryStateUpdate(TypedDict):
@@ -180,9 +180,8 @@ def _strip_html_comments(text: str) -> str:
 class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
-    Loads memory content from configured sources and injects into the system
-    prompt. Supports multiple sources that are combined together. See
-    constructor for the full argument list.
+    Reset checkpointed `memory_contents` to `None` with `update_state` or
+    `aupdate_state` to reload configured sources before the next run.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
@@ -280,7 +279,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
+        Reloads when `memory_contents` is missing or `None`; cached dictionaries,
+        including empty ones, remain unchanged.
 
         Args:
             state: Current agent state.
@@ -290,8 +290,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             State update with memory_contents populated.
         """
-        # Skip if already loaded
-        if "memory_contents" in state:
+        if state.get("memory_contents") is not None:
             return None
 
         backend = self._backend
@@ -314,7 +313,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
+        Reloads when `memory_contents` is missing or `None`; cached dictionaries,
+        including empty ones, remain unchanged.
 
         Args:
             state: Current agent state.
@@ -324,8 +324,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             State update with memory_contents populated.
         """
-        # Skip if already loaded
-        if "memory_contents" in state:
+        if state.get("memory_contents") is not None:
             return None
 
         backend = self._backend
@@ -356,7 +355,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if self.system_prompt is None:
             new_system_message = request.system_message
         else:
-            contents = request.state.get("memory_contents", {})
+            contents = request.state.get("memory_contents") or {}
             agent_memory = self._format_agent_memory(contents, self.system_prompt)
             new_system_message = append_to_system_message(request.system_message, agent_memory)
 

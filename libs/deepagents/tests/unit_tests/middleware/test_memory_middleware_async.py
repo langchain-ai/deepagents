@@ -4,11 +4,18 @@ This module contains async versions of memory middleware tests.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -139,6 +146,77 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
 
     # Should return None (no update needed)
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("initial", "updated"),
+    [("alpha memory", "beta memory"), ("alpha memory", None), (None, "beta memory")],
+)
+async def test_checkpointed_memory_reloads_after_reset_async(tmp_path: Path, initial: str | None, updated: str | None) -> None:
+    memory_path = tmp_path / "AGENTS.md"
+    if initial is not None:
+        memory_path.write_text(initial, encoding="utf-8")
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="first"), AIMessage(content="second"), AIMessage(content="third")]))
+    agent = create_deep_agent(
+        model=model,
+        backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
+        memory=["/AGENTS.md"],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "memory-reset"}}
+    await agent.ainvoke(input={"messages": [HumanMessage(content="first")]}, config=config)
+    cached: dict[str, str] = {"/AGENTS.md": initial} if initial is not None else {}
+    assert (await agent.aget_state(config)).values["memory_contents"] == cached
+
+    if updated is None:
+        memory_path.unlink()
+    else:
+        memory_path.write_text(updated, encoding="utf-8")
+    await agent.ainvoke(input={"messages": [HumanMessage(content="second")]}, config=config)
+    assert (await agent.aget_state(config)).values["memory_contents"] == cached
+    assert (initial or "(No memory loaded)") in model.call_history[-1]["messages"][0].text
+
+    await agent.aupdate_state(config=config, values={"memory_contents": None})
+    result = await agent.ainvoke(input={"messages": [HumanMessage(content="third")]}, config=config)
+    expected: dict[str, str] = {"/AGENTS.md": updated} if updated is not None else {}
+    assert (await agent.aget_state(config)).values["memory_contents"] == expected
+    assert (updated or "(No memory loaded)") in model.call_history[-1]["messages"][0].text
+    assert "alpha memory" not in model.call_history[-1]["messages"][0].text
+    assert "memory_contents" not in result
+
+
+async def test_memory_file_edit_does_not_reload_during_run_async(tmp_path: Path) -> None:
+    memory_path = tmp_path / "AGENTS.md"
+    memory_path.write_text("alpha memory", encoding="utf-8")
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"file_path": "/AGENTS.md", "old_string": "alpha memory", "new_string": "beta memory"},
+                            "id": "edit-memory",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
+        memory=["/AGENTS.md"],
+    )
+    await agent.ainvoke(input={"messages": [HumanMessage(content="update memory")]})
+    assert memory_path.read_text(encoding="utf-8") == "beta memory"
+    assert len(model.call_history) == 2
+    for call in model.call_history:
+        assert "alpha memory" in call["messages"][0].text
+        assert "beta memory" not in call["messages"][0].text
 
 
 async def test_load_memory_with_empty_sources_async(tmp_path: Path) -> None:

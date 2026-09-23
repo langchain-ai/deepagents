@@ -9957,6 +9957,9 @@ class DeepAgentsApp(App):
             },
             as_node="model",
         )
+        # Seeding as model schedules after-model middleware. Mark that work
+        # complete without running it so the child is immediately offloadable.
+        await remote.aupdate_state(config, None, as_node="__end__")
         await set_thread_metadata(
             child_id,
             agent_name=agent_name,

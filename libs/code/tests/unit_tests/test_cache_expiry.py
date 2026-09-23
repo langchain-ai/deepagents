@@ -2,7 +2,6 @@
 
 import asyncio
 from copy import deepcopy
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -126,7 +125,7 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "summary", "empty", "seed", "metadata", "queued"]
+    "failure", [None, "summary", "empty", "seed", "finish", "metadata", "queued"]
 )
 async def test_handoff_persists_recovery_before_switch(
     failure: str | None, monkeypatch: pytest.MonkeyPatch
@@ -147,6 +146,8 @@ async def test_handoff_persists_recovery_before_switch(
     remote.aupdate_state = AsyncMock(
         side_effect=RuntimeError("write failed") if failure == "seed" else None
     )
+    if failure == "finish":
+        remote.aupdate_state.side_effect = [None, RuntimeError("completion failed")]
     monkeypatch.setattr(
         "deepagents_code.sessions.set_thread_metadata",
         AsyncMock(
@@ -179,7 +180,7 @@ async def test_handoff_persists_recovery_before_switch(
     assert remote.aoffload.await_args is not None
     assert remote.aupdate_state.await_args is not None
     assert remote.aoffload.await_args.kwargs["handoff"] is True
-    update = remote.aupdate_state.await_args.args[1]
+    update = remote.aupdate_state.await_args_list[0].args[1]
     content = update["messages"][0].text
     assert "LLM summary" in content
     assert "Previous thread ID: source" in content
@@ -244,7 +245,7 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
 
     assert remote.aupdate_state.await_args is not None
     assert remote.aoffload.await_args is not None
-    config, values = remote.aupdate_state.await_args.args
+    config, values = remote.aupdate_state.await_args_list[0].args
     child_id = config["configurable"]["thread_id"]
     remote.aswitch_workspace.assert_awaited_once_with(config, source_cwd)
     assert values["_model_spec"] == "test:source-model"
@@ -262,14 +263,12 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
 async def test_handoff_child_is_discoverable_and_resumable(
     queued: bool, assistant_id: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from langgraph.graph import END, StateGraph
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     from deepagents_code import sessions
     from deepagents_code.app import DEFAULT_ASSISTANT_ID
-
-    @dataclass
-    class State:
-        messages: list[HumanMessage]
+    from deepagents_code.resume_state import ResumeStateMiddleware
 
     app = DeepAgentsApp(assistant_id=assistant_id)
     owner = assistant_id or DEFAULT_ASSISTANT_ID
@@ -304,14 +303,15 @@ async def test_handoff_child_is_discoverable_and_resumable(
         app._pending_messages.append(QueuedMessage("arrived", "normal"))
 
     async with sessions.get_checkpointer() as checkpointer:
-        builder = StateGraph(State)
-        builder.add_node("model", lambda state: {"messages": state.messages})
-        builder.set_entry_point("model")
-        builder.add_edge("model", END)
-        graph = builder.compile(checkpointer=checkpointer)
+        model = FakeListChatModel(responses=["Next reply", "Unexpected extra reply"])
+        graph = create_agent(
+            model,
+            middleware=[ResumeStateMiddleware()],
+            checkpointer=checkpointer,
+        )
 
         async def update_state(
-            config: "RunnableConfig", values: dict[str, object], *, as_node: str
+            config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
@@ -326,6 +326,25 @@ async def test_handoff_child_is_discoverable_and_resumable(
         child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
         state = await graph.aget_state({"configurable": {"thread_id": child_id}})
         assert "LLM summary" in state.values["messages"][0].text
+        # Offload rejects any of these fields before attempting summarization.
+        assert not state.next
+        assert not state.tasks
+        assert not state.interrupts
+        assert model.i == 0
+        assert len(state.values["messages"]) == 1
+        assert await sessions.get_thread_agent(child_id) == owner
+        continued = await graph.ainvoke(
+            {"messages": [HumanMessage("Continue from the summary.")]},
+            {
+                "configurable": {"thread_id": child_id},
+                "metadata": {"agent_name": owner, "cwd": app._cwd},
+            },
+        )
+        assert [message.text for message in continued["messages"]] == [
+            state.values["messages"][0].text,
+            "Continue from the summary.",
+            "Next reply",
+        ]
 
     threads = await sessions.list_threads(agent_name=owner, cwd=app._cwd)
     assert [thread["thread_id"] for thread in threads] == [child_id]
@@ -382,7 +401,7 @@ async def test_handoff_preserves_shell_context(
 
         async def update_state(
             config: "RunnableConfig",
-            values: dict[str, object],
+            values: dict[str, object] | None,
             *,
             as_node: str | None = None,
             recovery: bool = False,

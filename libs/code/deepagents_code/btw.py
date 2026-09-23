@@ -9,8 +9,10 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
+from deepagents.backends import StateBackend
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsState
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -27,6 +29,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
     convert_to_messages,
+    trim_messages,
 )
 from langchain_core.runnables import RunnableBinding
 from langgraph.runtime import Runtime
@@ -37,7 +40,8 @@ if TYPE_CHECKING:
 
     from deepagents.middleware.memory import MemoryMiddleware
     from deepagents.middleware.skills import SkillsMiddleware
-    from langchain_core.messages import MessageLikeRepresentation
+    from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain_core.messages import AnyMessage, MessageLikeRepresentation
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
@@ -126,7 +130,12 @@ def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
     )
 
 
-def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
+def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
+    """Restore the effective checkpoint messages before read-only compaction.
+
+    Returns:
+        The saved summary followed by messages after its cutoff, if present.
+    """
     raw = state.get("messages")
     messages = (
         convert_to_messages(cast("list[MessageLikeRepresentation]", raw))
@@ -146,7 +155,16 @@ def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
                 *convert_to_messages([cast("MessageLikeRepresentation", summary)]),
                 *messages[cutoff:],
             ]
-    transcript: list[BaseMessage] = []
+    return cast("list[AnyMessage]", messages)
+
+
+def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+    """Render tool exchanges as text after their arguments have been truncated.
+
+    Returns:
+        A transcript without executable tool calls or provider-only metadata.
+    """
+    transcript: list[AnyMessage] = []
     for message in messages:
         text = message.text
         if isinstance(message, AIMessage):
@@ -168,6 +186,51 @@ def _conversation(state: Mapping[str, object]) -> list[BaseMessage]:
         else:
             transcript.append(HumanMessage(content=f"[{message.type} context]\n{text}"))
     return transcript
+
+
+def _fit_context(
+    request: ModelRequest, compaction: SummarizationMiddleware
+) -> list[BaseMessage]:
+    """Keep the system prompt and latest question while bounding older context.
+
+    Returns:
+        Messages within the model's input budget when its limit is known.
+    """
+    messages: list[BaseMessage] = [
+        *([request.system_message] if request.system_message is not None else []),
+        *request.messages,
+    ]
+    budget = compaction._input_budget(request)
+    if budget is None or not compaction._over_budget(request):
+        return messages
+    # Never drop or shorten the user's question to make the request fit.
+    compaction._check_reduction(
+        request, request.override(messages=request.messages[-1:]), None
+    )
+    return trim_messages(
+        messages,
+        max_tokens=budget,
+        token_counter=compaction.token_counter,
+        strategy="last",
+        start_on="human",
+        include_system=True,
+    )
+
+
+def _prepare_messages(request: ModelRequest) -> list[BaseMessage]:
+    """Reuse SDK compaction policies without running summaries or backend writes.
+
+    Returns:
+        A tool-free transcript sized for the resolved model and output settings.
+    """
+    compaction = create_summarization_middleware(request.model, StateBackend())
+    messages, _ = compaction._truncate_args(
+        request.messages,
+        compaction._count_tokens(request.messages, request.system_message, []),
+    )
+    return _fit_context(
+        request.override(messages=_tool_free_transcript(messages)), compaction
+    )
 
 
 class BtwOperation(AgentMiddleware):
@@ -273,6 +336,9 @@ class BtwOperation(AgentMiddleware):
         the checkpointed effective instructions when no live snapshot exists.
         New and legacy threads restore memory and skills through the main
         agent's loaders without writing updates back to the conversation.
+        Large older file arguments are truncated using the main agent's policy;
+        older context is dropped when needed to fit the side request's budget.
+        Instructions and questions that cannot fit raise `ContextOverflowError`.
 
         Args:
             thread_id: Thread whose conversation supplies context.
@@ -321,7 +387,6 @@ class BtwOperation(AgentMiddleware):
                     )
             model = _tool_free_model(model)
             messages = [
-                SystemMessage(content=f"{system.text}\n\n{_INSTRUCTIONS}"),
                 *_conversation(state),
                 *(
                     message
@@ -334,7 +399,18 @@ class BtwOperation(AgentMiddleware):
                 HumanMessage(content=f"{_INSTRUCTIONS}\n\n{question}"),
             ]
             response = await model.ainvoke(
-                messages,
+                _prepare_messages(
+                    ModelRequest(
+                        model=model,
+                        system_message=SystemMessage(
+                            content=f"{system.text}\n\n{_INSTRUCTIONS}"
+                        ),
+                        messages=messages,
+                        tools=[],
+                        model_settings=settings,
+                        runtime=Runtime(),
+                    )
+                ),
                 config={"callbacks": [], "metadata": {"thread_id": thread_id}},
                 **settings,
             )

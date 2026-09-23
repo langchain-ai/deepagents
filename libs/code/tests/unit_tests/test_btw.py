@@ -80,6 +80,133 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
     assert state == before
 
 
+@pytest.mark.parametrize("tool", ["write_file", "edit_file"])
+@pytest.mark.parametrize("summarized", [False, True])
+@pytest.mark.parametrize("context_limit", [8000, None])
+async def test_side_context_truncates_old_file_arguments(
+    tool: str, context_limit: int | None, *, summarized: bool
+) -> None:
+    model = FakeMessagesListChatModel(
+        responses=[],
+        profile={"max_input_tokens": context_limit} if context_limit else None,
+    )
+    operation = BtwOperation(model, "Main instructions", None)
+    old_content = "old file contents\n" * 4000
+    recent_content = "recent file contents\n" * 101
+    argument = "content" if tool == "write_file" else "new_string"
+    state: dict[str, object] = {
+        "messages": [
+            HumanMessage(content="Archived request"),
+            HumanMessage(content="Update the file"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": tool,
+                        "args": {"file_path": "/example.py", argument: old_content},
+                        "id": "old",
+                    }
+                ],
+            ),
+            ToolMessage(content="Saved", tool_call_id="old"),
+            *(HumanMessage(content="More context") for _ in range(20)),
+            HumanMessage(content="Make one more change"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": tool,
+                        "args": {"file_path": "/example.py", argument: recent_content},
+                        "id": "recent",
+                    }
+                ],
+            ),
+            ToolMessage(content="Saved", tool_call_id="recent"),
+        ],
+    }
+    if summarized:
+        state["_summarization_event"] = {
+            "cutoff_index": 1,
+            "summary_message": HumanMessage(content="Earlier summary"),
+        }
+    before = deepcopy(state)
+    with patch.object(
+        FakeMessagesListChatModel,
+        "ainvoke",
+        new=AsyncMock(return_value=AIMessage(content="The answer")),
+    ) as invoke:
+        assert await operation.answer("thread", state, "Why?") == "The answer"
+    messages = invoke.call_args.args[0]
+    transcript = "\n".join(message.text for message in messages)
+    assert "...(argument truncated)" in transcript
+    assert json.dumps(old_content) not in transcript
+    assert json.dumps(recent_content) in transcript
+    assert ("Earlier summary" if summarized else "Archived request") in transcript
+    assert all(not isinstance(message, ToolMessage) for message in messages)
+    assert all(
+        not message.tool_calls for message in messages if isinstance(message, AIMessage)
+    )
+    assert state == before
+
+
+@pytest.mark.parametrize("max_tokens", [0, 400])
+async def test_side_context_budget_includes_instructions_history_and_output(
+    max_tokens: int,
+) -> None:
+    from langchain_core.messages.utils import count_tokens_approximately
+
+    model = FakeMessagesListChatModel(responses=[], profile={"max_input_tokens": 2000})
+    operation = BtwOperation(
+        cast("BaseChatModel", model.bind(max_tokens=max_tokens)),
+        "Main instructions " * 40,
+        None,
+    )
+    state = {"messages": [HumanMessage(content="Old context " * 1000)]}
+    history = [
+        ("Old side question", "Old side answer " * 340),
+        ("Which file?", "example.py"),
+    ]
+    before = deepcopy(state)
+    history_before = deepcopy(history)
+    with patch.object(
+        FakeMessagesListChatModel,
+        "ainvoke",
+        new=AsyncMock(return_value=AIMessage(content="The answer")),
+    ) as invoke:
+        await operation.answer("thread", state, "Why?", history=history)
+    messages = invoke.call_args.args[0]
+    assert count_tokens_approximately(messages) <= 1900 - max_tokens
+    assert messages[0].text.startswith("Main instructions " * 40)
+    retained_history = history[-1:] if max_tokens else history
+    assert [message.text for message in messages[1:-1]] == [
+        text for pair in retained_history for text in pair
+    ]
+    assert messages[-1].text.endswith("Why?")
+    assert history == history_before
+    assert state == before
+
+
+@pytest.mark.parametrize("oversized", ["system", "question"])
+async def test_side_context_rejects_required_input_over_budget(oversized: str) -> None:
+    from langchain_core.exceptions import ContextOverflowError
+
+    model = FakeMessagesListChatModel(responses=[], profile={"max_input_tokens": 1000})
+    operation = BtwOperation(
+        model, "Instructions " * (1000 if oversized == "system" else 1), None
+    )
+    question = "Why? " * (1000 if oversized == "question" else 1)
+    with (
+        patch.object(
+            FakeMessagesListChatModel,
+            "ainvoke",
+            new=AsyncMock(return_value=AIMessage(content="The answer")),
+        ) as invoke,
+        pytest.raises(ContextOverflowError, match="input budget"),
+    ):
+        await operation.answer("thread", {}, question)
+    invoke.assert_not_awaited()
+
+
 async def test_live_model_selected_before_main_response_and_no_wait() -> None:
     old = FakeMessagesListChatModel(responses=[AIMessage(content="old")])
     active = FakeMessagesListChatModel(responses=[AIMessage(content="active")])

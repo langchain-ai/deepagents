@@ -17,11 +17,6 @@ BtwScreen #btw-title {
     color: $primary;
 }
 
-BtwScreen #btw-subtitle, BtwScreen #btw-help {
-    color: $text-muted;
-    margin-bottom: 1;
-}
-
 BtwScreen #btw-question {
     height: auto;
     margin: 1 0;
@@ -48,6 +43,7 @@ BtwScreen #btw-error {
 }
 
 BtwScreen #btw-help {
+    color: $text-muted;
     margin-top: 1;
     margin-bottom: 0;
 }

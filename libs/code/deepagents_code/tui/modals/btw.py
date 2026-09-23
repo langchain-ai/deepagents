@@ -67,10 +67,6 @@ class BtwScreen(ModalScreen[None]):
                 "Ask a quick question without interrupting your conversation.",
                 id="btw-description",
             )
-            yield Static(
-                "Replies don't use tools and aren't saved to the conversation.",
-                id="btw-subtitle",
-            )
             yield BtwTextArea(
                 placeholder="Ask anything about this conversation",
                 id="btw-input",

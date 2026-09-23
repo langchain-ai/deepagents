@@ -90,6 +90,8 @@ async def btw(request: Request) -> JSONResponse:
     Returns:
         Answer text or a safe error response.
     """
+    from langchain_core.messages import convert_to_messages
+
     from deepagents_code.offload_api import _thread_client, get_server_runtime
 
     try:
@@ -128,7 +130,10 @@ async def btw(request: Request) -> JSONResponse:
                 )
             client = _thread_client()
             snapshot = await client.threads.get_state(thread_id)
-            state = snapshot.get("values") or {}
+            # Accounting must recognize prior AI messages, including legacy
+            # responses without saved costs. Keep the checkpoint untouched.
+            state = dict(snapshot.get("values") or {})
+            state["messages"] = convert_to_messages(state.get("messages", []))
             result = await _answer_while_connected(
                 request,
                 answer_with_cost(

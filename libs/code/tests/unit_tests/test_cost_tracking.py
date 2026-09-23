@@ -9,6 +9,7 @@ import logging
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -2481,6 +2482,57 @@ async def test_side_question_cost_is_durable_without_another_turn(
     assert after["_session_cost_usd"] == pytest.approx(2 * one_call)
     assert len(after["messages"]) == 4
     assert recorder.drain(THREAD_ID) == []
+
+
+@pytest.mark.parametrize("history", ["new", "legacy", "accounted"])
+@pytest.mark.usefixtures("side_cost_db")
+async def test_side_question_cost_completeness_from_serialized_history(
+    history: str,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from deepagents_code import offload_api
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import load_cost
+
+    messages = [HumanMessage("Main question").model_dump()]
+    if history != "new":
+        messages.append(AIMessage("Earlier answer").model_dump())
+    values: dict[str, object] = {"messages": messages}
+    if history == "accounted":
+        values["_session_cost_breakdown"] = cost_tracking._empty_cost_breakdown()
+    before = deepcopy(values)
+    operation = BtwOperation(
+        _fake_model(_message(_usage(), message_id="side")), "system", None
+    )
+    server = SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+    threads = SimpleNamespace(get_state=AsyncMock(return_value={"values": values}))
+    with (
+        patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
+        patch.object(offload_api, "get_server_runtime", AsyncMock(return_value=server)),
+        patch.object(
+            offload_api, "_thread_client", return_value=SimpleNamespace(threads=threads)
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/dcode/threads/{THREAD_ID}/btw",
+                json={"question": "side question", "workspace": {}},
+            )
+            display = await client.get(f"/dcode/threads/{THREAD_ID}/cost")
+
+    assert response.status_code == display.status_code == 200
+    cost = response.json()["cost"]
+    assert cost["total_cost_usd"] > 0
+    assert cost["request_count"] == 1
+    assert cost["historical_complete"] is (history != "legacy")
+    assert display.json()["cost"]["breakdown"]["historical_complete"] is (
+        history != "legacy"
+    )
+    assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
+    assert values == before
 
 
 @pytest.fixture

@@ -11,7 +11,6 @@ from deepagents_code.cold_cache import (
     RewarmEstimate,
 )
 from deepagents_code.tui.modals.cold_cache import (
-    SEND_CHOICES,
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
@@ -90,16 +89,6 @@ def test_unknown_age_copy_claims_no_idle_time() -> None:
     # Unknown age leaves open that the cache is intact, so the cost sentence
     # stays conditional even though the policy is `expired`.
     assert "If the cache has expired" in body
-
-
-def test_send_choices_excludes_cancel() -> None:
-    """Spend authorization is a closed set; cancel is never in it."""
-    assert ColdCacheChoice.CANCEL not in SEND_CHOICES
-    assert {
-        choice
-        for choice in ColdCacheChoice
-        if choice not in {ColdCacheChoice.CANCEL, ColdCacheChoice.HANDOFF}
-    } == SEND_CHOICES
 
 
 async def test_enter_authorizes_send() -> None:

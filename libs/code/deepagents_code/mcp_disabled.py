@@ -74,7 +74,7 @@ def _load_config(config_path: Path) -> dict[str, Any]:
     try:
         with config_path.open("rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         logger.warning(
             "Could not read MCP disabled config at %s: %s",
             config_path,

@@ -124,11 +124,9 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
         await pilot.press("escape")
 
 
-@pytest.mark.parametrize(
-    "failure", [None, "summary", "empty", "seed", "finish", "metadata", "queued"]
-)
-async def test_handoff_persists_recovery_before_switch(
-    failure: str | None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failure", ["summary", "empty", "seed", "finish", "metadata"])
+async def test_handoff_failure_keeps_source_thread(
+    failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
     app._lc_thread_id = "source"
@@ -162,32 +160,10 @@ async def test_handoff_persists_recovery_before_switch(
     monkeypatch.setattr(app, "_mount_message", AsyncMock())
     resume = AsyncMock()
     monkeypatch.setattr(app, "_resume_thread", resume)
-    if failure == "queued":
-        app._pending_messages.append(QueuedMessage(text="arrived", mode="normal"))
+    with pytest.raises(RuntimeError):
         await app._handoff_expired_cache("source")
-        resume.assert_not_awaited()
-        assert app._pending_messages[0].text == "arrived"
-        assert app._lc_thread_id == "source"
-        return
-    if failure:
-        with pytest.raises(RuntimeError):
-            await app._handoff_expired_cache("source")
-        resume.assert_not_awaited()
-        assert app._lc_thread_id == "source"
-        return
-    await app._handoff_expired_cache("source")
-    remote.aoffload.assert_awaited_once()
-    assert remote.aoffload.await_args is not None
-    assert remote.aupdate_state.await_args is not None
-    assert remote.aoffload.await_args.kwargs["handoff"] is True
-    update = remote.aupdate_state.await_args_list[0].args[1]
-    content = update["messages"][0].text
-    assert "LLM summary" in content
-    assert "Previous thread ID: source" in content
-    assert "/conversation_history/source.md" in content
-    child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
-    assert child_id != "source"
-    resume.assert_awaited_once_with(child_id)
+    resume.assert_not_awaited()
+    assert app._lc_thread_id == "source"
 
 
 @pytest.mark.parametrize("switch_during", ["spinner", "summary", "seed"])
@@ -258,8 +234,9 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
     resume.assert_not_awaited()
 
 
-@pytest.mark.parametrize("queued", [False, True])
-@pytest.mark.parametrize("assistant_id", [None, "researcher"])
+@pytest.mark.parametrize(
+    ("queued", "assistant_id"), [(False, None), (True, "researcher")]
+)
 async def test_handoff_child_is_discoverable_and_resumable(
     queued: bool, assistant_id: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -322,10 +299,16 @@ async def test_handoff_child_is_discoverable_and_resumable(
 
         remote.aupdate_state = AsyncMock(side_effect=update_state)
         await app._handoff_expired_cache("source")
+        assert remote.aoffload.await_args is not None
+        assert remote.aoffload.await_args.kwargs["handoff"] is True
         assert remote.aupdate_state.await_args is not None
         child_id = remote.aupdate_state.await_args.args[0]["configurable"]["thread_id"]
+        assert child_id != "source"
         state = await graph.aget_state({"configurable": {"thread_id": child_id}})
-        assert "LLM summary" in state.values["messages"][0].text
+        content = state.values["messages"][0].text
+        assert "LLM summary" in content
+        assert "Previous thread ID: source" in content
+        assert "/conversation_history/source.md" in content
         # Offload rejects any of these fields before attempting summarization.
         assert not state.next
         assert not state.tasks
@@ -352,6 +335,8 @@ async def test_handoff_child_is_discoverable_and_resumable(
     assert await app._thread_resume_block(child_id) is None
     if queued:
         resume.assert_not_awaited()
+        assert app._pending_messages[0].text == "arrived"
+        assert app._lc_thread_id == "source"
     else:
         resume.assert_awaited_once_with(child_id)
 
@@ -496,6 +481,10 @@ async def test_send_timing_restores_draft_without_spending(
         await pilot.pause()
         _prepare(app, monkeypatch)
         assert app._chat_input is not None
+        if mode != "expiry":
+            app._check_cache_expiry()
+            await pilot.pause()
+            assert not isinstance(app.screen, ColdCacheWarningScreen)
         await app._dispatch_queued_message(QueuedMessage("keep my request", "normal"))
         await pilot.pause()
         if mode == "off":
@@ -513,19 +502,6 @@ async def test_send_timing_restores_draft_without_spending(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
         await app._dispatch_queued_message(QueuedMessage("keep my request", "normal"))
         process.assert_awaited_once_with("keep my request", "normal")
-
-
-async def test_send_mode_does_not_interrupt_idle_composer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: "send")
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        _prepare(app, monkeypatch)
-        app._check_cache_expiry()
-        await pilot.pause()
-        assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
 def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:

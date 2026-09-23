@@ -524,9 +524,20 @@ class RemoteAgent:
                 )
                 return self._fallback_session_cost(thread_id, checkpoint)
             latest = self._session_costs.get(thread_id)
-            if side_only and latest is not None:
-                if "graph_total" not in latest or "side_breakdown" not in cost:
-                    return latest
+            if (
+                latest is not None
+                and "graph_total" in latest
+                and "graph_total" in cost
+                and "side_breakdown" in cost
+            ):
+                # Graph and side subtotals advance independently. A side
+                # refresh must not hide a newer graph checkpoint, and a newer
+                # streamed graph total must survive an older accounting read.
+                graph = (
+                    latest
+                    if side_only or latest["graph_total"] > cost["graph_total"]
+                    else cost
+                )
                 side = cost["side_breakdown"]
                 known_side = latest.get("side_breakdown")
                 if known_side is not None and (
@@ -535,12 +546,13 @@ class RemoteAgent:
                 ):
                     side = known_side
                 self._session_costs[thread_id] = combine_session_cost(
-                    latest["graph_total"], latest.get("graph_breakdown"), side
+                    graph["graph_total"], graph.get("graph_breakdown"), side
                 )
                 return self._session_costs[thread_id]
-            # A streamed total received during this read is newer than the
-            # checkpoint the request may have observed.
-            if self._session_costs.get(thread_id) is previous:
+            if side_only and latest is not None:
+                return latest
+            # Older servers do not expose components that can be reconciled.
+            if latest is previous:
                 self._session_costs[thread_id] = cast("SessionCost", cost)
         except NotFoundError:
             # Older servers do not expose a combined accounting view.

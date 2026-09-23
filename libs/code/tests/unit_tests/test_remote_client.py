@@ -368,6 +368,67 @@ async def test_side_refresh_preserves_streamed_graph_cost(
         assert cost["breakdown"]["request_count"] == 3
 
 
+@pytest.mark.parametrize("concurrent_graph_total", [1.0, 3.0])
+@pytest.mark.parametrize("response_side_total", [None, 0.25, 0.75])
+async def test_accounting_read_merges_concurrent_graph_and_side_updates(
+    concurrent_graph_total: float, response_side_total: float | None
+) -> None:
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=2.0, request_count=2)
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    response_side = None
+    if response_side_total is not None:
+        response_side = side.copy()
+        response_side["total_cost_usd"] = response_side_total
+    streamed_main = main.copy()
+    streamed_main["total_cost_usd"] = concurrent_graph_total
+    event = {
+        "type": "session_cost",
+        **combine_session_cost(concurrent_graph_total, streamed_main, None),
+    }
+    agent = _make_agent([((), "custom", event)])
+    agent._graph.client.http.get.return_value = {
+        "cost": combine_session_cost(1.0, None, None)
+    }
+    await agent.aget_session_cost(_config())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(_path: str) -> dict[str, object]:
+        if started.is_set():
+            return {"cost": combine_session_cost(1.0, None, side)}
+        started.set()
+        await release.wait()
+        return {"cost": combine_session_cost(2.0, main, response_side)}
+
+    agent._graph.client.http.get = read
+    pending = asyncio.create_task(
+        agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 2.0})
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        if concurrent_graph_total > 1.0:
+            async for _event in agent.astream({}, config=_config()):
+                pass
+        await agent.arefresh_side_cost(_config())
+        release.set()
+        cost = await asyncio.wait_for(pending, 2)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+    expected = max(2.0, concurrent_graph_total) + max(0.5, response_side_total or 0)
+    assert cost is not None
+    assert cost["total"] == pytest.approx(expected)
+    assert cost["breakdown"] is not None
+    assert cost["breakdown"]["total_cost_usd"] == pytest.approx(expected)
+    assert cost["breakdown"]["request_count"] == 3
+
+
 @pytest.mark.parametrize("streamed_side_total", [None, 0.25, 0.75])
 @pytest.mark.parametrize("graph_total", [2.0, 3.0])
 async def test_delayed_stream_preserves_refreshed_side_cost(

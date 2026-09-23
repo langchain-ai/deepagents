@@ -126,6 +126,24 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
+_TOOL_CALL_ID_DISPLAY_LIMIT = 32
+
+
+def _abbreviate_tool_call_ids(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Shorten long tool-call IDs only in display copies for summarization."""
+    result: list[AnyMessage] = []
+    for message in messages:
+        if not isinstance(message, AIMessage) or not any(len(call.get("id") or "") > _TOOL_CALL_ID_DISPLAY_LIMIT for call in message.tool_calls):
+            result.append(message)
+            continue
+        calls = [
+            {**call, "id": f"{call_id[:_TOOL_CALL_ID_DISPLAY_LIMIT]}..."}
+            if len(call_id := call.get("id") or "") > _TOOL_CALL_ID_DISPLAY_LIMIT
+            else call
+            for call in message.tool_calls
+        ]
+        result.append(message.model_copy(update={"tool_calls": calls}))
+    return result
 
 
 class CompactConversationSchema(BaseModel):
@@ -695,11 +713,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages."""
-        return self._lc_helper._create_summary(messages_to_summarize)
+        return self._lc_helper._create_summary(_abbreviate_tool_call_ids(messages_to_summarize))
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages (async)."""
-        return await self._lc_helper._acreate_summary(messages_to_summarize)
+        return await self._lc_helper._acreate_summary(_abbreviate_tool_call_ids(messages_to_summarize))
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.
@@ -1256,7 +1274,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(_abbreviate_tool_call_ids(filtered_messages), format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
@@ -1333,7 +1351,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(_abbreviate_tool_call_ids(filtered_messages), format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns

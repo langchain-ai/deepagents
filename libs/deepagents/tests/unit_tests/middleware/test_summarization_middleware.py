@@ -19,6 +19,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
+    _abbreviate_tool_call_ids,
     _token_counter_accepts_tools,
     _upload_response_error,
 )
@@ -1300,6 +1301,47 @@ class TestSummaryMessageFormat:
 
         # Should have lc_source marker
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_summary_display_copies_abbreviate_long_tool_ids(*, asynchronous: bool) -> None:
+    backend = MockBackend()
+    model = make_mock_model()
+    middleware = SummarizationMiddleware(model=model, backend=backend, trigger=("messages", 2), keep=("messages", 1), trim_tokens_to_summarize=None)
+    long_id = "call_" + "thought_signature" * 100
+    long_result = "tool output " * 10_000
+    long_call = AIMessage(content="calling", tool_calls=[{"id": long_id, "name": "search", "args": {"q": "weather"}}])
+    short_call = AIMessage(content="calling", tool_calls=[{"id": "call_short", "name": "search", "args": {}}])
+    result = ToolMessage(content=long_result, tool_call_id=long_id)
+    messages = [HumanMessage(content="hi"), long_call, result, short_call]
+
+    copied = _abbreviate_tool_call_ids(messages)
+    assert copied[0] is messages[0]
+    assert copied[1] is not long_call
+    assert copied[1].content is long_call.content
+    assert copied[1].tool_calls[0]["args"] is long_call.tool_calls[0]["args"]
+    assert copied[2] is result
+    assert copied[2].content is long_result
+    assert copied[3] is short_call
+    assert long_call.tool_calls[0]["id"] == long_id
+    assert result.tool_call_id == long_id
+
+    if asynchronous:
+        await middleware._aoffload_to_backend(backend, messages, "session")
+        await middleware._acreate_summary(messages)
+        prompt = model.ainvoke.await_args.args[0]
+    else:
+        middleware._offload_to_backend(backend, messages, "session")
+        middleware._create_summary(messages)
+        prompt = model.invoke.call_args.args[0]
+    history = backend.write_calls[0][1]
+    for rendered in (history, prompt):
+        assert f"{long_id[:32]}..." in rendered
+        assert long_id not in rendered
+        assert 'id="call_short"' in rendered
+        assert "tool output" in rendered
+    assert long_call.tool_calls[0]["id"] == long_id
+    assert result.tool_call_id == long_id
 
 
 class TestNoSummarizationTriggered:

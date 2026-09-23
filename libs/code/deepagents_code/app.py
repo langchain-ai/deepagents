@@ -9717,6 +9717,7 @@ class DeepAgentsApp(App):
         if (
             _load_cache_prompt_mode() != "expiry"
             or self._cold_cache_suppressed_for_session
+            or self._cold_cache_warning_threshold_usd <= 0
         ):
             return
         task = self._schedule_off_message_pump(
@@ -9777,14 +9778,17 @@ class DeepAgentsApp(App):
     async def _cold_cache_opted_out(self) -> bool:
         """Check whether the user asked not to be warned about cold caches.
 
-        Honors "don't warn again this session" and "never warn again" from the
-        send-time prompt, so the handoff prompt does not replace a warning the
-        user already turned off.
+        Honors a disabled cost threshold, "don't warn again this session", and
+        "never warn again", so the handoff prompt does not replace a warning
+        the user already turned off.
 
         Returns:
             Whether cold-cache prompts are suppressed.
         """
-        if self._cold_cache_suppressed_for_session:
+        if (
+            self._cold_cache_suppressed_for_session
+            or self._cold_cache_warning_threshold_usd <= 0
+        ):
             return True
         from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
         from deepagents_code.model_config import is_warning_suppressed

@@ -825,6 +825,42 @@ async def test_cold_cache_opt_out_suppresses_handoff(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
 
 
+@pytest.mark.parametrize(
+    ("mode", "submit"), [("expiry", False), ("expiry", True), ("send", True)]
+)
+async def test_zero_threshold_disables_handoff_prompts(
+    mode: str, submit: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.configuration.resolver import reset_config_resolver
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_CONFIG_PATH.write_text(
+        f'[warnings]\ncache_prompt = "{mode}"\ncold_cache_min_delta_usd = 0\n'
+    )
+    reset_config_resolver()
+    try:
+        app = DeepAgentsApp()
+        process = AsyncMock()
+        monkeypatch.setattr(app, "_process_message", process)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _prepare(app, monkeypatch)
+            if submit:
+                await app._dispatch_queued_message(QueuedMessage("send it", "normal"))
+            else:
+                app._check_cache_expiry()
+            await pilot.pause()
+            assert not isinstance(app.screen, ColdCacheWarningScreen)
+            assert not app._cache_expiry_seen
+            if submit:
+                process.assert_awaited_once_with("send it", "normal")
+            else:
+                process.assert_not_awaited()
+    finally:
+        reset_config_resolver()
+
+
 async def test_resumed_thread_with_lapsed_window_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

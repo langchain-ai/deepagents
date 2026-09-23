@@ -477,6 +477,70 @@ async def test_delayed_stream_preserves_refreshed_side_cost(
     assert cached["breakdown"] == event["breakdown"]
 
 
+@pytest.mark.parametrize("source", ["stream", "http", "side_refresh"])
+@pytest.mark.parametrize("incoming_is_newer", [False, True])
+@pytest.mark.parametrize("priced", [False, True], ids=["unpriced", "free"])
+async def test_equal_dollar_snapshots_keep_latest_side_usage(
+    source: str, *, incoming_is_newer: bool, priced: bool
+) -> None:
+    """Free and unpriced requests advance usage even when spend is unchanged."""
+    from deepagents_code.btw_cost import combine_session_cost
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=2.0, request_count=1, priced_request_count=1)
+    older = _empty_cost_breakdown()
+    older.update(
+        total_cost_usd=0.5,
+        request_count=1,
+        priced_request_count=1,
+        input_tokens=10,
+        output_tokens=2,
+    )
+    newer = older.copy()
+    newer.update(
+        request_count=2,
+        priced_request_count=2 if priced else 1,
+        input_tokens=30,
+        output_tokens=5,
+        input_cost_complete=priced,
+        output_cost_complete=priced,
+    )
+    initial, incoming = (older, newer) if incoming_is_newer else (newer, older)
+    incoming_cost = combine_session_cost(2.0, main, incoming)
+    event = {"type": "session_cost", **incoming_cost}
+    agent = _make_agent([((), "custom", event)])
+    agent._graph.client.http.get.return_value = {
+        "cost": combine_session_cost(2.0, main, initial)
+    }
+    await agent.aget_session_cost(_config())
+    agent._graph.client.http.get.return_value = {"cost": incoming_cost}
+
+    if source == "stream":
+        events = [event async for _, _, event in agent.astream({}, config=_config())]
+        result = events[0]
+    elif source == "http":
+        result = await agent.aget_session_cost(_config())
+    else:
+        result = await agent.arefresh_side_cost(_config())
+
+    assert result is not None
+    assert result["total"] == pytest.approx(2.5)
+    assert result["side_breakdown"] == newer
+    breakdown = result["breakdown"]
+    assert breakdown is not None
+    assert breakdown["request_count"] == 3
+    assert breakdown["priced_request_count"] == (3 if priced else 2)
+    assert breakdown["input_tokens"] == 30
+    assert breakdown["output_tokens"] == 5
+    assert breakdown["input_cost_complete"] is priced
+    assert breakdown["output_cost_complete"] is priced
+    agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
+    cached = await agent.aget_session_cost(_config())
+    assert cached is not None
+    assert cached["breakdown"] == breakdown
+
+
 async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 

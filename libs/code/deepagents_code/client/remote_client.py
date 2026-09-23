@@ -55,6 +55,26 @@ _OFFLOAD_RESULT_INT_FIELDS = (
 )
 
 
+def _latest_side_breakdown(
+    current: CostBreakdown | None, incoming: CostBreakdown | None
+) -> CostBreakdown | None:
+    """Return the freshest cumulative side usage across HTTP and stream updates.
+
+    Request counts advance for free and unpriced requests too. Use spend only
+    to break count ties, retaining corrections for already counted requests.
+    """
+    if current is None:
+        return incoming
+    if incoming is None:
+        return current
+    if (current["request_count"], current["total_cost_usd"]) > (
+        incoming["request_count"],
+        incoming["total_cost_usd"],
+    ):
+        return current
+    return incoming
+
+
 async def _join_task_deferring_cancellation[T](task: asyncio.Task[T]) -> None:
     """Join a task despite repeated cancellation of the waiting caller."""
     while not task.done():
@@ -538,13 +558,9 @@ class RemoteAgent:
                     if side_only or latest["graph_total"] > cost["graph_total"]
                     else cost
                 )
-                side = cost["side_breakdown"]
-                known_side = latest.get("side_breakdown")
-                if known_side is not None and (
-                    side is None
-                    or known_side["total_cost_usd"] > side["total_cost_usd"]
-                ):
-                    side = known_side
+                side = _latest_side_breakdown(
+                    latest.get("side_breakdown"), cost["side_breakdown"]
+                )
                 self._session_costs[thread_id] = combine_session_cost(
                     graph["graph_total"], graph.get("graph_breakdown"), side
                 )
@@ -801,16 +817,13 @@ class RemoteAgent:
                 if "graph_total" in data:
                     from deepagents_code.btw_cost import combine_session_cost
 
-                    side = data.get("side_breakdown")
                     previous = self._session_costs.get(thread_id)
-                    known_side = previous.get("side_breakdown") if previous else None
-                    # A side refresh can settle spend before an older graph
-                    # event arrives. Its cumulative side subtotal must survive.
-                    if known_side is not None and (
-                        side is None
-                        or known_side["total_cost_usd"] > side["total_cost_usd"]
-                    ):
-                        side = known_side
+                    # A side refresh can settle usage before an older graph
+                    # event arrives. Its cumulative side usage must survive.
+                    side = _latest_side_breakdown(
+                        previous.get("side_breakdown") if previous else None,
+                        data.get("side_breakdown"),
+                    )
                     cost = combine_session_cost(
                         data["graph_total"], data.get("graph_breakdown"), side
                     )

@@ -3345,6 +3345,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
@@ -3356,7 +3357,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if messages == request.messages:
                 raise
             response = handler(request.override(messages=messages))
-        if eviction_result is not None and state_command is not None:
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
             return ExtendedModelResponse(model_response=response, command=state_command)
         return response
 
@@ -3385,6 +3390,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
@@ -3396,7 +3402,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if messages == request.messages:
                 raise
             response = await handler(request.override(messages=messages))
-        if eviction_result is not None and state_command is not None:
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
             return ExtendedModelResponse(model_response=response, command=state_command)
         return response
 

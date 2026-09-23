@@ -4904,7 +4904,11 @@ class RejectingFileChatModel(FixedGenericFakeChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        if any(isinstance(message, ToolMessage) for message in messages) and (len(self.captured_messages) == 1 or self.retry_fails):
+        if any(isinstance(message, ToolMessage) for message in messages) and (
+            len(self.captured_messages) == 1
+            or self.retry_fails
+            or any(isinstance(message, ToolMessage) and isinstance(message.content, list) for message in messages)
+        ):
             self.captured_messages.append(messages)
             msg = "Rejected file content"
             raise self.error_type(msg)
@@ -4930,12 +4934,14 @@ async def test_read_file_invalid_request_fallback(
             [
                 AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "read-1"}]),
                 AIMessage(content="done"),
+                AIMessage(content="followup"),
             ]
         ),
         error_type=error_type,
         retry_fails=retry_fails,
     )
-    agent = create_deep_agent(model=model)
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "file-fallback"}}
     inputs = {
         "messages": [HumanMessage(content="Read the file")],
         "files": {
@@ -4946,13 +4952,15 @@ async def test_read_file_invalid_request_fallback(
     }
 
     async def invoke() -> dict[str, Any]:
-        return await agent.ainvoke(inputs) if async_mode else agent.invoke(inputs)
+        return await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
 
     if recovers:
         result = await invoke()
         assert result["messages"][-1].content == "done"
         persisted = next(message for message in result["messages"] if isinstance(message, ToolMessage))
-        assert isinstance(persisted.content, list)
+        assert persisted.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+        assert [message for message in checkpoint.values["messages"] if isinstance(message, ToolMessage)] == [persisted]
     else:
         with pytest.raises(error_type, match="Rejected file content"):
             await invoke()
@@ -4964,6 +4972,13 @@ async def test_read_file_invalid_request_fallback(
         assert retried.tool_call_id == original.tool_call_id
         assert retried.id == original.id
         assert isinstance(original.content, list)
+
+    if recovers:
+        followup = {"messages": [HumanMessage(content="What next?")]}
+        result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+        assert result["messages"][-1].content == "followup"
+        assert len(model.captured_messages) == calls + 1
+        assert [message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)] == [persisted]
 
 
 class TestMultimodalProfileScrubNoProfile:

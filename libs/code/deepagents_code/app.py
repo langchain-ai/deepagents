@@ -22266,7 +22266,7 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
-        8. If offload is running, interrupt it
+        8. If a cache handoff or offload is running, interrupt it
         9. If agent is running, interrupt it (restoring the interrupted prompt
            to the chat input when it is empty and no user-visible model output
            — text or a tool call — has appeared yet for the turn)
@@ -22339,6 +22339,16 @@ class DeepAgentsApp(App):
         # one at a time; once the queue is empty the next ESC will interrupt.
         if self._pending_messages:
             self._pop_last_queued_message()
+            return
+
+        # Accepting the handoff dismisses its modal, but the continuation still
+        # owns the busy slot while summarizing. Cancel it so its finally block
+        # restores the draft and spinner, and its done callback releases the slot.
+        handoff = self._modal_command_tasks.get("cache-expiry")
+        if handoff is not None and not handoff.done():
+            self._warn_dropped_mcp_reconnect()
+            self._discard_queue()
+            handoff.cancel()
             return
 
         if self._offload_worker is not None:

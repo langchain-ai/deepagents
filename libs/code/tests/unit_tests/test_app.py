@@ -2124,6 +2124,79 @@ class TestCtrlCCopySelection:
             assert app._quit_pending is True
 
 
+class TestCacheHandoffInterrupt:
+    @pytest.mark.parametrize("trigger", ["idle", "send"])
+    async def test_enter_then_escape_cancels_handoff(
+        self, trigger: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dismissed handoff modal must leave summarization interruptible."""
+        from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def summarize(**_kwargs: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        remote = MagicMock()
+        remote.aoffload = AsyncMock(side_effect=summarize)
+        process = AsyncMock()
+        monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(
+            app, "_cold_cache_warning_for", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(app, "_cold_cache_opted_out", AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            "deepagents_code.app._load_cache_prompt_mode", lambda: "expiry"
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "_agent", MagicMock())
+            app._lc_thread_id = "source"
+            app._session_state = TextualSessionState(thread_id="source")
+            assert app._status_bar is not None
+            app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            assert app._chat_input is not None
+            app._chat_input.value = "keep this draft"
+            if trigger == "idle":
+                app._check_cache_expiry()
+            else:
+                await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+
+            await pilot.press("enter")
+            await asyncio.wait_for(started.wait(), timeout=2)
+            await pilot.pause()
+            assert not isinstance(app.screen, ColdCacheWarningScreen)
+            assert app._loading_widget is not None
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert cancelled.is_set()
+            assert not app._modal_command_running()
+            assert app._loading_widget is None
+            assert app._lc_thread_id == "source"
+            assert app._chat_input.value == "keep this draft"
+            process.assert_not_awaited()
+            assert not app.query(ErrorMessage)
+
+            # Cancellation releases the busy slot so the next prompt can run.
+            app._chat_input.value = "next prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+            process.assert_awaited_once_with("next prompt", "normal")
+            assert not app._pending_messages
+
+
 class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
 

@@ -29,11 +29,6 @@ dependencies = [
     "wcmatch>=11.0",
 ]
 
-# TEMPORARY: `UnsupportedContentMiddleware` is unreleased. Drop this block and
-# raise the `langchain` floor once it ships, and do not merge with it in place.
-[tool.uv.sources]
-langchain = { git = "https://github.com/langchain-ai/langchain.git", branch = "cc/multimodal-filter-middleware", subdirectory = "libs/langchain_v1" }
-
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.7.9,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.7"]

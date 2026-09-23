@@ -2,13 +2,11 @@
 
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from langchain.agents.middleware.unsupported_content import (
-    UnsupportedContentMiddleware as _UnsupportedContentMiddleware,
-)
 from langchain_core.messages import AnyMessage
 from langchain_core.messages.content import ContentBlock
 
 from deepagents.backends.utils import _OPENAI_FILE_MIME_TYPES
+from deepagents.middleware._unsupported_content import _UnsupportedContentMiddleware
 
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI

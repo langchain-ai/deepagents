@@ -30828,6 +30828,44 @@ class TestColdCacheStateLifecycle:
         assert app._last_cache_model_spec == "openai:gpt-5.6"
         assert app._last_cache_model_params == {"prompt_cache_retention": "24h"}
 
+    async def test_thread_switch_during_checkpoint_read_preserves_active_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed source checkpoint must not overwrite the active thread."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="source")
+        reading = asyncio.Event()
+        switched = asyncio.Event()
+
+        async def read_checkpoint(thread_id: str) -> dict[str, object]:
+            assert thread_id == "source"
+            reading.set()
+            await switched.wait()
+            return {
+                "_session_cost_usd": 1.25,
+                "_last_model_request_at": "2026-08-17T00:00:00+00:00",
+                "_last_cache_model_spec": "test:source-model",
+                "_last_cache_params": {"prompt_cache_retention": "24h"},
+                "_last_cache_endpoint": "default",
+            }
+
+        monkeypatch.setattr(app, "_get_thread_state_values", read_checkpoint)
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(app._sync_session_cost_from_checkpoint())
+            await asyncio.wait_for(reading.wait(), timeout=1)
+            app._lc_thread_id = "other"
+            app._set_session_cost(3.5)
+            app._last_model_request_at = "2026-08-18T00:00:00+00:00"
+            app._last_cache_model_spec = "test:other-model"
+            app._last_cache_model_params = {"prompt_cache_retention": "in_memory"}
+            app._last_cache_endpoint = "https://other.example"
+            switched.set()
+
+        assert app._displayed_cost_usd == pytest.approx(3.5)
+        assert app._last_model_request_at == "2026-08-18T00:00:00+00:00"
+        assert app._last_cache_model_spec == "test:other-model"
+        assert app._last_cache_model_params == {"prompt_cache_retention": "in_memory"}
+        assert app._last_cache_endpoint == "https://other.example"
+
     async def test_unreadable_checkpoint_leaves_cache_state_untouched(self) -> None:
         """A failed state read must not clear a good in-memory identity."""
         app = DeepAgentsApp()

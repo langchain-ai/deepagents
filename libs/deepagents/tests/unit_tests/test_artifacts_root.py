@@ -70,6 +70,8 @@ class TestFilesystemMiddlewareArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert result.tool_call_id == tool_call_id
         assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
         [resp] = backend.download_files([path])
         assert resp.content == b"x" * 5000
 
@@ -146,6 +148,8 @@ class TestAsyncEvictionArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert result.tool_call_id == tool_call_id
         assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
         [resp] = await backend.adownload_files([path])
         assert resp.content == b"x" * 5000
 

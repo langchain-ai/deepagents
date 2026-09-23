@@ -5457,7 +5457,10 @@ class TestCreateModelEdgeCaseParsing:
         assert result.provider == "bedrock"
         assert result.model_name == model_id
         assert mock_init_chat_model.call_args.args == (model_id,)
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_versioned_bedrock_vendor_id_not_misparsed(
@@ -5479,7 +5482,10 @@ class TestCreateModelEdgeCaseParsing:
         assert result.provider == "bedrock"
         assert result.model_name == model_id
         assert mock_init_chat_model.call_args.args == (model_id,)
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_cross_region_bedrock_id_treated_as_bare_model(
@@ -5512,7 +5518,46 @@ class TestCreateModelEdgeCaseParsing:
 
         assert result.provider == "bedrock"
         assert result.model_name == model_id
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
+
+    @pytest.mark.parametrize(
+        ("model_spec", "init_provider"),
+        [
+            ("us.openai.gpt-6-sol", "bedrock_converse"),
+            ("global.openai.gpt-6-luna", "bedrock_converse"),
+            ("openai.gpt-oss-120b-1:0", "bedrock_converse"),
+            ("bedrock:us.openai.gpt-6-sol", "bedrock_converse"),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock"),
+            ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock"),
+            (
+                (
+                    "bedrock:arn:aws:bedrock:us-east-1:123456789012:"
+                    "application-inference-profile/abc"
+                ),
+                "bedrock",
+            ),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_non_anthropic_bedrock_id_uses_converse(
+        self, mock_init_chat_model: Mock, model_spec: str, init_provider: str
+    ) -> None:
+        """Non-Anthropic Bedrock IDs are built on Converse so tools reach the model.
+
+        `ChatBedrock` binds tools only for Anthropic models and silently drops
+        them for other vendors, which left the coding agent with no tools.
+        """
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_spec)
+
+        assert result.provider == "bedrock"
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == init_provider
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_provider_not_hijacked_by_bedrock(

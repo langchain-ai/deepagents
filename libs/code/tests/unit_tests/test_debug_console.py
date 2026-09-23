@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static
 
+import deepagents_code.tui.modals.cost_breakdown as cost_breakdown_mod
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
@@ -374,6 +375,36 @@ class TestDebugConsoleScreen:
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is console
+
+    async def test_cost_breakdown_updates_while_open_and_copies_latest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        breakdown = "Input  12  0.01"
+        copied: list[str] = []
+        monkeypatch.setattr(
+            cost_breakdown_mod,
+            "copy_text_to_clipboard",
+            lambda _app, text: (copied.append(text) or True, None),
+        )
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+            modal = cast("CostBreakdownScreen", app.screen)
+            assert "12" in _widget_text(modal.query_one(".cost-breakdown-body", Static))
+
+            breakdown = "Input  24  0.02"
+            await pilot.pause(delay=0.6)
+            assert breakdown in _widget_text(
+                modal.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("c")
+            assert copied == [breakdown]
 
     async def test_escape_dismisses(self) -> None:
         app = _Harness()

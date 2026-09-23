@@ -80,6 +80,53 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
     assert state == before
 
 
+@pytest.mark.parametrize(
+    "attachment",
+    [
+        {"type": "image_url", "image_url": {"url": "https://example.com/design.png"}},
+        {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"},
+        {"type": "video", "base64": "dmlkZW8=", "mime_type": "video/mp4"},
+    ],
+)
+@pytest.mark.parametrize("include_text", [False, True])
+async def test_side_context_preserves_human_attachments(
+    attachment: dict[str, object], *, include_text: bool
+) -> None:
+    model = FakeMessagesListChatModel(responses=[], profile={"max_input_tokens": 8000})
+    operation = BtwOperation(model, "Main instructions", None)
+    human = HumanMessage(
+        content=[
+            *([{"type": "text", "text": "Review this design"}] if include_text else []),
+            attachment,
+        ]
+    )
+    state = {
+        "messages": [
+            human.model_dump(),
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "Private", "signature": "sig"},
+                    {"type": "text", "text": "I see the design"},
+                ],
+                additional_kwargs={"provider_state": "opaque"},
+            ).model_dump(),
+        ]
+    }
+    before = deepcopy(state)
+    with patch.object(
+        FakeMessagesListChatModel,
+        "ainvoke",
+        new=AsyncMock(return_value=AIMessage(content="The answer")),
+    ) as invoke:
+        await operation.answer("thread", state, "What color is the background?")
+    messages = invoke.call_args.args[0]
+    assert messages[1] == human
+    assert messages[2] == AIMessage(content="I see the design")
+    assert messages[-1].text.endswith("What color is the background?")
+    messages[1].content[-1]["mime_type"] = "changed"
+    assert state == before
+
+
 @pytest.mark.parametrize("tool", ["write_file", "edit_file"])
 @pytest.mark.parametrize("summarized", [False, True])
 @pytest.mark.parametrize("context_limit", [8000, None])

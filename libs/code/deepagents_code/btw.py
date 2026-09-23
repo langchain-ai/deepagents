@@ -166,6 +166,10 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     """
     transcript: list[AnyMessage] = []
     for message in messages:
+        if isinstance(message, HumanMessage):
+            if message.content:
+                transcript.append(HumanMessage(content=deepcopy(message.content)))
+            continue
         text = message.text
         if isinstance(message, AIMessage):
             calls = [
@@ -181,7 +185,7 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             continue
         if isinstance(message, AIMessage):
             transcript.append(AIMessage(content=text))
-        elif isinstance(message, HumanMessage | ToolMessage):
+        elif isinstance(message, ToolMessage):
             transcript.append(HumanMessage(content=text))
         else:
             transcript.append(HumanMessage(content=f"[{message.type} context]\n{text}"))

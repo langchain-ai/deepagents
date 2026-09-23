@@ -11,6 +11,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, overload
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
+_MAX_TOOL_CALL_PATH_COMPONENT_BYTES: Final = 128
 
 # Upstream issue for model profiles: https://github.com/anomalyco/models.dev/issues/3037
 _OPENAI_FILE_MIME_TYPES: Final = frozenset(
@@ -351,11 +353,11 @@ def _normalize_content(file_data: FileData) -> str:
 
 
 def sanitize_tool_call_id(tool_call_id: str) -> str:
-    r"""Sanitize tool_call_id to prevent path traversal and separator issues.
-
-    Replaces dangerous characters (., /, \) with underscores.
-    """
-    return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
+    r"""Return a bounded, path-safe component for a tool call ID."""
+    sanitized_id = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
+    if len(sanitized_id.encode("utf-8")) > _MAX_TOOL_CALL_PATH_COMPONENT_BYTES:
+        return f"call-{sha256(tool_call_id.encode('utf-8')).hexdigest()}"
+    return sanitized_id
 
 
 def format_content_with_line_numbers(

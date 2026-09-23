@@ -608,7 +608,7 @@ test = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.73"
+version = "0.1.74"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite" },

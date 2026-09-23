@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.74](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.73...deepagents-code==0.1.74) (2026-09-23)
+
+### Features
+
+- Added inline thread mentions & picker via `@@` ([#6197](https://github.com/langchain-ai/deepagents/pull/6197)).
+- Usage summaries now show human invocations ([#6500](https://github.com/langchain-ai/deepagents/pull/6500)).
+
+### Bug Fixes
+
+- Retry bare `openai.APIError` exceptions raised mid-stream ([#6499](https://github.com/langchain-ai/deepagents/pull/6499)).
+- Keep prompt recall results out of the file picker ([#6494](https://github.com/langchain-ai/deepagents/pull/6494)).
+- Read `hooks.json` as UTF-8 in the legacy hook loader ([#6501](https://github.com/langchain-ai/deepagents/pull/6501)).
+
+### Performance Improvements
+
+- Reuse Auto classifier history ([#6056](https://github.com/langchain-ai/deepagents/pull/6056)).
+- Rank checkpoint and message row IDs before loading blobs and prompts ([#6488](https://github.com/langchain-ai/deepagents/pull/6488), [#6489](https://github.com/langchain-ai/deepagents/pull/6489)).
+- Log thread-loading phase timings ([#6490](https://github.com/langchain-ai/deepagents/pull/6490)).
+
 ## [0.1.73](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.72...deepagents-code==0.1.73) (2026-09-22)
 
 ### Features

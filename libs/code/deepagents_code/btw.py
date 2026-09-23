@@ -263,6 +263,8 @@ class BtwOperation(AgentMiddleware):
         thread_id: str,
         state: Mapping[str, object],
         question: str,
+        *,
+        history: Sequence[tuple[str, str]] = (),
     ) -> str:
         """Generate without tools or checkpoint writes.
 
@@ -276,6 +278,7 @@ class BtwOperation(AgentMiddleware):
             thread_id: Thread whose conversation supplies context.
             state: Read-only conversation snapshot.
             question: Side question to answer.
+            history: Completed question/answer pairs from this side conversation.
 
         Returns:
             The ephemeral answer text.
@@ -320,6 +323,14 @@ class BtwOperation(AgentMiddleware):
             messages = [
                 SystemMessage(content=f"{system.text}\n\n{_INSTRUCTIONS}"),
                 *_conversation(state),
+                *(
+                    message
+                    for prompt, answer in history
+                    for message in (
+                        HumanMessage(content=prompt),
+                        AIMessage(content=answer),
+                    )
+                ),
                 HumanMessage(content=f"{_INSTRUCTIONS}\n\n{question}"),
             ]
             response = await model.ainvoke(

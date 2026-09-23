@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from deepagents_code.btw_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
@@ -385,8 +385,19 @@ class RemoteAgent:
             )
         return self._graph
 
-    async def abtw(self, question: str, *, config: Mapping[str, Any]) -> str:
+    async def abtw(
+        self,
+        question: str,
+        *,
+        config: Mapping[str, Any],
+        history: Sequence[tuple[str, str]] = (),
+    ) -> str:
         """Ask without submitting a run or writing conversation state.
+
+        Args:
+            question: Side question to answer.
+            config: Configuration identifying the main conversation.
+            history: Completed question/answer pairs from this side conversation.
 
         Returns:
             The ephemeral answer.
@@ -400,10 +411,13 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
         await self.aensure_thread(dict(config))
+        payload: dict[str, object] = {"question": question, "workspace": workspace}
+        if history:
+            payload["history"] = list(history)
         try:
             response = await self._get_graph().client.http.post(
                 f"/dcode/threads/{thread_id}/btw",
-                json={"question": question, "workspace": workspace},
+                json=payload,
             )
         except NotFoundError as exc:
             msg = "This server does not support /btw. Update the built-in dcode server."

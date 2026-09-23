@@ -21,6 +21,37 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
+_MAX_HISTORY_LENGTH = 128_000
+
+
+def _parse_history(raw: object) -> list[tuple[str, str]]:
+    """Validate completed text exchanges without accepting message roles.
+
+    Returns:
+        Question/answer pairs for the side conversation.
+
+    Raises:
+        TypeError: If history is not a list.
+        ValueError: If an exchange is malformed or history exceeds the limit.
+    """
+    history: list[tuple[str, str]] = []
+    if not isinstance(raw, list):
+        msg = "History must be a list of question/answer pairs."
+        raise TypeError(msg)
+    for pair in raw:
+        match pair:
+            case [str(question), str(answer)] if question.strip() and answer.strip():
+                history.append((question, answer))
+            case _:
+                msg = "History must contain nonempty question/answer text pairs."
+                raise ValueError(msg)
+    if (
+        sum(len(question) + len(answer) for question, answer in history)
+        > _MAX_HISTORY_LENGTH
+    ):
+        msg = "Side conversation is too long. Close /btw and start a new one."
+        raise ValueError(msg)
+    return history
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -63,7 +94,11 @@ async def btw(request: Request) -> JSONResponse:
 
     try:
         payload = await request.json()
-        if not isinstance(payload, dict) or payload.keys() != {"question", "workspace"}:
+        if (
+            not isinstance(payload, dict)
+            or not {"question", "workspace"} <= payload.keys()
+            or payload.keys() - {"question", "workspace", "history"}
+        ):
             return JSONResponse(
                 {"detail": "Expected question and workspace."}, status_code=422
             )
@@ -76,6 +111,7 @@ async def btw(request: Request) -> JSONResponse:
                 {"detail": "Question must contain 1 to 16000 characters."},
                 status_code=422,
             )
+        history = _parse_history(payload.get("history", []))
         thread_id = request.path_params["thread_id"]
         binding = await require_thread_workspace(thread_id, payload["workspace"])
     except (TypeError, ValueError) as exc:
@@ -96,7 +132,9 @@ async def btw(request: Request) -> JSONResponse:
             result = await _answer_while_connected(
                 request,
                 answer_with_cost(
-                    operation.answer(thread_id, state, question.strip()),
+                    operation.answer(
+                        thread_id, state, question.strip(), history=history
+                    ),
                     thread_id=thread_id,
                     state=cast("CostState", state),
                 ),

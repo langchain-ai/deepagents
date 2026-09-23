@@ -540,6 +540,62 @@ async def test_remote_uses_side_route_not_runs() -> None:
     graph.client.runs.assert_not_called()
 
 
+async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code import offload_api
+
+    state = {"messages": [HumanMessage(content="Main task")]}
+    before = deepcopy(state)
+    invoke = AsyncMock(return_value=AIMessage(content="Because it is faster."))
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
+    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "system", None)
+    monkeypatch.setattr("deepagents_code.btw_api.require_thread_workspace", AsyncMock())
+    monkeypatch.setattr(
+        offload_api,
+        "get_server_runtime",
+        AsyncMock(
+            return_value=SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+        ),
+    )
+    threads = MagicMock()
+    threads.get_state = AsyncMock(return_value={"values": state})
+    monkeypatch.setattr(
+        offload_api, "_thread_client", lambda: SimpleNamespace(threads=threads)
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=offload_api.app), base_url="http://test"
+    ) as client:
+        remote = RemoteAgent("http://test")
+
+        async def post(path: str, *, json: dict[str, object]) -> object:
+            response = await client.post(path, json=json)
+            response.raise_for_status()
+            return response.json()
+
+        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
+        monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+        monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+        monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+        assert (
+            await remote.abtw(
+                "Why that option?",
+                config={"configurable": {"thread_id": "thread"}},
+                history=[("Which option?", "Use the cache.")],
+            )
+            == "Because it is faster."
+        )
+    messages = invoke.call_args.args[0]
+    assert [(message.type, message.text) for message in messages[1:-1]] == [
+        ("human", "Main task"),
+        ("human", "Which option?"),
+        ("ai", "Use the cache."),
+    ]
+    assert messages[-1].text.endswith("Why that option?")
+    assert state == before
+    assert [call[0] for call in threads.mock_calls] == ["get_state"]
+
+
 @pytest.mark.parametrize("main_total", [1.0, 2.0])
 @pytest.mark.parametrize("refresh_error", [RuntimeError("unavailable"), TimeoutError()])
 async def test_checkpoint_reconciles_cost_when_accounting_fails(
@@ -725,8 +781,14 @@ async def test_app_modal_while_main_run_continues(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def answer(question: str, *, config: dict[str, dict[str, object]]) -> str:
+    async def answer(
+        question: str,
+        *,
+        config: dict[str, dict[str, object]],
+        history: tuple[tuple[str, str], ...] = (),
+    ) -> str:
         assert question == "Why this approach?"
+        assert not history
         assert isinstance(config, dict)
         assert config == {"configurable": {"thread_id": app._lc_thread_id}}
         started.set()
@@ -805,6 +867,8 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
         await pilot.pause()
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0
+        await pilot.press("tab", "home")
+        assert scroll.has_focus
         assert scroll.scroll_y == 0
         await pilot.press("down", "down", "down")
         await pilot.pause()
@@ -847,6 +911,114 @@ async def test_modal_dismiss_cancels_only_side_question() -> None:
         assert not isinstance(app.screen, BtwScreen)
 
 
+async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-follow-ups")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [HumanMessage(content="Main task")]}),
+    )
+    remote = MagicMock(spec=RemoteAgent)
+    remote.arefresh_side_cost = AsyncMock(return_value=None)
+    remote.abtw = AsyncMock(
+        side_effect=[
+            "Use a cache.",
+            RuntimeError("Try again"),
+            "It is faster.",
+            "New conversation.",
+        ]
+    )
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        app._connecting = False
+        before = app._message_store.get_all_messages()
+        await app._handle_command("/btw Which option?")
+        await pilot.pause()
+        editor = app.screen.query_one(TextArea)
+        assert editor.has_focus
+        assert editor.text == ""
+        await pilot.press(*"Why?", "enter")
+        await pilot.pause()
+        assert editor.has_focus
+        assert not editor.disabled
+        assert app.screen.query(".btw-error").last(Static).content == "Try again"
+        await pilot.press(*"Why?", "enter")
+        await pilot.pause()
+        assert [
+            widget.content
+            for widget in app.screen.query(Static)
+            if widget.has_class("btw-question")
+        ] == [
+            "Which option?",
+            "Why?",
+            "Why?",
+        ]
+        assert [
+            widget._markdown for widget in app.screen.query(Markdown) if widget.display
+        ] == [
+            "Use a cache.",
+            "It is faster.",
+        ]
+        assert [call.kwargs["history"] for call in remote.abtw.await_args_list] == [
+            (),
+            (("Which option?", "Use a cache."),),
+            (("Which option?", "Use a cache."),),
+        ]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one("#chat-input", TextArea).has_focus
+        assert app._message_store.get_all_messages() == before
+        assert not app._pending_messages
+        await app._handle_command("/btw Start over")
+        await pilot.pause()
+        assert remote.abtw.call_args.kwargs["history"] == ()
+
+
+@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
+async def test_thinking_follows_current_question_and_prevents_duplicate_submits(
+    size: tuple[int, int],
+) -> None:
+    from textual.app import App
+
+    app = App()
+    response: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def answer(_question: str) -> str:
+        return await response
+
+    callback = AsyncMock(side_effect=answer)
+    async with app.run_test(size=size) as pilot:
+        app.push_screen(BtwScreen(callback, "First question"))
+        await pilot.pause()
+        for question in ("First question", "Follow-up question"):
+            scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
+            loading = app.screen.query_one("#btw-loading", Static)
+            latest = app.screen.query(".btw-question").last(Static)
+            assert latest.content == question
+            assert loading.region.y >= latest.region.bottom
+            assert loading.region in scroll.content_region
+            editor = app.screen.query_one(TextArea)
+            assert editor.disabled
+            await pilot.press("enter", "enter")
+            assert callback.await_count == (1 if question == "First question" else 2)
+            response.set_result(
+                "A cache reuses earlier results to make repeated requests faster."
+            )
+            await pilot.pause()
+            assert not loading.display
+            assert editor.has_focus
+            if question == "First question":
+                response = asyncio.get_running_loop().create_future()
+                await pilot.press(*"Follow-up question", "enter")
+                await pilot.pause()
+
+
 async def test_modal_error_is_plain_text() -> None:
     from textual.app import App
 
@@ -855,7 +1027,7 @@ async def test_modal_error_is_plain_text() -> None:
     async with app.run_test() as pilot:
         app.push_screen(BtwScreen(answer, "why"))
         await pilot.pause()
-        assert app.screen.query_one("#btw-error", Static).content == "bad [/tmp/file]"
+        assert app.screen.query_one(".btw-error", Static).content == "bad [/tmp/file]"
         await pilot.press("escape")
 
 
@@ -875,7 +1047,7 @@ async def test_modal_submits_complete_paste(question: str) -> None:
         await pilot.press("enter")
         await pilot.pause()
         answer.assert_awaited_once_with(question.strip())
-        assert app.screen.query_one("#btw-question", Static).content == question.strip()
+        assert app.screen.query_one(".btw-question", Static).content == question.strip()
 
 
 async def test_modal_rejects_oversized_expanded_paste() -> None:
@@ -948,10 +1120,10 @@ async def test_long_question_keeps_answer_and_dismissal_hint_visible(
         assert hint.region in dialog.content_region
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0
-        await pilot.press("home")
+        await pilot.press("tab", "home")
         await pilot.pause()
         assert scroll.scroll_y == 0
-        question_widget = app.screen.query_one("#btw-question", Static)
+        question_widget = app.screen.query_one(".btw-question", Static)
         assert question_widget.region.y >= scroll.region.y
         assert question_widget.content == question
         await pilot.press("end")

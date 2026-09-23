@@ -1,10 +1,10 @@
-"""Ephemeral side-question prompt and answer."""
+"""Ephemeral side conversation with follow-up questions."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, override
 
 from textual import work
 from textual.binding import Binding, BindingType
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.timer import Timer
+    from textual.widget import Widget
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class BtwTextArea(InlinePromptTextArea):
 
 
 class BtwScreen(ModalScreen[None]):
-    """Ask independently of the main run and discard the answer on dismissal."""
+    """Chat independently of the main run and discard exchanges on dismissal."""
 
     CSS_PATH = "btw.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -54,7 +55,9 @@ class BtwScreen(ModalScreen[None]):
         self._question = question
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
+        self._pending = False
 
+    @override
     def compose(self) -> ComposeResult:
         """Build the side-question dialog.
 
@@ -67,34 +70,33 @@ class BtwScreen(ModalScreen[None]):
                 "Ask a quick question without interrupting your conversation.",
                 id="btw-description",
             )
+            with VerticalScroll(id="btw-scroll"):
+                yield Static(id="btw-loading")
             yield BtwTextArea(
                 placeholder="Ask anything about this conversation",
                 id="btw-input",
             )
-            yield Static(id="btw-loading")
-            with VerticalScroll(id="btw-scroll"):
-                yield Static(self._question, id="btw-question", markup=False)
-                yield Markdown("", id="btw-answer", open_links=False)
-                yield Static("", id="btw-error", markup=False)
             yield Static(
                 f" {get_glyphs().bullet} ".join(
-                    ("Enter ask", newline_hint(), "Esc dismiss")
+                    ("Enter ask", newline_hint(), "Tab history/input", "Esc dismiss")
                 ),
                 id="btw-help",
             )
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         """Start an independent worker only after the modal is mounted."""
         self.query_one("#btw-loading").display = False
         self.query_one("#btw-scroll").display = False
         if self._question:
-            self._start(self._question)
+            await self._start(self._question)
         else:
             self.query_one(BtwTextArea).focus()
 
-    def on_btw_text_area_submitted(self, event: BtwTextArea.Submitted) -> None:
+    async def on_btw_text_area_submitted(self, event: BtwTextArea.Submitted) -> None:
         """Submit the expanded modal text without sending a chat message."""
         event.stop()
+        if self._pending:
+            return
         if question := event.value.strip():
             if len(question) > _MAX_QUESTION_LENGTH:
                 self.notify(
@@ -102,22 +104,40 @@ class BtwScreen(ModalScreen[None]):
                     severity="warning",
                 )
                 return
-            self._start(question)
+            await self._start(question)
 
-    def _start(self, question: str) -> None:
-        self.query_one(BtwTextArea).display = False
-        self.query_one("#btw-help", Static).update(
-            f"Esc dismiss {get_glyphs().bullet} Up/Down scroll"
-        )
+    async def _start(self, question: str) -> None:
+        self._pending = True
+        editor = self.query_one(BtwTextArea)
+        editor.disabled = True
+        editor.reset_paste_state()
+        editor.clear()
+        self.add_class("has-history")
         scroll = self.query_one("#btw-scroll", VerticalScroll)
         scroll.display = True
         scroll.focus()
-        self.query_one("#btw-question", Static).update(question)
+        answer = Markdown("", open_links=False)
+        error = Static("", classes="btw-error", markup=False)
+        answer.display = error.display = False
+        await scroll.mount(
+            Static(question, classes="btw-question", markup=False),
+            answer,
+            error,
+            before="#btw-loading",
+        )
+        self._start_spinner()
+        self._generate(question, answer, error)
+
+    def _start_spinner(self) -> None:
         loading = self.query_one("#btw-loading", Static)
         loading.update(f"{self._spinner.current_frame()} Thinking...")
         loading.display = True
         self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
-        self._generate(question)
+        # Let the new exchange lay out before scroll_end schedules its scroll;
+        # wrapped Markdown can change the content height on the next refresh.
+        self.call_after_refresh(
+            self.query_one("#btw-scroll", VerticalScroll).scroll_end, animate=False
+        )
 
     def _tick_spinner(self) -> None:
         self.query_one("#btw-loading", Static).update(
@@ -130,31 +150,36 @@ class BtwScreen(ModalScreen[None]):
             self._spinner_timer = None
 
     @work(exclusive=True)
-    async def _generate(self, question: str) -> None:
-        target = "#btw-answer"
+    async def _generate(self, question: str, answer: Markdown, error: Static) -> None:
+        target: Widget = answer
         try:
             text = await self._answer(question)
-            await self.query_one(Markdown).update(text)
+            await answer.update(text)
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.debug("Side question failed", exc_info=True)
             from deepagents_code.client.remote_client import format_agent_exception
 
-            target = "#btw-error"
-            self.query_one("#btw-error", Static).update(format_agent_exception(exc))
+            target = error
+            error.update(format_agent_exception(exc))
         self._stop_spinner()
         if self.is_mounted:
+            target.display = True
             self.query_one("#btw-loading").display = False
-            scroll = self.query_one("#btw-scroll", VerticalScroll)
-            scroll.display = True
-            scroll.focus()
+            self._pending = False
+            editor = self.query_one(BtwTextArea)
+            editor.disabled = False
+            editor.placeholder = "Ask a follow-up"
+            editor.focus(scroll_visible=False)
             self.call_after_refresh(self._reveal_answer, target)
 
-    def _reveal_answer(self, selector: str) -> None:
-        target = self.query_one(selector)
+    def _reveal_answer(self, target: Widget) -> None:
         scroll = self.query_one("#btw-scroll", VerticalScroll)
-        if target.region.y >= scroll.content_region.bottom:
+        if (
+            target.region.y < scroll.content_region.y
+            or target.region.bottom > scroll.content_region.bottom
+        ):
             target.scroll_visible(top=True, animate=False)
 
     def on_unmount(self) -> None:
@@ -162,6 +187,6 @@ class BtwScreen(ModalScreen[None]):
         self._stop_spinner()
 
     def action_cancel(self) -> None:
-        """Dismiss only this answer, leaving the main run untouched."""
+        """Dismiss the side conversation, leaving the main run untouched."""
         self.workers.cancel_node(self)
         self.dismiss(None)

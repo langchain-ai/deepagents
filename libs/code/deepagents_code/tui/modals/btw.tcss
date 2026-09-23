@@ -17,7 +17,11 @@ BtwScreen #btw-title {
     color: $primary;
 }
 
-BtwScreen #btw-question {
+BtwScreen.has-history #btw-dialog {
+    height: 85%;
+}
+
+BtwScreen .btw-question {
     height: auto;
     margin: 1 0;
 }
@@ -35,9 +39,10 @@ BtwScreen #btw-loading {
 
 BtwScreen #btw-scroll {
     height: 1fr;
+    scrollbar-gutter: stable;
 }
 
-BtwScreen #btw-error {
+BtwScreen .btw-error {
     height: auto;
     color: $error;
 }

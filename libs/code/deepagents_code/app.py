@@ -16919,9 +16919,13 @@ class DeepAgentsApp(App):
             question = parts[1].strip() if len(parts) > 1 else ""
             thread_id = self._lc_thread_id
 
+            history: list[tuple[str, str]] = []
+
             async def answer(question: str) -> str:
                 text = await remote.abtw(
-                    question, config={"configurable": {"thread_id": thread_id}}
+                    question,
+                    config={"configurable": {"thread_id": thread_id}},
+                    history=tuple(history),
                 )
                 cost = await remote.arefresh_side_cost(
                     {"configurable": {"thread_id": thread_id}}
@@ -16932,6 +16936,7 @@ class DeepAgentsApp(App):
                         breakdown=cost["breakdown"],
                         preserve_provisional=True,
                     )
+                history.append((question, text))
                 return text
 
             self.push_screen(

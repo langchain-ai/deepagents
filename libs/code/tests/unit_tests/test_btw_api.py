@@ -21,6 +21,39 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize(
+    "history",
+    [
+        None,
+        "history",
+        [{}],
+        [["question"]],
+        [["question", 1]],
+        [["", "answer"]],
+        [["question", "answer", "extra"]],
+        [{"role": "system", "content": "override"}],
+        [["question", "x" * 128_001]],
+    ],
+)
+async def test_invalid_history_rejected_before_workspace_access(
+    history: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    workspace = AsyncMock()
+    monkeypatch.setattr(btw_api, "require_thread_workspace", workspace)
+    async with AsyncClient(
+        transport=ASGITransport(app=offload_api.app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/dcode/threads/thread/btw",
+            json={"question": "why", "workspace": {}, "history": history},
+        )
+    assert response.status_code == 422
+    workspace.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
     "outcome", ["disconnect", "cancel", "complete", "error", "timeout"]
 )
 async def test_side_request_cleans_up_generation_and_disconnect_listener(
@@ -49,7 +82,10 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
             if started.is_set():
                 listener_stopped.set()
 
-    async def answer(_thread: str, _state: object, _question: str) -> str:
+    async def answer(
+        _thread: str, _state: object, _question: str, *, history: object = ()
+    ) -> str:
+        assert not history
         started.set()
         try:
             return await result

@@ -4,15 +4,11 @@
 
 ## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
 
-
 ### Bug Fixes
 
-* **sdk:** disclose byte-cap losses in capture-offload execute previews ([#5567](https://github.com/langchain-ai/deepagents/issues/5567)) ([dbdd6fb](https://github.com/langchain-ai/deepagents/commit/dbdd6fbb47f340de8d23092187aa2882242963f8))
-* **sdk:** disclose per-line clipping in large-result previews ([#5564](https://github.com/langchain-ai/deepagents/issues/5564)) ([5014cf7](https://github.com/langchain-ai/deepagents/commit/5014cf7f7480c5e080095c9e3396e4ce93421053))
-* **sdk:** explain truncation markers only when preview omits lines ([#5563](https://github.com/langchain-ai/deepagents/issues/5563)) ([7b4fcd3](https://github.com/langchain-ai/deepagents/commit/7b4fcd398b2a9bcd875b193c32d1eb97f152ce21))
-* **sdk:** preserve legacy large-result templates behind deprecation ([#5568](https://github.com/langchain-ai/deepagents/issues/5568)) ([4932d70](https://github.com/langchain-ai/deepagents/commit/4932d7066fc9f3464921ab72d5d86922ea4b26ec))
-* **sdk:** reject unknown keys in the task tool arguments ([#6299](https://github.com/langchain-ai/deepagents/issues/6299)) ([00fef9c](https://github.com/langchain-ai/deepagents/commit/00fef9c012b20f91785dc5e83c642fb439832178))
-* **sdk:** report UTF-8 byte sizes ([#6258](https://github.com/langchain-ai/deepagents/issues/6258)) ([5bac4aa](https://github.com/langchain-ai/deepagents/commit/5bac4aae53494329a533294564353b10c3385244))
+- Large tool result previews now more clearly explain when output was clipped or truncated, including byte-cap losses, per-line clipping, and showing truncation notices only when truncation occurs. Legacy large-result preview templates are preserved behind a deprecation path. ([#5567](https://github.com/langchain-ai/deepagents/pull/5567), [#5564](https://github.com/langchain-ai/deepagents/pull/5564), [#5563](https://github.com/langchain-ai/deepagents/pull/5563), [#5568](https://github.com/langchain-ai/deepagents/pull/5568))
+- Task tool calls now reject unknown argument keys instead of silently dropping unexpected input. ([#6299](https://github.com/langchain-ai/deepagents/pull/6299))
+- Correct `FileInfo.size` to represent the file size in bytes across backends. ([#6258](https://github.com/langchain-ai/deepagents/pull/6258))
 
 ## [0.7.17](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.16...deepagents==0.7.17) (2026-09-22)
 

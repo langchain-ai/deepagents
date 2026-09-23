@@ -51,6 +51,7 @@ renderer's `N.1` continuation gutters and `_CAVEAT_CLIPPED_LINES` no longer
 describes what the model sees.
 """
 
+_VISIBLE_TOOL_CALL_ID_LIMIT: Final = 32
 _PREVIEW_NOTE_PLAIN = "Here is a preview of the {subject}"
 _PREVIEW_NOTE_HEAD_TAIL = "Here is a preview showing the head and tail of the {subject}"
 
@@ -232,6 +233,11 @@ def _render_preview_stub(template: str, preview: ContentPreview, *, subject: str
     )
 
 
+def _visible_tool_call_id(tool_call_id: str) -> str:
+    """Abbreviate IDs only in model-visible offload notices."""
+    return f"{tool_call_id[:_VISIBLE_TOOL_CALL_ID_LIMIT]}..." if len(tool_call_id) > _VISIBLE_TOOL_CALL_ID_LIMIT else tool_call_id
+
+
 def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
     """Render the large-tool-result stub for `content_str`.
 
@@ -246,7 +252,7 @@ def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str
     return _render_preview_stub(
         _TOO_LARGE_TOOL_MSG,
         _create_content_preview(content_str),
-        tool_call_id=tool_call_id,
+        tool_call_id=_visible_tool_call_id(tool_call_id),
         file_path=file_path,
     )
 

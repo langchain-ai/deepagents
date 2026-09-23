@@ -89,6 +89,7 @@ from deepagents.middleware._message_eviction import (
     _extract_text_from_message,
     _offload_tool_message_content,
     _render_preview_stub,
+    _visible_tool_call_id,
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
@@ -3052,7 +3053,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 # discloses that in-band rather than through this note.
                 lines_clipped=False,
             ),
-            tool_call_id=tool_call_id,
+            tool_call_id=_visible_tool_call_id(tool_call_id),
             file_path=capture_path,
         )
 

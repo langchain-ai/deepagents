@@ -5,7 +5,7 @@ description: Package ownership and dependency boundaries across the Deep Agents 
 tags: [architecture, monorepo, deepagents, dcode, acp, runtime-boundaries]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
+    at: 2026-09-23T08:05:59.666Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -55,7 +55,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
 ---
 
 # Repository Architecture Overview
@@ -116,7 +116,7 @@ Deep Agents Code separates a terminal client from an agent server in separate pr
 
 `create_cli_agent()` is dcode's product assembly point. It creates a composite local-or-sandbox backend, CLI context schema, product middleware, approval policy, checkpoint/store integration, subagents, and a sanitized assistant name before calling `create_deep_agent()`. It also enforces product-specific constraints: an explicit filesystem-tool allowlist is injected into synchronous subagents so delegation cannot bypass it; a JavaScript interpreter is rejected with a remote sandbox; and Auto approval is disabled for sandbox-backed graphs. Registered extensions replace same-named tools and middleware before final construction.
 
-The dcode server supplies runtime-resolved model, MCP, project, and environment inputs to this assembly seam. The package pins `deepagents==0.7.17`, consumes `deepagents-acp`, and exposes optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel. Provider mechanics remain in the partner package, even when dcode selects the backend.
+The dcode server supplies runtime-resolved model, MCP, project, and environment inputs to this assembly seam. The package pins `deepagents==0.7.18`, consumes `deepagents-acp`, and exposes optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel. Provider mechanics remain in the partner package, even when dcode selects the backend.
 
 ### dcode ACP assembly
 
@@ -182,7 +182,7 @@ Talon approval policy is host-owned. Each invocation captures an immutable polic
 
 The evaluation suite runs agents against real LLMs, captures tool calls, file mutations, and final responses, and scores correctness and efficiency. Its Harbor integration runs sandboxed benchmarks such as Terminal Bench 2.0. Use it for changes that alter agent trajectories, alongside focused tests at the changed ownership boundary.
 
-The release manifest records `deepagents` 0.7.17, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.73, `deepagents-talon` 0.0.8, and partner packages Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7. dcode's `pyproject.toml` agrees on 0.1.73 and pins its SDK dependency to 0.7.17. Release Please creates separate draft pull requests and independent Python package releases with package-specific version files and changelogs, component-bearing tags separated by `==`, and test paths excluded from release analysis.
+The release manifest records `deepagents` 0.7.18, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.74, `deepagents-talon` 0.0.8, and partner packages Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7. dcode's `pyproject.toml` agrees on 0.1.74 and pins its SDK dependency to 0.7.18. Release Please creates separate draft pull requests and independent Python package releases with package-specific version files and changelogs, component-bearing tags separated by `==`, and test paths excluded from release analysis.
 
 1. **SDK change:** trace public `create_deep_agent()` inputs into middleware, profiles, or backends; preserve middleware ordering and the `DeepAgentState` message reducer.
 2. **dcode change:** keep UI, client/server streaming, product approvals, extensions, configuration, and sandbox selection in `libs/code`. Test `create_cli_agent()` behavior and its server caller together where construction inputs cross processes.

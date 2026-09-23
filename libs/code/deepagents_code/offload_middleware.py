@@ -1498,7 +1498,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         archive = _PendingArchive(
             summarization,
             self._summarization._backend,
-            to_summarize,
+            # A handoff promises a complete recovery transcript even when an
+            # earlier compaction archive failed or was swept. The effective
+            # messages contain only its summary and the recent tail.
+            messages if handoff else to_summarize,
             session_id,
             summary,
             state_cutoff,

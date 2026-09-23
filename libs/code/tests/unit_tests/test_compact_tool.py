@@ -245,6 +245,53 @@ class TestCLICompactionMiddleware:
         assert plan.update(None)["_summarization_event"]["cutoff_index"] == 2
         summarization._aoffload_to_backend.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        "previous_archive", [None, "/conversation_history/source.md"]
+    )
+    async def test_handoff_archive_recovers_full_compacted_history(
+        self, previous_archive: str | None, tmp_path: Path
+    ) -> None:
+        """A failed or swept earlier archive must not lose checkpointed details."""
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        summarization = SummarizationMiddleware(
+            FakeListChatModel(responses=["New summary"]), backend=backend
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        messages: list[AnyMessage] = [
+            HumanMessage("The deployment region is eu-west-2."),
+            AIMessage("The service name is kestrel."),
+            HumanMessage("Now add monitoring."),
+            AIMessage("Monitoring configured."),
+        ]
+        plan = await middleware._aplan_forced_compaction_update(
+            {
+                "messages": messages,
+                "_summarization_session_id": "source",
+                "_summarization_event": {
+                    "cutoff_index": 2,
+                    "summary_message": HumanMessage(
+                        "Earlier deployment work.",
+                        additional_kwargs={"lc_source": "summarization"},
+                    ),
+                    "file_path": previous_archive,
+                },
+            },
+            SimpleNamespace(context=None),
+            handoff=True,
+        )
+
+        assert plan is not None
+        archive = await plan.archive.write()
+        assert archive is not None
+        transcript = (await backend.adownload_files([archive.path]))[0].content
+        assert transcript is not None
+        for message in messages:
+            assert message.text in transcript.decode("utf-8")
+
     async def test_operation_path_returns_an_absolute_cutoff(self) -> None:
         """The committed event must carry the absolute cutoff, not the relative one.
 

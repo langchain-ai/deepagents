@@ -12,7 +12,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.exceptions import ContextOverflowError
+from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -4889,6 +4889,81 @@ def _second_call_tool_message(model: FixedGenericFakeChatModel) -> ToolMessage:
 
 def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
     return block["type"] == "text" and path in block["text"]
+
+
+class RejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject tool results to exercise the agent's provider-error fallback."""
+
+    retry_fails: bool = False
+    error_type: type[Exception] = ModelInvalidRequestError
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) for message in messages) and (len(self.captured_messages) == 1 or self.retry_fails):
+            self.captured_messages.append(messages)
+            msg = "Rejected file content"
+            raise self.error_type(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    ("file_path", "error_type", "retry_fails", "recovers", "calls"),
+    [
+        ("/photo.png", ModelInvalidRequestError, False, True, 3),
+        ("/report.pdf", ModelInvalidRequestError, False, True, 3),
+        ("/photo.png", ModelInvalidRequestError, True, False, 3),
+        ("/notes.txt", ModelInvalidRequestError, False, False, 2),
+        ("/photo.png", RuntimeError, False, False, 2),
+    ],
+)
+async def test_read_file_invalid_request_fallback(
+    *, async_mode: bool, file_path: str, error_type: type[Exception], retry_fails: bool, recovers: bool, calls: int
+) -> None:
+    model = RejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "read-1"}]),
+                AIMessage(content="done"),
+            ]
+        ),
+        error_type=error_type,
+        retry_fails=retry_fails,
+    )
+    agent = create_deep_agent(model=model)
+    inputs = {
+        "messages": [HumanMessage(content="Read the file")],
+        "files": {
+            file_path: create_file_data(
+                "invalid" if file_path.endswith(".txt") else _docx_base64(), encoding="utf-8" if file_path.endswith(".txt") else "base64"
+            )
+        },
+    }
+
+    async def invoke() -> dict[str, Any]:
+        return await agent.ainvoke(inputs) if async_mode else agent.invoke(inputs)
+
+    if recovers:
+        result = await invoke()
+        assert result["messages"][-1].content == "done"
+        persisted = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert isinstance(persisted.content, list)
+    else:
+        with pytest.raises(error_type, match="Rejected file content"):
+            await invoke()
+    assert len(model.captured_messages) == calls
+    if calls == 3:
+        original = _second_call_tool_message(model)
+        retried = next(message for message in model.captured_messages[2] if isinstance(message, ToolMessage))
+        assert retried.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        assert retried.tool_call_id == original.tool_call_id
+        assert retried.id == original.id
+        assert isinstance(original.content, list)
 
 
 class TestMultimodalProfileScrubNoProfile:

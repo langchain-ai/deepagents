@@ -387,14 +387,16 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
 
 
 def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """Replace multimodal `read_file` results with a text-only fallback."""
+    """Replace only multimodal reads since the latest model response."""
+    last_response = next((index for index in range(len(messages) - 1, -1, -1) if isinstance(messages[index], AIMessage)), -1)
     return [
         message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
-        if isinstance(message, ToolMessage)
+        if index > last_response
+        and isinstance(message, ToolMessage)
         and message.name == "read_file"
         and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
         else message
-        for message in messages
+        for index, message in enumerate(messages)
     ]
 
 

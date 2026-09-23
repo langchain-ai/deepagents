@@ -140,7 +140,7 @@ async def test_handoff_failure_keeps_source_thread(
         }
     )
     remote.aensure_thread = AsyncMock()
-    remote.aswitch_workspace = AsyncMock()
+    remote.abind_workspace = AsyncMock()
     remote.aupdate_state = AsyncMock(
         side_effect=RuntimeError("write failed") if failure == "seed" else None
     )
@@ -200,7 +200,7 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
     if switch_during == "summary":
         remote.aoffload.side_effect = summarize
     remote.aensure_thread = AsyncMock()
-    remote.aswitch_workspace = AsyncMock(
+    remote.abind_workspace = AsyncMock(
         side_effect=switch_thread if switch_during == "seed" else None
     )
     remote.aupdate_state = AsyncMock()
@@ -223,7 +223,7 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
     assert remote.aoffload.await_args is not None
     config, values = remote.aupdate_state.await_args_list[0].args
     child_id = config["configurable"]["thread_id"]
-    remote.aswitch_workspace.assert_awaited_once_with(config, source_cwd)
+    remote.abind_workspace.assert_awaited_once_with(config, source_cwd)
     assert values["_model_spec"] == "test:source-model"
     assert values["_model_params"] == {"reasoning": {"effort": "high"}}
     metadata.assert_awaited_once_with(
@@ -232,6 +232,42 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
     assert remote.aoffload.await_args.kwargs["context"]["model"] == "test:source-model"
     assert app._lc_thread_id == "other"
     resume.assert_not_awaited()
+
+
+async def test_seeding_handoff_preserves_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    remote = RemoteAgent("http://localhost:8123")
+    bindings: dict[str, str] = {}
+
+    def bind(
+        config: dict[str, dict[str, str]], cwd: str, **_kwargs: object
+    ) -> tuple[dict[str, str], None]:
+        thread_id = config["configurable"]["thread_id"]
+        assert bindings.setdefault(thread_id, cwd) == cwd, "workspace conflict"
+        return {"cwd": cwd}, None
+
+    monkeypatch.setattr(remote, "_request_workspace", AsyncMock(side_effect=bind))
+    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(remote, "aupdate_state", AsyncMock())
+    monkeypatch.setattr("deepagents_code.sessions.set_thread_metadata", AsyncMock())
+    # The user opened another workspace while the source was summarized.
+    active_config = {"configurable": {"thread_id": "other"}}
+    await remote.aswitch_workspace(active_config, "/other-project")
+
+    child_id = await DeepAgentsApp._seed_handoff_thread(
+        remote, "summary", cwd="/source-project", agent_name="agent", context={}
+    )
+
+    assert bindings[child_id] == "/source-project"
+    assert await remote._workspace_for_thread(active_config) == {
+        "cwd": "/other-project"
+    }
+    assert await remote._workspace_for_thread(
+        {"configurable": {"thread_id": "next"}}
+    ) == {"cwd": "/other-project"}
 
 
 @pytest.mark.parametrize(
@@ -259,7 +295,7 @@ async def test_handoff_child_is_discoverable_and_resumable(
         }
     )
     remote.aensure_thread = AsyncMock()
-    remote.aswitch_workspace = AsyncMock()
+    remote.abind_workspace = AsyncMock()
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_set_spinner", AsyncMock())
     monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
@@ -368,7 +404,7 @@ async def test_handoff_preserves_shell_context(
     app._buffer_shell_for_model_context("echo important", "important result", 0)
     remote = MagicMock()
     remote.aensure_thread = AsyncMock()
-    remote.aswitch_workspace = AsyncMock()
+    remote.abind_workspace = AsyncMock()
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_set_spinner", AsyncMock())
     monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())

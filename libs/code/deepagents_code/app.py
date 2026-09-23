@@ -9732,16 +9732,16 @@ class DeepAgentsApp(App):
         *,
         message: QueuedMessage | None = None,
     ) -> None:
-        """Offer a summarized-thread handoff for an expired cache; never sends.
+        """Offer a handoff, or send an already submitted message, after expiry.
 
         Esc, or leaving the prompt unanswered, keeps the current thread and
-        suppresses the send-time warning for this window. The draft is restored
-        whichever way the prompt resolves.
+        suppresses the send-time warning for this window. Only an explicit
+        send choice dispatches the message; other choices preserve the draft.
 
         Args:
             thread_id: Thread whose cache window expired.
             expires_at: The expired window. `None` records no bypass.
-            message: Submitted message whose text is restored as the draft.
+            message: Submitted message to send or restore as a draft.
         """
         from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
 
@@ -9749,18 +9749,30 @@ class DeepAgentsApp(App):
             return
         draft = message.text if message else None
         child_id = None
+        choice = None
         try:
-            choice = await self._ask_cache_handoff(thread_id)
+            choice = await self._ask_cache_handoff(
+                thread_id, allow_send=message is not None
+            )
             if choice is ColdCacheChoice.HANDOFF:
                 if draft is None and self._chat_input:
                     draft = self._chat_input.value
                 child_id = await self._run_cache_handoff(thread_id)
+            elif choice is ColdCacheChoice.SEND and message is not None:
+                await self._process_message(message.text, message.mode)
+                draft = None
             elif choice is ColdCacheChoice.CANCEL and expires_at is not None:
                 self._cache_expiry_bypassed = (thread_id, expires_at)
                 self._cache_expiry_seen[thread_id] = expires_at
+        except Exception:
+            logger.exception("Cache-expiry continuation failed after choice %r", choice)
+            await self._mount_message(
+                ErrorMessage("Could not process the cache action.")
+            )
         finally:
             self._restore_handoff_draft(draft, thread_id, child_id=child_id)
-            await self._set_spinner(None)
+            if choice is ColdCacheChoice.HANDOFF:
+                await self._set_spinner(None)
 
     async def _cold_cache_opted_out(self) -> bool:
         """Check whether the user asked not to be warned about cold caches.
@@ -9779,8 +9791,14 @@ class DeepAgentsApp(App):
 
         return await asyncio.to_thread(is_warning_suppressed, COLD_CACHE_WARNING_KEY)
 
-    async def _ask_cache_handoff(self, thread_id: str) -> ColdCacheChoice | None:
+    async def _ask_cache_handoff(
+        self, thread_id: str, *, allow_send: bool = False
+    ) -> ColdCacheChoice | None:
         """Show the handoff prompt and wait for the user's choice.
+
+        Args:
+            thread_id: Thread whose cache window expired.
+            allow_send: Offer to send the message awaiting confirmation.
 
         Returns:
             The choice, `CANCEL` when the prompt times out, or `None` when the
@@ -9803,7 +9821,9 @@ class DeepAgentsApp(App):
                 return None
             if warning is not None:
                 await self._emit_cold_cache_warning_hook(warning)
-            screen = ColdCacheWarningScreen(warning, handoff=True)
+            screen = ColdCacheWarningScreen(
+                warning, handoff=True, allow_send=allow_send
+            )
             choice = await asyncio.wait_for(
                 self._push_screen_wait(screen), timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
             )
@@ -13211,8 +13231,9 @@ class DeepAgentsApp(App):
 
         With `warnings.cache_prompt = "off"` the message is sent directly. If an
         interactive message arrives after its cache window expired, the handoff
-        prompt opens and the message returns to the composer instead of being
-        sent. Otherwise the send-time cost warning applies.
+        prompt offers to summarize, send in the current thread, or cancel.
+        Summarizing and canceling restore the draft. Otherwise the send-time
+        cost warning applies.
         """
         mode = _load_cache_prompt_mode()
         if mode == "off":

@@ -13777,6 +13777,62 @@ class TestInterruptApprovalPriority:
 class TestApprovalPositionBindings:
     """Tests for app-level approval fallback shortcuts."""
 
+    async def test_tab_navigates_btw_when_background_approval_arrives(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tab stays in the side dialog until it closes, then reaches approval."""
+        from textual.containers import VerticalScroll
+        from textual.widgets import TextArea
+
+        from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-approval")
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        monkeypatch.setattr(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value={"messages": [{"type": "human", "content": "hi"}]}),
+        )
+        remote = MagicMock(
+            abtw=AsyncMock(return_value="Side answer"),
+            arefresh_side_cost=AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+        async with app.run_test(size=(110, 36)) as pilot:
+            await pilot.pause()
+            app._connecting = False
+            messages = app.query_one("#messages", Container)
+            await pilot.press(*"/btw why", "enter")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, BtwScreen)
+            editor = screen.query_one("#btw-input", TextArea)
+            history = screen.query_one("#btw-scroll", VerticalScroll)
+            assert editor.has_focus
+
+            approval = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            await messages.mount(approval)
+            app._pending_approval_widget = approval
+            reason = approval.query_one("#approval-reason-input", Input)
+            assert not reason.display
+
+            await pilot.press("tab")
+            assert history.has_focus
+            assert not reason.display
+            await pilot.press("tab")
+            assert editor.has_focus
+            assert not reason.display
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+            assert app._pending_approval_widget is approval
+            approval.focus()
+            await pilot.press("tab")
+            assert reason.display
+            assert reason.has_focus
+
     @pytest.mark.parametrize("position", [0, 1, 2])
     def test_numeric_position_delegates_to_visible_option(self, position: int) -> None:
         """Fallback number actions use the widget's visible option positions."""

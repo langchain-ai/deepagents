@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e0cfea2ffbda921d78977bab25ba79b69c06bcd144ceabcec97b3bfc8047dd63",
+  "pageVersion": "sha256:67adfbbe4d0e6082e27109d4261bffcd0f9754ce5e2060c7af34a267ed936bdf",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -94,21 +94,21 @@
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:0080d71c2986b6be5c9d6a72d36b1e123065da58399073c511d1d24e69f58353"
+          "version": "repo-file-v1:sha256:54c5f74e002a4b70d6c630ab9aa1c3b70794ffcd2eaa5fb2d3ca520b2ec1d57d"
         }
       ]
     },
     {
       "id": "claim_837e7b13e9f94a098eb350808a7d0a3c",
-      "statement": "The release manifest records independent versions for deepagents 0.7.17, ACP 0.0.12, Code 0.1.73, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages; Code's pyproject identifies it as 0.1.73 and pins deepagents to 0.7.17.",
+      "statement": "The release manifest records independent versions for deepagents 0.7.18, ACP 0.0.12, Code 0.1.74, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages; Code's pyproject identifies it as 0.1.74 and pins deepagents to 0.7.18.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:8032ff7237378749c91faacd1f7e11381b5f8acb487cbef4e5a87fe6e2765d5a"
+          "version": "repo-file-v1:sha256:95c7a2f87573800071a06b8ee1b654135558a2163e9604ef95d9d59c0541fa48"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:aab93ed43573d467838f61940b2c31be069e34e8c6af681bd8f330330a8502b6"
+          "version": "repo-file-v1:sha256:db6f5221b999b1da48369d4270ab6e29577cb40af86b7ac93f49f61abc12682d"
         }
       ]
     },
@@ -370,29 +370,17 @@
     },
     {
       "id": "claim_cdeee79c02c74338a467b47d6b996f57",
-      "statement": "dcode declares an exact dependency on deepagents 0.7.17, consumes deepagents-acp, and offers optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel; its local development sources point those partner integrations at sibling packages.",
+      "statement": "dcode declares an exact dependency on deepagents 0.7.18, consumes deepagents-acp, and offers optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel; its local development sources point those partner integrations at sibling packages.",
       "evidence": [
         {
-          "resource": "repo://libs/code/pyproject.toml#L103-L105",
-          "version": "repo-lines-v1:sha256:b2b5ab8d5b52e8c3dbee6704740816c46456b04674c5c30fbe5a75efbce7a09e:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmM2ZGVmZWM1YTU1ZTRlODZmZWExODRlZmZmMmVhOGU0MjAyY2Y5NzUwYWI4OGY3YjU0MTcxMGFhNTRmOGZlOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE4NDQ1NTBmYTM1MmJiN2MwYzRlODJlMzA3N2MzNWZiYjMzMTIwOTg3MDk1YTk2ZDJjZDNiMjFkODMwYzU0NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjMyMDM4ZTA3OGU3MTJlODIzNTBjZTIwMmY5MDJkYjNhYTFmMzhhYzYyNmFjOGNkZDc3ZjAzZDcyYTRhNmYxNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQzNGRhZWIyMmM4Y2E1M2JmOTlmZjJkNmRkMjAxMmNjNjAzYWQyNzBjODk3OGMzYmIwY2M0Y2FjZDIwZWJhZCJ9"
-        },
-        {
-          "resource": "repo://libs/code/pyproject.toml#L138-L146",
-          "version": "repo-lines-v1:sha256:b1e4b640f6a537e5bdc39c69cb9a406b38c7b7298b5e3d62cd30f360dd353652:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzFkM2QyOGIxMWE3ZGExNDIzYmU4N2U5NmMxNDc1YmUzZTAyMjE3MDRiNzFkNzFiMzFjODJkMGU2ODUxNzAxNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjBiYzFiZDMyMTI4OWQ5Mjg0OWRiYWY3MzFhOWI3ZWRhYmIzMThiYjJiZWIyZWEwYTg5YTkzMWVjZGZiZmYxYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTBhMTAxYWFjODZmYTIyZDFhYmViNGI1NzY3YzYwZmViODIwMjQxM2QxOGI1NGUzMDM2NTJiODZiM2I3MzQzZSJ9"
-        },
-        {
-          "resource": "repo://libs/code/pyproject.toml#L213-L220",
-          "version": "repo-lines-v1:sha256:d17072bf7263abf884a8260ad4ae1059ed3b0302391e9a981c6677cba58f44ca:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjUyZmM1OGIzZjRiOTczNzM2YjNhZDc5ZDFkNzQ5NTEwNTIzMGY2NWUzZDk4NjM3YTQ2YWU4ZTJmZWEyOTUyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmZlYjcxZTU4NGZjZjYxMzlmMTU4ODY4OGM2NDE3Nzc0Y2ZjOTFjZjNhZGNlYmRhMzYzMjY2NWIyNGI4NzJlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2UxMTZhYjgzZDA2YzE2MDkwYTgwMzc2OTc3ZDZmNzFkNjY1NmY5N2U5MmJmNjM4OWRkMTBiOTc3NTEyZWE2OCJ9"
-        },
-        {
-          "resource": "repo://libs/code/pyproject.toml#L28-L38",
-          "version": "repo-lines-v1:sha256:e2e47cc52f2d5b41a8d8403b3786f4dcbe14c52bcc4401286c3e90daf2847a84:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGNmYTA0N2MyMWZmNzU5NTMxOWE3ZjBhYTJhYThjY2FhMDcwM2RmMDY5YjkzZDViOGNmM2I3NDdkMTdjYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmZjMzOTZiNzBkNDZkZTVmODE2MzdhMTA3NjVlYTEyMjNkOGU0M2MwZDc1MzY0NzQ0OWIyNzNjOWVmZTIxYjIifQ"
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:db6f5221b999b1da48369d4270ab6e29577cb40af86b7ac93f49f61abc12682d"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-22T08:05:41.799Z"
+    "at": "2026-09-23T08:05:59.666Z"
   }
 }

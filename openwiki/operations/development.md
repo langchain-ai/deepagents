@@ -56,8 +56,8 @@ sources:
     resource: repo://release-please-config.json
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+    at: 2026-09-23T08:05:59.666Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
 ---
 
 # Development, CI, and Releases
@@ -108,7 +108,7 @@ Warnings not explicitly accepted by the test configuration are errors. Fix actio
 
 `libs/code` provides `make check` as the local CI-parity entrypoint. After linting, import checks, and unit tests, it verifies optional-extra synchronization, `pyproject.toml`/`_version.py` equality, and lock freshness. It then checks the Code SDK pin: exit status 1 (a stale pin) is advisory locally, while other checker failures remain fatal.
 
-`deepagents-code` currently has source version `0.1.73` in both `libs/code/pyproject.toml` and `deepagents_code/_version.py`; its changelog records the `0.1.73` release. Its exact SDK dependency is `deepagents==0.7.17`. When Code needs SDK functionality introduced by a newer SDK, update that exact pin in the same PR, regenerate `libs/code/uv.lock`, and commit the result. The pin represents the minimum SDK Code actually requires, not merely the newest SDK available.
+`deepagents-code` currently has source version `0.1.74` in both `libs/code/pyproject.toml` and `deepagents_code/_version.py`; its changelog records the `0.1.74` release. Its exact SDK dependency is `deepagents==0.7.18`. When Code needs SDK functionality introduced by a newer SDK, update that exact pin in the same PR, regenerate `libs/code/uv.lock`, and commit the result. The pin represents the minimum SDK Code actually requires, not merely the newest SDK available.
 
 On a Code release PR, the SDK-pin workflow warns but does not fail for a stale pin. Publication is stricter: the release workflow rejects a Code package pin that is older than the workspace SDK. An intentionally older pin requires the deliberate `ci:dcode-skip-sdk-pin` release-PR label; only after positively reading that label does the dispatcher pass `dangerous-skip-sdk-pin-check=true`. A label lookup failure leaves the check enforced. A prerelease SDK pin instead requires `ci:ack-release-deps` before the release PR can merge.
 
@@ -138,9 +138,9 @@ The release manifest records the last released baselines, **not** a package's ed
 
 | Manifest path | Baseline |
 | --- | --- |
-| `libs/deepagents` | `0.7.17` |
+| `libs/deepagents` | `0.7.18` |
 | `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.73` |
+| `libs/code` | `0.1.74` |
 | `libs/talon` | `0.0.8` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
@@ -172,7 +172,7 @@ Release attribution is by changed file paths rather than Conventional Commit sco
 
 Keep bump-worthy work to one managed component. An empty commit has no path assignment and can fan out to every component, so the release workflow blocks it before release-please runs. A bump-worthy change that also includes lockfiles or real files in another component can likewise fan out. The scope gate blocks lockfile-only and multi-component fan-out unless `ci:allow-lockfile-release` acknowledges it; the label permits rather than prevents the resulting releases. Put cross-package dependency and lock churn in a separate `chore(deps):` change.
 
-Before recomputing release PRs, the release workflow waits for every merged PR still carrying `auto:release-pending`. This prevents evaluating a manifest advanced ahead of its tag; unreadable GitHub state fails closed, while a genuinely slow publisher defers the refresh to a later push.
+Before recomputing release PRs, the release-please workflow waits for every merged PR still carrying `auto:release-pending`. This prevents evaluating a manifest advanced ahead of its tag; unreadable GitHub state fails closed, while a genuinely slow publisher defers the refresh to a later push.
 
 ### Curated release notes
 

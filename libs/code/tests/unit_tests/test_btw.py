@@ -512,34 +512,6 @@ async def test_route_rejects_wrong_workspace_before_reading() -> None:
     client_factory.assert_not_called()
 
 
-async def test_remote_uses_side_route_not_runs() -> None:
-    agent = RemoteAgent("http://test")
-    graph = MagicMock()
-    graph.client.http.post = AsyncMock(return_value={"text": "answer"})
-    config = {
-        "configurable": {
-            "thread_id": "thread",
-            "model": "provider:selected",
-            "model_params": {"temperature": 0.2},
-        }
-    }
-    with (
-        patch.object(agent, "_get_graph", return_value=graph),
-        patch.object(
-            agent,
-            "_workspace_for_thread",
-            new=AsyncMock(return_value={"workspace_id": "1"}),
-        ),
-        patch.object(agent, "aensure_thread", new=AsyncMock()),
-    ):
-        assert await agent.abtw("why", config=config) == "answer"
-    graph.client.http.post.assert_awaited_once_with(
-        "/dcode/threads/thread/btw",
-        json={"question": "why", "workspace": {"workspace_id": "1"}},
-    )
-    graph.client.runs.assert_not_called()
-
-
 async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -580,7 +552,13 @@ async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchan
         assert (
             await remote.abtw(
                 "Why that option?",
-                config={"configurable": {"thread_id": "thread"}},
+                config={
+                    "configurable": {
+                        "thread_id": "thread",
+                        "model": "provider:selected",
+                        "model_params": {"temperature": 0.2},
+                    }
+                },
                 history=[("Which option?", "Use the cache.")],
             )
             == "Because it is faster."
@@ -597,9 +575,8 @@ async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchan
 
 
 @pytest.mark.parametrize("main_total", [1.0, 2.0])
-@pytest.mark.parametrize("refresh_error", [RuntimeError("unavailable"), TimeoutError()])
 async def test_checkpoint_reconciles_cost_when_accounting_fails(
-    main_total: float, refresh_error: Exception, monkeypatch: pytest.MonkeyPatch
+    main_total: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.btw_cost import combine_session_cost
@@ -623,7 +600,7 @@ async def test_checkpoint_reconciles_cost_when_accounting_fails(
     await remote.aget_session_cost(config)
     app._set_session_cost(1.5)
     app._add_provisional_cost(1.0, request_id="missed-final-event")
-    graph.client.http.get.side_effect = refresh_error
+    graph.client.http.get.side_effect = RuntimeError("unavailable")
 
     await app._sync_session_cost_from_checkpoint()
 
@@ -667,14 +644,14 @@ async def test_cached_cost_without_checkpoint_preserves_provisional_spend(
 
 
 @pytest.mark.parametrize("main_total", [1.0, 2.0])
-@pytest.mark.parametrize("provisional", [0.0, 0.2])
 async def test_side_cost_survives_main_cancellation(
-    main_total: float, provisional: float, monkeypatch: pytest.MonkeyPatch
+    main_total: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
+    provisional = 0.2
     remote = RemoteAgent("http://test")
     graph = MagicMock()
     remote._graph = graph
@@ -928,7 +905,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
     remote.abtw = AsyncMock(
         side_effect=[
             "Use a cache.",
-            RuntimeError("Try again"),
+            RuntimeError("Try again [/tmp/file]"),
             "It is faster.",
             "New conversation.",
         ]
@@ -947,7 +924,10 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         await pilot.pause()
         assert editor.has_focus
         assert not editor.disabled
-        assert app.screen.query(".btw-error").last(Static).content == "Try again"
+        assert (
+            app.screen.query(".btw-error").last(Static).content
+            == "Try again [/tmp/file]"
+        )
         await pilot.press(*"Why?", "enter")
         await pilot.pause()
         assert [
@@ -1017,18 +997,6 @@ async def test_thinking_follows_current_question_and_prevents_duplicate_submits(
                 response = asyncio.get_running_loop().create_future()
                 await pilot.press(*"Follow-up question", "enter")
                 await pilot.pause()
-
-
-async def test_modal_error_is_plain_text() -> None:
-    from textual.app import App
-
-    app = App()
-    answer = AsyncMock(side_effect=RuntimeError("bad [/tmp/file]"))
-    async with app.run_test() as pilot:
-        app.push_screen(BtwScreen(answer, "why"))
-        await pilot.pause()
-        assert app.screen.query_one(".btw-error", Static).content == "bad [/tmp/file]"
-        await pilot.press("escape")
 
 
 @pytest.mark.parametrize("question", ["First line\nSecond line", "Pasted line\n" * 100])

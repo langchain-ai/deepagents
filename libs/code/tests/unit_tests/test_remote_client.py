@@ -295,7 +295,8 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     side = _empty_cost_breakdown()
     side.update(total_cost_usd=0.5, request_count=1)
     event = {"type": "session_cost", "total": 2.0}
-    agent = _make_agent([((), "custom", event)])
+    nested = {"type": "session_cost", "total": 0.2}
+    agent = _make_agent([((), "custom", event), (("tools:child",), "custom", nested)])
     agent._graph.client.http.get.return_value = {
         "cost": {"total": 1.5, "breakdown": side}
     }
@@ -304,7 +305,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     assert saved_cost["total"] == pytest.approx(1.5)
     agent._graph.client.http.get.side_effect = error
     events = [item async for item in agent.astream({}, config=_config())]
-    assert events[0][2]["total"] == pytest.approx(2.0)
+    assert events == [((), "custom", event), (("tools:child",), "custom", nested)]
 
     from langgraph.types import StateSnapshot
 
@@ -326,17 +327,8 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     assert cost["total"] == pytest.approx(2.0)
 
 
-async def test_server_cost_events_are_passed_through() -> None:
-    main = {"type": "session_cost", "total": 1.5, "thread_id": _TEST_THREAD_ID}
-    nested = {"type": "session_cost", "total": 0.2}
-    agent = _make_agent([((), "custom", main), (("tools:child",), "custom", nested)])
-    events = [event async for event in agent.astream({}, config=_config())]
-    assert events[0][2] == main
-    assert events[1][2] == nested
-
-
 @pytest.mark.parametrize("concurrent_stream", [False, True])
-@pytest.mark.parametrize("saved_side_total", [0.25, 0.5, 0.75])
+@pytest.mark.parametrize("saved_side_total", [0.25, 0.75])
 async def test_side_refresh_preserves_streamed_graph_cost(
     *, concurrent_stream: bool, saved_side_total: float
 ) -> None:

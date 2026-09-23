@@ -5520,6 +5520,24 @@ def _is_bedrock_model_id(model_lower: str) -> bool:
     return bool(dot) and vendor.isalnum()
 
 
+def _bedrock_init_provider(model_name: str) -> str:
+    """Return the `init_chat_model` provider for a `bedrock` model ID.
+
+    `ChatBedrock` (InvokeModel) binds tools only for Anthropic models and drops
+    them for every other vendor without an error, which would leave the agent
+    with no tools. Non-Anthropic IDs go to `ChatBedrockConverse`, which carries
+    tools for all vendors -- the same switch `ChatBedrock` already makes
+    internally for Amazon Nova. ARNs and other non-ID names stay on `bedrock`.
+    """
+    model_lower = model_name.lower()
+    if (
+        _is_bedrock_model_id(model_lower)
+        and "anthropic" not in model_lower.split(".")[:2]
+    ):
+        return "bedrock_converse"
+    return "bedrock"
+
+
 def _detection_credentials() -> Credentials | CredentialsSnapshot:
     """Return the credential source that matches the active environment scope.
 
@@ -6851,7 +6869,10 @@ def create_model(
     elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
-        model = _create_model_via_init(model_name, provider, kwargs)
+        init_provider = (
+            _bedrock_init_provider(model_name) if provider == "bedrock" else provider
+        )
+        model = _create_model_via_init(model_name, init_provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
     from deepagents_code.cost_tracking import _set_configured_model_metadata

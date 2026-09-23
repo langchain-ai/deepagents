@@ -33,13 +33,18 @@ def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
     app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
 
-@pytest.mark.parametrize("key", ["enter", "escape"])
+@pytest.mark.parametrize(
+    ("keys", "summarize"),
+    [(("enter",), True), (("escape",), False), (("shift+tab", "enter"), False)],
+)
 async def test_modal_keys_preserve_draft_and_prompt_once(
-    key: str, monkeypatch: pytest.MonkeyPatch
+    keys: tuple[str, ...], summarize: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
     handoff = AsyncMock()
+    process = AsyncMock()
     monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr(app, "_process_message", process)
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)
@@ -48,18 +53,17 @@ async def test_modal_keys_preserve_draft_and_prompt_once(
         app._check_cache_expiry()
         await pilot.pause()
         assert isinstance(app.screen, ColdCacheWarningScreen)
-        await pilot.press("shift+tab")
-        assert isinstance(app.screen, ColdCacheWarningScreen)
-        await pilot.press(key)
+        await pilot.press(*keys)
         await pilot.pause()
         assert not isinstance(app.screen, ColdCacheWarningScreen)
         assert app._chat_input.value == "keep this draft"
         assert app._lc_thread_id == "source"
-        assert handoff.await_count == (1 if key == "enter" else 0)
+        assert handoff.await_count == int(summarize)
+        process.assert_not_awaited()
         app._check_cache_expiry()
         await pilot.pause()
         assert not isinstance(app.screen, ColdCacheWarningScreen)
-        if key == "escape":
+        if not summarize:
             assert app._cache_expiry_bypassed is not None
 
 
@@ -506,8 +510,9 @@ async def test_handoff_preserves_shell_context(
 
 
 @pytest.mark.parametrize("mode", ["expiry", "send", "off"])
+@pytest.mark.parametrize("keys", [("escape",), ("shift+tab", "enter")])
 async def test_send_timing_restores_draft_without_spending(
-    mode: str, monkeypatch: pytest.MonkeyPatch
+    mode: str, keys: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
     process = AsyncMock()
@@ -529,7 +534,7 @@ async def test_send_timing_restores_draft_without_spending(
             return
         assert isinstance(app.screen, ColdCacheWarningScreen)
         assert "estimate is unavailable" in app.screen._body()
-        await pilot.press("escape")
+        await pilot.press(*keys)
         await pilot.pause()
         process.assert_not_awaited()
         assert app._chat_input.value == "keep my request"
@@ -551,6 +556,54 @@ def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[
 
     monkeypatch.setattr(app, "_mount_message", record)
     return errors
+
+
+@pytest.mark.parametrize("outcome", ["sent", "failure", "thread_changed"])
+async def test_expiry_send_action_dispatches_once_in_current_thread(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+
+    async def send(_text: str, _mode: str) -> None:
+        assert app._lc_thread_id == "source"
+        if outcome == "failure":
+            msg = "send failed"
+            raise RuntimeError(msg)
+        await app._set_spinner("Thinking")
+
+    process = AsyncMock(side_effect=send)
+    handoff = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: "send")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        errors = _record_errors(app, monkeypatch)
+        await app._dispatch_queued_message(QueuedMessage("send this request", "normal"))
+        await pilot.pause()
+        assert isinstance(app.screen, ColdCacheWarningScreen)
+        assert app._chat_input is not None
+        if outcome == "thread_changed":
+            app._lc_thread_id = "other"
+            app._chat_input.value = "unrelated draft"
+        await pilot.press("tab", "enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        handoff.assert_not_awaited()
+        if outcome == "thread_changed":
+            process.assert_not_awaited()
+            assert app._chat_input.value == "unrelated draft"
+        else:
+            process.assert_awaited_once_with("send this request", "normal")
+            assert app._lc_thread_id == "source"
+            if outcome == "failure":
+                assert app._chat_input.value == "send this request"
+                assert errors
+            else:
+                assert app._chat_input.value == ""
+                assert app._loading_widget is not None
+                assert not errors
 
 
 @pytest.mark.parametrize("failure", [False, True])

@@ -4,26 +4,22 @@
 
 ## [0.1.74](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.73...deepagents-code==0.1.74) (2026-09-23)
 
-
 ### Features
 
-* **code:** add thread picker ([#6197](https://github.com/langchain-ai/deepagents/issues/6197)) ([9d3da12](https://github.com/langchain-ai/deepagents/commit/9d3da1287ba5656d52ad7f2c75cf9062d46a4959))
-* **code:** show human invocations in usage teardown ([#6500](https://github.com/langchain-ai/deepagents/issues/6500)) ([0779f31](https://github.com/langchain-ai/deepagents/commit/0779f314841ec4216a189b70c615d06194731ecd))
-
+- Added inline thread mentions & picker via `@@` ([#6197](https://github.com/langchain-ai/deepagents/pull/6197)).
+- Usage summaries now show human invocations ([#6500](https://github.com/langchain-ai/deepagents/pull/6500)).
 
 ### Bug Fixes
 
-* **code:** keep prompt recall out of file picker ([#6494](https://github.com/langchain-ai/deepagents/issues/6494)) ([86b7f85](https://github.com/langchain-ai/deepagents/commit/86b7f85af7424ff2491206070897818d71e163cb))
-* **code:** read `hooks.json` as UTF-8 in the legacy hook loader ([#6501](https://github.com/langchain-ai/deepagents/issues/6501)) ([61bada8](https://github.com/langchain-ai/deepagents/commit/61bada8bcbb62a40bfbe0345831228756f0ba353))
-* **code:** retry bare `openai.APIError` raised mid-stream ([#6499](https://github.com/langchain-ai/deepagents/issues/6499)) ([0f95915](https://github.com/langchain-ai/deepagents/commit/0f959156b828f9deb08438b71dbc9a65c13b1714))
-
+- Retry bare `openai.APIError` exceptions raised mid-stream ([#6499](https://github.com/langchain-ai/deepagents/pull/6499)).
+- Keep prompt recall results out of the file picker ([#6494](https://github.com/langchain-ai/deepagents/pull/6494)).
+- Read `hooks.json` as UTF-8 in the legacy hook loader ([#6501](https://github.com/langchain-ai/deepagents/pull/6501)).
 
 ### Performance Improvements
 
-* **code:** log thread loading phase timings ([#6490](https://github.com/langchain-ai/deepagents/issues/6490)) ([ad038f8](https://github.com/langchain-ai/deepagents/commit/ad038f87e07e13791ff9b1e239326d2c959fd412))
-* **code:** rank checkpoint row IDs before loading blobs ([#6488](https://github.com/langchain-ai/deepagents/issues/6488)) ([933eaea](https://github.com/langchain-ai/deepagents/commit/933eaeaddea12d1d6fcd0a8cd7716e948ff1df58))
-* **code:** rank message row IDs before loading prompts ([#6489](https://github.com/langchain-ai/deepagents/issues/6489)) ([17ea378](https://github.com/langchain-ai/deepagents/commit/17ea378fcb04f15c916e64eaf24a833b3a63c504))
-* **code:** reuse Auto classifier history ([#6056](https://github.com/langchain-ai/deepagents/issues/6056)) ([44926fa](https://github.com/langchain-ai/deepagents/commit/44926fa8f26dfb24d9a0e3ded335c48b123d193d))
+- Reuse Auto classifier history ([#6056](https://github.com/langchain-ai/deepagents/pull/6056)).
+- Rank checkpoint and message row IDs before loading blobs and prompts ([#6488](https://github.com/langchain-ai/deepagents/pull/6488), [#6489](https://github.com/langchain-ai/deepagents/pull/6489)).
+- Log thread-loading phase timings ([#6490](https://github.com/langchain-ai/deepagents/pull/6490)).
 
 ## [0.1.73](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.72...deepagents-code==0.1.73) (2026-09-22)
 

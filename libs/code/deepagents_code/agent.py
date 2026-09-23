@@ -537,6 +537,33 @@ def _normalize_rubric_grader_context_tools(
     return normalized
 
 
+def _normalize_empty_glob_result(result: object) -> object:
+    """Clarify when an empty glob result was truncated before completion."""
+    if not isinstance(result, str):
+        return result
+    lowered = result.lower()
+    if not lowered.startswith("no files found"):
+        return result
+    if "paths above are valid but incomplete" not in lowered:
+        return result
+    if any(
+        marker in lowered
+        for marker in ("inaccessible", "could not be read", "unreadable")
+    ):
+        return (
+            "No files found\n\n"
+            "Search stopped before completion because some directories were "
+            "inaccessible. No matching files were found in the portion searched, "
+            "so this does not establish that matching files are absent."
+        )
+    return (
+        "No files found\n\n"
+        "Search stopped before completion. No matching files were found in the "
+        "portion searched, so this does not establish that matching files are "
+        "absent."
+    )
+
+
 def _create_rubric_grader_tools(
     backend: CompositeBackend,
     *,
@@ -776,8 +803,10 @@ def _create_rubric_grader_tools(
             return _bound(
                 active_bounds,
                 "glob",
-                fs_glob_func(
-                    pattern=pattern, runtime=runtime, path=clamped.get("path")
+                _normalize_empty_glob_result(
+                    fs_glob_func(
+                        pattern=pattern, runtime=runtime, path=clamped.get("path")
+                    )
                 ),
             )
 

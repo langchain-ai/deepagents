@@ -42,6 +42,7 @@ from deepagents_code.agent import (
     _format_delete_description,
     _format_execute_description,
     _interrupt_predicate,
+    _normalize_empty_glob_result,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
@@ -3920,6 +3921,52 @@ class TestCreateCliAgentShellMiddlewareWiring:
             isinstance(mw, ConfigurableModelMiddleware)
             for mw in subagents_by_name["general-purpose"]["middleware"]
         )
+
+
+class TestNormalizeEmptyGlobResult:
+    """Verify empty truncated glob results do not imply absence."""
+
+    def test_completed_empty_result_is_unchanged(self) -> None:
+        result = _normalize_empty_glob_result("No files found")
+
+        assert result == "No files found"
+
+    def test_truncated_empty_result_is_incomplete(self) -> None:
+        result = _normalize_empty_glob_result(
+            "No files found\n\n"
+            "Note: the paths above are valid but incomplete because the search "
+            "hit its budget."
+        )
+
+        assert isinstance(result, str)
+        assert "Search stopped before completion" in result
+        assert "does not establish" in result
+        assert "paths above are valid but incomplete" not in result
+
+    def test_truncated_non_empty_result_preserves_reason_note(self) -> None:
+        result = _normalize_empty_glob_result(
+            "src/app.py\n\n"
+            "Note: the paths above are valid but incomplete because the search "
+            "hit its budget."
+        )
+
+        assert result == (
+            "src/app.py\n\n"
+            "Note: the paths above are valid but incomplete because the search "
+            "hit its budget."
+        )
+
+    def test_truncated_inaccessible_result_retains_warning(self) -> None:
+        result = _normalize_empty_glob_result(
+            "No files found\n\n"
+            "Note: the paths above are valid but incomplete because some "
+            "directories were inaccessible."
+        )
+
+        assert isinstance(result, str)
+        assert "directories were inaccessible" in result
+        assert "does not establish" in result
+        assert "paths above are valid but incomplete" not in result
 
 
 class TestCreateCliAgentFsToolsWiring:

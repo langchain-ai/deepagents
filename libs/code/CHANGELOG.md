@@ -4,11 +4,10 @@
 
 ## [0.1.75](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.74...deepagents-code==0.1.75) (2026-09-23)
 
-
 ### Bug Fixes
 
-* **code:** refresh token and cost breakdown while open ([#6520](https://github.com/langchain-ai/deepagents/issues/6520)) ([22524ed](https://github.com/langchain-ai/deepagents/commit/22524edb7702d6fb31ffefd2d7d19549b17d2ed6))
-* **code:** warm lazy MCP caches off the event loop ([#6517](https://github.com/langchain-ai/deepagents/issues/6517)) ([e6419a6](https://github.com/langchain-ai/deepagents/commit/e6419a6fbabf18d8232fb6b0a0283bc933b4bae3))
+- Lazy MCP caches now warm without blocking the event loop.
+- Token and cost breakdowns now refresh while the view is open.
 
 ## [0.1.74](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.73...deepagents-code==0.1.74) (2026-09-23)
 

@@ -427,9 +427,13 @@ def _make_bare_graph(
     search_tool = _web_search_tool()
     if selector == "llm":
         middleware = [LLMToolSelectorMiddleware(model=model)]
-    elif selector == "typesafe":
+    elif selector in {"typesafe", "typesafe-choice"}:
         typesafe_middleware = import_module("langchain_typesafe.experimental.middleware")
-        middleware = [typesafe_middleware.TsToolSelectorMiddleware()]
+        middleware = [
+            typesafe_middleware.TsToolSelectorMiddleware()
+            if selector == "typesafe"
+            else typesafe_middleware.TsChoiceToolSelectorMiddleware()
+        ]
     else:
         middleware = []
     return create_deep_agent(
@@ -453,6 +457,11 @@ def make_llm_tool_selector_graph(config: dict[str, object] | None = None) -> obj
 def make_ts_tool_selector_graph(config: dict[str, object] | None = None) -> object:
     """Create a bare Harbor graph using `TsToolSelectorMiddleware`."""
     return _make_bare_graph(config, selector="typesafe")
+
+
+def make_ts_choice_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using `TsChoiceToolSelectorMiddleware`."""
+    return _make_bare_graph(config, selector="typesafe-choice")
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

@@ -3,7 +3,7 @@
 import json
 from collections.abc import Callable, Iterator, Sequence
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Never, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -12,6 +12,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
+from langchain_anthropic import ChatAnthropic
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -26,6 +27,7 @@ from pydantic import Field
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+from deepagents_code.configurable_model import ConfigurableModelMiddleware
 from deepagents_code.goal_rubric import (
     RubricGraderState,
     _rubric_grader_messages,
@@ -55,6 +57,20 @@ class _FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Return this deterministic model after tool binding."""
         return self
+
+
+class _RequestCapturedError(Exception):
+    """Stop a model call after the final provider payload is available."""
+
+
+class _CapturingChatAnthropic(ChatAnthropic):
+    """Capture the payload immediately before the Anthropic client call."""
+
+    captured_payload: dict[str, Any] | None = Field(default=None, exclude=True)
+
+    async def _acreate(self, payload: dict[str, Any]) -> Never:
+        self.captured_payload = payload
+        raise _RequestCapturedError
 
 
 class _RetryingGraderModel(BaseChatModel):
@@ -360,6 +376,63 @@ class TestReliableRubricMiddleware:
         assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "yolo"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
+    async def test_goal_runtime_opus_5_5_uses_native_anthropic_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        @tool
+        def inspect_evidence() -> str:
+            """Inspect evidence before returning a grader verdict."""
+            return "verified"
+
+        bootstrap_model = _FixedGenericFakeChatModel(messages=iter([]))
+        opus = _CapturingChatAnthropic(
+            model="claude-opus-5-5",
+            api_key="test",
+            profile={"structured_output": False},
+        )
+        configurable = ConfigurableModelMiddleware(
+            persist_model_state=False,
+            openai_prompt_cache_key=False,
+            strict_model_resolution=True,
+        )
+        middleware = _rubric(
+            model=bootstrap_model,
+            tools=[inspect_evidence],
+            grader_middleware=[configurable],
+            runtime_bootstrap_model=bootstrap_model,
+        )
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "anthropic:claude-opus-5-5"
+        model_result = SimpleNamespace(
+            model=opus,
+            model_name="claude-opus-5-5",
+            provider="anthropic",
+            context_limit=1_000_000,
+            unsupported_modalities=frozenset(),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config.create_model",
+            lambda _model: model_result,
+        )
+
+        with pytest.raises(_RequestCapturedError):
+            await middleware._ainvoke_grader(state, 0, context=CLIContextSchema())
+
+        payload = opus.captured_payload
+        assert payload is not None
+        output_format = payload["output_config"]["format"]
+        assert output_format["type"] == "json_schema"
+        assert set(output_format["schema"]["required"]) == {
+            "result",
+            "explanation",
+            "criteria",
+        }
+        assert "tool_choice" not in payload
+        assert [tool_definition["name"] for tool_definition in payload["tools"]] == [
+            "inspect_evidence"
+        ]
 
     def test_inherits_sdk_coverage_retry_sync(self) -> None:
         # The SDK's coverage retry still fires when the grader under-reports its

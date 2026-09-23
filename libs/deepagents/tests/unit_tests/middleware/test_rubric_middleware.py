@@ -17,17 +17,18 @@ direct-hook unit tests could not.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphBubbleUp
 from pydantic import ValidationError
@@ -44,6 +45,13 @@ from deepagents.middleware.rubric import (
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.runnables import Runnable
+
 pytestmark = pytest.mark.filterwarnings(r"ignore:The middleware `RubricMiddleware` is in beta\..*")
 
 # Placeholder model identifier used wherever the grader is stubbed via
@@ -54,6 +62,57 @@ _STUB_MODEL = "stub:test"
 # itself. A non-empty list keeps the grader response usable so the middleware
 # does not exercise its retry/downgrade path.
 _PASSING_CRITERION: CriterionEval = {"name": "Response answers the question", "passed": True}
+
+
+class _Opus55FakeChatModel(GenericFakeChatModel):
+    """Anthropic-shaped model that rejects the forced-tool grader path."""
+
+    model_name: str = "claude-opus-5-5"
+    bound_tool_choice: str | None = None
+    bound_response_format: object | None = None
+
+    @property
+    def _llm_type(self) -> str:
+        return "anthropic-chat"
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Record whether the grader uses native JSON or a forced tool."""
+        if tool_choice == "any":
+            msg = "Claude Opus 5.5 does not support forced tool use"
+            raise AssertionError(msg)
+        self.tools = tools
+        self.bound_tool_choice = tool_choice
+        self.bound_response_format = kwargs.get("response_format")
+        return self
+
+
+class _SwapGraderModelMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Replace the construction model with a request-local grader model."""
+
+    def __init__(self, model: GenericFakeChatModel) -> None:
+        self.model = model
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse],
+    ) -> ModelResponse:
+        """Apply the same request override used by dcode model selection."""
+        return handler(request.override(model=self.model))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Apply the request-local model override to an asynchronous call."""
+        return await handler(request.override(model=self.model))
 
 
 # ---------------------------------------------------------------------- #
@@ -587,7 +646,9 @@ class TestGraderPlumbing:
 
         mw._ensure_grader()
 
-        assert seen["middleware"] == [nested_middleware]
+        assert seen["middleware"][0] is nested_middleware
+        assert len(seen["middleware"]) == 2
+        assert type(seen["middleware"][-1]).__name__ == "_RubricStructuredOutputMiddleware"
         assert seen["context_schema"] is GraderContext
         assert seen["state_schema"] is GraderState
 
@@ -621,6 +682,51 @@ class TestGraderPlumbing:
         mw = RubricMiddleware(model="custom-grader-model")
         mw._ensure_grader()
         assert seen["model"] == "custom-grader-model"
+
+    @pytest.mark.parametrize("invocation_mode", ["sync", "async"])
+    async def test_runtime_selected_opus_5_5_uses_provider_structured_output(
+        self,
+        invocation_mode: Literal["sync", "async"],
+    ) -> None:
+        @tool
+        def inspect_evidence() -> str:
+            """Inspect evidence before returning the grader verdict."""
+            return "verified"
+
+        model = _Opus55FakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content=json.dumps(
+                            {
+                                "result": "satisfied",
+                                "explanation": "all checks pass",
+                                "criteria": [_PASSING_CRITERION],
+                            }
+                        )
+                    )
+                ]
+            ),
+            profile={"structured_output": False},
+        )
+        bootstrap_model = GenericFakeChatModel(messages=iter([]))
+        mw = RubricMiddleware(
+            model=bootstrap_model,
+            tools=[inspect_evidence],
+            grader_middleware=[_SwapGraderModelMiddleware(model)],
+        )
+
+        state = {
+            "rubric": "Response answers the question",
+            "messages": [HumanMessage(content="Answer it")],
+        }
+        graded = await mw._ainvoke_grader(state, 0) if invocation_mode == "async" else mw._invoke_grader(state, 0)
+
+        assert graded.result == "satisfied"
+        assert model.bound_tool_choice is None
+        assert isinstance(model.bound_response_format, dict)
+        assert model.bound_response_format["type"] == "json_schema"
+        assert [bound_tool.name for bound_tool in model.tools] == ["inspect_evidence"]
 
     @pytest.mark.parametrize(
         ("model_name", "profile", "expected_strategy"),

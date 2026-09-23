@@ -16,7 +16,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from importlib import import_module
 from typing import (
     TYPE_CHECKING,
@@ -31,6 +31,8 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ModelRequest,
+    ModelResponse,
     PrivateStateAttr,
     ResponseT,
     TracePolicy,
@@ -38,7 +40,9 @@ from langchain.agents.middleware.types import (
     omit_payload,
 )
 from langchain.agents.structured_output import (
+    AutoStrategy,
     MultipleStructuredOutputsError,
+    ProviderStrategy,
     StructuredOutputValidationError,
 )
 from langchain_core._api import beta
@@ -307,7 +311,8 @@ class GraderResponse(BaseModel):
     """Structured output the grader sub-agent must emit.
 
     Passed as `response_format=GraderResponse` to `create_agent` so the
-    underlying provider's structured output strategy is auto-selected.
+    underlying provider's structured output strategy is selected, with scoped
+    compatibility overrides where model metadata lags provider behavior.
     """
 
     result: GraderVerdict = Field(
@@ -351,6 +356,55 @@ class GraderResponse(BaseModel):
 
 _StructuredOutputStrategy = Literal["ProviderStrategy", "ToolStrategy"]
 """Structured-output strategies LangChain can select for the grader."""
+
+
+def _requires_provider_structured_output(model: object) -> bool:
+    """Return whether the rubric grader must avoid forced output-tool calls.
+
+    Claude Opus 5.5 rejects Anthropic's forced tool choices (`any` and a named
+    tool). LangChain's automatic strategy currently selects `ToolStrategy`
+    because the model profile reports `structured_output=False`, so rubric
+    grading would otherwise fail before the model can return a verdict.
+    """
+    identifier = _model_identifier(model)
+    return (
+        identifier is not None
+        and (identifier.lower() == "claude-opus-5-5" or identifier.lower().startswith("claude-opus-5-5-"))
+        and getattr(model, "_llm_type", None) == "anthropic-chat"
+    )
+
+
+class _RubricStructuredOutputMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Select provider-native grader output for incompatible Anthropic models."""
+
+    @staticmethod
+    def _compatible_request(request: ModelRequest[Any]) -> ModelRequest[Any]:
+        response_format = request.response_format
+        if (
+            _requires_provider_structured_output(request.model)
+            and isinstance(response_format, AutoStrategy)
+            and response_format.schema is GraderResponse
+        ):
+            return request.override(
+                response_format=ProviderStrategy(GraderResponse),
+            )
+        return request
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse],
+    ) -> ModelResponse:
+        """Apply the compatibility strategy to a synchronous grader call."""
+        return handler(self._compatible_request(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Apply the compatibility strategy to an asynchronous grader call."""
+        return await handler(self._compatible_request(request))
 
 
 def _model_identifier(model: object) -> str | None:
@@ -470,11 +524,12 @@ def _strategy_from_model(
     """
     if isinstance(model, str):
         return None
+    requires_provider_strategy = _requires_provider_structured_output(model)
     identifier = _model_identifier(model)
     normalized = identifier.lower() if identifier is not None else None
     profile = getattr(model, "profile", None)
-    if isinstance(profile, Mapping) and profile.get("structured_output"):
-        if has_tools and normalized is not None and "gemini" in normalized and "gemini-3" not in normalized:
+    if requires_provider_strategy or (isinstance(profile, Mapping) and profile.get("structured_output")):
+        if not requires_provider_strategy and has_tools and normalized is not None and "gemini" in normalized and "gemini-3" not in normalized:
             return "ToolStrategy"
         return "ProviderStrategy"
     fallback_patterns = _fallback_structured_output_model_patterns()
@@ -592,7 +647,13 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         self._model_label = _configured_model_label(model)
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
-        self._grader_middleware = grader_middleware or ()
+        # Keep the compatibility adapter innermost so it sees the model selected
+        # by caller-provided runtime middleware (notably dcode's
+        # `ConfigurableModelMiddleware`).
+        self._grader_middleware = (
+            *(grader_middleware or ()),
+            _RubricStructuredOutputMiddleware(),
+        )
         self._grader_context_schema = grader_context_schema
         self._grader_state_schema = grader_state_schema
         self._prepare_messages_for_grader = prepare_messages_for_grader

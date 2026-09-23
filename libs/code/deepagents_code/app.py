@@ -10103,25 +10103,30 @@ class DeepAgentsApp(App):
         display at the end of one, and covers a turn whose final events were
         missed (an aborted stream, say).
         """
-        if not self._agent or not self._lc_thread_id:
+        thread_id = self._lc_thread_id
+        if not self._agent or not thread_id:
             return
         try:
-            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            state_values = await self._get_thread_state_values(thread_id)
         except Exception:
             logger.debug(
                 "Could not load thread state while reconciling cost and cache state",
                 exc_info=True,
             )
             return
+        if self._lc_thread_id != thread_id:
+            return
         remote = self._remote_agent()
         cost = (
             await remote.aget_session_cost(
-                {"configurable": {"thread_id": self._lc_thread_id}},
+                {"configurable": {"thread_id": thread_id}},
                 checkpoint=state_values,
             )
             if remote is not None
             else None
         )
+        if self._lc_thread_id != thread_id:
+            return
         if cost is not None:
             self._set_session_cost(
                 cost["total"],

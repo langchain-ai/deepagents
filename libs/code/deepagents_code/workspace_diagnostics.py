@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from textual.content import Content
 
+from deepagents_code.unicode_security import strip_dangerous_unicode
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -412,19 +414,28 @@ def format_diagnostics_content(diagnostics: WorkspaceDiagnostics) -> Content:
     """
     lines = [Content.styled(f"Server refusal: {diagnostics.reason}", "bold")]
     if diagnostics.changes:
-        lines.append(Content.styled("Changed since this thread was bound:", "dim"))
+        lines.append(
+            Content("To resume this thread, restore these settings and relaunch:")
+        )
         for change in diagnostics.changes:
             if change.state == "values_unavailable":
                 lines.append(
-                    Content.from_markup("  • $field changed", field=change.name)
+                    Content.from_markup(
+                        "  • Restore $field to its original value (unavailable)",
+                        field=strip_dangerous_unicode(change.name),
+                    )
                 )
             else:
                 lines.append(
                     Content.from_markup(
-                        "  • $field: $bound → $current",
-                        field=change.name,
-                        bound=_display_value(change.bound),
-                        current=_display_value(change.current),
+                        (
+                            "  • Unset $field (currently $current)"
+                            if change.bound is None
+                            else "  • Set $field to $bound (currently $current)"
+                        ),
+                        field=strip_dangerous_unicode(change.name),
+                        bound=strip_dangerous_unicode(_display_value(change.bound)),
+                        current=strip_dangerous_unicode(_display_value(change.current)),
                     )
                 )
     if diagnostics.snapshot_status == "unavailable":

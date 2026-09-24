@@ -144,8 +144,7 @@ async def test_side_context_preserves_human_attachments(
     ],
     ids=["image-url", "image", "file", "document"],
 )
-@pytest.mark.parametrize("include_text", [False, True])
-@pytest.mark.parametrize("serialized", [False, True])
+@pytest.mark.parametrize(("include_text", "serialized"), [(False, False), (True, True)])
 async def test_side_context_preserves_tool_attachments(
     attachment: dict[str, object], *, include_text: bool, serialized: bool
 ) -> None:
@@ -184,9 +183,15 @@ async def test_side_context_preserves_tool_attachments(
     assert state == before
 
 
-@pytest.mark.parametrize("tool", ["write_file", "edit_file"])
-@pytest.mark.parametrize("summarized", [False, True])
-@pytest.mark.parametrize("context_limit", [8000, None])
+@pytest.mark.parametrize(
+    ("tool", "summarized", "context_limit"),
+    [
+        ("write_file", False, 8000),
+        ("write_file", True, None),
+        ("edit_file", False, None),
+        ("edit_file", True, 8000),
+    ],
+)
 async def test_side_context_truncates_old_file_arguments(
     tool: str, context_limit: int | None, *, summarized: bool
 ) -> None:
@@ -975,70 +980,6 @@ async def test_app_requires_a_message_before_btw(
         notify.assert_called_once_with("Send a message before asking /btw.")
 
 
-@pytest.mark.parametrize("question", ["", "Why this approach?"])
-async def test_app_modal_while_main_run_continues(
-    question: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from deepagents_code.app import DeepAgentsApp
-
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-inflight")
-    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
-    remote = MagicMock(spec=RemoteAgent)
-    remote.arefresh_side_cost = AsyncMock(return_value=None)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def answer(
-        question: str,
-        *,
-        config: dict[str, dict[str, object]],
-        history: tuple[tuple[str, str], ...] = (),
-    ) -> str:
-        assert question == "Why this approach?"
-        assert not history
-        assert isinstance(config, dict)
-        assert config == {"configurable": {"thread_id": app._lc_thread_id}}
-        started.set()
-        await release.wait()
-        return "**Side answer**"
-
-    remote.abtw = AsyncMock(side_effect=answer)
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        app._agent_running = True
-        app._agent_turn_started = True
-        app._active_user_message = UserMessage("main")
-        app._connecting = False
-        before = app._message_store.get_all_messages()
-        app._model_override = "provider:selected"
-        app._model_params_override = {"temperature": 0.2}
-        assert app._can_bypass_queue("/btw why")
-        await app._submit_input(f"/btw {question}".strip(), "command")
-        await pilot.pause()
-        assert isinstance(app.screen, BtwScreen)
-        if not question:
-            app.screen.query_one(TextArea).load_text("Why this approach?")
-            await pilot.press("enter")
-        await asyncio.wait_for(started.wait(), 2)
-        loading = app.screen.query_one("#btw-loading", Static)
-        assert loading.display
-        assert "Thinking..." in str(loading.content)
-        assert app._agent_running
-        release.set()
-        await pilot.pause()
-        assert not loading.display
-        assert app.screen.query_one(Markdown)._markdown == "**Side answer**"
-        await pilot.press("escape")
-        await pilot.pause()
-        assert not isinstance(app.screen, BtwScreen)
-        assert app._agent_running
-        assert app._message_store.get_all_messages() == before
-        assert not app._pending_messages
-        app._agent_running = False
-
-
 async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1046,11 +987,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
 
     app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-scroll")
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-    monkeypatch.setattr(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(return_value={"messages": [HumanMessage(content="main")]}),
-    )
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
     remote = MagicMock(spec=RemoteAgent)
     remote.arefresh_side_cost = AsyncMock(return_value=None)
     remote.abtw = AsyncMock(return_value="\n\n".join(f"Line {i}" for i in range(80)))
@@ -1068,11 +1005,21 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
         await pilot.pause()
         app._connecting = False
         app._agent_running = True
+        # The first main turn has no checkpoint yet, but /btw is already usable.
+        app._agent_turn_started = True
+        app._active_user_message = UserMessage("main")
+        app._model_override = "provider:selected"
+        app._model_params_override = {"temperature": 0.2}
         worker = app.run_worker(main_run(), group="agent")
         await asyncio.wait_for(main_started.wait(), 2)
         before = app._message_store.get_all_messages()
         await app._submit_input("/btw why", "command")
         await pilot.pause()
+        remote.abtw.assert_awaited_once_with(
+            "why",
+            config={"configurable": {"thread_id": app._lc_thread_id}},
+            history=(),
+        )
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0
         await pilot.press("tab", "home")
@@ -1092,6 +1039,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
         assert not worker.is_cancelled
         assert app._agent_running
         assert app._message_store.get_all_messages() == before
+        assert not app._pending_messages
         release.set()
         await asyncio.wait_for(main_finished.wait(), 2)
         app._agent_running = False

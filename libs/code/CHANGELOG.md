@@ -2,6 +2,17 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.77](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.76...deepagents-code==0.1.77) (2026-09-24)
+
+
+### Bug Fixes
+
+* **code:** hide unavailable prompt search hints ([#6543](https://github.com/langchain-ai/deepagents/issues/6543)) ([3ba4356](https://github.com/langchain-ai/deepagents/commit/3ba435604c4b7f664978fa3c5f81914b05d86321))
+* **code:** make workspace configuration warnings actionable ([#6546](https://github.com/langchain-ai/deepagents/issues/6546)) ([05900e7](https://github.com/langchain-ai/deepagents/commit/05900e7ecc14ce64d9535617400a5e2f35d4c734))
+* **code:** preview remote plugin contents before installation ([#6542](https://github.com/langchain-ai/deepagents/issues/6542)) ([ec56c57](https://github.com/langchain-ai/deepagents/commit/ec56c57fb086dc5bee06547f9896e49a52ead3b3))
+* **code:** report a mis-encoded `config.toml` from the older config writers ([#6514](https://github.com/langchain-ai/deepagents/issues/6514)) ([a6e2140](https://github.com/langchain-ai/deepagents/commit/a6e21408ccc1b9a80f941d3458a0ae58dcc29abe))
+* **code:** show and handle escape during MCP browser login ([#6541](https://github.com/langchain-ai/deepagents/issues/6541)) ([0a1967e](https://github.com/langchain-ai/deepagents/commit/0a1967e94c4bce9cb4a28b8368510f3392e9e52b))
+
 ## [0.1.76](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.75...deepagents-code==0.1.76) (2026-09-24)
 
 ### Features

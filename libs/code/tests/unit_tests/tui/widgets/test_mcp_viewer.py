@@ -1118,18 +1118,50 @@ class TestModuleLevelHelpers:
 
     # --- _visible_tools_for ---
 
-    def test_visible_tools_for_zero_tool_server_name_match_returns_none(self) -> None:
-        """Server name match on a zero-tool server returns None (no stub header)."""
-        from deepagents_code.tui.widgets.mcp_viewer import _visible_tools_for
+    @pytest.mark.parametrize("server", _mixed_status_info()[1:])
+    async def test_filter_keeps_matching_zero_tool_server(
+        self, server: MCPServerInfo
+    ) -> None:
+        """Searching a zero-tool server retains its header without an empty state."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press(*server.name.upper())
+            await pilot.pause()
 
-        info = MCPServerInfo(
-            name="github",
-            transport="http",
-            status="unauthenticated",
-            error="Run: dcode mcp login github",
-        )
-        # Server name matches but tools=() → or None collapses to None
-        assert _visible_tools_for(info, ["github"]) is None
+            headers = screen.query(MCPServerHeaderItem)
+            assert len(headers) == 1
+            assert headers.first().server.name == server.name
+            assert not screen.query(MCPToolItem)
+            assert not screen.query(".mcp-empty")
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            ("WEB", ["search"]),
+            ("search WEB", ["search"]),
+            ("read write", []),
+            ("remote-api", ["search"]),
+            ("read_file", ["read_file"]),
+            ("sse", []),
+        ],
+    )
+    async def test_filter_names_and_descriptions(
+        self, query: str, expected: list[str]
+    ) -> None:
+        """Filter names and descriptions case-insensitively with all tokens required."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press(*query)
+            await pilot.pause()
+
+            assert [tool.tool_name for tool in screen.query(MCPToolItem)] == expected
+            assert bool(screen.query(".mcp-empty")) == (not expected)
 
     def test_visible_tools_for_zero_tool_server_no_tokens_returns_empty_tuple(
         self,

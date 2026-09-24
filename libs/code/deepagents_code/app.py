@@ -9972,10 +9972,17 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import HumanMessage
 
-        from deepagents_code.sessions import set_thread_metadata
+        from deepagents_code.sessions import set_thread_metadata, thread_exists
 
         child_id = str(uuid4())
-        config = {"configurable": {"thread_id": child_id}}
+        config = {
+            "configurable": {"thread_id": child_id},
+            "metadata": {
+                "agent_name": agent_name,
+                "cwd": cwd,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        }
         await remote.aensure_thread(config)
         await remote.abind_workspace(config, cwd)
         await remote.aupdate_state(
@@ -9990,11 +9997,11 @@ class DeepAgentsApp(App):
         # Seeding as model schedules after-model middleware. Mark that work
         # complete without running it so the child is immediately offloadable.
         await remote.aupdate_state(config, None, as_node="__end__")
-        await set_thread_metadata(
-            child_id,
-            agent_name=agent_name,
-            cwd=cwd,
-        )
+        # The HTTP state API drops config metadata, so mirror the server's
+        # registration metadata into checkpoints when storage is shared.
+        # External servers may keep the child entirely outside sessions.db.
+        if await thread_exists(child_id):
+            await set_thread_metadata(child_id, agent_name=agent_name, cwd=cwd)
         return child_id
 
     async def _switch_to_handoff(self, thread_id: str, child_id: str) -> None:

@@ -1646,6 +1646,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
 
+    When using `create_agent` directly, add
+    [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
+    last in the `middleware` list, so `read_file` results the model can't accept are
+    replaced with a text notice. `create_deep_agent` adds it automatically.
+
     Args:
         backend: Backend for file storage and optional execution.
 

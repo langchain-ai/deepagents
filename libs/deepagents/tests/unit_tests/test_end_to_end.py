@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
@@ -41,6 +42,7 @@ from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMidd
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent, create_sub_agent
 from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -119,7 +121,7 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
     """Every message list passed to `_generate`, in call order.
 
-    Some middleware (e.g. `_UnsupportedContentMiddleware`) only transforms the
+    Some middleware (e.g. `UnsupportedContentMiddleware`) only transforms the
     outgoing request, it never mutates persisted
     graph state, so `result["messages"]` from `agent.invoke(...)` can't reveal
     what the model actually received. This does.
@@ -5111,7 +5113,7 @@ def test_utf8_text_read_reaches_model_as_text() -> None:
 class TestMultimodalProfileScrubRuntimeModelSwitch:
     """The filter must read the model a custom middleware selects at call time.
 
-    `_UnsupportedContentMiddleware` is installed last, so it is the innermost
+    `UnsupportedContentMiddleware` is installed last, so it is the innermost
     `wrap_model_call` layer and observes `request.model` after every override.
     """
 
@@ -5210,6 +5212,34 @@ class TestMultimodalProfileScrubRuntimeModelSwitch:
         )
 
         tool_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, ToolMessage))
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubStandalone:
+    def test_create_agent_with_filesystem_middleware(self) -> None:
+        """Callers composing `FilesystemMiddleware` into `create_agent` add the filter themselves."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            ),
+            profile={"image_inputs": False},
+        )
+        agent = create_agent(model, middleware=[FilesystemMiddleware(), UnsupportedContentMiddleware()])
+
+        agent.invoke(
+            {
+                "messages": [HumanMessage(content="read /photo.png")],
+                "files": {"/photo.png": create_file_data(_image_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
 
 

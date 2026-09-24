@@ -106,14 +106,30 @@ def _read_file_placeholder(block: ContentBlock, message: AnyMessage) -> ContentB
     )
 
 
-class _UnsupportedContentMiddleware(AgentMiddleware[AgentState[ResponseT], ContextT, ResponseT]):
+class UnsupportedContentMiddleware(AgentMiddleware[AgentState[ResponseT], ContextT, ResponseT]):
     """Replace multimodal input blocks the active model can't accept with a text notice.
+
+    Without it, a request carrying content the model can't accept (e.g. an image sent
+    to a text-only model) fails, and since that content stays in the thread, every
+    later request fails too. This middleware replaces such blocks with a text notice
+    on every model request. The thread itself keeps the original content, so switching
+    to a model that accepts it sends it again.
 
     Support is read from
     [`model.profile`](https://docs.langchain.com/oss/python/langchain/models#model-profiles).
 
     Place this middleware last in the `middleware` list, so that if
     `ModelRequest.model` changes, this middleware will apply to the correct one.
+
+    [`create_deep_agent`][deepagents.graph.create_deep_agent] adds it automatically.
+
+    Example:
+        ```python
+        from deepagents.middleware import FilesystemMiddleware, UnsupportedContentMiddleware
+        from langchain.agents import create_agent
+
+        agent = create_agent(model, middleware=[FilesystemMiddleware(), UnsupportedContentMiddleware()])
+        ```
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)

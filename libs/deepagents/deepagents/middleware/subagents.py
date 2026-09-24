@@ -31,7 +31,6 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware._unsupported_content import _UnsupportedContentMiddleware
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import (
@@ -40,6 +39,7 @@ from deepagents.middleware.summarization import (
     SummarizationEvent,
     _DeepAgentsSummarizationMiddleware,
 )
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 if TYPE_CHECKING:
     from pydantic_core import InitErrorDetails
@@ -583,8 +583,8 @@ def create_sub_agent(
     if interrupt_on:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    if not any(m.name == _UnsupportedContentMiddleware.__name__ for m in middleware):
-        middleware.append(_UnsupportedContentMiddleware())
+    if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
+        middleware.append(UnsupportedContentMiddleware())
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")
     create_agent_kwargs: dict[str, Any] = {

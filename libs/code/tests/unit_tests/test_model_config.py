@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
 from pathlib import Path
@@ -60,6 +60,8 @@ from deepagents_code.model_config import (
     save_recent_model,
     save_recent_startup_mode,
     save_thread_columns,
+    save_thread_relative_time,
+    save_thread_sort_order,
     suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,
@@ -3166,6 +3168,60 @@ class TestUnsuppressWarning:
         result = unsuppress_warning("tavily", config_path)
 
         assert result is False
+
+
+_MIS_ENCODED_CONFIG = '[ui]\ntheme = "dark"\n'.encode("utf-16")
+
+
+class TestWritersReportMisEncodedConfig:
+    """Writers that parse `config.toml` themselves must report a non-UTF-8 file.
+
+    `tomllib` decodes the bytes itself, so the failure is a `UnicodeDecodeError`
+    rather than `TOMLDecodeError`. Raised from a `/threads` handler, it exits
+    the app instead of showing the failure toast.
+    """
+
+    @pytest.mark.parametrize(
+        "write",
+        [
+            pytest.param(
+                lambda path: unsuppress_warning("ripgrep", path),
+                id="unsuppress_warning",
+            ),
+            pytest.param(
+                lambda path: save_thread_columns(dict(THREAD_COLUMN_DEFAULTS), path),
+                id="save_thread_columns",
+            ),
+            pytest.param(
+                lambda path: save_thread_relative_time(False, path),
+                id="save_thread_relative_time",
+            ),
+            pytest.param(
+                lambda path: save_thread_sort_order("created_at", path),
+                id="save_thread_sort_order",
+            ),
+        ],
+    )
+    def test_returns_false_and_keeps_the_file(
+        self, tmp_path: Path, write: Callable[[Path], bool]
+    ) -> None:
+        """The writer reports failure and leaves the file untouched."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_bytes(_MIS_ENCODED_CONFIG)
+
+        assert write(config_path) is False
+        assert config_path.read_bytes() == _MIS_ENCODED_CONFIG
+
+    def test_suppress_reason_names_the_encoding(self, tmp_path: Path) -> None:
+        """The reason points at the encoding, not at file permissions."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_bytes(_MIS_ENCODED_CONFIG)
+
+        reason = suppress_warning_reason("ripgrep", config_path)
+
+        assert reason is not None
+        assert "UTF-8" in reason
+        assert config_path.read_bytes() == _MIS_ENCODED_CONFIG
 
 
 class TestMcpServerTrustLists:

@@ -4639,6 +4639,11 @@ def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | 
     except tomllib.TOMLDecodeError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} is not valid TOML"
+    except UnicodeDecodeError:
+        # `tomllib` decodes the bytes itself, so a file that is not UTF-8
+        # raises `UnicodeDecodeError` rather than `TOMLDecodeError`.
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return f"{config_path} is not UTF-8 encoded"
     except OSError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} could not be written"
@@ -4705,7 +4710,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     _invalidate_config_caches(config_path)
@@ -6156,7 +6161,7 @@ def save_thread_columns(
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
@@ -6220,7 +6225,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
@@ -6449,7 +6454,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()

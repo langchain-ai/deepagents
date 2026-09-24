@@ -85,6 +85,20 @@ class TestSetServerDisabled:
         # File contents preserved verbatim.
         assert cfg.read_text() == corrupt
 
+    def test_refuses_to_overwrite_mis_encoded_config(self, tmp_path: Path) -> None:
+        """A non-UTF-8 config gets the same refusal as unparseable TOML.
+
+        `tomllib` raises `UnicodeDecodeError` for it rather than
+        `TOMLDecodeError`, and escaping from the `/mcp` toggle exits the app.
+        """
+        cfg = tmp_path / "config.toml"
+        mis_encoded = "[mcp]\ndisabled_servers = []\n".encode("utf-16")
+        cfg.write_bytes(mis_encoded)
+        ok, detail = set_server_disabled("github", True, config_path=cfg)
+        assert not ok
+        assert detail is not None
+        assert cfg.read_bytes() == mis_encoded
+
 
 class TestIsServerDisabled:
     """Tests for `is_server_disabled`."""

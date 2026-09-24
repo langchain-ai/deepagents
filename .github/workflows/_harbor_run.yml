@@ -319,8 +319,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -382,7 +382,7 @@ jobs:
             missing+=("TAVILY_API_KEY")
           fi
 
-          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" ]]; then
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-hybrid-tool-selector" ]]; then
             [ -z "$TYPESAFE_API_KEY" ] && missing+=("TYPESAFE_API_KEY")
             [ -z "$TYPESAFE_BASE_URL" ] && missing+=("TYPESAFE_BASE_URL")
           fi
@@ -622,8 +622,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -679,7 +679,7 @@ jobs:
           git clone --filter=blob:none --no-checkout \
             https://github.com/langchain-ai/langchain.git "$RUNNER_TEMP/langchain-tool-selector"
           git -C "$RUNNER_TEMP/langchain-tool-selector" fetch --depth=1 origin \
-            82aef99fa579b5db865b7e8d66881e43983f9f46
+            b5ddb60bd2efb5bfcd72ab8333a7d91dc09f5905
           git -C "$RUNNER_TEMP/langchain-tool-selector" checkout FETCH_HEAD -- \
             libs/core libs/langchain_v1 libs/partners/typesafe
           rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/core/" \
@@ -930,7 +930,7 @@ jobs:
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           agent_host_args=()
-          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" ]]; then
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-hybrid-tool-selector" ]]; then
             agent_env_args+=(
               --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
               --agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'

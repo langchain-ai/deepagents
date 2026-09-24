@@ -123,6 +123,9 @@ on:
           - ts-tool-selector
           - ts-choice-tool-selector
           - ts-hybrid-tool-selector
+          - semif-tool-selector
+          - semif-choice-tool-selector
+          - semif-hybrid-tool-selector
           - tau3
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."

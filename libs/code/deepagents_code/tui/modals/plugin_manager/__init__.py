@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code import theme
+from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import _save_toml_field
 from deepagents_code.plugins import (
@@ -459,7 +460,12 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._update_tab_labels()
         status_widget = self.query_one("#plugin-manager-status", Static)
         if self._mode == "plugin_details" and self._selected_plugin is not None:
-            status_widget.update(_plugin_details_content(self._selected_plugin))
+            status_widget.update(
+                _plugin_details_content(
+                    self._selected_plugin,
+                    inspecting=self._selected_plugin.plugin_id in self._inspecting,
+                )
+            )
         elif self._mode == "installed_details" and self._selected_plugin is not None:
             status_widget.update(
                 _installed_plugin_details_content(self._selected_plugin)
@@ -1060,6 +1066,8 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             self._selected_plugin = row
             self._mode = "plugin_details"
             self._error = None
+            if row.skill_count is None and not is_env_truthy(OFFLINE):
+                self._start_plugin_inspection(row)
             self._refresh_view()
             return
         if option_id.startswith("installed:"):
@@ -1078,11 +1086,8 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             return
         if option_id == "action:inspect":
             row = self._selected_plugin
-            if row is not None and row.plugin_id not in self._inspecting:
-                self._inspecting.add(row.plugin_id)
-                self._error = None
-                self._refresh_view()
-                self._inspect_selected_plugin(row)
+            if row is not None:
+                self._start_plugin_inspection(row)
             return
         if option_id == "action:install":
             await self._install_selected_plugin()
@@ -1154,6 +1159,14 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._refresh_view()
         if enabled and self._on_auto_update_enabled is not None:
             self._on_auto_update_enabled()
+
+    def _start_plugin_inspection(self, row: _PluginRow) -> None:
+        if row.plugin_id in self._inspecting:
+            return
+        self._inspecting.add(row.plugin_id)
+        self._error = None
+        self._refresh_view()
+        self.call_after_refresh(self._inspect_selected_plugin, row)
 
     @work(exit_on_error=False)
     async def _inspect_selected_plugin(self, row: _PluginRow) -> None:

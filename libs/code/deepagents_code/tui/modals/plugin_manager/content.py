@@ -80,14 +80,11 @@ def _install_details_options(
     options = (
         [
             Option(
-                "Downloading and inspecting contents..."
-                if inspecting
-                else "Inspect contents (downloads source)",
+                "Inspect contents (downloads source)",
                 id="action:inspect",
-                disabled=inspecting,
             )
         ]
-        if uninspected
+        if uninspected and not inspecting
         else []
     )
     return [
@@ -205,7 +202,7 @@ def _status_lines(row: _PluginRow) -> list[Content]:
     return lines
 
 
-def _plugin_details_content(row: _PluginRow) -> Content:
+def _plugin_details_content(row: _PluginRow, *, inspecting: bool = False) -> Content:
     _, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
         Content.styled("Plugin details", "bold"),
@@ -221,7 +218,12 @@ def _plugin_details_content(row: _PluginRow) -> Content:
     if row.author:
         parts.extend(["\n\n", Content.styled(f"By: {row.author}", "dim")])
     parts.extend(["\n\n", Content.styled("Will install:", "bold")])
-    for line in _will_install_lines(row):
+    lines = (
+        ["Downloading and inspecting contents..."]
+        if inspecting
+        else _will_install_lines(row)
+    )
+    for line in lines:
         parts.extend(["\n  ", Content.styled(line, "dim")])
     parts.extend(
         [

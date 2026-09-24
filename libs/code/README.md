@@ -42,6 +42,18 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## Plugin previews
+
+Opening a plugin's details in `/plugins` automatically downloads its source when
+needed and lists its skills, MCP servers, and hook events before installation.
+Inspection does not install or enable the plugin, connect MCP servers, or run hooks.
+Browsing the plugin list does not download sources; completed previews are reused
+while the manager stays open. If inspection fails, choose **Inspect contents** to
+retry.
+
+Set `DEEPAGENTS_CODE_OFFLINE=1` to disable automatic downloads, including plugin
+previews. You can still explicitly choose **Inspect contents (downloads source)**.
+
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

@@ -1,4 +1,4 @@
-"""Opt-in plugin inventory inspection without installation."""
+"""Automatic plugin inventory inspection without installation."""
 
 import asyncio
 import json
@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from textual.widgets import OptionList, Static
 
+from deepagents_code._env_vars import OFFLINE
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.plugins import discovery, store
 from deepagents_code.plugins.marketplace import MarketplaceError
@@ -145,6 +146,7 @@ def test_malformed_components_fail_inspection(
 def screen(
     row: _PluginRow, monkeypatch: pytest.MonkeyPatch
 ) -> plugin_manager.PluginManagerScreen:
+    monkeypatch.delenv(OFFLINE, raising=False)
     snapshot = _ManagerState(
         available_plugins=(row, replace(row, plugin_id="other@official")),
         installed_plugins=(),
@@ -160,7 +162,7 @@ def screen(
     return plugin_manager.PluginManagerScreen()
 
 
-async def test_inspection_is_opt_in_and_survives_connection_refresh(
+async def test_inspection_fetches_only_opened_plugin_and_caches_preview(
     row: _PluginRow,
     screen: plugin_manager.PluginManagerScreen,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,12 +175,9 @@ async def test_inspection_is_opt_in_and_survives_connection_refresh(
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(screen)
         await pilot.pause()
-        await pilot.press("/", "d", "e", "m", "o", "enter")
         inspect.assert_not_called()
-        assert "Contents not inspected" in str(
-            screen.query_one("#plugin-manager-status", Static).content
-        )
-
+        await pilot.press("/", "d", "e", "m", "o")
+        inspect.assert_not_called()
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -199,6 +198,55 @@ async def test_inspection_is_opt_in_and_survives_connection_refresh(
         assert inspect.call_count == 1
 
 
+async def test_offline_disables_automatic_inspection_but_allows_manual_fetch(
+    row: _PluginRow,
+    screen: plugin_manager.PluginManagerScreen,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(OFFLINE, "1")
+    inspect = MagicMock(return_value=replace(row, skill_count=0))
+    monkeypatch.setattr(plugin_manager, "_inspect_plugin", inspect)
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("/", "d", "e", "m", "o", "enter")
+        inspect.assert_not_called()
+        assert "Contents not inspected" in str(
+            screen.query_one("#plugin-manager-status", Static).content
+        )
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        inspect.assert_called_once_with(row)
+
+
+async def test_known_local_contents_do_not_fetch(
+    row: _PluginRow,
+    screen: plugin_manager.PluginManagerScreen,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _ManagerState(
+        available_plugins=(replace(row, skill_count=0, mcp_server_names=("local",)),),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "./marketplace", 1, 0),),
+        errors=(),
+    )
+    monkeypatch.setattr(
+        plugin_manager, "_load_manager_state", lambda *_a, **_kw: snapshot
+    )
+    inspect = MagicMock()
+    monkeypatch.setattr(plugin_manager, "_inspect_plugin", inspect)
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
+        inspect.assert_not_called()
+        assert "MCP: local" in str(
+            screen.query_one("#plugin-manager-status", Static).content
+        )
+
+
 @pytest.mark.parametrize("fails", [False, True])
 async def test_pending_inspection_allows_navigation_without_stale_updates(
     screen: plugin_manager.PluginManagerScreen,
@@ -208,8 +256,12 @@ async def test_pending_inspection_allows_navigation_without_stale_updates(
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
+    requested: list[str] = []
 
     def inspect(selected: _PluginRow) -> _PluginRow:
+        requested.append(selected.plugin_id)
+        if selected.plugin_id == "other@official":
+            return replace(selected, skill_count=0)
         loop.call_soon_threadsafe(started.set)
         if not release.wait(timeout=10):
             msg = "test did not release inspection"
@@ -225,11 +277,17 @@ async def test_pending_inspection_allows_navigation_without_stale_updates(
         app.push_screen(screen)
         await pilot.pause()
         try:
-            await pilot.press("/", "d", "e", "m", "o", "enter", "enter")
+            await pilot.press("/", "d", "e", "m", "o", "enter")
             await asyncio.wait_for(started.wait(), timeout=2)
             options = screen.query_one("#plugin-manager-options", OptionList)
             assert options.get_option("action:install").disabled
-            assert options.get_option("action:inspect").disabled
+            assert options.option_count == 2
+            assert "Downloading and inspecting contents" in str(
+                screen.query_one("#plugin-manager-status", Static).content
+            )
+            await pilot.press("escape", "enter")
+            assert requested == ["demo@official"]
+            assert options.get_option("action:install").disabled
             await pilot.press(
                 "escape", "/", "end", "ctrl+u", "o", "t", "h", "e", "r", "enter"
             )
@@ -259,7 +317,7 @@ async def test_malformed_mcp_type_recovers_and_allows_retry(
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(screen)
         await pilot.pause()
-        await pilot.press("/", "d", "e", "m", "o", "enter", "enter")
+        await pilot.press("/", "d", "e", "m", "o", "enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert "Could not inspect contents" in str(
@@ -294,7 +352,7 @@ async def test_failed_inspection_can_be_retried(
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(screen)
         await pilot.pause()
-        await pilot.press("/", "d", "e", "m", "o", "enter", "enter")
+        await pilot.press("/", "d", "e", "m", "o", "enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert "download failed" in str(

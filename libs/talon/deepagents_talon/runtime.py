@@ -1128,16 +1128,25 @@ def _default_backend(env: Mapping[str, str] | None, assistant_dir: Path | None) 
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
     home = assistant_dir or TalonConfig.from_env(values).home
-    artifacts = home.expanduser().resolve() / "artifacts"
-    artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
-    artifacts.chmod(0o700)
+    artifacts = _prepare_artifacts(home)
     local = LocalShellBackend(
         root_dir=root,
         virtual_mode=False,
         env=_backend_child_env(values),
         inherit_env=False,
     )
-    return CompositeBackend(default=local, routes={}, artifacts_root=str(artifacts))
+    return CompositeBackend(default=local, routes={}, artifacts_root=artifacts)
+
+
+def _prepare_artifacts(home: Path) -> str:
+    artifacts = home.expanduser().resolve() / "artifacts"
+    artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(artifacts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+    return str(artifacts)
 
 
 def _backend_child_env(env: Mapping[str, str]) -> dict[str, str]:

@@ -47,3 +47,24 @@ def test_custom_backend_is_preserved(tmp_path: Path) -> None:
     runtime = DeepAgentRuntime(model="test:model", backend=backend, assistant_dir=tmp_path)
     assert runtime.backend is backend
     assert not (tmp_path / "artifacts").exists()
+
+
+@pytest.mark.parametrize("existing_target", [False, True])
+def test_artifact_symlink_does_not_modify_target(tmp_path: Path, *, existing_target: bool) -> None:
+    assistant = tmp_path / "assistant"
+    assistant.mkdir()
+    target = tmp_path / "shared"
+    if existing_target:
+        target.mkdir()
+        target.chmod(0o755)
+        (target / "data.txt").write_text("shared data")
+    (assistant / "artifacts").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(OSError, match="artifacts"):
+        DeepAgentRuntime(model="test:model", assistant_dir=assistant, env={})
+
+    if existing_target:
+        assert target.stat().st_mode & 0o777 == 0o755
+        assert (target / "data.txt").read_text() == "shared data"
+    else:
+        assert not target.exists()

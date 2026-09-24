@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
+
+### Bug Fixes
+
+- Recover when `read_file` media is rejected.
+- Filter unsupported multimodal content through separate middleware.
+- Bound tool offload paths and abbreviate long IDs.
+
 ## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
 
 ### Bug Fixes

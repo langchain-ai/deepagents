@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -266,13 +266,13 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     await runtime.start()
 
-    assert isinstance(captured["backend"], LocalShellBackend)
+    assert isinstance(captured["backend"], CompositeBackend)
     assert captured["checkpointer"] is runtime.checkpointer
     assert captured["system_prompt"] == "assistant instructions"
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()
-    assert captured["backend"].cwd == tmp_path.resolve()
+    assert captured["backend"].default.cwd == tmp_path.resolve()
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert not {"fetch_url", "web_search"} & tool_names
@@ -623,7 +623,7 @@ async def test_runtime_uses_configured_workspace_for_default_backend(
 
     await runtime.start()
 
-    assert captured["backend"].cwd == tmp_path.resolve()
+    assert captured["backend"].default.cwd == tmp_path.resolve()
 
 
 def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Path) -> None:
@@ -647,7 +647,7 @@ def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Pat
             "AWS_SESSION_TOKEN": "aws-session",
         },
     )
-    backend = cast("LocalShellBackend", runtime.backend)
+    backend = cast("CompositeBackend", runtime.backend)
 
     result = backend.execute(
         "printf '<%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s>' "
@@ -685,7 +685,7 @@ def test_runtime_default_backend_hardens_shell_env(tmp_path: Path) -> None:
             "LC_ALL": "C",
         },
     )
-    backend = cast("LocalShellBackend", runtime.backend)
+    backend = cast("CompositeBackend", runtime.backend)
 
     result = backend.execute(
         'printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s" '

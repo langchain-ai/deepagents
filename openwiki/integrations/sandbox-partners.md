@@ -5,7 +5,7 @@ description: How Deep Agents shell backends derive filesystem behavior from prov
 tags: [sandbox, backends, integrations, deepagents, dcode, partners]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
+    at: 2026-09-24T08:06:01.996Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -29,7 +29,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
   - id: openwiki-source-903e05891b2ddf4f958276fd
     resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
 ---
 
 # Sandbox and Partner Backends
@@ -141,7 +141,9 @@ When dcode constructs a sandboxed server runtime, it opens the context once, sto
 
 A partner adapter should implement only provider translation: turn the provider SDK's command and file APIs into the four `BaseSandbox` primitives and preserve the batch-response contract. Provider lifecycle belongs in a `SandboxProvider`, where attachment, readiness, deletion, credentials, and snapshot behavior can be described accurately in metadata and enforced before the adapter is exposed.
 
-The curated registry currently names `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`. They are not interchangeable security boundaries. For example, metadata marks AgentCore as unable to attach by ID, and marks LangSmith and Runloop as snapshot-capable. dcode's optional provider extras include AgentCore, Daytona, Modal, Runloop, and Vercel adapters; the base dcode package requires Python `>=3.12,<4.0` and pins `deepagents==0.7.18`.
+The curated registry currently names `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`. They are not interchangeable security boundaries. For example, metadata marks AgentCore as unable to attach by ID, and marks LangSmith and Runloop as snapshot-capable.
+
+The distribution behind the `dcode` command is `deepagents-code`, currently version `0.1.75`. It requires Python `>=3.12,<4.0` and pins `deepagents==0.7.18`. `langsmith[sandbox]>=0.14.0` is a base dependency, while AgentCore, Daytona, Modal, Runloop, and Vercel adapters are separately installed through the corresponding optional sandbox extras. Installing the base package therefore does not install those five partner adapters.
 
 When adding or changing an integration:
 
@@ -155,3 +157,10 @@ When adding or changing an integration:
 `test_sandbox_backend.py` uses a minimal `MockSandbox` to verify the derived contract: server-side paginated reads, write preflight plus upload, inline and uploaded edit paths, parser failures, literal grep semantics, glob errors, capture-offload preservation of failures, and recursive deletion behavior. It specifically checks that malformed capture-wrapper output is not re-executed and that a child command's exit code survives the wrapper.
 
 `test_local_sandbox_operations.py` supplies a `LocalSubprocessSandbox` that derives from `BaseSandbox` but intentionally invokes the local shell. It is gated by `RUN_SANDBOX_TESTS=true` and exercises the shared filesystem behavior against real temporary files: nested writes, pagination, permission and missing-path errors, exact replacement, CRLF preservation, mixed line endings, search, glob, and deletion. Its existence is a practical reminder that satisfying the sandbox protocol does not make an implementation isolated.
+
+Run that opt-in local verification only in a trusted development or CI environment because its subclass executes host commands:
+
+```bash
+cd libs/deepagents
+RUN_SANDBOX_TESTS=true make test TEST_FILE=tests/unit_tests/test_local_sandbox_operations.py
+```

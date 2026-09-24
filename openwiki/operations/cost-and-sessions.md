@@ -3,9 +3,6 @@ type: operations reference
 title: Cost, Usage, and Session Operations
 description: Operate dcode's durable estimated-cost checkpoints, replay-safe live usage display, pricing catalog, offload settlement, and SQLite-backed threads. Explains attribution, breakdowns, and why estimates are not provider billing records.
 tags: [dcode, sessions, cost-tracking, usage, operations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
 sources:
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
@@ -23,15 +20,22 @@ sources:
     resource: repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py
   - id: openwiki-source-1326222fbf96b7f18194e63b
     resource: repo://libs/code/deepagents_code/tui/modals/session_cost.py
+  - id: openwiki-source-851e33831638e46febf30b1d
+    resource: repo://libs/code/deepagents_code/tui/widgets/debug_console.py
   - id: openwiki-source-5775d9bd08f14b550e010f4c
     resource: repo://libs/code/PRICING.md
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-4a1c43d9b711698f20494eb8
+    resource: repo://libs/code/tests/unit_tests/test_debug_console.py
   - id: openwiki-source-595131cfca9034bbbf74e8b2
     resource: repo://libs/code/tests/unit_tests/test_session_stats.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-24T08:06:01.996Z
 ---
 
 # Cost, Usage, and Session Operations
@@ -111,7 +115,11 @@ The end-of-run Rich usage table is controlled by `display.show_usage_stats` or `
 
 ## Durable breakdown and warning surfaces
 
-The Debug Console exposes a copyable **entire-thread estimated** token-and-cost breakdown only when compatible, historically complete structured detail is available. It obtains the durable `_session_cost_usd` and `_session_cost_breakdown` from the active app. The modal sanitizes control characters, supports `c` to copy, and closes on Escape. If the provider fails, the console warns rather than crashing; if historical breakdown data is missing or incompatible, the breakdown control is unavailable even though a total may still be shown.
+The Debug Console exposes a copyable **entire-thread estimated** token-and-cost breakdown only when the active app's durable `_session_cost_usd` and `_session_cost_breakdown` can be formatted from version-1, historically complete structured detail. The formatter produces a plain-text table with inclusive parent rows, subset cache/reasoning rows, totals, and notes for unpriceable or directionless spend. If history is missing, incomplete, or incompatible, the cost total can still be shown but the breakdown control is unavailable.
+
+The console passes a live formatter provider to `CostBreakdownScreen`, rather than a frozen copy. While the console and then the modal are open, each polls on the 0.5-second refresh cadence; the modal replaces its displayed value only after a successful, non-empty provider result. It sanitizes control characters both for the initial and refreshed text, renders it as non-markup content, and `c` copies the most recently successful complete value; Escape closes the modal.
+
+Refresh is deliberately non-disruptive. A failed availability poll is debug-logged and hides the button; a failure while opening logs a warning and shows an unavailable toast; and a failure in the open modal is debug-logged while retaining the last displayed and copyable value. Thus a transient formatter/provider error cannot tear down the diagnostic UI or the user session.
 
 `warnings.session_cost_threshold_usd` configures a once-per-thread warning; `0` disables it. When an incoming authoritative estimate is strictly above a positive threshold, the TUI opens `SessionCostWarningScreen`. The acknowledgement-only modal calls the amount an **estimated session cost**, suggests `/offload` or `/clear`, and closes only on Enter or Escape. Restoring a thread already above the threshold marks its warning as shown, so resuming it does not repeatedly interrupt the user. It is an advisory warning, not a budget guard.
 
